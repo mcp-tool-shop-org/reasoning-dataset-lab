@@ -44,6 +44,7 @@ from reasoning_dataset_lab.pilot_b.run_records import (
     UNVERIFIED_JUDGE_DONE_FILENAME,
     collect_run_unverified_passes,
     format_unverified_or_incomplete_refusal,
+    read_excluded_incomplete_passes,
 )
 from reasoning_dataset_lab.pilot_b.three_way_wording import (
     PASS_MODE_CHOICES,
@@ -1127,6 +1128,7 @@ def _check_shard_unverified_passes(
     `outcome.draft.json` (including passes outside `expected_judge_ids`) unless `allow_unverified=True` (stub-only)."""
     try:
         entries = collect_run_unverified_passes(sdir, default_pass_mode=manifest_pass_mode)
+        read_excluded_incomplete_passes(sdir)
     except (OSError, ValueError) as exc:
         raise MergeRefusalError(
             "MERGE_UNVERIFIED_PASS",
@@ -1654,6 +1656,7 @@ def merge_shards(
     per_shard_verified_recovery: dict[str, bool] = {}
     per_shard_modes: dict[str, str] = {}
     unverified_passes: list[dict[str, str]] = []
+    excluded_incomplete_passes: list[dict[str, Any]] = []
 
     # Gate (a), (b), (e) accumulators
     seen_triples: dict[tuple[str, str, str], str] = {}
@@ -1813,6 +1816,9 @@ def merge_shards(
                 manifest_pass_mode=manifest_pass_mode,
                 allow_unverified=bool(allow_unverified),
             )
+        )
+        excluded_incomplete_passes.extend(
+            {"shard": expected_spec, **entry} for entry in read_excluded_incomplete_passes(sdir)
         )
 
         # Gate (e) & row collection across all expected judges
@@ -2353,6 +2359,8 @@ def merge_shards(
     if allow_unverified or unverified_passes:
         merge_receipt["allow_unverified"] = bool(allow_unverified)
         merge_receipt["unverified_passes"] = unverified_passes
+    if excluded_incomplete_passes:
+        merge_receipt["excluded_incomplete_passes"] = excluded_incomplete_passes
 
     (output_dir / "merged_readout.json").write_text(
         json.dumps(merged_readout, indent=2, sort_keys=True) + "\n",

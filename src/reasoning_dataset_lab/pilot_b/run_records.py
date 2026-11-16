@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import re
+from typing import Any
 
 from reasoning_dataset_lab.pilot_b.three_way_wording import (
     LEGACY_DONE_NAME_PASS_MODES,
@@ -165,23 +166,13 @@ def read_unverified_passes(
     return entries
 
 
-def read_outcome_unverified_passes(run_dir: Path) -> list[dict[str, str]]:
-    """Cross-check `outcome.draft.json` in `run_dir` so dotfile-dropping copies (`cp -r out/* dst/`) cannot bypass.
-
-    Refuses with `ValueError` if `outcome.draft.json` is non-regular (including live or dangling symlinks and
-    directories), unreadable, invalid JSON, non-dict, sets `unverified_passes_malformed=true`, has a malformed
-    `unverified_passes` or `judges_completed` field, or contains malformed `rows/*.jsonl` names. Returns deduplicated
-    entries tagged with `reason`:
-    1. `"unverified_pass"` for any pass listed in `outcome.draft.json["unverified_passes"]`, and
-    2. `"incomplete_rows"` for any `rows/*.jsonl` file present on disk whose `judge_done` stem is absent from
-       `outcome.draft.json["judges_completed"]` and not listed in `unverified_passes`.
-    """
+def _read_outcome_draft_dict(run_dir: Path) -> tuple[Path, dict[str, Any] | None]:
     resolved_dir = Path(run_dir)
     outcome_path = resolved_dir / OUTCOME_DRAFT_FILENAME
     try:
         exists_or_link = outcome_path.exists() or outcome_path.is_symlink()
         if not exists_or_link:
-            return []
+            return outcome_path, None
         if outcome_path.is_symlink() or not outcome_path.is_file():
             raise ValueError(f"{OUTCOME_DRAFT_FILENAME} at '{outcome_path}' is not a regular file")
         raw_text = outcome_path.read_bytes().decode("utf-8")
@@ -194,6 +185,35 @@ def read_outcome_unverified_passes(run_dir: Path) -> list[dict[str, str]]:
         raise ValueError(f"invalid JSON in {OUTCOME_DRAFT_FILENAME} at '{outcome_path}': {exc}") from exc
     if not isinstance(doc, dict):
         raise ValueError(f"{OUTCOME_DRAFT_FILENAME} at '{outcome_path}' must be a JSON object")
+    return outcome_path, doc
+
+
+def read_excluded_incomplete_passes(run_dir: Path) -> list[dict[str, Any]]:
+    """Return validated `excluded_incomplete_passes` entries from `outcome.draft.json` (or `[]` when absent)."""
+    _, doc = _read_outcome_draft_dict(run_dir)
+    if doc is None or doc.get("excluded_incomplete_passes") is None:
+        return []
+    raw_excl = doc["excluded_incomplete_passes"]
+    if not isinstance(raw_excl, list) or not all(isinstance(x, dict) for x in raw_excl):
+        raise ValueError(f"{OUTCOME_DRAFT_FILENAME} excluded_incomplete_passes must be a list of objects")
+    return [dict(x) for x in raw_excl]
+
+
+def read_outcome_unverified_passes(run_dir: Path) -> list[dict[str, str]]:
+    """Cross-check `outcome.draft.json` in `run_dir` so dotfile-dropping copies (`cp -r out/* dst/`) cannot bypass.
+
+    Refuses with `ValueError` if `outcome.draft.json` is non-regular (including live or dangling symlinks and
+    directories), unreadable, invalid JSON, non-dict, sets `unverified_passes_malformed=true`, has a malformed
+    `unverified_passes` or `judges_completed` field, or contains malformed `rows/*.jsonl` names. Returns deduplicated
+    entries tagged with `reason`:
+    1. `"unverified_pass"` for any pass listed in `outcome.draft.json["unverified_passes"]`, and
+    2. `"incomplete_rows"` for any `rows/*.jsonl` file present on disk whose `judge_done` stem is absent from
+       `outcome.draft.json["judges_completed"]` and not listed in `unverified_passes`.
+    """
+    resolved_dir = Path(run_dir)
+    outcome_path, doc = _read_outcome_draft_dict(resolved_dir)
+    if doc is None:
+        return []
 
     if doc.get("unverified_passes_malformed"):
         raise ValueError(f"{OUTCOME_DRAFT_FILENAME} at '{outcome_path}' records unverified_passes_malformed=true")
@@ -266,25 +286,45 @@ def format_unverified_or_incomplete_refusal(
     subject: str,
     extra_note: str = "",
 ) -> tuple[str, str]:
-    """Build `(message, hint)` distinguishing incomplete rows (`B-3`) from unverified timed-out passes."""
-    first_u = entries[0]
-    listed = ", ".join(f"{u['judge_id']}:{u['pass_mode']}" for u in entries)
+    """Build `(message, hint)` reporting unverified passes and incomplete-rows passes each with their own wording/hint."""
+    unv_entries = [u for u in entries if u.get("reason") != "incomplete_rows"]
+    inc_entries = [u for u in entries if u.get("reason") == "incomplete_rows"]
     note_suffix = f" ({extra_note})" if extra_note else ""
-    if first_u.get("reason") == "incomplete_rows":
-        msg = (
-            f"{subject} has rows present for a pass the outcome does not list as completed: [{listed}] "
-            f"(first: judge={first_u['judge_id']} pass_mode={first_u['pass_mode']} rows/{first_u['rows_file']})"
-            f"{note_suffix}."
+
+    msg_parts: list[str] = []
+    if unv_entries:
+        first_unv = unv_entries[0]
+        unv_listed = ", ".join(f"{u['judge_id']}:{u['pass_mode']}" for u in unv_entries)
+        msg_parts.append(
+            f"lists unverified pass(es) [{unv_listed}] in {UNVERIFIED_JUDGE_DONE_FILENAME} or "
+            f"{OUTCOME_DRAFT_FILENAME} (first: judge={first_unv['judge_id']} pass_mode={first_unv['pass_mode']} "
+            f"judge_done/{first_unv['done_file']})"
         )
-        hint = (
-            f"Run 'python scripts/colab/vm_judges.py exclude-incomplete <out_dir> "
-            f"--judge {first_u['judge_id']} --pass-mode {first_u['pass_mode']}' to move those rows and any pair to "
-            f"{ROWS_INCOMPLETE_DIRNAME}/ and record the exclusion in {OUTCOME_DRAFT_FILENAME}."
+    if inc_entries:
+        first_inc = inc_entries[0]
+        inc_listed = ", ".join(f"{u['judge_id']}:{u['pass_mode']}" for u in inc_entries)
+        msg_parts.append(
+            f"has rows present for a pass the outcome does not list as completed: [{inc_listed}] "
+            f"(first: judge={first_inc['judge_id']} pass_mode={first_inc['pass_mode']} rows/{first_inc['rows_file']})"
         )
-        return msg, hint
-    msg = (
-        f"{subject} lists unverified pass(es) [{listed}] in {UNVERIFIED_JUDGE_DONE_FILENAME} or "
-        f"{OUTCOME_DRAFT_FILENAME} (first: judge={first_u['judge_id']} pass_mode={first_u['pass_mode']} "
-        f"judge_done/{first_u['done_file']}){note_suffix}; refusing to count rows from an unverified timed-out pass."
+
+    if unv_entries and not inc_entries:
+        msg = f"{subject} {msg_parts[0]}{note_suffix}; refusing to count rows from an unverified timed-out pass."
+        return msg, REVERIFY_HINT_TEMPLATE
+    first_inc = inc_entries[0]
+    excl_hint = (
+        f"Run 'python scripts/colab/vm_judges.py exclude-incomplete <out_dir> "
+        f"--judge {first_inc['judge_id']} --pass-mode {first_inc['pass_mode']}' to move those rows and any pair to "
+        f"{ROWS_INCOMPLETE_DIRNAME}/ and record the exclusion in {OUTCOME_DRAFT_FILENAME}."
     )
-    return msg, REVERIFY_HINT_TEMPLATE
+    if not unv_entries:
+        msg = f"{subject} {msg_parts[0]}{note_suffix}."
+        return msg, excl_hint
+    unv_listed = ", ".join(f"{u['judge_id']}:{u['pass_mode']}" for u in unv_entries)
+    inc_listed = ", ".join(f"{u['judge_id']}:{u['pass_mode']}" for u in inc_entries)
+    msg = (
+        f"{subject} {msg_parts[0]} (refusing to count rows from an unverified timed-out pass) "
+        f"and {msg_parts[1]}{note_suffix}."
+    )
+    hint = f"For unverified pass(es) [{unv_listed}]: {REVERIFY_HINT_TEMPLATE} For incomplete rows [{inc_listed}]: {excl_hint}"
+    return msg, hint

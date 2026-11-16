@@ -16715,6 +16715,12 @@ _LIVE_RIG_PID_FILES: tuple[str, ...] = (".rig_launcher.pid", ".rig_exec.pid")
 
 
 def _pid_is_alive(pid: int) -> bool:
+    if os.name == "nt":
+        raise RefusalError(
+            "RIG_POSIX_REQUIRED",
+            "PID liveness checks require POSIX/WSL Python (os.kill(pid, 0) on Windows sends CTRL_C_EVENT).",
+            hint="Run vm_judges.py reverify-unverified and exclude-incomplete inside WSL, not native Windows Python.",
+        )
     if pid <= 0:
         return False
     try:
@@ -16781,7 +16787,13 @@ def _ensure_run_not_live(
         if mp.exists() or mp.is_symlink():
             raise RefusalError(
                 live_refusal_code,
-                f"Run directory '{resolved_dir}' has active launcher marker '{marker_name}'; refusing while run is live.",
+                f"Run directory '{resolved_dir}' has active launcher marker '{marker_name}'; refusing while run is live "
+                f"(if left behind by a rig crash after verifying via ps and colab sessions that no launcher, watchdog, "
+                f"or Colab session is running, remove stale '{mp}' and retry).",
+                hint=(
+                    f"Wait for the launcher and watchdog to finish, or if the rig crashed and no launcher, watchdog, "
+                    f"or Colab session is running, remove stale '{mp}' and retry."
+                ),
             )
 
     for pid_name in _LIVE_RIG_PID_FILES:
@@ -16806,20 +16818,12 @@ def _ensure_run_not_live(
         except (OSError, UnicodeDecodeError, ValueError) as exc:
             raise RefusalError(malformed_refusal_code, f"Cannot parse status.json at '{status_path}': {exc}") from exc
         if isinstance(sdoc, Mapping):
+            # status.json is written on the VM and carries no rig launcher PID; rig PIDs live in .rig_launcher.pid / .rig_exec.pid.
             st_val = str(sdoc.get("status") or "").strip().lower()
-            raw_pid = sdoc.get("launcher_pid") if sdoc.get("launcher_pid") is not None else sdoc.get("pid")
-            pid_int = int(raw_pid) if isinstance(raw_pid, int) and not isinstance(raw_pid, bool) else 0
             if st_val in ("running", "in_progress", "starting"):
-                if raw_pid is None or _pid_is_alive(pid_int):
-                    raise RefusalError(
-                        live_refusal_code,
-                        f"Run directory '{resolved_dir}' status.json reports status={st_val!r} "
-                        f"(launcher_pid={raw_pid!r}); refusing while run is live.",
-                    )
-            elif pid_int > 0 and _pid_is_alive(pid_int):
                 raise RefusalError(
                     live_refusal_code,
-                    f"Run directory '{resolved_dir}' status.json launcher_pid={pid_int} is alive; refusing while run is live.",
+                    f"Run directory '{resolved_dir}' status.json reports status={st_val!r}; refusing while run is live.",
                 )
 
     try:
@@ -16831,13 +16835,28 @@ def _ensure_run_not_live(
     return outcome_path, odoc
 
 
+def _resolve_window_pass_mode(resolved_dir: Path, odoc: Mapping[str, Any]) -> str:
+    window_pass_mode = str(odoc.get("pass_mode") or "").strip()
+    if not window_pass_mode:
+        win_p = resolved_dir / "window.json"
+        if win_p.is_file() and not win_p.is_symlink():
+            try:
+                wdoc = json.loads(win_p.read_text(encoding="utf-8"))
+                if isinstance(wdoc, Mapping) and str(wdoc.get("pass_mode") or "").strip():
+                    window_pass_mode = str(wdoc["pass_mode"]).strip()
+            except (OSError, ValueError):
+                pass
+    return window_pass_mode or "binary"
+
+
 def reverify_unverified(out_dir: Path) -> tuple[int, dict[str, Any]]:
     """Offline unpaid re-verification (`python scripts/colab/vm_judges.py reverify-unverified <out_dir>`).
 
     Refuses while the run is live (`REVERIFY_UNVERIFIED_RUN_LIVE`). Rebuilds its candidate list from
-    `.unverified_judge_done`, `outcome.draft.json["unverified_passes"]`, and `progress.jsonl` (`judge_pass_done`),
-    ignoring a stale `unverified_passes_malformed` flag and clearing that flag only once `.unverified_judge_done`
-    parses cleanly. Requires a 64-hex `want_sha256` from `progress.jsonl` per entry, writes `outcome.draft.json`
+    `.unverified_judge_done`, `outcome.draft.json["unverified_passes"]`, `progress.jsonl` (`judge_pass_done` when rows
+    or `judge_done` exist on disk), and uncompleted `judge_done/*.json` files while skipping `excluded_incomplete_passes`
+    and ignoring a stale `unverified_passes_malformed` flag (clearing that flag only once `.unverified_judge_done`
+    parses cleanly). Requires a 64-hex `want_sha256` from `progress.jsonl` per entry, writes `outcome.draft.json`
     atomically before updating/unlinking `.unverified_judge_done`, and returns `(0, report)` or `(2, report)`.
     """
     resolved_dir = Path(out_dir)
@@ -16854,17 +16873,7 @@ def reverify_unverified(out_dir: Path) -> tuple[int, dict[str, Any]]:
         outcome_filename=run_records.OUTCOME_DRAFT_FILENAME,
     )
 
-    window_pass_mode = str(odoc.get("pass_mode") or "").strip()
-    if not window_pass_mode:
-        win_p = resolved_dir / "window.json"
-        if win_p.is_file() and not win_p.is_symlink():
-            try:
-                wdoc = json.loads(win_p.read_text(encoding="utf-8"))
-                if isinstance(wdoc, Mapping) and str(wdoc.get("pass_mode") or "").strip():
-                    window_pass_mode = str(wdoc["pass_mode"]).strip()
-            except (OSError, ValueError):
-                pass
-    window_pass_mode = window_pass_mode or "binary"
+    window_pass_mode = _resolve_window_pass_mode(resolved_dir, odoc)
     default_pmode = window_pass_mode if window_pass_mode in PASS_MODES else "binary"
 
     try:
@@ -16882,6 +16891,32 @@ def reverify_unverified(out_dir: Path) -> tuple[int, dict[str, Any]]:
             "REVERIFY_UNVERIFIED_MALFORMED",
             f"Malformed {UNVERIFIED_JUDGE_DONE_FILENAME} in '{resolved_dir}': {exc}.",
         ) from exc
+
+    raw_excl = odoc.get("excluded_incomplete_passes")
+    if raw_excl is not None and not isinstance(raw_excl, list):
+        raise RefusalError(
+            "REVERIFY_UNVERIFIED_MALFORMED",
+            f"{run_records.OUTCOME_DRAFT_FILENAME} excluded_incomplete_passes must be a list.",
+        )
+    excluded_keys: set[tuple[str, str]] = set()
+    for ex in raw_excl or []:
+        if not isinstance(ex, Mapping):
+            raise RefusalError(
+                "REVERIFY_UNVERIFIED_MALFORMED",
+                f"{run_records.OUTCOME_DRAFT_FILENAME} excluded_incomplete_passes entries must be JSON objects.",
+            )
+        ex_j = str(ex.get("judge_id") or "").strip()
+        ex_m = str(ex.get("pass_mode") or "").strip()
+        if (not ex_j or not ex_m) and isinstance(ex.get("pass"), str) and ":" in ex["pass"]:
+            ex_parts = [p.strip() for p in ex["pass"].split(":")]
+            if len(ex_parts) == 2:
+                ex_j, ex_m = ex_parts
+        if ex_j not in JUDGE_SPECS or ex_m not in PASS_MODES:
+            raise RefusalError(
+                "REVERIFY_UNVERIFIED_MALFORMED",
+                f"Invalid excluded_incomplete_passes entry {ex!r} in {run_records.OUTCOME_DRAFT_FILENAME}.",
+            )
+        excluded_keys.add((ex_j, ex_m))
 
     had_malformed_flag = bool(odoc.get("unverified_passes_malformed"))
     raw_unv = odoc.get("unverified_passes")
@@ -16919,9 +16954,10 @@ def reverify_unverified(out_dir: Path) -> tuple[int, dict[str, Any]]:
 
     def _add_candidate(jid: str, pmode: str, done_file: str, rows_file: str) -> None:
         key = (jid, pmode)
-        if key not in seen_keys:
-            seen_keys.add(key)
-            entries.append({"judge_id": jid, "pass_mode": pmode, "done_file": done_file, "rows_file": rows_file})
+        if key in excluded_keys or key in seen_keys:
+            return
+        seen_keys.add(key)
+        entries.append({"judge_id": jid, "pass_mode": pmode, "done_file": done_file, "rows_file": rows_file})
 
     for me in marker_entries:
         _add_candidate(me["judge_id"], me["pass_mode"], me["done_file"], me["rows_file"])
@@ -16929,7 +16965,11 @@ def reverify_unverified(out_dir: Path) -> tuple[int, dict[str, Any]]:
         _add_candidate(oe["judge_id"], oe["pass_mode"], oe["done_file"], oe["rows_file"])
     for pr in progress_passes:
         done_stem = pr["done_file"][: -len(".json")]
-        if done_stem not in prior_completed_stems:
+        if done_stem in prior_completed_stems:
+            continue
+        pr_rows_p = resolved_dir / ROWS_DIRNAME / pr["rows_file"]
+        pr_done_p = resolved_dir / JUDGE_DONE_DIRNAME / pr["done_file"]
+        if (pr_rows_p.exists() or pr_rows_p.is_symlink()) or (pr_done_p.exists() or pr_done_p.is_symlink()):
             _add_candidate(pr["judge_id"], pr["pass_mode"], pr["done_file"], pr["rows_file"])
 
     jdone_dir = resolved_dir / JUDGE_DONE_DIRNAME
@@ -16980,11 +17020,12 @@ def reverify_unverified(out_dir: Path) -> tuple[int, dict[str, Any]]:
     odoc.pop("unverified_passes_malformed", None)
     odoc["unverified_passes"] = still_labels
     still_done_names = {e["done_file"] for e in still_unverified}
+    excluded_done_names = {judge_done_filename_for_pass(j, m) for j, m in excluded_keys}
     done_ids = (
         {
             jf.stem
             for jf in sorted(jdone_dir.glob("*.json"))
-            if jf.is_file() and not jf.is_symlink() and jf.name not in still_done_names
+            if jf.is_file() and not jf.is_symlink() and jf.name not in still_done_names and jf.name not in excluded_done_names
         }
         if jdone_dir.is_dir()
         else set()
@@ -17080,17 +17121,36 @@ def exclude_incomplete(
     done_stem = done_name[: -len(".json")]
     rows_name = rows_filename_for_pass(jid, pmode)
 
-    raw_comp = odoc.get("judges_completed")
-    if raw_comp is not None and (not isinstance(raw_comp, list) or not all(isinstance(x, str) for x in raw_comp)):
-        raise RefusalError("EXCLUDE_INCOMPLETE_MALFORMED", f"{run_records.OUTCOME_DRAFT_FILENAME} judges_completed must be a list of strings.")
-    if isinstance(raw_comp, list) and done_stem in {x.strip() for x in raw_comp if x.strip()}:
+    if "judges_completed" not in odoc:
+        raise RefusalError(
+            "EXCLUDE_INCOMPLETE_MISSING_JUDGES_COMPLETED",
+            f"{run_records.OUTCOME_DRAFT_FILENAME} in '{resolved_dir}' has no judges_completed list; "
+            "refusing to exclude without an explicit judges_completed list.",
+        )
+    raw_comp = odoc["judges_completed"]
+    if not isinstance(raw_comp, list) or not all(isinstance(x, str) for x in raw_comp):
+        raise RefusalError(
+            "EXCLUDE_INCOMPLETE_MALFORMED",
+            f"{run_records.OUTCOME_DRAFT_FILENAME} judges_completed must be a list of strings.",
+        )
+    if done_stem in {x.strip() for x in raw_comp if x.strip()}:
         raise RefusalError(
             "EXCLUDE_INCOMPLETE_ALREADY_COMPLETED",
             f"Pass {jid}:{pmode} (judge_done/{done_name}) is listed in judges_completed; refusing to exclude a completed pass.",
         )
 
-    window_pmode = str(odoc.get("pass_mode") or "").strip()
+    window_pmode = _resolve_window_pass_mode(resolved_dir, odoc)
     default_pmode = window_pmode if window_pmode in PASS_MODES else "binary"
+
+    progress_passes = launcher_completed_passes(resolved_dir / PROGRESS_FILENAME, window_pmode)
+    if any((r["judge_id"], r["pass_mode"]) == (jid, pmode) for r in progress_passes):
+        raise RefusalError(
+            "EXCLUDE_INCOMPLETE_HAS_PROGRESS_DONE",
+            f"Pass {jid}:{pmode} has a judge_pass_done record in {PROGRESS_FILENAME}; "
+            "timed-out finished passes must be re-verified rather than excluded.",
+            hint=run_records.REVERIFY_HINT_TEMPLATE,
+        )
+
     try:
         marker_entries = run_records.read_unverified_passes(resolved_dir, default_pass_mode=default_pmode)
     except (OSError, ValueError) as exc:
@@ -17133,11 +17193,21 @@ def exclude_incomplete(
             raise RefusalError("EXCLUDE_INCOMPLETE_MALFORMED", f"Invalid '{closed_path}' structure.")
         closed_doc = parsed_closed
 
-    moved_records = [
-        {"from": src.relative_to(resolved_dir).as_posix(), "to": dst.relative_to(resolved_dir).as_posix()}
-        for src, dst in to_move
-    ]
-    moved_rels = {rec["from"] for rec in moved_records}
+    moved_records: list[dict[str, Any]] = []
+    for src, dst in to_move:
+        try:
+            raw_b = src.read_bytes()
+        except OSError as exc:
+            raise RefusalError("EXCLUDE_INCOMPLETE_MALFORMED", f"Cannot read '{src}': {exc}") from exc
+        moved_records.append(
+            {
+                "from": src.relative_to(resolved_dir).as_posix(),
+                "to": dst.relative_to(resolved_dir).as_posix(),
+                "bytes": len(raw_b),
+                "sha256": hashlib.sha256(raw_b).hexdigest(),
+            }
+        )
+    moved_rels = {str(rec["from"]) for rec in moved_records}
 
     pass_label = f"{jid}:{pmode}"
     if isinstance(odoc.get("unverified_passes"), list):
@@ -17176,6 +17246,8 @@ def exclude_incomplete(
         raise RefusalError("EXCLUDE_INCOMPLETE_WRITE_FAILED", f"Failed moving incomplete pass files: {exc}") from exc
 
     if closed_doc is not None:
+        prior_closed_sha = str(closed_doc.get("outputs_closed_sha256") or "")
+        removed_closed_files = sorted(str(k) for k in closed_doc["files"] if str(k) in moved_rels)
         new_files = {
             str(k): dict(v)
             for k, v in sorted(closed_doc["files"].items())
@@ -17186,8 +17258,24 @@ def exclude_incomplete(
             "files": dict(sorted(new_files.items())),
         }
         canonical_manifest = json.dumps(manifest_body, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        new_closed_sha = hashlib.sha256(canonical_manifest).hexdigest()
+        amendments = list(closed_doc["amendments"]) if isinstance(closed_doc.get("amendments"), list) else []
+        amendments.append(
+            {
+                "amended_at": now_utc,
+                "reason": "exclude_incomplete",
+                "pass": pass_label,
+                "judge_id": jid,
+                "pass_mode": pmode,
+                "by": actor,
+                "removed_files": removed_closed_files,
+                "prior_outputs_closed_sha256": prior_closed_sha,
+                "outputs_closed_sha256": new_closed_sha,
+            }
+        )
         closed_doc["files"] = dict(sorted(new_files.items()))
-        closed_doc["outputs_closed_sha256"] = hashlib.sha256(canonical_manifest).hexdigest()
+        closed_doc["outputs_closed_sha256"] = new_closed_sha
+        closed_doc["amendments"] = amendments
         _atomic_write_regular_file(
             closed_path,
             json.dumps(closed_doc, indent=2, sort_keys=True) + "\n",
@@ -17214,6 +17302,13 @@ def exclude_incomplete(
     return 0, report
 
 
+def _format_cli_refusal_line(exc: Any) -> str:
+    hint = str(getattr(exc, "hint", "") or "").strip()
+    if hint and hint != "Inspect VM logs and refusal details before retrying.":
+        return f"{exc.code}: {exc.message} (hint: {hint})\n"
+    return f"{exc.code}: {exc.message}\n"
+
+
 def _cli_reverify_unverified(argv: list[str]) -> int:
     if len(argv) != 1 or not argv[0].strip() or argv[0].startswith("-"):
         sys.stderr.write("usage: vm_judges.py reverify-unverified <out_dir>\n")
@@ -17221,7 +17316,7 @@ def _cli_reverify_unverified(argv: list[str]) -> int:
     try:
         rc, report = reverify_unverified(Path(argv[0]))
     except RefusalError as exc:
-        sys.stderr.write(f"{exc.code}: {exc.message}\n")
+        sys.stderr.write(_format_cli_refusal_line(exc))
         return 2
     sys.stdout.write(json.dumps(report, sort_keys=True) + "\n")
     return rc
@@ -17251,7 +17346,7 @@ def _cli_exclude_incomplete(argv: list[str]) -> int:
             by=parsed.by,
         )
     except RefusalError as exc:
-        sys.stderr.write(f"{exc.code}: {exc.message}\n")
+        sys.stderr.write(_format_cli_refusal_line(exc))
         return 2
     sys.stdout.write(json.dumps(report, sort_keys=True) + "\n")
     return rc

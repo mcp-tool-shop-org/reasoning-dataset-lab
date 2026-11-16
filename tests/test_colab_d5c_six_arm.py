@@ -2797,12 +2797,34 @@ def test_read_unverified_passes_edge_cases_and_malformed_lines(
         ("d3-mini", TWO_Q, "unverified_pass"),
         (ENCODER, NLI, "incomplete_rows"),
     ]
-    msg_unv, hint_unv = run_records.format_unverified_or_incomplete_refusal(combined, subject="shard 1/2", extra_note="note")
-    assert "unverified pass(es)" in msg_unv and "reverify-unverified" in hint_unv
+    msg_mixed, hint_mixed = run_records.format_unverified_or_incomplete_refusal(
+        combined, subject="shard 1/2", extra_note="note"
+    )
+    assert f"unverified pass(es) [d3-mini:{TWO_Q}]" in msg_mixed
+    assert f"rows present for a pass the outcome does not list as completed: [{ENCODER}:{NLI}]" in msg_mixed
+    assert "reverify-unverified" in hint_mixed
+    assert f"vm_judges.py exclude-incomplete <out_dir> --judge {ENCODER} --pass-mode {NLI}" in hint_mixed
+
+    msg_only_unv, hint_only_unv = run_records.format_unverified_or_incomplete_refusal([combined[0]], subject="shard 1/2")
+    assert "unverified pass(es)" in msg_only_unv and "rows present for a pass" not in msg_only_unv
+    assert hint_only_unv == run_records.REVERIFY_HINT_TEMPLATE
+
     msg_inc, hint_inc = run_records.format_unverified_or_incomplete_refusal([combined[1]], subject="Run dir")
     assert "rows present for a pass the outcome does not list as completed" in msg_inc
     assert "timed-out" not in msg_inc
     assert f"vm_judges.py exclude-incomplete <out_dir> --judge {ENCODER} --pass-mode {NLI}" in hint_inc
+
+    # `read_excluded_incomplete_passes` validation.
+    assert run_records.read_excluded_incomplete_passes(tmp_path / "no_such_dir") == []
+    assert run_records.read_excluded_incomplete_passes(out_b1) == []
+    (out_b1 / run_records.OUTCOME_DRAFT_FILENAME).write_text(
+        json.dumps({"excluded_incomplete_passes": ["not-an-object"]}) + "\n", encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="excluded_incomplete_passes must be a list of objects"):
+        run_records.read_excluded_incomplete_passes(out_b1)
+    (out_b1 / run_records.OUTCOME_DRAFT_FILENAME).write_text(
+        json.dumps({"judges_completed": []}) + "\n", encoding="utf-8"
+    )
 
     # Invalid rows entry (`rows/.jsonl`) raises ValueError.
     (out_b1 / "rows" / ".jsonl").write_text("{}\n", encoding="utf-8")
@@ -2839,7 +2861,22 @@ def test_dangling_and_live_symlinks_refused_in_run_records_and_reverify(tmp_path
         run_records.read_outcome_unverified_passes(sym_dir)
     outcome_link.unlink()
 
-    # C-a: live symlink `.unverified_judge_done -> outside.txt` is refused and never written through.
+    # C-a & #103 B-4: live symlinks on both `.unverified_judge_done` and `outcome.draft.json` are refused without write-through.
+    outside_outcome = tmp_path / "outside_outcome.json"
+    outside_outcome_bytes = (
+        json.dumps({"pass_mode": CONTRA, "judges_completed": ["d3-mini"], "unverified_passes": []}) + "\n"
+    ).encode("utf-8")
+    outside_outcome.write_bytes(outside_outcome_bytes)
+    outcome_link.symlink_to(outside_outcome)
+    assert outcome_link.exists() and outcome_link.is_file() and outcome_link.is_symlink()
+    with pytest.raises(ValueError, match="not a regular file"):
+        run_records.read_outcome_unverified_passes(sym_dir)
+    with pytest.raises(vm_judges.RefusalError) as exc_sym_out_rev:
+        vm_judges.reverify_unverified(sym_dir)
+    assert exc_sym_out_rev.value.code == "REVERIFY_UNVERIFIED_MALFORMED"
+    assert outside_outcome.read_bytes() == outside_outcome_bytes
+    outcome_link.unlink()
+
     outside_target = tmp_path / "outside_marker.txt"
     outside_bytes = f"d3-mini:{CONTRA}\n".encode("utf-8")
     outside_target.write_bytes(outside_bytes)
@@ -2930,9 +2967,13 @@ def test_vm_judges_reverify_unverified_cli_verifies_and_prunes_offline(
         encoding="utf-8",
     )
 
-    # B-4 (2): Live `status.json` (`status: "running"`, live `launcher_pid`) and `.rig_launcher.pid` / `.rig_watchdog_armed` refuse.
+    # B-4 (2) & #103 C-2/C-3: Live `status.json` (`status: "running"` with NO pid), `.rig_launcher.pid`, `.rig_watchdog_armed`
+    # (with crash clearance guidance), and Windows `os.name == "nt"` `_pid_is_alive` guard all refuse cleanly.
     status_p = out_dir / "status.json"
-    status_p.write_text(json.dumps({"status": "running", "launcher_pid": os.getpid()}) + "\n", encoding="utf-8")
+    status_p.write_text(json.dumps({"status": "running"}) + "\n", encoding="utf-8")
+    with pytest.raises(vm_judges.RefusalError) as exc_live_status:
+        vm_judges.reverify_unverified(out_dir)
+    assert exc_live_status.value.code == "REVERIFY_UNVERIFIED_RUN_LIVE"
     live_status_proc = subprocess.run(
         [sys.executable, str(vm_py), "reverify-unverified", str(out_dir)],
         capture_output=True,
@@ -2941,6 +2982,13 @@ def test_vm_judges_reverify_unverified_cli_verifies_and_prunes_offline(
     )
     assert live_status_proc.returncode == 2 and "REVERIFY_UNVERIFIED_RUN_LIVE" in live_status_proc.stderr
     status_p.unlink()
+
+    orig_os_name = os.name
+    monkeypatch.setattr(os, "name", "nt")
+    with pytest.raises(vm_judges.RefusalError) as exc_nt_pid:
+        vm_judges._pid_is_alive(12345)
+    assert exc_nt_pid.value.code == "RIG_POSIX_REQUIRED"
+    monkeypatch.setattr(os, "name", orig_os_name)
 
     rig_pid_p = out_dir / ".rig_launcher.pid"
     rig_pid_p.write_text(f"{os.getpid()}\n", encoding="utf-8")
@@ -2951,9 +2999,15 @@ def test_vm_judges_reverify_unverified_cli_verifies_and_prunes_offline(
 
     rig_wd_p = out_dir / ".rig_watchdog_armed"
     rig_wd_p.write_text("", encoding="utf-8")
-    with pytest.raises(vm_judges.RefusalError) as exc_live_wd:
-        vm_judges.reverify_unverified(out_dir)
-    assert exc_live_wd.value.code == "REVERIFY_UNVERIFIED_RUN_LIVE"
+    wd_cli = subprocess.run(
+        [sys.executable, str(vm_py), "reverify-unverified", str(out_dir)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert wd_cli.returncode == 2
+    assert "REVERIFY_UNVERIFIED_RUN_LIVE" in wd_cli.stderr
+    assert "remove stale" in wd_cli.stderr and ".rig_watchdog_armed" in wd_cli.stderr
     rig_wd_p.unlink()
 
     marker_p.write_text("d3-mini\tbogus\td3-mini.json\n", encoding="utf-8")
@@ -3141,6 +3195,58 @@ def test_vm_judges_reverify_unverified_cli_verifies_and_prunes_offline(
         bootstrap_resamples=20,
     )
     assert {s["judge_id"] for s in scored_rep["three_way_pass"]} == {"d3-mini", FLASH}
+    assert "excluded_incomplete_passes" not in scored_rep
+
+    # #103 B-1 (probe S1): Clean run where `d3-flash` pair was deleted / never fetched while its `progress.jsonl`
+    # `judge_pass_done` record remains (`judges_completed: ["d3-mini"]`, `unverified_passes: []`, no marker).
+    # `reverify-unverified` must return `rc=0`, write no marker, and write no `unverified_passes` entry.
+    import shutil
+
+    s1_dir = tmp_path / "probe_s1"
+    shutil.copytree(out_dir, s1_dir)
+    (s1_dir / "rows" / f"{FLASH}.{CONTRA}.jsonl").unlink()
+    (s1_dir / "judge_done" / f"{FLASH}.json").unlink()
+    (s1_dir / run_records.OUTCOME_DRAFT_FILENAME).write_text(
+        json.dumps({"pass_mode": CONTRA, "judges_completed": ["d3-mini"], "unverified_passes": []}) + "\n",
+        encoding="utf-8",
+    )
+    assert run_records.collect_run_unverified_passes(s1_dir) == []
+    s1_proc = subprocess.run(
+        [sys.executable, str(vm_py), "reverify-unverified", str(s1_dir)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert s1_proc.returncode == 0, s1_proc.stderr
+    assert not (s1_dir / run_records.UNVERIFIED_JUDGE_DONE_FILENAME).exists()
+    s1_outcome = json.loads((s1_dir / run_records.OUTCOME_DRAFT_FILENAME).read_text(encoding="utf-8"))
+    assert s1_outcome["unverified_passes"] == []
+    assert s1_outcome["judges_completed"] == ["d3-mini"]
+    assert run_records.collect_run_unverified_passes(s1_dir) == []
+
+    # #103 B-4 (4a): Pin the `progress` candidate loop alone (`rows/<flash>` on disk, `judge_done/<flash>` absent,
+    # marker absent, `progress.jsonl` has `judge_pass_done` for `FLASH` -> only the progress loop finds it).
+    prog_loop_dir = tmp_path / "probe_prog_loop_only"
+    shutil.copytree(s1_dir, prog_loop_dir)
+    shutil.copy2(out_dir / "rows" / f"{FLASH}.{CONTRA}.jsonl", prog_loop_dir / "rows" / f"{FLASH}.{CONTRA}.jsonl")
+    assert not (prog_loop_dir / "judge_done" / f"{FLASH}.json").exists()
+    prog_loop_rc, prog_loop_rep = vm_judges.reverify_unverified(prog_loop_dir)
+    assert prog_loop_rc == 2
+    assert prog_loop_rep["still_unverified"] == [f"{FLASH}:{CONTRA}"]
+
+    # #103 B-4 (4b): Pin the `judge_done` candidate loop alone (`judge_done/<flash>` on disk, `rows/<flash>` absent,
+    # marker absent, `progress.jsonl` has NO `FLASH` record -> only the `judge_done` loop finds it).
+    jdone_loop_dir = tmp_path / "probe_jdone_loop_only"
+    shutil.copytree(s1_dir, jdone_loop_dir)
+    (jdone_loop_dir / "progress.jsonl").write_text(
+        json.dumps({"kind": "judge_pass_done", "judge": "d3-mini", "pass_mode": CONTRA, "sha256": d3_sha}) + "\n",
+        encoding="utf-8",
+    )
+    shutil.copy2(out_dir / "judge_done" / f"{FLASH}.json", jdone_loop_dir / "judge_done" / f"{FLASH}.json")
+    assert not (jdone_loop_dir / "rows" / f"{FLASH}.{CONTRA}.jsonl").exists()
+    jdone_loop_rc, jdone_loop_rep = vm_judges.reverify_unverified(jdone_loop_dir)
+    assert jdone_loop_rc == 2
+    assert jdone_loop_rep["still_unverified"] == [f"{FLASH}:{CONTRA}"]
 
     # C-c: `_load_run_records_module` honours `RDLAB_REPO_DIR` and turns ImportError into `RUN_RECORDS_UNAVAILABLE`.
     repo_root = Path(__file__).resolve().parents[1]
@@ -3298,6 +3404,129 @@ def test_exclude_incomplete_cli_on_lockcheck_1a_run8_shape_unblocks_merge_and_sc
     assert "timed-out" not in str(exc_s_inc.value)
     assert "vm_judges.py exclude-incomplete <out_dir> --judge flow-judge-v0.1 --pass-mode binary" in str(exc_s_inc.value)
 
+    # #103 C-4 (probe S6): Mixed directory with both an unverified pass (`mu-judge:binary` in marker) and incomplete rows
+    # (`flow-judge-v0.1` in `rows/`) reports BOTH with their own wording and BOTH hints (`reverify-unverified` + `exclude-incomplete`).
+    mixed_dir = tmp_path / "score_mixed_s6"
+    shutil.copytree(score_dir, mixed_dir)
+    (mixed_dir / run_records.UNVERIFIED_JUDGE_DONE_FILENAME).write_text("mu-judge\tbinary\tmu-judge.json\n", encoding="utf-8")
+    with pytest.raises(RdlabError) as exc_s_mixed:
+        bakeoff_judge_score.score_bakeoff_outputs(
+            judge_output_dir=mixed_dir,
+            keys_path=bin_keys_p,
+            public_out_path=tmp_path / "score_mixed_refused" / "public.json",
+            sealed_rows_out_path=tmp_path / "score_mixed_refused" / "sealed",
+            bootstrap_resamples=20,
+        )
+    mixed_err = str(exc_s_mixed.value)
+    assert "unverified pass(es) [mu-judge:binary]" in mixed_err
+    assert "rows present for a pass the outcome does not list as completed: [flow-judge-v0.1:binary]" in mixed_err
+    assert "reverify-unverified" in mixed_err
+    assert "vm_judges.py exclude-incomplete <out_dir> --judge flow-judge-v0.1 --pass-mode binary" in mixed_err
+
+    # #103 B-4 (3): `exclude-incomplete` refuses on live directories (missing outcome, `status.json` running without pid,
+    # live `.rig_launcher.pid`, and `.rig_watchdog_armed` with stale-crash clearance guidance) without moving rows.
+    live_excl_dir = tmp_path / "live_excl"
+    shutil.copytree(score_dir, live_excl_dir)
+    (live_excl_dir / run_records.OUTCOME_DRAFT_FILENAME).unlink()
+    live_no_out = subprocess.run(
+        [sys.executable, str(vm_py), "exclude-incomplete", str(live_excl_dir), "--judge", "flow-judge-v0.1", "--pass-mode", "binary"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert live_no_out.returncode == 2 and "EXCLUDE_INCOMPLETE_RUN_LIVE" in live_no_out.stderr
+    assert (live_excl_dir / "rows" / "flow-judge-v0.1.jsonl").is_file()
+
+    shutil.copy2(score_dir / run_records.OUTCOME_DRAFT_FILENAME, live_excl_dir / run_records.OUTCOME_DRAFT_FILENAME)
+    (live_excl_dir / "status.json").write_text('{"status":"running"}\n', encoding="utf-8")
+    with pytest.raises(vm_judges.RefusalError) as exc_excl_running:
+        vm_judges.exclude_incomplete(live_excl_dir, judge_id="flow-judge-v0.1", pass_mode="binary")
+    assert exc_excl_running.value.code == "EXCLUDE_INCOMPLETE_RUN_LIVE"
+    (live_excl_dir / "status.json").unlink()
+
+    (live_excl_dir / ".rig_launcher.pid").write_text(f"{os.getpid()}\n", encoding="utf-8")
+    with pytest.raises(vm_judges.RefusalError) as exc_excl_pid:
+        vm_judges.exclude_incomplete(live_excl_dir, judge_id="flow-judge-v0.1", pass_mode="binary")
+    assert exc_excl_pid.value.code == "EXCLUDE_INCOMPLETE_RUN_LIVE"
+    (live_excl_dir / ".rig_launcher.pid").unlink()
+
+    (live_excl_dir / ".rig_watchdog_armed").write_text("", encoding="utf-8")
+    live_wd_excl = subprocess.run(
+        [sys.executable, str(vm_py), "exclude-incomplete", str(live_excl_dir), "--judge", "flow-judge-v0.1", "--pass-mode", "binary"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert live_wd_excl.returncode == 2 and "EXCLUDE_INCOMPLETE_RUN_LIVE" in live_wd_excl.stderr
+    assert "remove stale" in live_wd_excl.stderr and ".rig_watchdog_armed" in live_wd_excl.stderr
+    assert (live_excl_dir / "rows" / "flow-judge-v0.1.jsonl").is_file()
+
+    # #103 B-3 (probes S3, S3b, S4_tar_no_jc): `exclude-incomplete` refuses unless `judges_completed` is a list of strings.
+    # Probe S3: completed, verified pass (`d3-mini`) with no `judges_completed` key in `outcome.draft.json` must NOT be moved.
+    s3_dir = tmp_path / "probe_s3"
+    shutil.copytree(shard_dirs[1], s3_dir)
+    (s3_dir / run_records.OUTCOME_DRAFT_FILENAME).write_text(
+        json.dumps({"pass_mode": "binary", "unverified_passes": []}) + "\n", encoding="utf-8"
+    )
+    s3_proc = subprocess.run(
+        [sys.executable, str(vm_py), "exclude-incomplete", str(s3_dir), "--judge", "d3-mini", "--pass-mode", "binary"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert s3_proc.returncode == 2 and "EXCLUDE_INCOMPLETE_MISSING_JUDGES_COMPLETED" in s3_proc.stderr
+    assert (s3_dir / "rows" / "d3-mini.jsonl").is_file() and (s3_dir / "judge_done" / "d3-mini.json").is_file()
+
+    # Probe S3b: `judges_completed: null` refuses in both `collect_run_unverified_passes` and `exclude-incomplete`.
+    s3b_dir = tmp_path / "probe_s3b"
+    shutil.copytree(score_dir, s3b_dir)
+    (s3b_dir / run_records.OUTCOME_DRAFT_FILENAME).write_text(
+        json.dumps({"pass_mode": "binary", "judges_completed": None, "unverified_passes": []}) + "\n", encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="judges_completed must be a list of strings"):
+        run_records.collect_run_unverified_passes(s3b_dir)
+    s3b_proc = subprocess.run(
+        [sys.executable, str(vm_py), "exclude-incomplete", str(s3b_dir), "--judge", "flow-judge-v0.1", "--pass-mode", "binary"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert s3b_proc.returncode == 2 and "EXCLUDE_INCOMPLETE_MALFORMED" in s3b_proc.stderr
+    assert (s3b_dir / "rows" / "flow-judge-v0.1.jsonl").is_file()
+
+    # Probe S4_tar_no_jc: `result.tar.gz` holds rows + judge_done + progress.jsonl, outcome has NO `judges_completed`,
+    # marker + `unverified_passes` list `d3-flash:three_way_contradicted` -> `exclude-incomplete` refuses without pruning!
+    import tarfile
+
+    s4_dir = tmp_path / "probe_s4_tar_no_jc"
+    (s4_dir / "rows").mkdir(parents=True)
+    (s4_dir / "judge_done").mkdir(parents=True)
+    (s4_dir / "rows" / f"{FLASH}.{CONTRA}.jsonl").write_text('{"judge_id":"d3-flash"}\n', encoding="utf-8")
+    (s4_dir / "judge_done" / f"{FLASH}.json").write_text(f'{{"judge_id":"{FLASH}","pass_mode":"{CONTRA}"}}\n', encoding="utf-8")
+    (s4_dir / "progress.jsonl").write_text(
+        json.dumps({"kind": "judge_pass_done", "judge": FLASH, "pass_mode": CONTRA, "sha256": "a" * 64}) + "\n",
+        encoding="utf-8",
+    )
+    with tarfile.open(s4_dir / "result.tar.gz", "w:gz") as tf:
+        tf.add(s4_dir / "rows" / f"{FLASH}.{CONTRA}.jsonl", arcname=f"rows/{FLASH}.{CONTRA}.jsonl")
+        tf.add(s4_dir / "judge_done" / f"{FLASH}.json", arcname=f"judge_done/{FLASH}.json")
+        tf.add(s4_dir / "progress.jsonl", arcname="progress.jsonl")
+    (s4_dir / run_records.UNVERIFIED_JUDGE_DONE_FILENAME).write_text(f"{FLASH}\t{CONTRA}\t{FLASH}.json\n", encoding="utf-8")
+    (s4_dir / run_records.OUTCOME_DRAFT_FILENAME).write_text(
+        json.dumps({"pass_mode": CONTRA, "unverified_passes": [f"{FLASH}:{CONTRA}"]}) + "\n",
+        encoding="utf-8",
+    )
+    s4_proc = subprocess.run(
+        [sys.executable, str(vm_py), "exclude-incomplete", str(s4_dir), "--judge", FLASH, "--pass-mode", CONTRA],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert s4_proc.returncode == 2 and "EXCLUDE_INCOMPLETE_MISSING_JUDGES_COMPLETED" in s4_proc.stderr
+    assert (s4_dir / run_records.UNVERIFIED_JUDGE_DONE_FILENAME).is_file()
+    assert (s4_dir / "rows" / f"{FLASH}.{CONTRA}.jsonl").is_file()
+    assert len(run_records.collect_run_unverified_passes(s4_dir)) == 1
+
     # Completed pass (`d3-mini`) cannot be excluded (`EXCLUDE_INCOMPLETE_ALREADY_COMPLETED`).
     refuse_done = subprocess.run(
         [sys.executable, str(vm_py), "exclude-incomplete", str(shard_dirs[0]), "--judge", "d3-mini", "--pass-mode", "binary"],
@@ -3307,8 +3536,11 @@ def test_exclude_incomplete_cli_on_lockcheck_1a_run8_shape_unblocks_merge_and_sc
     )
     assert refuse_done.returncode == 2 and "EXCLUDE_INCOMPLETE_ALREADY_COMPLETED" in refuse_done.stderr
 
-    # 2. Run `exclude-incomplete` on `shard_1` and `score_run8`.
-    for target_dir in (shard_dirs[0], score_dir):
+    # 2. Run `exclude-incomplete` on `shard_1` and `score_run8`, verify `outputs-closed.json` amendment (`C-5`),
+    # and verify `reverify-unverified` afterwards leaves both dirs clean (`rc=0`).
+    prior_shard_closed_sha = json.loads((shard_dirs[0] / "outputs-closed.json").read_text(encoding="utf-8"))["outputs_closed_sha256"]
+    prior_score_closed_sha = json.loads((score_dir / "outputs-closed.json").read_text(encoding="utf-8"))["outputs_closed_sha256"]
+    for target_dir, prior_sha in ((shard_dirs[0], prior_shard_closed_sha), (score_dir, prior_score_closed_sha)):
         excl_proc = subprocess.run(
             [
                 sys.executable,
@@ -3330,16 +3562,38 @@ def test_exclude_incomplete_cli_on_lockcheck_1a_run8_shape_unblocks_merge_and_sc
         assert excl_rep["excluded"]["pass"] == "flow-judge-v0.1:binary"
         assert excl_rep["excluded"]["by"] == "operator"
         assert excl_rep["excluded"]["at"].endswith("Z")
+        assert len(excl_rep["excluded"]["moved_files"][0]["sha256"]) == 64
+        assert excl_rep["excluded"]["moved_files"][0]["bytes"] > 0
         assert not (target_dir / "rows" / "flow-judge-v0.1.jsonl").exists()
         assert (target_dir / "rows.incomplete" / "flow-judge-v0.1.jsonl").is_file()
         odoc_after = json.loads((target_dir / run_records.OUTCOME_DRAFT_FILENAME).read_text(encoding="utf-8"))
         assert len(odoc_after["excluded_incomplete_passes"]) == 1
         assert odoc_after["excluded_incomplete_passes"][0]["pass"] == "flow-judge-v0.1:binary"
+        closed_after = json.loads((target_dir / "outputs-closed.json").read_text(encoding="utf-8"))
+        assert len(closed_after["amendments"]) == 1
+        amend = closed_after["amendments"][0]
+        assert amend["reason"] == "exclude_incomplete"
+        assert amend["pass"] == "flow-judge-v0.1:binary"
+        assert amend["amended_at"].endswith("Z")
+        assert amend["prior_outputs_closed_sha256"] == prior_sha
+        assert amend["outputs_closed_sha256"] == closed_after["outputs_closed_sha256"]
+        assert amend["prior_outputs_closed_sha256"] != amend["outputs_closed_sha256"]
+        assert "rows/flow-judge-v0.1.jsonl" in amend["removed_files"]
+
+        rev_after = subprocess.run(
+            [sys.executable, str(vm_py), "reverify-unverified", str(target_dir)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert rev_after.returncode == 0, rev_after.stderr
+        assert run_records.collect_run_unverified_passes(target_dir) == []
 
     assert not (shard_dirs[0] / "anchor_rows" / "flow-judge-v0.1.jsonl").exists()
     assert (shard_dirs[0] / "rows.incomplete" / "anchor_rows" / "flow-judge-v0.1.jsonl").is_file()
 
-    # 3. Merge with `--only-judges d3-mini` and scoring now proceed without `flow-judge-v0.1` and never count it.
+    # 3. Merge with `--only-judges d3-mini` and scoring now proceed without `flow-judge-v0.1`, never count it,
+    # and list `excluded_incomplete_passes` in `merge_receipt.json` and the score report (`C-5`).
     merged_rec = merge_shards.merge_shards(
         shard_dirs=shard_dirs,
         manifest_path=manifest_path,
@@ -3349,6 +3603,11 @@ def test_exclude_incomplete_cli_on_lockcheck_1a_run8_shape_unblocks_merge_and_sc
         allow_unpinned_stub=True,
     )
     assert merged_rec["status"] == "ok" and merged_rec["expected_judge_ids"] == ["d3-mini"]
+    assert len(merged_rec["excluded_incomplete_passes"]) == 1
+    assert merged_rec["excluded_incomplete_passes"][0]["shard"] == "1/2"
+    assert merged_rec["excluded_incomplete_passes"][0]["pass"] == "flow-judge-v0.1:binary"
+    receipt_on_disk = json.loads((tmp_path / "merged_after_exclude" / "merge_receipt.json").read_text(encoding="utf-8"))
+    assert receipt_on_disk["excluded_incomplete_passes"] == merged_rec["excluded_incomplete_passes"]
     merged_readout = json.loads((tmp_path / "merged_after_exclude" / "merged_readout.json").read_text(encoding="utf-8"))
     assert merged_readout["expected_judge_ids"] == ["d3-mini"]
     assert "flow-judge-v0.1" not in json.dumps(merged_readout)
@@ -3363,22 +3622,47 @@ def test_exclude_incomplete_cli_on_lockcheck_1a_run8_shape_unblocks_merge_and_sc
             allow_unpinned_stub=True,
         )
 
+    score_out_json = tmp_path / "score_after_exclude" / "public.json"
     score_rep = bakeoff_judge_score.score_bakeoff_outputs(
         judge_output_dir=score_dir,
         keys_path=bin_keys_p,
-        public_out_path=tmp_path / "score_after_exclude" / "public.json",
+        public_out_path=score_out_json,
         sealed_rows_out_path=tmp_path / "score_after_exclude" / "sealed",
         bootstrap_resamples=20,
     )
     assert [s["judge_id"] for s in score_rep["judges"]] == ["d3-mini"]
     assert [s["judge_id"] for s in score_rep["counted_set"]["judges"]] == ["d3-mini"]
+    assert len(score_rep["excluded_incomplete_passes"]) == 1
+    assert score_rep["excluded_incomplete_passes"][0]["pass"] == "flow-judge-v0.1:binary"
+    assert "`flow-judge-v0.1:binary`" in score_out_json.with_suffix(".md").read_text(encoding="utf-8")
 
-    # Also verify `exclude-incomplete` moves any `judge_done` pair and prunes `.unverified_judge_done` when present.
+    # #103 B-2 (probe S2):
+    # (a) When a pass HAS a `judge_pass_done` record in `progress.jsonl`, `exclude-incomplete` refuses with
+    # `EXCLUDE_INCOMPLETE_HAS_PROGRESS_DONE` and points at `reverify-unverified` (timed-out pass has one way out).
     pair_dir = tmp_path / "pair_exclude"
     shutil.copytree(score_dir, pair_dir)
     (pair_dir / "rows" / "mu-judge.jsonl").write_text('{"judge_id":"mu-judge"}\n', encoding="utf-8")
     (pair_dir / "judge_done" / "mu-judge.json").write_text('{"judge_id":"mu-judge","pass_mode":"binary"}\n', encoding="utf-8")
     (pair_dir / run_records.UNVERIFIED_JUDGE_DONE_FILENAME).write_text("mu-judge\tbinary\tmu-judge.json\n", encoding="utf-8")
+    (pair_dir / "progress.jsonl").write_text(
+        json.dumps({"kind": "judge_pass_done", "judge": "mu-judge", "pass_mode": "binary", "sha256": "b" * 64}) + "\n",
+        encoding="utf-8",
+    )
+    has_prog_proc = subprocess.run(
+        [sys.executable, str(vm_py), "exclude-incomplete", str(pair_dir), "--judge", "mu-judge", "--pass-mode", "binary"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert has_prog_proc.returncode == 2
+    assert "EXCLUDE_INCOMPLETE_HAS_PROGRESS_DONE" in has_prog_proc.stderr
+    assert "reverify-unverified" in has_prog_proc.stderr
+    assert (pair_dir / "rows" / "mu-judge.jsonl").is_file()
+
+    # (b) Without a `judge_pass_done` progress record, `exclude-incomplete` moves the pair and prunes the marker;
+    # subsequent `reverify-unverified` (even if `progress.jsonl` contains an entry for that excluded pass) skips any
+    # pass in `excluded_incomplete_passes` and leaves the run clean (`rc=0`, no marker, `unverified_passes == []`).
+    (pair_dir / "progress.jsonl").unlink()
     pair_proc = subprocess.run(
         [sys.executable, str(vm_py), "exclude-incomplete", str(pair_dir), "--judge", "mu-judge", "--pass-mode", "binary", "--by", "reviewer"],
         capture_output=True,
@@ -3391,3 +3675,21 @@ def test_exclude_incomplete_cli_on_lockcheck_1a_run8_shape_unblocks_merge_and_sc
     assert not (pair_dir / run_records.UNVERIFIED_JUDGE_DONE_FILENAME).exists()
     pair_outcome = json.loads((pair_dir / run_records.OUTCOME_DRAFT_FILENAME).read_text(encoding="utf-8"))
     assert pair_outcome["excluded_incomplete_passes"][-1]["by"] == "reviewer"
+
+    # Seed a `judge_pass_done` progress line for the already-excluded `mu-judge:binary` pass (exact S2 trap state)
+    # and run `reverify-unverified`: `reverify` skips `excluded_incomplete_passes`, returns `rc=0`, and leaves it clean.
+    (pair_dir / "progress.jsonl").write_text(
+        json.dumps({"kind": "judge_pass_done", "judge": "mu-judge", "pass_mode": "binary", "sha256": "b" * 64}) + "\n",
+        encoding="utf-8",
+    )
+    s2_rev_proc = subprocess.run(
+        [sys.executable, str(vm_py), "reverify-unverified", str(pair_dir)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert s2_rev_proc.returncode == 0, s2_rev_proc.stderr
+    assert not (pair_dir / run_records.UNVERIFIED_JUDGE_DONE_FILENAME).exists()
+    s2_outcome = json.loads((pair_dir / run_records.OUTCOME_DRAFT_FILENAME).read_text(encoding="utf-8"))
+    assert s2_outcome["unverified_passes"] == []
+    assert run_records.collect_run_unverified_passes(pair_dir) == []
