@@ -1775,6 +1775,7 @@ def test_bash_fetch_completed_judge_checkpoints_crash_empty_name_and_deadline_gu
     # Prove B2 pins the crash-path fallback rm: replacing the second rm_line with ':' leaves moved destination files behind.
     rm_line = 'rm -f "$OUT_DIR/judge_done/${done_file}" "$OUT_DIR/rows/${row_file}"'
     assert helpers_src.count(rm_line) == 2
+    assert 'timeout -k "$COLAB_KILL_GRACE_SECONDS" 30 "$PYTHON_BIN" -c' in helpers_src
     head_part, sep, tail_part = helpers_src.rpartition(rm_line)
     assert sep == rm_line
     mutated_helpers = f"{head_part}:{tail_part}"

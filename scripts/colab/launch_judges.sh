@@ -1907,7 +1907,7 @@ fetch_completed_judge_checkpoints() {
     [[ -n "$jid" && -n "$pmode" && -n "$done_file" && -n "$row_file" ]] || continue
     # Item 9: a pass is skipped only when its rows in place match its judge_done sha256 (and the VM's latest record);
     # a file of that name that does not match is fetched again, never kept.
-    if "$PYTHON_BIN" -c "$vmj; sys.exit(0 if v.launcher_verify_fetched_pass(Path(sys.argv[2]), sys.argv[3], sys.argv[4], staged=False, want_sha256=sys.argv[5])[0] else 1)" "$REPO_ROOT" "$OUT_DIR" "$jid" "$pmode" "${want_sha:-}" </dev/null >/dev/null 2>&1; then
+    if timeout -k "$COLAB_KILL_GRACE_SECONDS" 30 "$PYTHON_BIN" -c "$vmj; sys.exit(0 if v.launcher_verify_fetched_pass(Path(sys.argv[2]), sys.argv[3], sys.argv[4], staged=False, want_sha256=sys.argv[5])[0] else 1)" "$REPO_ROOT" "$OUT_DIR" "$jid" "$pmode" "${want_sha:-}" </dev/null >/dev/null 2>&1; then
       continue
     fi
     # Both files land as hidden .part downloads; only a pair whose rows match the judge_done sha256 is moved into

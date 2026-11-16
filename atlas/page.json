@@ -33,24 +33,49 @@
   ],
   "changes": {
     "fileCounts": {
-      "added": 0,
-      "changed": 7,
+      "added": 2,
+      "changed": 11,
       "moved": 0,
-      "parts": 3,
+      "parts": 4,
       "removed": 0
     },
     "items": [
       {
+        "kind": "landing",
+        "sentence": ".gitattributes is now also read by scripts/colab/receipts/vllm-sr__d3.sha256.json.",
+        "subjects": [
+          ".gitattributes",
+          "scripts/colab/receipts/vllm-sr__d3.sha256.json"
+        ]
+      },
+      {
+        "kind": "landing",
+        "sentence": "LICENSE is now also read by scripts/colab/receipts/vllm-sr__d3.sha256.json.",
+        "subjects": [
+          "LICENSE",
+          "scripts/colab/receipts/vllm-sr__d3.sha256.json"
+        ]
+      },
+      {
+        "kind": "landing",
+        "sentence": "README.md is now also read by scripts/colab/receipts/vllm-sr__d3.sha256.json and tests/test_colab_d5c_d3_27b.py.",
+        "subjects": [
+          "README.md",
+          "scripts/colab/receipts/vllm-sr__d3.sha256.json",
+          "tests/test_colab_d5c_d3_27b.py"
+        ]
+      },
+      {
         "kind": "counts",
-        "sentence": "Nothing structural changed since 2026-11-16; 7 files changed content.",
+        "sentence": "2 files added and 11 changed content, across 4 parts.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "fa0f86e4ceb0eb3a9b69830d1472a2890b64a339",
-      "generatedAt": "2026-11-16T00:40:50.829Z"
+      "commit": "81e923092f413c3bb705ecd15b22272352fc14e4",
+      "generatedAt": "2026-11-16T02:37:02.242Z"
     },
-    "unchanged": true
+    "unchanged": false
   },
   "changesTogether": [
     {
@@ -86,7 +111,7 @@
     {
       "a": "scripts/colab/vm_judges.py",
       "b": "tests/test_colab_judge_launcher.py",
-      "either": 39,
+      "either": 43,
       "partLabels": [
         "scripts",
         "tests"
@@ -96,7 +121,7 @@
         "tests"
       ],
       "relation": "b-imports-a",
-      "shared": 32
+      "shared": 33
     },
     {
       "a": "src/reasoning_dataset_lab/pilot_b/fact_tables.py",
@@ -116,7 +141,7 @@
     {
       "a": "scripts/colab/vm_judges.py",
       "b": "tests/fixtures/fake_colab.py",
-      "either": 38,
+      "either": 41,
       "partLabels": [
         "scripts",
         "tests"
@@ -126,7 +151,7 @@
         "tests"
       ],
       "relation": "b-imports-a",
-      "shared": 22
+      "shared": 24
     }
   ],
   "changesTogetherNote": [
@@ -135,9 +160,9 @@
     "Window: 180 days; a pair counts from 3 shared commits, since 10 source files reach 10 revisions; the floor rises to 10 when 25 do."
   ],
   "changesTogetherWithTests": 1,
-  "commit": "b59cf98861d6e47a6997567dd0b78588c7001c29",
+  "commit": "17015864580c1130d4650dccc812a67e202a4e49",
   "defaultBranch": "main",
-  "derived": "9 parts, mostly Python (87 files), shell (3), CSS (2), TypeScript (2), Astro (1) and JavaScript (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.",
+  "derived": "9 parts, mostly Python (88 files), shell (3), CSS (2), TypeScript (2), Astro (1) and JavaScript (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.",
   "doors": [
     {
       "checks": [],
@@ -154,7 +179,7 @@
         {
           "boundary": "tests",
           "depth": 0,
-          "files": 52
+          "files": 53
         },
         {
           "boundary": "scripts",
@@ -292,7 +317,7 @@
       ]
     }
   ],
-  "generatedAt": "2026-11-16T01:37:20.278Z",
+  "generatedAt": "2026-11-16T03:10:24.174Z",
   "limits": [
     "8 import sites name a declared dependency that shares its name with a local module (role_set); they are read as the dependency, which is not in this repository.",
     "16 imports could not be resolved: `scripts/colab/vm_judges.py` imports `device`, which is no module on its import path and no declared dependency, twice; `tests/test_bakeoff_judge_d3_transport.py` imports a path built at run time; `tests/test_counted_pin_and_no_capacity.py` imports `promote_goldens`, which is no module on its import path and no declared dependency; and 12 more.",
@@ -334,10 +359,10 @@
   "startReason": "This path follows rdlab (a command people run) from its entry, since ci runs only tests.",
   "summary": "reasoning-dataset-lab plans a dataset as a pre-registered map, builds items whose answer keys are constructed and proved by code, asks a local model only for the wording, and records the provenance of every item.",
   "summaryFrom": "person",
-  "testFiles": 68,
+  "testFiles": 69,
   "testedBy": {
-    "scripts": 11,
-    "src": 45
+    "scripts": 12,
+    "src": 46
   },
   "testedCodeParts": 2,
   "unnamedWrites": 13,

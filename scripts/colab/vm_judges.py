@@ -16289,7 +16289,7 @@ def elephant_install_commands(
         ("build_causal_conv1d", ["uv", "pip", "install", "--python", py, "--no-build-isolation", *cons, "causal-conv1d"]),
     ]
     if real:
-        cmds.append(("verify_causal_conv1d_cuda", [py, "-c", "import causal_conv1d_cuda"]))
+        cmds.append(("verify_causal_conv1d_cuda", [py, "-c", "import torch, causal_conv1d_cuda"]))
     cmds.extend(
         [
             ("install_decision_index", ["uv", "pip", "install", "--python", py, "--no-deps", "-e", str(kit)]),
@@ -16349,9 +16349,11 @@ def _elephant_env() -> dict[str, str]:
     return env
 
 
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+_TRAILING_ADVISORY_PREFIXES: tuple[str, ...] = ("hint:", "help:", "warning:", "note:")
 _CPU_CUDA_FINAL_ERROR_RE = re.compile(
-    r"^(?:"
-    r"nameerror:\s*name\s+['\"]?bare_metal_version['\"]?\s+is\s+not\s+defined\s*$"
+    r"^(?:error:\s*)?(?:"
+    r"nameerror:\s*name\s+['\"]?bare_metal_version['\"]?\s+is\s+not\s+defined\.?\s*$"
     r"|(?:oserror|runtimeerror|valueerror):\s*(?:"
     r"cuda_home\s+(?:environment\s+variable\s+is\s+not\s+set|is\s+none)\b.*"
     r"|cuda\s+was\s+not\s+found\s+on\s+the\s+system,\s*please\s+set\s+the\s+cuda_home\b.*"
@@ -16382,12 +16384,16 @@ _NON_CUDA_RESOLUTION_OR_FETCH_MARKERS: tuple[str, ...] = (
 def _is_cpu_cuda_build_failure(output: str) -> bool:
     """Return True only when the final build error is the known CPU signature (`bare_metal_version` NameError or
     `CUDA_HOME` unset/None) with no deny-listed resolution, network, timeout, disk, OOM, permission, or import error."""
-    raw = str(output or "")
-    low = raw.lower()
-    if not low or any(bad in low for bad in _NON_CUDA_RESOLUTION_OR_FETCH_MARKERS):
-        return False
+    raw = _ANSI_ESCAPE_RE.sub("", str(output or ""))
     lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
-    while lines and lines[-1].lower().startswith("hint:"):
+    if not lines:
+        return False
+    non_note_low = "\n".join(
+        ln.lower() for ln in lines if not ln.lower().startswith(("note:", "hint:", "help:"))
+    )
+    if any(bad in non_note_low for bad in _NON_CUDA_RESOLUTION_OR_FETCH_MARKERS):
+        return False
+    while lines and lines[-1].lower().startswith(_TRAILING_ADVISORY_PREFIXES):
         lines.pop()
     if not lines:
         return False

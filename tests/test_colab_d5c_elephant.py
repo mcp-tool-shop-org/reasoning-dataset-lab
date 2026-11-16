@@ -1317,11 +1317,70 @@ def test_stub_exercise_elephant_install_refused_outside_eligible_stub_plan(
             "NameError: name 'bare_metal_version' is not defined\nRuntimeError: post-build failure",
             False,
         ),
+        (
+            "cuda_line_then_later_real_failure",
+            "UserWarning: causal_conv1d was requested, but nvcc was not found.\n"
+            "NameError: name 'bare_metal_version' is not defined\n"
+            "OSError: [Errno 30] Read-only file system: '/content/x'",
+            False,
+        ),
+        (
+            "nvcc_warning_plus_disk_full",
+            "UserWarning: nvcc was not found.\nerror: could not write: No space left on device (os error 28)",
+            False,
+        ),
+        (
+            "nvcc_warning_plus_quota",
+            "UserWarning: nvcc was not found.\nOSError: [Errno 122] Disk quota exceeded",
+            False,
+        ),
+        ("memoryerror_final", "UserWarning: nvcc was not found.\nMemoryError", False),
+        ("whitespace_only", "   \n\n  ", False),
+        ("hint_only", "hint: foo", False),
+        # B5: genuine CPU failure shapes that must return True
+        (
+            "realistic_uv_trace_trailing_help",
+            "  x Failed to build `causal-conv1d==1.7.0`\n"
+            "  `-> Call to `setuptools.build_meta.build_wheel` failed (exit status: 1)\n"
+            "      [stderr]\n"
+            "      UserWarning: causal_conv1d was requested, but nvcc was not found.\n"
+            "      NameError: name 'bare_metal_version' is not defined\n"
+            "      hint: This usually indicates a problem with the package or the build environment.\n"
+            "  help: `causal-conv1d` (v1.7.0) was included because it was requested\n",
+            True,
+        ),
+        (
+            "realistic_uv_trace_trailing_warning",
+            "  x Failed to build `causal-conv1d==1.7.0`\n"
+            "      [stderr]\n"
+            "      UserWarning: causal_conv1d was requested, but nvcc was not found.\n"
+            "      NameError: name 'bare_metal_version' is not defined\n"
+            "      hint: This usually indicates a problem with the package or the build environment.\n"
+            "warning: The `--no-build-isolation` flag ...\n",
+            True,
+        ),
+        (
+            "realistic_uv_trace_ansi",
+            "      [stderr]\n"
+            "\x1b[31mNameError: name 'bare_metal_version' is not defined\x1b[0m\n"
+            "      hint: This usually indicates a problem with the package or the build environment.\n",
+            True,
+        ),
+        ("cuda_home_with_errorprefix", "error: OSError: CUDA_HOME environment variable is not set.", True),
+        ("NE_with_trailing_period", "NameError: name 'bare_metal_version' is not defined.", True),
+        (
+            "trace_mentions_timed_out_in_benign_text",
+            "UserWarning: causal_conv1d was requested, but nvcc was not found.  Are you sure your environment has nvcc available?\n"
+            "note: download timed out once, retried ok\n"
+            "NameError: name 'bare_metal_version' is not defined",
+            True,
+        ),
     ],
 )
 def test_b1_prime_cpu_cuda_build_failure_classifier_table(case_name: str, output: str, want: bool) -> None:
-    """B1': `_is_cpu_cuda_build_failure` matches only the known final CPU error (`bare_metal_version` NameError or
-    `CUDA_HOME` unset/None), drops `/bin/nvcc`, and refuses network/timeout/disk/OOM/permission/import failures."""
+    """B1'/B5: `_is_cpu_cuda_build_failure` strips ANSI and trailing advisory lines (`hint:`/`help:`/`warning:`/`note:`),
+    matches only the known final CPU error (`bare_metal_version` NameError or `CUDA_HOME` unset/None), drops `/bin/nvcc`,
+    and refuses non-CUDA failures."""
     assert vm_judges._is_cpu_cuda_build_failure(output) is want, case_name
 
 
@@ -1452,6 +1511,33 @@ def test_b3_build_env_strips_ambient_skip_and_real_window_verifies_cuda_kernels_
     ]
     assert ok_rec["steps"][-3]["step"] == "verify_causal_conv1d_cuda" and ok_rec["steps"][-3]["rc"] == 0
 
+    # A1 pin: reverting verify_causal_conv1d_cuda to the old "import causal_conv1d_cuda" without torch fails with libc10.so ImportError on fake.
+    monkeypatch.setattr(vm_judges, "_LAST_ELEPHANT_INSTALL", None)
+    b3_old = _setup_work_with_judge_venv("b3_old_order", omit_cuda_mod=False)
+    old_snap = vm_judges._resolve_snapshot_dir_for_spec(ESPEC, hf_home=b3_old["hf_home"])
+    orig_install_cmds = vm_judges.elephant_install_commands
+
+    def _old_order_cmds(w: Path, r: Path, s: Path, *, real: bool = True) -> list[tuple[str, list[str]]]:
+        return [
+            (n, [argv[0], "-c", "import causal_conv1d_cuda"] if n == "verify_causal_conv1d_cuda" else argv)
+            for n, argv in orig_install_cmds(w, r, s, real=real)
+        ]
+
+    with monkeypatch.context() as mp:
+        mp.setattr(vm_judges, "elephant_install_commands", _old_order_cmds)
+        old_rec = vm_judges.ensure_elephant_venv(
+            work_dir=b3_old["work_dir"],
+            repo_dir=b3_old["repo_dir"],
+            run_dir=b3_old["run_dir"],
+            snapshot_dir=old_snap,
+            real=True,
+            runner=_run_fake_vm_step,
+            which=lambda _n: "/usr/bin/git",
+            clock=_clock(),
+        )
+    assert old_rec["status"] == "failed" and old_rec["failure_class"] == "ELEPHANT_INSTALL_FAILED"
+    assert "verify_causal_conv1d_cuda" in old_rec["detail"] and "libc10.so" in old_rec["detail"]
+
 
 def test_stub_exercise_c3_scrub_gate_pinned_on_non_hook_elephant_install_json(tmp_path: Path) -> None:
     """C7: pin C3's post-fetch scrub gate (`launch_judges.sh:4613`). When `stub_exercise` is absent/false,
@@ -1517,3 +1603,17 @@ def test_stub_exercise_c3_scrub_gate_pinned_on_non_hook_elephant_install_json(tm
     assert "hf_[REDACTED]" in (out_hook / "elephant_install.json").read_text(encoding="utf-8")
     ext_txt = (out_hook / "extracted" / "elephant_install.json").read_text(encoding="utf-8")
     assert "hf_[REDACTED]" in ext_txt and "hf_SecretToken" not in ext_txt
+
+    # C9: pin the quarantine unlink of out_dir / "elephant_install.json" (mutation m7).
+    quarantine_line = '        out_dir / "elephant_install.json",\n'
+    assert heredoc.count(quarantine_line) == 1
+    key_leaked_hook = {"status": "cpu_cannot_build", "stub_exercise": True, "detail": "leaked keys.sealed.json"}
+    proc_c9, out_c9 = _run_post_fetch("c9_quarantine", heredoc, key_leaked_hook)
+    assert proc_c9.returncode != 0 and "LOG_GUARD_KEY_FILENAME_LEAK" in proc_c9.stderr
+    assert not (out_c9 / "elephant_install.json").exists()
+    assert not (out_c9 / "extracted").exists()
+
+    no_quarantine_unlink = heredoc.replace(quarantine_line, "", 1)
+    proc_m7, out_m7 = _run_post_fetch("c9_m7_unlinked", no_quarantine_unlink, key_leaked_hook)
+    assert proc_m7.returncode != 0 and "LOG_GUARD_KEY_FILENAME_LEAK" in proc_m7.stderr
+    assert (out_m7 / "elephant_install.json").is_file()

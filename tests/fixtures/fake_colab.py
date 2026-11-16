@@ -1582,7 +1582,9 @@ def run_fake_uv(argv: list[str]) -> int:
                 and not _omit_cc_cuda
             ):
                 (site_pkgs / "causal_conv1d_cuda.py").write_text(
-                    "# fake causal_conv1d_cuda compiled extension\n",
+                    "import sys\n"
+                    "if 'torch' not in sys.modules:\n"
+                    "    raise ImportError('libc10.so: cannot open shared object file')\n",
                     encoding="utf-8",
                     newline="\n",
                 )
