@@ -1080,6 +1080,28 @@ then
   exit 2
 fi
 
+# The judge selection the gate step is given (build_gate_env_args), checked again by name and value before any session
+# opens: only these two names are forwarded, and only values made of judge ids, mode names, `:` and `,`. The preflight
+# above has already checked them against vm_judges; anything else is refused here, never forwarded (#94).
+GATE_SELECTION_VALUE_RE='^[a-z0-9._-]+(:[a-z_]+)?(,[a-z0-9._-]+(:[a-z_]+)?)*$'
+check_gate_selection_env() {
+  local name val
+  for name in RDLAB_ONLY_JUDGES RDLAB_JUDGE_PASS_MODES; do
+    val="${!name:-}"
+    if [[ -n "$val" ]] && ! [[ "$val" =~ $GATE_SELECTION_VALUE_RE ]]; then
+      echo "GATE_ENV_VALUE_INVALID: $name may hold only judge ids, mode names, ':' and ',' (refused before the gate)" >&2
+      return 1
+    fi
+  done
+  if [[ "${RDLAB_ONLY_JUDGES:-}" == *:* ]]; then
+    echo "GATE_ENV_VALUE_INVALID: RDLAB_ONLY_JUDGES names judges only, not judge:mode pairs" >&2
+    return 1
+  fi
+}
+if ! check_gate_selection_env; then
+  exit 2
+fi
+
 if [[ -n "$EXPLICIT_CAP" ]] && ! [[ "$EXPLICIT_CAP" =~ ^-?[0-9]+([.][0-9]+)?$ ]]; then
   echo "BAD_CAP_UNITS: --cap must be a number of compute units, got '$EXPLICIT_CAP'" >&2
   exit 2
@@ -1235,6 +1257,14 @@ build_gate_env_args() {
   GATE_ENV_ARGS+=(--env "RDLAB_EXPECT_UV_VERSION=$exp_uv")
   if [[ -n "${RDLAB_FORCE_PINNED_UV+x}" ]] && [[ -n "${RDLAB_FORCE_PINNED_UV}" ]]; then
     GATE_ENV_ARGS+=(--env "RDLAB_FORCE_PINNED_UV=$RDLAB_FORCE_PINNED_UV")
+  fi
+  # The judge selection, so the VM's disk gate sizes the window it gates (#94): the same two values the run step gets,
+  # forwarded under the same conditions, after check_gate_selection_env (and the VM re-checks them before sizing).
+  if [[ -n "${RDLAB_ONLY_JUDGES:-}" ]]; then
+    GATE_ENV_ARGS+=(--env "RDLAB_ONLY_JUDGES=$RDLAB_ONLY_JUDGES")
+  fi
+  if [[ "${PASS_MODE:-binary}" == "per_judge" ]] && [[ -n "${RDLAB_JUDGE_PASS_MODES:-}" ]]; then
+    GATE_ENV_ARGS+=(--env "RDLAB_JUDGE_PASS_MODES=$RDLAB_JUDGE_PASS_MODES")
   fi
 }
 

@@ -191,6 +191,7 @@ THREE_WAY_WORDING_FAMILY_BY_JUDGE: dict[str, str] = {
     "nemotron-3-nano-4b": "STATE",
     "d3-mini": "the_state",
     "d3-flash": "the_state",
+    "d3": "the_state",  # vllm-sr/d3 (arms 7C and 7Q): exactly d3-mini's words in both modes
     "elephant-1": "the_state",  # arm 4: the d3-style words, sent through qev
 }
 # The judges each pass mode has a prompt for: the single list of which judge may run in which mode. `binary` is the
@@ -205,8 +206,8 @@ ORIGINAL_JUDGE_IDS: tuple[str, ...] = (
 PASS_MODE_JUDGES: dict[str, frozenset[str]] = {
     "binary": frozenset(ORIGINAL_JUDGE_IDS),
     "three_way": frozenset({"mu-judge", "nemotron-3-nano-4b", "d3-mini", "flow-judge-v0.1"}),
-    "three_way_contradicted": frozenset({"mu-judge", "nemotron-3-nano-4b", "d3-mini", "d3-flash", "elephant-1"}),
-    "three_way_two_question": frozenset({"d3-mini"}),
+    "three_way_contradicted": frozenset({"mu-judge", "nemotron-3-nano-4b", "d3-mini", "d3-flash", "d3", "elephant-1"}),
+    "three_way_two_question": frozenset({"d3-mini", "d3"}),
     "three_way_symmetric": frozenset({"d3-mini"}),
     "three_way_nli": frozenset({"nli-deberta-v3-large"}),
 }

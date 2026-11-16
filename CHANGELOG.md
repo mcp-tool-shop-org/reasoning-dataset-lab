@@ -6,6 +6,14 @@ All notable changes to `reasoning-dataset-lab` are documented here. The format i
 
 ## Unreleased
 
+### The fitted two-question and 27B d3 kit (card 2026-11-15 v2)
+
+- **#96 B1:** a d3-family answer the transport marks `done_reason == "error"` (an answer missing, not a mapping, or carrying `error`) is now unparseable in every pass mode, with a named parse note, even when it also carries a `noul` or probabilities.
+- **Judge `d3`** (vllm-sr/d3 at 62f07e54, 26.09B; card `d3-card`, base `qwen3.8-27b-card`), in `three_way_contradicted` and `three_way_two_question` only, with exactly d3-mini's "the_state" words. Its receipt (44 files, 52,202,137,725 bytes) is built from Hugging Face API metadata. It runs in venv-d3 through the d3 transport.
+- **Per-judge reviewed remote code:** d3's eight files must equal d3-mini's reviewed receipt except `d3_runtime.py`, which must equal d3's own reviewed entry (R&D delta review 2026-11-15: one added docstring line). d3-mini's and d3-flash's checks are unchanged.
+- **Per-judge VRAM ceiling:** `JudgeSpec.vram_halt_mib` (default 26,000). d3's is 68,000 MiB; every other judge keeps the window's value.
+- **#94:** the gate step now gets `RDLAB_ONLY_JUDGES` and `RDLAB_JUDGE_PASS_MODES`, checked by name and value on the rig and again on the VM, so the disk gate sizes the window it gates. A window that names d3 requires 153,781,266,148 bytes; one that names elephant-1 now really requires its 123,044,340,687; every other window is unchanged at 93,748,807,764.
+
 ### Opt-in CPU stub `elephant-1` install hook & `#96` follow-ups
 
 - **Opt-in CPU stub install hook (`RDLAB_STUB_EXERCISE_ELEPHANT_INSTALL=1`):** allowed only with `--stub` (no `--until`, no `--session-smoke`, and `elephant-1` in planned judges; refused otherwise with `STUB_EXERCISE_ELEPHANT_INSTALL_INVALID` and listed in `FORBIDDEN_COUNTED_TEST_HOOK_NAMES`). Runs all `ensure_elephant_venv` steps into `venv-elephant` (`resolve_causal_conv1d` dry-run with `CAUSAL_CONV1D_SKIP_CUDA_BUILD=TRUE` followed by `build_causal_conv1d`), records missing-CUDA/`nvcc` build failures as `cpu_cannot_build` while continuing through `install_decision_index` and `import_check`, keeps the stub judging child in `venv-judge` with zero weights loaded, and refuses with `ELEPHANT_INSTALL_FAILED` on resolution or non-CUDA failures.
