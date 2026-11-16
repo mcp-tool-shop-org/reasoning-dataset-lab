@@ -4727,7 +4727,12 @@ def validate_tar_file(tar_path: Path) -> list[str]:
 
 
 def build_allowlisted_result_tar(run_dir: Path, tar_path: Path) -> list[str]:
-    """Pack `run_dir` into `tar_path`, refusing if any file violates the allow-list."""
+    """Pack `run_dir` into `tar_path`, refusing if any file violates the allow-list.
+
+    The tar is written to a temporary file beside `tar_path`, validated there, then moved onto `tar_path` with
+    `os.replace` (#107): a reader of `tar_path` sees the earlier tar or the finished one, never a partial file, and a
+    pack that fails or is interrupted (`KeyboardInterrupt` included) leaves the earlier tar in place and removes the
+    temporary file. The gzip header names `tar_path`, as the in-place write did, so the bytes are the same."""
     ensure_not_drive_path(run_dir)
     ensure_not_drive_path(tar_path)
     rel_files: list[str] = []
@@ -4752,11 +4757,207 @@ def build_allowlisted_result_tar(run_dir: Path, tar_path: Path) -> list[str]:
         rel_files.append(rel)
 
     tar_path.parent.mkdir(parents=True, exist_ok=True)
-    with tarfile.open(tar_path, "w:gz") as tf:
-        for rel in rel_files:
-            tf.add(run_dir / rel, arcname=rel, recursive=False)
-    validate_tar_file(tar_path)
+    partial_path = result_tar_partial_path(tar_path)
+    ensure_not_drive_path(partial_path)
+    try:
+        with open(partial_path, "wb") as fh:
+            with tarfile.open(name=tar_path, mode="w:gz", fileobj=fh) as tf:
+                for rel in rel_files:
+                    tf.add(run_dir / rel, arcname=rel, recursive=False)
+            fh.flush()
+            os.fsync(fh.fileno())
+        validate_tar_file(partial_path)
+        os.replace(partial_path, tar_path)
+    finally:
+        try:
+            partial_path.unlink(missing_ok=True)
+        except OSError:
+            pass
     return rel_files
+
+
+def result_tar_partial_path(tar_path: Path) -> Path:
+    """The temporary file a result tar is written to before it is moved onto `tar_path` (same directory, so the move
+    is one rename)."""
+    return tar_path.parent / f".{tar_path.name}.partial-{os.getpid()}"
+
+
+# The kit's identity (#107): which commit of this repo, and which bytes of the two scripts, produced a run. The
+# launcher computes it on the rig before any session opens (`compute_kit_identity`) and records it in
+# outcome.draft.json; it forwards it to the VM, which records it in window.json and refuses when the vm_judges.py it
+# was sent differs from the hash the launcher recorded. Records only: never in progress.jsonl or time_one_summary.json.
+KIT_IDENTITY_FIELDS: tuple[str, ...] = (
+    "kit_head_sha",
+    "kit_tree_clean",
+    "kit_vm_judges_py_sha256",
+    "kit_launch_judges_sh_sha256",
+)
+KIT_VM_SCRIPT_RELPATH = "scripts/colab/vm_judges.py"
+
+
+def read_kit_identity_from_env(environ: Mapping[str, str] | None = None) -> dict[str, Any]:
+    """The four kit-identity fields the launcher forwarded (over `--env`); a field it did not send is None."""
+    env = os.environ if environ is None else environ
+
+    def _text(name: str) -> str | None:
+        raw = str(env.get(name, "") or "").strip()
+        return raw or None
+
+    clean_raw = (_text("RDLAB_KIT_TREE_CLEAN") or "").lower()
+    return {
+        "kit_head_sha": _text("RDLAB_KIT_HEAD_SHA"),
+        "kit_tree_clean": True if clean_raw == "true" else (False if clean_raw == "false" else None),
+        "kit_vm_judges_py_sha256": _text("RDLAB_KIT_VM_JUDGES_PY_SHA256"),
+        "kit_launch_judges_sh_sha256": _text("RDLAB_KIT_LAUNCH_JUDGES_SH_SHA256"),
+    }
+
+
+def compute_kit_identity(
+    repo_root: Path,
+    vm_script: Path,
+    launcher_script: Path,
+) -> tuple[dict[str, Any], str | None]:
+    """The launcher's kit identity, computed on the rig: `kit_head_sha` (`git rev-parse HEAD` of `repo_root`),
+    `kit_tree_clean` (True only when `git status --porcelain` prints nothing) and the sha256 of the two scripts as they
+    are sent. Returns `(identity, unavailable_reason)`: when git is not found or `repo_root` is not a git work tree the
+    two git fields are None and the reason says why (counted modes refuse on it, `refuse_kit_identity_for_mode`)."""
+    identity: dict[str, Any] = {
+        "kit_head_sha": None,
+        "kit_tree_clean": None,
+        "kit_vm_judges_py_sha256": sha256_file(Path(vm_script)),
+        "kit_launch_judges_sh_sha256": sha256_file(Path(launcher_script)),
+    }
+    git_bin = shutil.which("git")
+    if git_bin is None:
+        return identity, "git was not found on PATH"
+
+    def _git(*git_args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [git_bin, "-C", str(repo_root), *git_args],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=60,
+            stdin=subprocess.DEVNULL,
+        )
+
+    try:
+        head = _git("rev-parse", "HEAD")
+        if head.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}", head.stdout.strip()):
+            return identity, f"{repo_root} is not inside a git work tree (git rev-parse HEAD rc {head.returncode})"
+        status = _git("status", "--porcelain")
+        if status.returncode != 0:
+            return identity, f"git status failed in {repo_root} (rc {status.returncode})"
+    except (OSError, subprocess.SubprocessError) as exc:
+        return identity, f"git could not be run in {repo_root}: {type(exc).__name__}"
+    identity["kit_head_sha"] = head.stdout.strip()
+    identity["kit_tree_clean"] = not status.stdout.strip()
+    return identity, None
+
+
+def refuse_kit_identity_for_mode(
+    identity: Mapping[str, Any],
+    unavailable_reason: str | None,
+    mode: str | None,
+    *,
+    dryrun: bool = False,
+    shard_spec: str | None = None,
+) -> None:
+    """A counted, time-one, lock-check or sharded counted run (`is_counted_or_time_one_mode`) refuses
+    `KIT_IDENTITY_UNAVAILABLE` when the kit's commit could not be read and `KIT_TREE_DIRTY` when the worktree is not
+    clean. Stub and dry-run windows may run dirty or without git; they record what was read."""
+    if not is_counted_or_time_one_mode(mode, dryrun=dryrun, shard_spec=shard_spec):
+        return
+    if unavailable_reason is not None or not identity.get("kit_head_sha"):
+        raise RefusalError(
+            "KIT_IDENTITY_UNAVAILABLE",
+            f"A {mode} window records the kit commit it ran from, and it could not be read: "
+            f"{unavailable_reason or 'no kit_head_sha'}. Run the launcher from a git worktree of this repo.",
+        )
+    if identity.get("kit_tree_clean") is not True:
+        raise RefusalError(
+            "KIT_TREE_DIRTY",
+            f"A {mode} window runs only from a clean kit worktree, and `git status --porcelain` is not empty at "
+            f"{identity.get('kit_head_sha')}; commit or remove the changes.",
+        )
+
+
+KIT_LAUNCHER_RELPATH = "scripts/colab/launch_judges.sh"
+
+
+def kit_head_script_sha256s(repo_root: Path) -> dict[str, str | None]:
+    """The sha256 of `scripts/colab/vm_judges.py` and `scripts/colab/launch_judges.sh` as tracked at HEAD
+    (`git show HEAD:<path>`), keyed like the identity fields; None where git or the blob cannot be read."""
+    out: dict[str, str | None] = {"kit_vm_judges_py_sha256": None, "kit_launch_judges_sh_sha256": None}
+    git_bin = shutil.which("git")
+    if git_bin is None:
+        return out
+    for field, rel in (("kit_vm_judges_py_sha256", KIT_VM_SCRIPT_RELPATH), ("kit_launch_judges_sh_sha256", KIT_LAUNCHER_RELPATH)):
+        try:
+            proc = subprocess.run(
+                [git_bin, "-C", str(repo_root), "show", f"HEAD:{rel}"],
+                capture_output=True,
+                check=False,
+                timeout=60,
+                stdin=subprocess.DEVNULL,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if proc.returncode == 0:
+            out[field] = hashlib.sha256(proc.stdout).hexdigest()
+    return out
+
+
+def refuse_kit_scripts_not_head(
+    identity: Mapping[str, Any],
+    head_sha256s: Mapping[str, str | None],
+    mode: str | None,
+    *,
+    dryrun: bool = False,
+    shard_spec: str | None = None,
+) -> None:
+    """The rig-side script check (#108 fix 1), before any session opens: in a counted, time-one, lock-check or sharded
+    counted run, refuse `KIT_VM_SCRIPT_MISMATCH` when the vm_judges.py that will be sent (`RDLAB_VM_SCRIPT` or the
+    default) or the running launcher differs from its file as tracked at HEAD. It holds whether or not `RDLAB_VM_SCRIPT`
+    is set, and it does not depend on the sent script carrying the VM-side check. Stubs and dry runs send what they send
+    and record its hash."""
+    if not is_counted_or_time_one_mode(mode, dryrun=dryrun, shard_spec=shard_spec):
+        return
+    for field, rel in (("kit_vm_judges_py_sha256", KIT_VM_SCRIPT_RELPATH), ("kit_launch_judges_sh_sha256", KIT_LAUNCHER_RELPATH)):
+        sent = str(identity.get(field) or "").strip().lower()
+        head = str(head_sha256s.get(field) or "").strip().lower()
+        if not sent or not head or sent != head:
+            raise RefusalError(
+                "KIT_VM_SCRIPT_MISMATCH",
+                f"A {mode} window sends only HEAD's {rel}: the file that would run has sha256 {sent or 'unknown'} and "
+                f"HEAD's has {head or 'unknown'}. Unset RDLAB_VM_SCRIPT or commit the change.",
+            )
+
+
+def verify_vm_script_against_kit(repo_dir: Path | None, identity: Mapping[str, Any]) -> str | None:
+    """Re-hash the vm_judges.py this VM was sent and refuse `KIT_VM_SCRIPT_MISMATCH` when it differs from the hash the
+    launcher recorded (`kit_vm_judges_py_sha256`). A kernel cell has no file of its own, so the copy hashed is the one in
+    the unpacked repo bundle (`<repo_dir>/scripts/colab/vm_judges.py`). The launcher puts the file it sends with
+    `colab exec -f` there (#108 fix 1), so in every mode the check compares what ran with what was recorded; in counted
+    modes the rig has already refused a file other than HEAD's (`refuse_kit_scripts_not_head`). This check runs inside
+    the sent script, so it is a transport check, not the gate: the gate is the rig's. Returns the hash, or None when the
+    launcher sent none (nothing to compare)."""
+    expected = str(identity.get("kit_vm_judges_py_sha256") or "").strip().lower()
+    if not expected:
+        return None
+    bundled = Path(repo_dir) / KIT_VM_SCRIPT_RELPATH if repo_dir is not None else None
+    if bundled is None or not bundled.is_file():
+        raise RefusalError(
+            "KIT_VM_SCRIPT_MISMATCH",
+            f"The launcher recorded vm_judges.py sha256 {expected}, and the repo bundle holds no {KIT_VM_SCRIPT_RELPATH}.",
+        )
+    actual = sha256_file(bundled)
+    if actual != expected:
+        raise RefusalError(
+            "KIT_VM_SCRIPT_MISMATCH",
+            f"The vm_judges.py this VM was sent has sha256 {actual}, and the launcher recorded {expected}.",
+        )
+    return actual
 
 
 def _resolve_vm_window_id(
@@ -4786,8 +4987,12 @@ def write_window_manifest(
     p0a_items_sha256: str | None = None,
     counted_source_sha256: str | None = None,
     pass_mode: str | None = None,
+    kit_identity: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Build and write `run_dir / window.json` listing `{sha256, bytes}` for every allow-listed artifact in `run_dir`."""
+    """Build and write `run_dir / window.json` listing `{sha256, bytes}` for every allow-listed artifact in `run_dir`.
+
+    `kit_identity` (the four `KIT_IDENTITY_FIELDS`, from `read_kit_identity_from_env`) is recorded as given; when it is
+    not given, the fields of an earlier window.json are kept, as the item hashes are."""
     ensure_not_drive_path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
     eff_mode = (
@@ -4806,6 +5011,7 @@ def write_window_manifest(
     prev_p0a_sha: str | None = None
     prev_counted_sha: str | None = None
     prev_pass_mode: str | None = None
+    prev_kit: dict[str, Any] = {}
     if existing_win_path.is_file():
         try:
             prev_win_doc = json.loads(existing_win_path.read_text(encoding="utf-8"))
@@ -4814,6 +5020,7 @@ def write_window_manifest(
                 prev_p0a_sha = str(prev_win_doc.get("p0a_items_sha256") or "").strip() or None
                 prev_counted_sha = str(prev_win_doc.get("counted_source_sha256") or "").strip() or None
                 prev_pass_mode = str(prev_win_doc.get("pass_mode") or "").strip() or None
+                prev_kit = {f: prev_win_doc[f] for f in KIT_IDENTITY_FIELDS if f in prev_win_doc}
         except Exception:
             pass
     eff_anchor_sha = (str(anchor_items_sha256).strip() if anchor_items_sha256 else None) or prev_anchor_sha
@@ -4848,6 +5055,10 @@ def write_window_manifest(
     eff_pass_mode = (str(pass_mode).strip() if pass_mode is not None else None) or prev_pass_mode
     if eff_pass_mode is not None:
         doc["pass_mode"] = eff_pass_mode
+    if kit_identity is not None:
+        doc.update({f: kit_identity.get(f) for f in KIT_IDENTITY_FIELDS})
+    else:
+        doc.update(prev_kit)
     body_bytes = json.dumps(
         doc, sort_keys=True, separators=(",", ":"), ensure_ascii=False
     ).encode("utf-8")
@@ -14436,6 +14647,16 @@ def main(argv: list[str] | None = None) -> int:
     loop_order_val: str = DEFAULT_LOOP_ORDER
     subblock_items_val: int = DEFAULT_SUBBLOCK_ITEMS
     uploaded_item_files: list[Path] = []
+    # The kit identity the launcher forwarded (#107): recorded in every window.json this run writes, OK or failed.
+    kit_identity = read_kit_identity_from_env()
+    # Set once the OK path has written its receipts, so a later unexpected error rewrites them as a failure (#107).
+    ok_receipts_written = False
+    # Whether the VM-side script check ran (#108 fix 1): passed, refused, not_sent (no hash forwarded); None if not reached.
+    kit_vm_script_check: str | None = None
+    main_pass_mode: str | None = None
+    anchor_items_sha256: str | None = None
+    p0a_items_sha256: str | None = None
+    counted_source_sha256: str | None = None
     try:
         # The lock-check phase first: a lock-check window with no phase (or a phase on another mode) refuses before
         # anything else is checked or written.
@@ -14623,6 +14844,13 @@ def main(argv: list[str] | None = None) -> int:
             progress_path=progress_path,
             step_timings=step_timings,
             step_order=step_order,
+        )
+
+        # The vm_judges.py this VM was sent must be the one the launcher recorded (#107), before any model download.
+        current_step = "verify_kit_identity"
+        kit_vm_script_check = "refused"
+        kit_vm_script_check = (
+            "passed" if verify_vm_script_against_kit(args.repo_dir, kit_identity) is not None else "not_sent"
         )
 
         if is_lock_check_main:
@@ -15183,6 +15411,8 @@ def main(argv: list[str] | None = None) -> int:
             pass_mode=main_pass_mode,
         )
         receipt_serialized = json.dumps(receipt_doc, indent=2) + "\n"
+        # Set before the first write (#108 fix 1): a failure while either OK receipt is written still rewrites both.
+        ok_receipts_written = True
         receipt_path.write_text(
             receipt_serialized,
             encoding="utf-8",
@@ -15202,6 +15432,7 @@ def main(argv: list[str] | None = None) -> int:
             p0a_items_sha256=p0a_items_sha256,
             counted_source_sha256=counted_source_sha256,
             pass_mode=main_pass_mode,
+            kit_identity=kit_identity,
         )
         build_allowlisted_result_tar(args.run_dir, args.result_tar)
         _record_step_end(
@@ -15233,10 +15464,12 @@ def main(argv: list[str] | None = None) -> int:
             p0a_items_sha256=p0a_items_sha256,
             counted_source_sha256=counted_source_sha256,
             pass_mode=main_pass_mode,
+            kit_identity=kit_identity,
         )
         build_allowlisted_result_tar(args.run_dir, args.result_tar)
 
         status_extra: dict[str, Any] = {
+            "kit_vm_script_check": kit_vm_script_check,
             "shard_spec": (
                 shard_info_report["shard_spec"]
                 if shard_info_report is not None
@@ -15343,6 +15576,7 @@ def main(argv: list[str] | None = None) -> int:
             p0a_items_sha256=p0a_items_sha256,
             counted_source_sha256=counted_source_sha256,
             pass_mode=main_pass_mode,
+            kit_identity=kit_identity,
         )
         build_allowlisted_result_tar(args.run_dir, args.result_tar)
         return 0
@@ -15448,6 +15682,7 @@ def main(argv: list[str] | None = None) -> int:
         if err_subproc_rec is not None:
             fail_receipt["subprocess"] = err_subproc_rec
         status_fail_extra: dict[str, Any] = {
+            "kit_vm_script_check": kit_vm_script_check,
             "judge_order": list(judge_order),
             "judge_order_source": judge_order_source,
             "only_judges": list(only_judges) if only_judges is not None else None,
@@ -15529,6 +15764,16 @@ def main(argv: list[str] | None = None) -> int:
             encoding="utf-8",
             newline="\n",
         )
+        if ok_receipts_written:
+            # The OK path also wrote receipt.json (#108 fix 1): rewrite it as the same refusal, so the tar's two receipts agree.
+            try:
+                (args.run_dir / "receipt.json").write_text(
+                    json.dumps(fail_receipt, indent=2) + "\n",
+                    encoding="utf-8",
+                    newline="\n",
+                )
+            except Exception:
+                pass
         write_vm_status_file(
             args.status_file,
             step=current_step,
@@ -15555,12 +15800,29 @@ def main(argv: list[str] | None = None) -> int:
             )
         except Exception:
             pass
+        _write_failure_window_manifest(
+            args.run_dir,
+            window_id=getattr(args, "window_id", None),
+            mode=args.mode,
+            dryrun=dryrun,
+            anchor_items_sha256=anchor_items_sha256,
+            p0a_items_sha256=p0a_items_sha256,
+            counted_source_sha256=counted_source_sha256,
+            pass_mode=main_pass_mode,
+            kit_identity=kit_identity,
+        )
         _pack_failure_result_tar(args.run_dir, args.result_tar)  # last write into run_dir (#94)
         sys.stderr.write(f"{failure_class}: {scrub_log_text(str(detail))}\n")
         return 2
 
     except Exception as exc:
         exc_type = type(exc).__name__
+        # The exception's text, read once (#108 fix 1): an exception whose __str__ raises must not stop this handler
+        # before its status, run_end and pack.
+        try:
+            exc_text = scrub_log_text(str(exc))
+        except Exception:
+            exc_text = "<the exception's text could not be read>"
         if deleted_items_receipt is None:
             fallback_delete_paths: list[Path] = []
             if args.items_file is not None:
@@ -15592,11 +15854,39 @@ def main(argv: list[str] | None = None) -> int:
                     [], unexpected_cleanup_errors
                 )
             }
+        unexpected_extra = {**(unexpected_extra or {}), "kit_vm_script_check": kit_vm_script_check}
+        if ok_receipts_written:
+            # The OK path wrote vm_receipt.json and receipt.json before this error (#107): rewrite both as the failure
+            # they now record, as the refusal path writes its own, so the tar never carries OK receipts beside a
+            # refused progress.jsonl. Built and written inside the try (#108 fix 1), so nothing here can stop the
+            # handler before run_end and the pack.
+            try:
+                unexpected_receipt: dict[str, Any] = {
+                    "status": "refused",
+                    "failure_class": "UNEXPECTED_ERROR",
+                    "detail": f"step={current_step} {exc_type}: {exc_text}",
+                    "reason": f"UNEXPECTED_ERROR: step={current_step} {exc_type}: {exc_text}",
+                    "mode": args.mode,
+                    "lock_check_phase": main_lock_check_phase,
+                    "judge_order": list(judge_order),
+                    "judge_order_source": judge_order_source,
+                    "only_judges": list(only_judges) if only_judges is not None else None,
+                    "deleted_items_receipt": deleted_items_receipt,
+                    "timings": _build_timings_block(),
+                }
+                unexpected_receipt_text = json.dumps(unexpected_receipt, indent=2) + "\n"
+                for unexpected_receipt_path in (receipt_path, args.run_dir / "receipt.json"):
+                    try:
+                        unexpected_receipt_path.write_text(unexpected_receipt_text, encoding="utf-8", newline="\n")
+                    except Exception:
+                        pass
+            except Exception:
+                pass
         write_vm_status_file(
             args.status_file,
             step=current_step,
             rc=2,
-            reason=f"UNEXPECTED_ERROR: step={current_step} {exc_type}: {scrub_log_text(str(exc))}",
+            reason=f"UNEXPECTED_ERROR: step={current_step} {exc_type}: {exc_text}",
             status="refused",
             failure_class="UNEXPECTED_ERROR",
             extra=unexpected_extra,
@@ -15615,10 +15905,19 @@ def main(argv: list[str] | None = None) -> int:
             )
         except Exception:
             pass
-        _pack_failure_result_tar(args.run_dir, args.result_tar)  # last write into run_dir (#94)
-        sys.stderr.write(
-            f"UNEXPECTED_ERROR: step={current_step} {exc_type}: {scrub_log_text(str(exc))}\n"
+        _write_failure_window_manifest(
+            args.run_dir,
+            window_id=getattr(args, "window_id", None),
+            mode=args.mode,
+            dryrun=dryrun,
+            anchor_items_sha256=anchor_items_sha256,
+            p0a_items_sha256=p0a_items_sha256,
+            counted_source_sha256=counted_source_sha256,
+            pass_mode=main_pass_mode,
+            kit_identity=kit_identity,
         )
+        _pack_failure_result_tar(args.run_dir, args.result_tar)  # last write into run_dir (#94)
+        sys.stderr.write(f"UNEXPECTED_ERROR: step={current_step} {exc_type}: {exc_text}\n")
         return 2
     finally:
         _ACTIVE_VM_LOG_PATH = prev_log_path
@@ -15634,16 +15933,29 @@ def run_kernel_or_cli_entry(argv: list[str] | None = None) -> int:
     return rc
 
 
+def _write_failure_window_manifest(run_dir: Path, **manifest_kwargs: Any) -> None:
+    """A failure path's window.json, written after its `run_end` line and before its pack (#107), as the OK path writes
+    its last one: it lists the final progress.jsonl and carries the kit identity. Never raises: a failure path must still
+    reach its pack, its stderr line and `return 2`."""
+    try:
+        write_window_manifest(run_dir, **manifest_kwargs)
+    except Exception:
+        pass
+
+
 def _pack_failure_result_tar(run_dir: Path, tar_path: Path) -> None:
     """A failure path's last write: pack `run_dir` (after its `run_end` line and status file) into `tar_path`, so the
-    tar's progress.jsonl is the final one (#94). If the pack fails, remove any tar at `tar_path`: a tar left by an earlier
-    pack lacks the last lines, and the rig's scorers refuse a run whose disk and tar copies differ. Never raises."""
+    tar's progress.jsonl is the final one (#94). The pack is atomic (#107), so a failed pack leaves the earlier tar in
+    place; this helper then removes it, as #105 did: a tar left by an earlier pack lacks the last lines, and the rig's
+    scorers refuse a run whose disk and tar copies differ. The removal runs only after `ensure_not_drive_path(tar_path)`
+    passes, so a path the builder refused is never touched. Never raises (any `Exception` is swallowed)."""
     try:
         build_allowlisted_result_tar(run_dir, tar_path)
     except Exception:
         try:
+            ensure_not_drive_path(tar_path)
             tar_path.unlink(missing_ok=True)
-        except OSError:
+        except Exception:
             pass
 
 

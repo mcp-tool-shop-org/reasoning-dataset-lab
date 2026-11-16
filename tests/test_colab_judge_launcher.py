@@ -1746,6 +1746,36 @@ def test_kernel_exec_gate_and_run_steps_complete(tmp_path: Path) -> None:
     assert Path(wsl_vm_script).is_file()
 
 
+def _stub_window_failure_diagnostics(
+    proc: subprocess.CompletedProcess[str],
+    out_dir: Path,
+    env_paths: dict[str, Path],
+    *,
+    tail_lines: int = 60,
+) -> str:
+    """What a failed stub window left, for the assertion message (#106): the launcher's stderr, the VM's status.json (the
+    rig's copy and the fake VM's), and the tails of logs/vm.log and colab-cli.log, passed through
+    `vm_judges.scrub_log_text` before it is printed. Reads only; never retries."""
+
+    def _tail(path: Path) -> str:
+        if not path.is_file():
+            return f"<{path.name}: absent>"
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        return "\n".join(lines[-tail_lines:])
+
+    vm_fs = env_paths["state_dir"] / "vm_fs"
+    parts = [f"rc={proc.returncode}", f"stderr={proc.stderr[-4000:]}"]
+    for label, path in (
+        ("status.json (rig)", out_dir / "status.json"),
+        ("status.json (vm)", vm_fs / "status.json"),
+        ("logs/vm.log (rig)", out_dir / "logs" / "vm.log"),
+        ("logs/vm.log (vm)", vm_fs / "rdlab_run" / "logs" / "vm.log"),
+        ("colab-cli.log", out_dir / "colab-cli.log"),
+    ):
+        parts.append(f"--- {label} ---\n{_tail(path)}")
+    return vm_judges.scrub_log_text("\n".join(parts))
+
+
 def test_items_upload_fails_at_6436a3a6_gate_and_passes_after_fix(
     tmp_path: Path,
 ) -> None:
@@ -1793,7 +1823,7 @@ def test_items_upload_fails_at_6436a3a6_gate_and_passes_after_fix(
         timeout=60,
         check=False,
     )
-    assert proc_old.returncode != 0
+    assert proc_old.returncode != 0, _stub_window_failure_diagnostics(proc_old, out_old, env_old)
     old_cli_log = (out_old / "colab-cli.log").read_text(encoding="utf-8")
     assert "Uploaded " in old_cli_log and "-> /content/repo_bundle.tar.gz" in old_cli_log
     assert "-> /content/receipts_bundle.tar.gz" in old_cli_log
@@ -1832,7 +1862,7 @@ def test_items_upload_fails_at_6436a3a6_gate_and_passes_after_fix(
         timeout=60,
         check=False,
     )
-    assert proc_new.returncode == 0, f"stderr={proc_new.stderr}"
+    assert proc_new.returncode == 0, _stub_window_failure_diagnostics(proc_new, out_new, env_new)
     new_cli_log = (out_new / "colab-cli.log").read_text(encoding="utf-8")
     assert "VM_GATE_OK " in new_cli_log
     assert "items_dir=/content/rdlab_items" in new_cli_log
@@ -14349,6 +14379,10 @@ RIG_ONLY_AND_VM_INTERNAL_RDLAB_ENV_ALLOWLIST: dict[str, str] = {
     "RDLAB_PRICING_RATE": "rig-only: write_outcome_draft's cap pricing rate, max(--max-rate, window rate)",
     "RDLAB_OUTCOME_LOCK_CHECK_PHASE": "rig-only: write_outcome_draft's copy of the lock-check phase (the VM gets RDLAB_LOCK_CHECK_PHASE)",
     "RDLAB_OUTCOME_PASS_MODE": "rig-only: write_outcome_draft's copy of the pass mode (the VM gets RDLAB_PASS_MODE)",
+    "RDLAB_OUTCOME_KIT_HEAD_SHA": "rig-only: write_outcome_draft's copy of the kit commit (the VM gets RDLAB_KIT_HEAD_SHA)",
+    "RDLAB_OUTCOME_KIT_TREE_CLEAN": "rig-only: write_outcome_draft's copy of kit_tree_clean (the VM gets RDLAB_KIT_TREE_CLEAN)",
+    "RDLAB_OUTCOME_KIT_VM_JUDGES_PY_SHA256": "rig-only: write_outcome_draft's copy of the vm_judges.py sha256 sent",
+    "RDLAB_OUTCOME_KIT_LAUNCH_JUDGES_SH_SHA256": "rig-only: write_outcome_draft's copy of the launcher's sha256",
     "RDLAB_OUTCOME_CARD_REQUESTED": "rig-only: write_outcome_draft's copy of the requested GPU card (the VM gets RDLAB_CARD)",
     "RDLAB_OUTCOME_SHAPE_REQUESTED": "rig-only: write_outcome_draft's copy of the requested VM shape (the VM gets RDLAB_SHAPE)",
     "RDLAB_OUTCOME_OPENED_HW": "rig-only: write_outcome_draft's copy of the opened session Hardware field from colab sessions",

@@ -683,12 +683,15 @@ def check_vram_guard(
 
 
 def resolve_judge_vram_halt_mib(spec: JudgeSpec, window_vram_halt_mib: int) -> int:
-    """The VRAM ceiling one judge runs under: the window's, unless the window is at the default ceiling and the judge's
-    spec carries a higher one (vllm-sr/d3), which then applies to that judge only. 0 (the CPU modes) stays 0, and any
-    other window value (the RDLAB_VRAM_HALT_MIB test hook) applies as given, to every judge, d3 included."""
+    """The VRAM ceiling one judge runs under. A judge whose spec carries a positive ceiling of its own (one that is not
+    `DEFAULT_VRAM_HALT_MIB`; today only vllm-sr/d3, 68,000 MiB) always runs under it: a window-wide value
+    (`RDLAB_VRAM_HALT_MIB`) can neither lower nor raise it (#107; so `RDLAB_VRAM_HALT_MIB=20000` gives d3 68,000, where
+    before it gave 20,000). The window's value applies only to judges with no ceiling of their own. A spec value of 0
+    or below is treated as no ceiling of its own, so it never switches the guard off on a GPU window (#108 fix 1).
+    0 (the CPU modes) stays 0 for every judge."""
     window = int(window_vram_halt_mib)
     own = int(spec.vram_halt_mib)
-    if window != DEFAULT_VRAM_HALT_MIB or own <= DEFAULT_VRAM_HALT_MIB:
+    if window == 0 or own <= 0 or own == DEFAULT_VRAM_HALT_MIB:
         return window
     return own
 
@@ -4931,7 +4934,7 @@ def run_bakeoff_judge(
         ) from exc
     resolved_out = check_output_dir_outside_repo(output_dir, repo_root=repo_root)
     spec = resolve_judge_spec(judge)
-    vram_halt_mib = resolve_judge_vram_halt_mib(spec, vram_halt_mib)  # the window's, or the judge's own when higher
+    vram_halt_mib = resolve_judge_vram_halt_mib(spec, vram_halt_mib)  # the judge's own ceiling, else the window's
     adapter = build_judge_adapter(spec)
     effective_dtype = DEFAULT_TORCH_DTYPE if str(torch_dtype).strip().lower() == "auto" else str(torch_dtype)
     eff_shard_spec = (
@@ -7860,6 +7863,15 @@ def run_p0a_child_stage(
     return doc
 
 
+# The four kit-identity fields vm_judges.write_window_manifest records in window.json (#107).
+WINDOW_KIT_IDENTITY_FIELDS: tuple[str, ...] = (
+    "kit_head_sha",
+    "kit_tree_clean",
+    "kit_vm_judges_py_sha256",
+    "kit_launch_judges_sh_sha256",
+)
+
+
 def build_window_manifest(
     run_dir: Path,
     *,
@@ -7877,6 +7889,7 @@ def build_window_manifest(
     prev_p0a_sha: str | None = None
     prev_counted_sha: str | None = None
     prev_pass_mode: str | None = None
+    prev_kit: dict[str, Any] = {}
     if existing_win_path.is_file():
         try:
             prev_win_doc = json.loads(existing_win_path.read_text(encoding="utf-8"))
@@ -7885,6 +7898,7 @@ def build_window_manifest(
                 prev_p0a_sha = str(prev_win_doc.get("p0a_items_sha256") or "").strip() or None
                 prev_counted_sha = str(prev_win_doc.get("counted_source_sha256") or "").strip() or None
                 prev_pass_mode = str(prev_win_doc.get("pass_mode") or "").strip() or None
+                prev_kit = {f: prev_win_doc[f] for f in WINDOW_KIT_IDENTITY_FIELDS if f in prev_win_doc}
         except Exception:
             pass
     eff_anchor_sha = (str(anchor_items_sha256).strip() if anchor_items_sha256 else None) or prev_anchor_sha
@@ -7919,6 +7933,8 @@ def build_window_manifest(
     eff_pass_mode = (str(pass_mode).strip() if pass_mode is not None else None) or prev_pass_mode
     if eff_pass_mode is not None:
         doc["pass_mode"] = eff_pass_mode
+    # The kit identity vm_judges records (#107), kept from an earlier window.json, so a rebuild hashes the same body.
+    doc.update(prev_kit)
     body_bytes = json.dumps(doc, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     doc["window_manifest_sha256"] = hashlib.sha256(body_bytes).hexdigest()
     window_path = resolved_dir / WINDOW_MANIFEST_FILENAME

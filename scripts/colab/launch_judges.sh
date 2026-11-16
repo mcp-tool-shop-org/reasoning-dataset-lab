@@ -62,6 +62,13 @@ GOLDEN_ANCHOR_MANIFEST=""
 WINDOW_ID=""
 PASS_MODE="${RDLAB_PASS_MODE:-}"
 PASS_MODE_FLAG=0
+# The kit identity (#107), set by compute_kit_identity before any session opens; empty = could not be read (null).
+KIT_HEAD_SHA=""
+KIT_TREE_CLEAN=""
+KIT_VM_JUDGES_PY_SHA256=""
+KIT_LAUNCH_JUDGES_SH_SHA256=""
+KIT_IDENTITY_UNAVAILABLE_REASON=""
+KIT_GATE_CLASS=""
 
 EXPECTED_JUDGE_LOCK_SHA256="608f56ab8eae6852718438366ff0ce74ef6aafb66db75faef034ae0bb5bdcf10"
 EXPECTED_D3_LOCK_SHA256="08801f9ac5e3cfb14ce819b051aeef388bea3e564e7b99bddc10d91537ab78e2"
@@ -1319,6 +1326,20 @@ build_exec_env_args() {
     --env "RDLAB_STATUS_FILE=/content/status.json"
     --env "RDLAB_RESUME=$EFFECTIVE_RESUME"
   )
+  # The kit identity (#107), computed before any session opens: the VM records it in window.json and refuses
+  # KIT_VM_SCRIPT_MISMATCH when the vm_judges.py it was sent hashes otherwise. A value that could not be read is not sent.
+  if [[ -n "$KIT_HEAD_SHA" ]]; then
+    EXEC_ENV_ARGS+=(--env "RDLAB_KIT_HEAD_SHA=$KIT_HEAD_SHA")
+  fi
+  if [[ -n "$KIT_TREE_CLEAN" ]]; then
+    EXEC_ENV_ARGS+=(--env "RDLAB_KIT_TREE_CLEAN=$KIT_TREE_CLEAN")
+  fi
+  if [[ -n "$KIT_VM_JUDGES_PY_SHA256" ]]; then
+    EXEC_ENV_ARGS+=(--env "RDLAB_KIT_VM_JUDGES_PY_SHA256=$KIT_VM_JUDGES_PY_SHA256")
+  fi
+  if [[ -n "$KIT_LAUNCH_JUDGES_SH_SHA256" ]]; then
+    EXEC_ENV_ARGS+=(--env "RDLAB_KIT_LAUNCH_JUDGES_SH_SHA256=$KIT_LAUNCH_JUDGES_SH_SHA256")
+  fi
   if [[ -n "$UNTIL_STEP" ]]; then
     EXEC_ENV_ARGS+=(--env "RDLAB_UNTIL=$UNTIL_STEP")
   fi
@@ -1482,6 +1503,77 @@ except vm_judges.RefusalError as exc:
 PY
 }
 
+# The kit's identity (#107): which commit of this repo and which bytes of the two scripts this window runs, computed on
+# the rig before any session opens (vm_judges.compute_kit_identity). Recorded in outcome.draft.json for every outcome and
+# forwarded to the VM for window.json. An empty value is one that could not be read (recorded as null).
+compute_kit_identity() {
+  local kit_out=""
+  local -a kit_lines=()
+  kit_out="$("$PYTHON_BIN" - "$REPO_ROOT" "$VM_SCRIPT" "$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")" <<'PY'
+import sys
+from pathlib import Path
+
+repo_root, vm_script, launcher = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
+sys.path.insert(0, str(repo_root / "src"))
+sys.path.insert(0, str(repo_root / "scripts" / "colab"))
+import vm_judges
+
+ident, reason = vm_judges.compute_kit_identity(repo_root, vm_script, launcher)
+clean = ident["kit_tree_clean"]
+print(ident["kit_head_sha"] or "")
+print("" if clean is None else ("true" if clean else "false"))
+print(ident["kit_vm_judges_py_sha256"] or "")
+print(ident["kit_launch_judges_sh_sha256"] or "")
+print(" ".join(str(reason or "").split()))
+PY
+)" || kit_out=""
+  mapfile -t kit_lines <<<"$kit_out"
+  KIT_HEAD_SHA="${kit_lines[0]:-}"
+  KIT_TREE_CLEAN="${kit_lines[1]:-}"
+  KIT_VM_JUDGES_PY_SHA256="${kit_lines[2]:-}"
+  KIT_LAUNCH_JUDGES_SH_SHA256="${kit_lines[3]:-}"
+  KIT_IDENTITY_UNAVAILABLE_REASON="${kit_lines[4]:-}"
+  if [[ -z "$KIT_VM_JUDGES_PY_SHA256" ]] && [[ -z "$KIT_IDENTITY_UNAVAILABLE_REASON" ]]; then
+    KIT_IDENTITY_UNAVAILABLE_REASON="the kit identity could not be computed on the rig"
+  fi
+}
+
+# A counted, time-one, lock-check or sharded counted window refuses KIT_IDENTITY_UNAVAILABLE (no git, or not a git
+# worktree), KIT_TREE_DIRTY (`git status --porcelain` not empty) or KIT_VM_SCRIPT_MISMATCH (the vm_judges.py to be sent,
+# or this launcher, is not HEAD's tracked file) before any colab call; stubs run and record what was read. Prints the
+# failure class on refusal.
+kit_identity_gate() {
+  "$PYTHON_BIN" - "$REPO_ROOT" "$MODE" "${VM_DRYRUN:-0}" "${RDLAB_SHARD:-1/1}" "$KIT_HEAD_SHA" "$KIT_TREE_CLEAN" "$KIT_IDENTITY_UNAVAILABLE_REASON" "$KIT_VM_JUDGES_PY_SHA256" "$KIT_LAUNCH_JUDGES_SH_SHA256" <<'PY'
+import sys
+from pathlib import Path
+
+repo_root, mode, vm_dryrun, shard = Path(sys.argv[1]), sys.argv[2], sys.argv[3] == "1", sys.argv[4]
+sys.path.insert(0, str(repo_root / "src"))
+sys.path.insert(0, str(repo_root / "scripts" / "colab"))
+import vm_judges
+
+ident = {
+    "kit_head_sha": sys.argv[5] or None,
+    "kit_tree_clean": {"true": True, "false": False}.get(sys.argv[6]),
+    "kit_vm_judges_py_sha256": sys.argv[8] or None,
+    "kit_launch_judges_sh_sha256": sys.argv[9] or None,
+}
+try:
+    vm_judges.refuse_kit_identity_for_mode(ident, sys.argv[7] or None, mode, dryrun=vm_dryrun, shard_spec=shard)
+    # The sent vm_judges.py and this launcher must be HEAD's files in a counted window (#108 fix 1), with or without
+    # RDLAB_VM_SCRIPT: the VM-side check runs inside the sent script, so it cannot be the gate.
+    if vm_judges.is_counted_or_time_one_mode(mode, dryrun=vm_dryrun, shard_spec=shard):
+        vm_judges.refuse_kit_scripts_not_head(
+            ident, vm_judges.kit_head_script_sha256s(repo_root), mode, dryrun=vm_dryrun, shard_spec=shard
+        )
+except vm_judges.RefusalError as exc:
+    print(getattr(exc, "failure_class", None) or getattr(exc, "code", None) or "KIT_IDENTITY_UNAVAILABLE")
+    sys.stderr.write(f"{exc}\n")
+    raise SystemExit(2)
+PY
+}
+
+compute_kit_identity
 
 if [[ "$DRY_FLAG" == "1" ]]; then
   if [[ "$MODE" == "lock-check" ]] || [[ "$MODE" == "lock-check-stub" ]]; then
@@ -1665,6 +1757,15 @@ PY
   build_exec_env_args
   DRY_ENV_STR="${EXEC_ENV_ARGS[*]}"
   if ! guard_forwarded_test_hooks; then
+    exit 2
+  fi
+  # The kit identity this window would record (#107), on stderr so the command list on stdout is unchanged.
+  printf 'KIT_IDENTITY kit_head_sha=%s kit_tree_clean=%s kit_vm_judges_py_sha256=%s kit_launch_judges_sh_sha256=%s\n' \
+    "${KIT_HEAD_SHA:-null}" "${KIT_TREE_CLEAN:-null}" "${KIT_VM_JUDGES_PY_SHA256:-null}" "${KIT_LAUNCH_JUDGES_SH_SHA256:-null}" >&2
+  if [[ -n "$KIT_IDENTITY_UNAVAILABLE_REASON" ]]; then
+    printf 'KIT_IDENTITY_UNAVAILABLE recorded=null reason=%s\n' "$KIT_IDENTITY_UNAVAILABLE_REASON" >&2
+  fi
+  if ! kit_identity_gate >/dev/null; then
     exit 2
   fi
 
@@ -2205,6 +2306,10 @@ write_outcome_draft() {
   RDLAB_PRICING_RATE="$PRICING_RATE_UNITS_PER_HOUR" \
   RDLAB_OUTCOME_LOCK_CHECK_PHASE="$LOCK_CHECK_PHASE" \
   RDLAB_OUTCOME_PASS_MODE="${PASS_MODE:-binary}" \
+  RDLAB_OUTCOME_KIT_HEAD_SHA="${KIT_HEAD_SHA:-}" \
+  RDLAB_OUTCOME_KIT_TREE_CLEAN="${KIT_TREE_CLEAN:-}" \
+  RDLAB_OUTCOME_KIT_VM_JUDGES_PY_SHA256="${KIT_VM_JUDGES_PY_SHA256:-}" \
+  RDLAB_OUTCOME_KIT_LAUNCH_JUDGES_SH_SHA256="${KIT_LAUNCH_JUDGES_SH_SHA256:-}" \
   RDLAB_MAX_RATE="$MAX_RATE" \
   RDLAB_LIVE_USAGE_RATE="$LIVE_RATE_UNITS_PER_HOUR" \
   RDLAB_RATE_READ_AT_UTC="$RATE_READ_AT_UTC" \
@@ -2457,6 +2562,22 @@ only_judges_list: list[str] | None = (
 )
 payload["only_judges"] = only_judges_list
 payload["pass_mode"] = os.environ.get("RDLAB_OUTCOME_PASS_MODE", "").strip() or "binary"; payload.update({"judge_pass_modes": [p for p in os.environ.get("RDLAB_JUDGE_PASS_MODES", "").split(",") if p]} if payload["pass_mode"] == "per_judge" else {})  # noqa: E501
+# The kit identity (#107), computed on the rig before any session opened; an empty value could not be read (null).
+payload["kit_head_sha"] = os.environ.get("RDLAB_OUTCOME_KIT_HEAD_SHA", "").strip() or None
+payload["kit_tree_clean"] = {"true": True, "false": False}.get(os.environ.get("RDLAB_OUTCOME_KIT_TREE_CLEAN", "").strip())
+payload["kit_vm_judges_py_sha256"] = os.environ.get("RDLAB_OUTCOME_KIT_VM_JUDGES_PY_SHA256", "").strip() or None
+payload["kit_launch_judges_sh_sha256"] = os.environ.get("RDLAB_OUTCOME_KIT_LAUNCH_JUDGES_SH_SHA256", "").strip() or None
+# Whether the VM re-hashed the vm_judges.py it was sent (#108 fix 1), as its status.json says: passed, refused or
+# not_sent; null when the VM never reached that step (a refusal on the rig, a cap stop before it, no status fetched).
+payload["kit_vm_script_check"] = None
+_kit_status_p = out_path.parent / "status.json"
+if _kit_status_p.is_file():
+    try:
+        _kit_status_doc = json.loads(_kit_status_p.read_text(encoding="utf-8"))
+        if isinstance(_kit_status_doc, dict) and _kit_status_doc.get("kit_vm_script_check") in ("passed", "refused", "not_sent"):
+            payload["kit_vm_script_check"] = _kit_status_doc["kit_vm_script_check"]
+    except Exception:
+        pass
 jdone_dir = out_path.parent / "judge_done"
 repo_root_arg = sys.argv[19].strip() if len(sys.argv) > 19 else ""
 repo_src = (Path(repo_root_arg) if repo_root_arg else Path.cwd()) / "src"
@@ -3718,7 +3839,7 @@ fi
 mkdir -p "$STAGE_DIR"
 # Part files left in the stage dir by an earlier, interrupted launch must never be uploaded for this one.
 rm -f "$STAGED_PART_JSON_FILE" "$STAGED_PART_CHECKSUMS_FILE" "$STAGED_P0A_PART_JSON_FILE" "$STAGED_P0A_CHECKSUMS_FILE" "$STAGED_BINDING_FILE" "$RIG_BINDING_FILE"
-if ! "$PYTHON_BIN" - "$REPO_ROOT" "$ITEMS_FILE" "$STAGED_ITEMS_FILE" "$RECEIPTS_DIR" "$RECEIPTS_TAR" "$REPO_TAR" "$STAGED_DEVICE_PY" "$GOLDEN_ANCHOR_MANIFEST" "$ANCHOR_ITEMS_FILE" "$STAGED_ANCHOR_ITEMS_FILE" "$P0A_ITEMS_FILE" "$STAGED_P0A_ITEMS_FILE" "$COUNTED_ITEMS_FILE" "$COUNTED_MANIFEST_FILE" "$STAGED_BINDING_FILE" "$MODE" "${VM_DRYRUN:-0}" "$STAGED_PART_JSON_FILE" "$STAGED_PART_CHECKSUMS_FILE" "$(effective_part_dir "$ITEMS_FILE")" "$P0A_PART_DIR" "$STAGED_P0A_PART_JSON_FILE" "$STAGED_P0A_CHECKSUMS_FILE" <<'PY'
+if ! "$PYTHON_BIN" - "$REPO_ROOT" "$ITEMS_FILE" "$STAGED_ITEMS_FILE" "$RECEIPTS_DIR" "$RECEIPTS_TAR" "$REPO_TAR" "$STAGED_DEVICE_PY" "$GOLDEN_ANCHOR_MANIFEST" "$ANCHOR_ITEMS_FILE" "$STAGED_ANCHOR_ITEMS_FILE" "$P0A_ITEMS_FILE" "$STAGED_P0A_ITEMS_FILE" "$COUNTED_ITEMS_FILE" "$COUNTED_MANIFEST_FILE" "$STAGED_BINDING_FILE" "$MODE" "${VM_DRYRUN:-0}" "$STAGED_PART_JSON_FILE" "$STAGED_PART_CHECKSUMS_FILE" "$(effective_part_dir "$ITEMS_FILE")" "$P0A_PART_DIR" "$STAGED_P0A_PART_JSON_FILE" "$STAGED_P0A_CHECKSUMS_FILE" "$VM_SCRIPT" <<'PY'
 import datetime
 import json
 import shutil
@@ -3749,6 +3870,7 @@ raw_part_dir = sys.argv[20].strip() if len(sys.argv) > 20 else ""
 raw_p0a_part_dir = sys.argv[21].strip() if len(sys.argv) > 21 else ""
 raw_p0a_part_json_dst = sys.argv[22].strip() if len(sys.argv) > 22 else ""
 raw_p0a_checksums_dst = sys.argv[23].strip() if len(sys.argv) > 23 else ""
+raw_sent_vm_script = sys.argv[24].strip() if len(sys.argv) > 24 else ""
 
 sys.path.insert(0, str(repo_root / "src"))
 sys.path.insert(0, str(repo_root / "scripts" / "colab"))
@@ -3836,6 +3958,11 @@ tracked_files = vm_judges.tracked_repo_bundle_files(repo_root)
 raw_shard_manifest = (_os.environ.get("RDLAB_SHARD_MANIFEST") or "").strip()
 with tarfile.open(repo_tar, "w:gz") as tf:
     for rel in tracked_files:
+        # The bundle's vm_judges.py is the file `colab exec -f` sends (#108 fix 1), so the VM's re-hash compares what ran
+        # with what was recorded. A counted window has already been refused unless that file is HEAD's.
+        if rel == vm_judges.KIT_VM_SCRIPT_RELPATH and raw_sent_vm_script:
+            tf.add(Path(raw_sent_vm_script), arcname=rel, recursive=False)
+            continue
         tf.add(repo_root / rel, arcname=rel, recursive=False)
     if raw_shard_manifest:
         sm_path = Path(raw_shard_manifest)
@@ -3925,6 +4052,18 @@ if ! guard_forwarded_test_hooks; then
   RUN_FAILURE_CLASS="TEST_HOOK_IN_COUNTED_MODE"
   RUN_WHY="refused before any colab call: a forwarded test hook or item limit in a real window"
   exit 2
+fi
+
+# Before any colab call: a counted window records a clean kit commit, or refuses (#107).
+log_msg "KIT_IDENTITY kit_head_sha=${KIT_HEAD_SHA:-null} kit_tree_clean=${KIT_TREE_CLEAN:-null} kit_vm_judges_py_sha256=${KIT_VM_JUDGES_PY_SHA256:-null} kit_launch_judges_sh_sha256=${KIT_LAUNCH_JUDGES_SH_SHA256:-null}"
+if ! KIT_GATE_CLASS="$(kit_identity_gate)"; then
+  RUN_FAILURE_CLASS="${KIT_GATE_CLASS:-KIT_IDENTITY_UNAVAILABLE}"
+  RUN_WHY="refused before any colab call: ${RUN_FAILURE_CLASS} (a ${MODE} window runs only a clean kit commit and HEAD's scripts)"
+  exit 2
+fi
+if [[ -n "$KIT_IDENTITY_UNAVAILABLE_REASON" ]]; then
+  log_msg "KIT_IDENTITY_UNAVAILABLE recorded=null reason=$KIT_IDENTITY_UNAVAILABLE_REASON"
+  printf 'KIT_IDENTITY_UNAVAILABLE: kit_head_sha and kit_tree_clean recorded as null (%s)\n' "$KIT_IDENTITY_UNAVAILABLE_REASON" >&2
 fi
 
 mkdir -p "$(dirname "$OPEN_LOCK")"
