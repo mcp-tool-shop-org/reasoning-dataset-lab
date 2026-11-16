@@ -1368,19 +1368,47 @@ def test_stub_exercise_elephant_install_refused_outside_eligible_stub_plan(
         ),
         ("cuda_home_with_errorprefix", "error: OSError: CUDA_HOME environment variable is not set.", True),
         ("NE_with_trailing_period", "NameError: name 'bare_metal_version' is not defined.", True),
+        # B9: note/hint/help lines are scanned against the deny-list (no exemption for advisory lines), and note: is not a trailing advisory prefix.
         (
             "trace_mentions_timed_out_in_benign_text",
             "UserWarning: causal_conv1d was requested, but nvcc was not found.  Are you sure your environment has nvcc available?\n"
             "note: download timed out once, retried ok\n"
             "NameError: name 'bare_metal_version' is not defined",
+            False,
+        ),
+        ("b9_note_killed", "note: Killed\nNameError: name 'bare_metal_version' is not defined", False),
+        (
+            "b9_hint_no_space",
+            "hint: No space left on device (os error 28)\nNameError: name 'bare_metal_version' is not defined",
+            False,
+        ),
+        (
+            "b9_help_permission_denied",
+            "help: permission denied writing /content/x\nNameError: name 'bare_metal_version' is not defined",
+            False,
+        ),
+        (
+            "b9_note_no_module_torch",
+            "note: ModuleNotFoundError: No module named 'torch'\nNameError: name 'bare_metal_version' is not defined",
+            False,
+        ),
+        (
+            "b9_trailing_note_no_space",
+            "NameError: name 'bare_metal_version' is not defined\nnote: OSError: [Errno 28] No space left on device",
+            False,
+        ),
+        # C13: private-mode CSI codes (such as \x1b[?25h) are stripped cleanly.
+        (
+            "c13_ansi_private_mode_csi",
+            "\x1b[1m\x1b[31merror\x1b[0m: NameError: name 'bare_metal_version' is not defined\n\x1b[?25h",
             True,
         ),
     ],
 )
 def test_b1_prime_cpu_cuda_build_failure_classifier_table(case_name: str, output: str, want: bool) -> None:
-    """B1'/B5: `_is_cpu_cuda_build_failure` strips ANSI and trailing advisory lines (`hint:`/`help:`/`warning:`/`note:`),
-    matches only the known final CPU error (`bare_metal_version` NameError or `CUDA_HOME` unset/None), drops `/bin/nvcc`,
-    and refuses non-CUDA failures."""
+    """B1'/B5/B9/C13: `_is_cpu_cuda_build_failure` strips ANSI/CSI/OSC sequences and trailing `hint:`/`help:`/`warning:`
+    lines (scanning all lines including advisory lines against the deny-list), matches only the known final CPU error
+    (`bare_metal_version` NameError or `CUDA_HOME` unset/None), drops `/bin/nvcc`, and refuses non-CUDA failures."""
     assert vm_judges._is_cpu_cuda_build_failure(output) is want, case_name
 
 

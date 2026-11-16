@@ -16218,6 +16218,23 @@ def launcher_verify_fetched_pass(
     return True, ""
 
 
+def write_launcher_halted_pass_verdicts(out_dir: Path, halted_tsv: str, verdicts_path: Path) -> None:
+    """Check all remaining post-halt passes (`staged=False`) in one process and flush one `OK`/`BAD` tab-separated
+    verdict line per pass to `verdicts_path` so a single `timeout` bounds the entire post-halt check."""
+    with Path(verdicts_path).open("a", encoding="utf-8", newline="\n") as fh:
+        for raw in str(halted_tsv or "").splitlines():
+            parts = raw.split("\t")
+            if len(parts) < 4:
+                continue
+            jid, pmode, done_file, row_file = parts[0].strip(), parts[1].strip(), parts[2].strip(), parts[3].strip()
+            want_sha = parts[4].strip() if len(parts) > 4 else ""
+            if not (jid and pmode and done_file and row_file):
+                continue
+            ok, _ = launcher_verify_fetched_pass(out_dir, jid, pmode, staged=False, want_sha256=want_sha)
+            fh.write(f"{'OK' if ok else 'BAD'}\t{jid}\t{pmode}\t{done_file}\n")
+            fh.flush()
+
+
 # --- arm 4: venv-elephant, built on the VM only (never on the rig), before elephant-1's first pass ----------------
 # setup.sh (elephant-1's, pinned in its receipt) installs OneJev @81ce62f + serve.patch and the decision-index kit into
 # the active interpreter and may apt-install git. Here, by R&D's ruling of 2026-11-15:
@@ -16349,8 +16366,8 @@ def _elephant_env() -> dict[str, str]:
     return env
 
 
-_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
-_TRAILING_ADVISORY_PREFIXES: tuple[str, ...] = ("hint:", "help:", "warning:", "note:")
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
+_TRAILING_ADVISORY_PREFIXES: tuple[str, ...] = ("hint:", "help:", "warning:")
 _CPU_CUDA_FINAL_ERROR_RE = re.compile(
     r"^(?:error:\s*)?(?:"
     r"nameerror:\s*name\s+['\"]?bare_metal_version['\"]?\s+is\s+not\s+defined\.?\s*$"
@@ -16388,10 +16405,8 @@ def _is_cpu_cuda_build_failure(output: str) -> bool:
     lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
     if not lines:
         return False
-    non_note_low = "\n".join(
-        ln.lower() for ln in lines if not ln.lower().startswith(("note:", "hint:", "help:"))
-    )
-    if any(bad in non_note_low for bad in _NON_CUDA_RESOLUTION_OR_FETCH_MARKERS):
+    low = "\n".join(ln.lower() for ln in lines)
+    if any(bad in low for bad in _NON_CUDA_RESOLUTION_OR_FETCH_MARKERS):
         return False
     while lines and lines[-1].lower().startswith(_TRAILING_ADVISORY_PREFIXES):
         lines.pop()

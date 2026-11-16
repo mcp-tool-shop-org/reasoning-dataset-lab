@@ -1649,17 +1649,27 @@ def test_bash_fetch_completed_judge_checkpoints_crash_empty_name_and_deadline_gu
                     break
         return sh_text[start:end]
 
-    helpers_src = _extract_bash_fn("remaining_fetch_timeout") + "\n\n" + _extract_bash_fn("fetch_completed_judge_checkpoints")
+    helpers_src = (
+        _extract_bash_fn("remaining_fetch_timeout")
+        + "\n\n"
+        + _extract_bash_fn("fetch_completed_judge_checkpoints")
+        + "\n\n"
+        + _extract_bash_fn("write_outcome_draft")
+    )
 
     def _run_fetch_harness(
         sub: Path,
         *,
         py_mode: str,
         deadline_epoch: int,
+        verify_timeout: int = 30,
+        kill_grace_seconds: int = 5,
         seed_stale: bool = True,
         cleanup_skip_fetch: int = 0,
         helpers_override: str | None = None,
-    ) -> tuple[subprocess.CompletedProcess[str], list[str], Path]:
+    ) -> tuple[subprocess.CompletedProcess[str], list[str], Path, list[str], dict[str, Any]]:
+        import hashlib
+
         sub.mkdir(parents=True, exist_ok=True)
         out_dir = sub / "out"
         (out_dir / "judge_done").mkdir(parents=True, exist_ok=True)
@@ -1669,16 +1679,47 @@ def test_bash_fetch_completed_judge_checkpoints_crash_empty_name_and_deadline_gu
         jid = "d3-mini"
         done_name = f"{jid}.json"
         rows_name = f"{jid}.jsonl"
+
+        def _write_valid_pair(judge: str, payload_line: bytes) -> str:
+            sha = hashlib.sha256(payload_line).hexdigest()
+            (out_dir / "rows" / f"{judge}.jsonl").write_bytes(payload_line)
+            (out_dir / "judge_done" / f"{judge}.json").write_text(
+                json.dumps(
+                    {
+                        "judge_id": judge,
+                        "pass_mode": "binary",
+                        "rows_file": f"rows/{judge}.jsonl",
+                        "sha256": sha,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            return sha
+
+        mu_sha = "22222222"
+        d3_valid_sha = ""
         if seed_stale:
-            (out_dir / "judge_done" / done_name).write_text('{"judge_id":"d3-mini","sha256":"0000"}\n', encoding="utf-8")
-            (out_dir / "rows" / rows_name).write_text('{"stale":1}\n', encoding="utf-8")
-            if py_mode == "multi_pass":
-                (out_dir / "judge_done" / "mu-judge.json").write_text('{"judge_id":"mu-judge","sha256":"22222222"}\n', encoding="utf-8")
-                (out_dir / "rows" / "mu-judge.jsonl").write_text('{"valid":1}\n', encoding="utf-8")
-                (out_dir / "judge_done" / "flow-judge-v0.1.json").write_text('{"judge_id":"flow-judge-v0.1","sha256":"0000"}\n', encoding="utf-8")
-                (out_dir / "rows" / "flow-judge-v0.1.jsonl").write_text('{"stale":1}\n', encoding="utf-8")
+            if py_mode in ("stall_pre_halt_124", "stall_pre_halt_137", "stall_pre_halt_fail", "stall_post_halt"):
+                d3_valid_sha = _write_valid_pair("d3-mini", b'{"valid":"d3-mini"}\n')
+                mu_sha = _write_valid_pair("mu-judge", b'{"valid":"mu-judge"}\n')
+                if py_mode == "stall_post_halt":
+                    (out_dir / "judge_done" / "flow-judge-v0.1.json").write_text(
+                        '{"judge_id":"flow-judge-v0.1","sha256":"0000"}\n', encoding="utf-8"
+                    )
+                    (out_dir / "rows" / "flow-judge-v0.1.jsonl").write_text('{"stale":1}\n', encoding="utf-8")
+            else:
+                (out_dir / "judge_done" / done_name).write_text('{"judge_id":"d3-mini","sha256":"0000"}\n', encoding="utf-8")
+                (out_dir / "rows" / rows_name).write_text('{"stale":1}\n', encoding="utf-8")
+                if py_mode == "multi_pass":
+                    mu_sha = _write_valid_pair("mu-judge", b'{"valid":1}\n')
+                    (out_dir / "judge_done" / "flow-judge-v0.1.json").write_text(
+                        '{"judge_id":"flow-judge-v0.1","sha256":"0000"}\n', encoding="utf-8"
+                    )
+                    (out_dir / "rows" / "flow-judge-v0.1.jsonl").write_text('{"stale":1}\n', encoding="utf-8")
 
         colab_log = sub / "colab_downloads.log"
+        py_calls_log = sub / "py_calls.log"
         cli_log = out_dir / "colab-cli.log"
         cli_log.write_text("", encoding="utf-8")
         (out_dir / "progress.jsonl").write_text("", encoding="utf-8")
@@ -1704,34 +1745,67 @@ def test_bash_fetch_completed_judge_checkpoints_crash_empty_name_and_deadline_gu
         fake_py.write_text(
             "#!/usr/bin/env bash\n"
             f'REAL_PY="{sys.executable}"\n'
-            'code="$2"\n'
-            'if [[ "$code" == *"print_launcher_completed_passes"* ]]; then\n'
-            f'  if [[ "{py_mode}" == "empty_fields" ]]; then\n'
-            '    printf "d3-mini\\tbinary\\td3-mini.json\\n"\n'
-            '    printf "d3-mini\\tbinary\\n"\n'
-            f'  elif [[ "{py_mode}" == "multi_pass" ]]; then\n'
-            '    printf "d3-mini\\tbinary\\td3-mini.json\\td3-mini.jsonl\\t11111111\\n"\n'
-            '    printf "mu-judge\\tbinary\\tmu-judge.json\\tmu-judge.jsonl\\t22222222\\n"\n'
-            '    printf "flow-judge-v0.1\\tbinary\\tflow-judge-v0.1.json\\tflow-judge-v0.1.jsonl\\t33333333\\n"\n'
-            "  else\n"
-            '    printf "d3-mini\\tbinary\\td3-mini.json\\td3-mini.jsonl\\tffffffff\\n"\n'
-            "  fi\n"
-            "  exit 0\n"
-            "fi\n"
-            'if [[ "$code" == *"staged=False"* ]]; then\n'
-            f'  if [[ "{py_mode}" == "multi_pass" && "$5" == "mu-judge" ]]; then\n'
+            f'PY_LOG="{_to_wsl_path(py_calls_log)}"\n'
+            'if [[ "$1" == "-c" ]]; then\n'
+            '  code="$2"\n'
+            '  if [[ "$code" == *"print_launcher_completed_passes"* ]]; then\n'
+            '    printf "print_launcher_completed_passes\\n" >> "$PY_LOG"\n'
+            f'    if [[ "{py_mode}" == "empty_fields" ]]; then\n'
+            '      printf "d3-mini\\tbinary\\td3-mini.json\\n"\n'
+            '      printf "d3-mini\\tbinary\\n"\n'
+            f'    elif [[ "{py_mode}" == "multi_pass" ]]; then\n'
+            '      printf "d3-mini\\tbinary\\td3-mini.json\\td3-mini.jsonl\\t11111111\\n"\n'
+            f'      printf "mu-judge\\tbinary\\tmu-judge.json\\tmu-judge.jsonl\\t{mu_sha}\\n"\n'
+            '      printf "flow-judge-v0.1\\tbinary\\tflow-judge-v0.1.json\\tflow-judge-v0.1.jsonl\\t33333333\\n"\n'
+            f'    elif [[ "{py_mode}" == "stall_pre_halt_124" || "{py_mode}" == "stall_pre_halt_137" || "{py_mode}" == "stall_pre_halt_fail" ]]; then\n'
+            f'      printf "d3-mini\\tbinary\\td3-mini.json\\td3-mini.jsonl\\t{d3_valid_sha}\\n"\n'
+            f'      printf "mu-judge\\tbinary\\tmu-judge.json\\tmu-judge.jsonl\\t{mu_sha}\\n"\n'
+            f'    elif [[ "{py_mode}" == "stall_post_halt" ]]; then\n'
+            f'      printf "mu-judge\\tbinary\\tmu-judge.json\\tmu-judge.jsonl\\t{mu_sha}\\n"\n'
+            '      printf "flow-judge-v0.1\\tbinary\\tflow-judge-v0.1.json\\tflow-judge-v0.1.jsonl\\t33333333\\n"\n'
+            f'      printf "d3-mini\\tbinary\\td3-mini.json\\td3-mini.jsonl\\t{d3_valid_sha}\\n"\n'
+            "    else\n"
+            '      printf "d3-mini\\tbinary\\td3-mini.json\\td3-mini.jsonl\\tffffffff\\n"\n'
+            "    fi\n"
             "    exit 0\n"
             "  fi\n"
-            "  exit 1\n"
-            "fi\n"
-            'if [[ "$code" == *"staged=True"* ]]; then\n'
-            f'  if [[ "{py_mode}" == "crash_staged" ]]; then\n'
-            '    cp "$4/judge_done/.d3-mini.json.part" "$4/judge_done/d3-mini.json"\n'
-            '    cp "$4/rows/.d3-mini.jsonl.part" "$4/rows/d3-mini.jsonl"\n'
-            "    exit 42\n"
+            '  if [[ "$code" == *"write_launcher_halted_pass_verdicts"* ]]; then\n'
+            '    printf "halted_verdicts\\n" >> "$PY_LOG"\n'
+            f'    if [[ "{py_mode}" == "stall_post_halt" ]]; then\n'
+            '      first_two="$(printf \'%s\' "$5" | head -n 2)"\n'
+            '      "$REAL_PY" -c "$2" "$3" "$4" "$first_two" "$6"\n'
+            "      sleep 5\n"
+            "      exit 0\n"
+            "    fi\n"
+            '    "$REAL_PY" "$@"\n'
+            "    exit $?\n"
             "  fi\n"
-            '  "$REAL_PY" "$@"\n'
-            "  exit $?\n"
+            '  if [[ "$code" == *"staged=False"* ]]; then\n'
+            '    printf "staged=False:%s\\n" "$5" >> "$PY_LOG"\n'
+            f'    if [[ "{py_mode}" == "stall_pre_halt_124" && "$5" == "d3-mini" ]]; then\n'
+            "      exec sleep 5\n"
+            "    fi\n"
+            f'    if [[ "{py_mode}" == "stall_pre_halt_137" && "$5" == "d3-mini" ]]; then\n'
+            "      trap '' TERM\n"
+            "      while true; do sleep 0.2; done\n"
+            "    fi\n"
+            f'    if [[ "{py_mode}" == "stall_pre_halt_fail" && "$5" == "d3-mini" ]]; then\n'
+            "      sleep 2\n"
+            "      exit 1\n"
+            "    fi\n"
+            '    "$REAL_PY" "$@"\n'
+            "    exit $?\n"
+            "  fi\n"
+            '  if [[ "$code" == *"staged=True"* ]]; then\n'
+            '    printf "staged=True:%s\\n" "$5" >> "$PY_LOG"\n'
+            f'    if [[ "{py_mode}" == "crash_staged" ]]; then\n'
+            '      cp "$4/judge_done/.d3-mini.json.part" "$4/judge_done/d3-mini.json"\n'
+            '      cp "$4/rows/.d3-mini.jsonl.part" "$4/rows/d3-mini.jsonl"\n'
+            "      exit 42\n"
+            "    fi\n"
+            '    "$REAL_PY" "$@"\n'
+            "    exit $?\n"
+            "  fi\n"
             "fi\n"
             '"$REAL_PY" "$@"\n',
             encoding="utf-8",
@@ -1751,35 +1825,84 @@ def test_bash_fetch_completed_judge_checkpoints_crash_empty_name_and_deadline_gu
             'PASS_MODE="binary"\n'
             f"CLEANUP_SKIP_FETCH={cleanup_skip_fetch}\n"
             "DOWNLOAD_TIMEOUT_SECONDS=30\n"
-            "COLAB_KILL_GRACE_SECONDS=5\n"
+            f"COLAB_KILL_GRACE_SECONDS={kill_grace_seconds}\n"
+            'PROGRESS_FETCH_TIMEOUT_SECONDS=30\n'
+            'OUTCOME_FILE="$OUT_DIR/outcome.draft.json"\n'
+            'RUN_ID="fetch-harness"\n'
+            'CARD="cpu"\n'
+            'OPENED_CARD_TYPE="cpu"\n'
+            'SHAPE="cpu"\n'
+            'EXPECTED_SESSION_SHAPE=""\n'
+            'OPENED_SHAPE_OBS=""\n'
+            'CAP_UNITS="0"\n'
+            'RATE_UNITS_PER_HOUR="0"\n'
+            'WALL_SECONDS=60\n'
+            'EXPLICIT_CAP=""\n'
+            'RUN_OUTCOME="ok"\n'
+            'RUN_WHY="test"\n'
+            'STOP_PATH="trap"\n'
+            'STOP_PATH_FILE=""\n'
+            'COST_CAP_MARKER=""\n'
+            'START_EPOCH=0\n'
+            'SESSION_NAME="rdlab-harness"\n'
+            'PRE_SESSIONS=""\n'
+            'MID_SESSIONS=""\n'
+            'POST_SESSIONS=""\n'
+            'UNTIL_STEP=""\n'
+            'RUN_FAILURE_CLASS=""\n'
+            'NO_SESSION_ASSIGNED=0\n'
+            'RATE_SOURCE=""\n'
+            'PRE_ACCOUNT_RATE=""\n'
+            'POST_ACCOUNT_RATE=""\n'
+            'PRICING_RATE_UNITS_PER_HOUR=""\n'
+            'LOCK_CHECK_PHASE=""\n'
+            'MAX_RATE=""\n'
+            'LIVE_RATE_UNITS_PER_HOUR=""\n'
+            'RATE_READ_AT_UTC=""\n'
+            'RATE_REREAD_STATE=""\n'
+            'RATE_REREADS_FILE=""\n'
+            'RATE_REREAD_SECONDS=0\n'
+            'CAP_MARGIN_UNITS="0.01"\n'
+            'CLEANUP_STOP_ATTEMPTED_BY_SECONDS=0\n'
+            'CLEANUP_BOUND_SECONDS=0\n'
+            'now_epoch_seconds() { date +%s; }\n'
             'log_msg() { printf "%s\\n" "$*" >> "$OUT_DIR/colab-cli.log"; }\n'
             + (helpers_override if helpers_override is not None else helpers_src)
-            + f"\nfetch_completed_judge_checkpoints 30 {deadline_epoch}\n",
+            + f"\nfetch_completed_judge_checkpoints 30 {deadline_epoch} {verify_timeout}\nwrite_outcome_draft\n",
             encoding="utf-8",
             newline="\n",
         )
         driver.chmod(0o755)
-        proc = subprocess.run(["bash", _to_wsl_path(driver)], capture_output=True, text=True, timeout=30, check=False)
+        proc = subprocess.run(["bash", _to_wsl_path(driver)], capture_output=True, text=True, timeout=45, check=False)
         dl_calls = colab_log.read_text(encoding="utf-8").splitlines() if colab_log.is_file() else []
-        return proc, dl_calls, out_dir
+        py_calls = py_calls_log.read_text(encoding="utf-8").splitlines() if py_calls_log.is_file() else []
+        outcome_p = out_dir / "outcome.draft.json"
+        outcome_doc = json.loads(outcome_p.read_text(encoding="utf-8")) if outcome_p.is_file() else {}
+        return proc, dl_calls, out_dir, py_calls, outcome_doc
 
     # B2: staged=True moves .part into destination before crashing -> only the fallback rm in bash cleans up.
-    proc_b2, dl_b2, out_b2 = _run_fetch_harness(tmp_path / "b2", py_mode="crash_staged", deadline_epoch=0, seed_stale=True)
+    proc_b2, dl_b2, out_b2, _, out_doc_b2 = _run_fetch_harness(
+        tmp_path / "b2", py_mode="crash_staged", deadline_epoch=0, seed_stale=True
+    )
     assert proc_b2.returncode == 0, proc_b2.stderr
     assert len(dl_b2) == 2
     assert list((out_b2 / "judge_done").iterdir()) == []
     assert list((out_b2 / "rows").iterdir()) == []
+    assert out_doc_b2["judges_completed"] == []
     assert "FETCHED_JUDGE_DONE_INVALID" in proc_b2.stderr
     assert "FETCHED_JUDGE_DONE_INVALID" in (out_b2 / "colab-cli.log").read_text(encoding="utf-8")
 
-    # Prove B2 pins the crash-path fallback rm: replacing the second rm_line with ':' leaves moved destination files behind.
+    # Prove B2 pins the crash-path fallback rm inside the staged=True refusal block.
     rm_line = 'rm -f "$OUT_DIR/judge_done/${done_file}" "$OUT_DIR/rows/${row_file}"'
-    assert helpers_src.count(rm_line) == 2
-    assert 'timeout -k "$COLAB_KILL_GRACE_SECONDS" 30 "$PYTHON_BIN" -c' in helpers_src
-    head_part, sep, tail_part = helpers_src.rpartition(rm_line)
-    assert sep == rm_line
-    mutated_helpers = f"{head_part}:{tail_part}"
-    proc_b2_mut, _, out_b2_mut = _run_fetch_harness(
+    assert rm_line in helpers_src
+    assert 'timeout -k "$COLAB_KILL_GRACE_SECONDS" "$verify_timeout" "$PYTHON_BIN" -c' in helpers_src
+    staged_marker = "# Fail closed: on a missing judge_done"
+    pre_s, sep_s, post_s = helpers_src.partition(staged_marker)
+    assert sep_s == staged_marker
+    mutated_post, n_rep = post_s.replace(rm_line, ":", 1), 1
+    assert mutated_post != post_s and n_rep == 1
+    mutated_helpers = pre_s + sep_s + mutated_post
+    proc_b2_mut, _, out_b2_mut, _, _ = _run_fetch_harness(
         tmp_path / "b2_mut", py_mode="crash_staged", deadline_epoch=0, seed_stale=True, helpers_override=mutated_helpers
     )
     assert proc_b2_mut.returncode == 0
@@ -1787,38 +1910,121 @@ def test_bash_fetch_completed_judge_checkpoints_crash_empty_name_and_deadline_gu
     assert (out_b2_mut / "rows" / "d3-mini.jsonl").is_file()
 
     # C1: empty done_file / row_file entries are skipped safely without rm or colab calls.
-    proc_c1, dl_c1, out_c1 = _run_fetch_harness(tmp_path / "c1", py_mode="empty_fields", deadline_epoch=0, seed_stale=True)
+    proc_c1, dl_c1, out_c1, _, _ = _run_fetch_harness(tmp_path / "c1", py_mode="empty_fields", deadline_epoch=0, seed_stale=True)
     assert proc_c1.returncode == 0, proc_c1.stderr
     assert dl_c1 == []
     assert (out_c1 / "judge_done" / "d3-mini.json").is_file()
     assert (out_c1 / "rows" / "d3-mini.jsonl").is_file()
 
-    # A1 (C4 fail-closed delete): both deadline break and CLEANUP_SKIP_FETCH=1 delete failed in-place pairs before breaking.
-    proc_c4, dl_c4, out_c4 = _run_fetch_harness(tmp_path / "c4_expired", py_mode="normal", deadline_epoch=1, seed_stale=True)
+    # C4 fail-closed delete: both deadline expired and CLEANUP_SKIP_FETCH=1 delete failed in-place pairs via the single batch check.
+    proc_c4, dl_c4, out_c4, py_c4, doc_c4 = _run_fetch_harness(tmp_path / "c4_expired", py_mode="normal", deadline_epoch=1, seed_stale=True)
     assert proc_c4.returncode == 0, proc_c4.stderr
     assert dl_c4 == []
+    assert py_c4 == ["print_launcher_completed_passes", "halted_verdicts"]
     assert not (out_c4 / "judge_done" / "d3-mini.json").exists()
     assert not (out_c4 / "rows" / "d3-mini.jsonl").exists()
+    assert doc_c4["judges_completed"] == []
 
-    proc_skip, dl_skip, out_skip = _run_fetch_harness(
+    proc_skip, dl_skip, out_skip, py_skip, doc_skip = _run_fetch_harness(
         tmp_path / "c4_skip", py_mode="normal", deadline_epoch=0, seed_stale=True, cleanup_skip_fetch=1
     )
     assert proc_skip.returncode == 0, proc_skip.stderr
     assert dl_skip == []
+    assert py_skip == ["print_launcher_completed_passes", "halted_verdicts"]
     assert not (out_skip / "judge_done" / "d3-mini.json").exists()
     assert not (out_skip / "rows" / "d3-mini.jsonl").exists()
+    assert doc_skip["judges_completed"] == []
 
-    # B4: after a fetch halt (deadline expired or CLEANUP_SKIP_FETCH=1), remaining passes still run staged=False:
-    # stale pairs on later passes (flow-judge-v0.1) are deleted while valid pairs (mu-judge) are kept, with 0 downloads.
+    # B4 + B8: after a fetch halt (deadline expired or CLEANUP_SKIP_FETCH=1), ALL remaining passes run in ONE Python
+    # call under one timeout (0 per-pass staged=False calls): stale pairs deleted, valid pairs kept and counted.
     for b4_tag, dl_epoch, skip_flag in (("b4_deadline", 1, 0), ("b4_skip", 0, 1)):
-        proc_b4, dl_b4, out_b4 = _run_fetch_harness(
+        proc_b4, dl_b4, out_b4, py_b4, doc_b4 = _run_fetch_harness(
             tmp_path / b4_tag, py_mode="multi_pass", deadline_epoch=dl_epoch, seed_stale=True, cleanup_skip_fetch=skip_flag
         )
         assert proc_b4.returncode == 0, proc_b4.stderr
         assert dl_b4 == []
+        assert py_b4 == ["print_launcher_completed_passes", "halted_verdicts"]
         assert not (out_b4 / "judge_done" / "d3-mini.json").exists()
         assert not (out_b4 / "rows" / "d3-mini.jsonl").exists()
         assert (out_b4 / "judge_done" / "mu-judge.json").is_file()
         assert (out_b4 / "rows" / "mu-judge.jsonl").is_file()
         assert not (out_b4 / "judge_done" / "flow-judge-v0.1.json").exists()
         assert not (out_b4 / "rows" / "flow-judge-v0.1.jsonl").exists()
+        assert doc_b4["judges_completed"] == ["mu-judge"]
+
+    # B7 + C14: pre-halt verify timeout (rc 124 and rc 137 after SIGTERM ignore + SIGKILL grace) KEEPS the pair on
+    # disk, excludes it from judges_completed via .unverified_judge_done, and logs FETCHED_PASS_VERIFY_TIMEOUT.
+    for tag_b7, mode_b7 in (("b7_pre_124", "stall_pre_halt_124"), ("b7_pre_137", "stall_pre_halt_137")):
+        proc_b7, dl_b7, out_b7, _, doc_b7 = _run_fetch_harness(
+            tmp_path / tag_b7,
+            py_mode=mode_b7,
+            deadline_epoch=0,
+            verify_timeout=1,
+            kill_grace_seconds=1,
+            seed_stale=True,
+        )
+        assert proc_b7.returncode == 0, (tag_b7, proc_b7.stderr)
+        assert dl_b7 == []
+        assert (out_b7 / "judge_done" / "d3-mini.json").is_file()
+        assert (out_b7 / "rows" / "d3-mini.jsonl").is_file()
+        assert (out_b7 / "judge_done" / "mu-judge.json").is_file()
+        assert doc_b7["judges_completed"] == ["mu-judge"]
+        cli_txt = (out_b7 / "colab-cli.log").read_text(encoding="utf-8")
+        assert "FETCHED_PASS_VERIFY_TIMEOUT judge=d3-mini pass_mode=binary" in cli_txt
+        assert "FETCHED_PASS_VERIFY_TIMEOUT judge=d3-mini pass_mode=binary" in proc_b7.stderr
+        assert "FETCHED_PASS_VERIFY_TIMEOUT judge=mu-judge" not in cli_txt
+
+    # B7 + B8 post-halt batch stall: ONE batch call flushes OK (mu-judge) and BAD (flow-judge-v0.1), then stalls on
+    # d3-mini; mu-judge is counted, flow-judge-v0.1 is deleted, and d3-mini is KEPT on disk, uncounted, and logged.
+    proc_b8_s, dl_b8_s, out_b8_s, py_b8_s, doc_b8_s = _run_fetch_harness(
+        tmp_path / "b8_post_halt_stall",
+        py_mode="stall_post_halt",
+        deadline_epoch=1,
+        verify_timeout=1,
+        kill_grace_seconds=1,
+        seed_stale=True,
+    )
+    assert proc_b8_s.returncode == 0, proc_b8_s.stderr
+    assert dl_b8_s == []
+    assert py_b8_s == ["print_launcher_completed_passes", "halted_verdicts"]
+    assert (out_b8_s / "judge_done" / "mu-judge.json").is_file()
+    assert not (out_b8_s / "judge_done" / "flow-judge-v0.1.json").exists()
+    assert not (out_b8_s / "rows" / "flow-judge-v0.1.jsonl").exists()
+    assert (out_b8_s / "judge_done" / "d3-mini.json").is_file()
+    assert (out_b8_s / "rows" / "d3-mini.jsonl").is_file()
+    assert doc_b8_s["judges_completed"] == ["mu-judge"]
+    cli_b8 = (out_b8_s / "colab-cli.log").read_text(encoding="utf-8")
+    assert "FETCHED_PASS_VERIFY_TIMEOUT judge=d3-mini pass_mode=binary" in cli_b8
+    assert "FETCHED_PASS_VERIFY_TIMEOUT judge=mu-judge" not in cli_b8
+    assert "FETCHED_PASS_VERIFY_TIMEOUT judge=flow-judge-v0.1" not in cli_b8
+
+    # C14 behavioral pin: removing `timeout -k "$COLAB_KILL_GRACE_SECONDS" "$verify_timeout" ` lets a slow failing check
+    # finish and delete the pair without FETCHED_PASS_VERIFY_TIMEOUT, whereas production keeps it with timeout.
+    proc_c14_ok, _, out_c14_ok, _, doc_c14_ok = _run_fetch_harness(
+        tmp_path / "c14_with_timeout",
+        py_mode="stall_pre_halt_fail",
+        deadline_epoch=0,
+        verify_timeout=1,
+        kill_grace_seconds=1,
+        seed_stale=True,
+    )
+    assert proc_c14_ok.returncode == 0
+    assert (out_c14_ok / "judge_done" / "d3-mini.json").is_file()
+    assert doc_c14_ok["judges_completed"] == ["mu-judge"]
+    assert "FETCHED_PASS_VERIFY_TIMEOUT judge=d3-mini pass_mode=binary" in proc_c14_ok.stderr
+
+    no_timeout_helpers = helpers_src.replace('timeout -k "$COLAB_KILL_GRACE_SECONDS" "$verify_timeout" ', "", 1)
+    assert no_timeout_helpers != helpers_src
+    proc_c14_mut, _, out_c14_mut, _, _ = _run_fetch_harness(
+        tmp_path / "c14_no_timeout",
+        py_mode="stall_pre_halt_fail",
+        deadline_epoch=0,
+        verify_timeout=1,
+        kill_grace_seconds=1,
+        seed_stale=True,
+        helpers_override=no_timeout_helpers,
+    )
+    assert proc_c14_mut.returncode == 0
+    assert not (out_c14_mut / "judge_done" / "d3-mini.json").exists()
+    assert not (out_c14_mut / "rows" / "d3-mini.jsonl").exists()
+    assert "FETCHED_PASS_VERIFY_TIMEOUT" not in proc_c14_mut.stderr

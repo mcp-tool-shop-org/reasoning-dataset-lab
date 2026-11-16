@@ -835,6 +835,10 @@ fi
 
 # From-trip cleanup bound: sum of the bounded steps between a trip (rate, cap, wall, interrupt) and a completed
 # `colab stop` (pre-stop fetch deadline + exec SIGTERM->SIGKILL grace + bounded `colab stop` with one retry).
+# `FETCH_STEP_BOUND_SECONDS` bounds the remote `colab download` phase (`fetch_results_once`); any remaining
+# post-halt local `staged=False` pass verifications run in one batched Python call under a single
+# `30 + COLAB_KILL_GRACE_SECONDS` s bound (`45 s` at default grace, `< 1 s` normal case; never `N * 45 s`),
+# still backstopped by the session watcher's `cleanup_overran` escalation.
 compute_cleanup_bounds() {
   if [[ "$SESSION_SMOKE_FLAG" -eq 1 ]]; then
     FETCH_STEP_BOUND_SECONDS=0
@@ -1880,14 +1884,19 @@ fetch_completed_judge_checkpoints() {
   #   - Names: from vm_judges for every pass mode (binary, each 3-way arm, and each pass of a per_judge window).
   #   - Skip: a pass already in place is skipped only when its rows' sha256 equals its judge_done sha256 (and the
   #     VM's latest judge_pass_done record); a same-named file that does not match is fetched again.
+  #   - Timeout (B7): if verification times out (rc 124 or 137), the in-place pair is kept on disk, recorded in
+  #     `.unverified_judge_done` so it is not counted in `judges_completed`, and `FETCHED_PASS_VERIFY_TIMEOUT` is
+  #     logged. Only a verified verification failure deletes the pair.
   #   - Keep: a downloaded pair is moved into place only when the rows' sha256 equals the judge_done record's.
   #   - Refuse: otherwise both downloads are deleted and one named line is logged and printed to stderr
   #     (FETCHED_JUDGE_DONE_INVALID, FETCHED_ROWS_MISSING or FETCHED_ROWS_SHA_MISMATCH), so the judge is not counted
-  #     in judges_completed (which lists the judge_done files in place).
-  #   - Deadline / skip: any in-place pair of a pass that fails staged=False verification is deleted even after the
-  #     fetch deadline expires (or CLEANUP_SKIP_FETCH=1), while stopping further downloads on subsequent passes.
+  #     in judges_completed (which lists the verified judge_done files in place).
+  #   - Deadline / skip (B8): once the fetch deadline expires (or CLEANUP_SKIP_FETCH=1), all remaining passes are
+  #     checked in one Python call under one `timeout` (`30 + COLAB_KILL_GRACE_SECONDS` s max total), deleting stale
+  #     `BAD` pairs and keeping+not-counting passes if the single batched check times out.
   # A pass that has not finished is never fetched: the list comes only from judge_pass_done records.
-  local dl_timeout="${1:-$PROGRESS_FETCH_TIMEOUT_SECONDS}" deadline_epoch="${2:-0}" rem_dl_timeout=""
+  local dl_timeout="${1:-$PROGRESS_FETCH_TIMEOUT_SECONDS}" deadline_epoch="${2:-0}" verify_timeout="${3:-30}" rem_dl_timeout=""
+  local unverified_file="$OUT_DIR/.unverified_judge_done"
   if [[ ! -f "$OUT_DIR/progress.jsonl" ]]; then
     return 0
   fi
@@ -1902,24 +1911,51 @@ fetch_completed_judge_checkpoints() {
     return 0
   fi
   mkdir -p "$OUT_DIR/rows" "$OUT_DIR/judge_done"
-  local jid pmode done_file row_file want_sha refusal fetch_halted=0
+  local jid pmode done_file row_file want_sha refusal fetch_halted=0 v_rc=0 halted_passes="" nl=$'\n'
   while IFS=$'\t' read -r jid pmode done_file row_file want_sha; do
     [[ -n "$jid" && -n "$pmode" && -n "$done_file" && -n "$row_file" ]] || continue
+    if [[ "$fetch_halted" -eq 0 ]] && ! remaining_fetch_timeout "$deadline_epoch" "$dl_timeout" >/dev/null 2>&1; then
+      fetch_halted=1
+    fi
+    if [[ "$fetch_halted" -eq 1 ]]; then
+      halted_passes+="${jid}"$'\t'"${pmode}"$'\t'"${done_file}"$'\t'"${row_file}"$'\t'"${want_sha:-}${nl}"
+      continue
+    fi
     # Item 9: a pass is skipped only when its rows in place match its judge_done sha256 (and the VM's latest record);
-    # a file of that name that does not match is fetched again, never kept.
-    if timeout -k "$COLAB_KILL_GRACE_SECONDS" 30 "$PYTHON_BIN" -c "$vmj; sys.exit(0 if v.launcher_verify_fetched_pass(Path(sys.argv[2]), sys.argv[3], sys.argv[4], staged=False, want_sha256=sys.argv[5])[0] else 1)" "$REPO_ROOT" "$OUT_DIR" "$jid" "$pmode" "${want_sha:-}" </dev/null >/dev/null 2>&1; then
+    # on verify timeout (rc 124 or 137), keep the pair uncounted (in .unverified_judge_done) and log; only a real failure
+    # deletes the stale pair and fetches again.
+    v_rc=0
+    timeout -k "$COLAB_KILL_GRACE_SECONDS" "$verify_timeout" "$PYTHON_BIN" -c "$vmj; sys.exit(0 if v.launcher_verify_fetched_pass(Path(sys.argv[2]), sys.argv[3], sys.argv[4], staged=False, want_sha256=sys.argv[5])[0] else 1)" "$REPO_ROOT" "$OUT_DIR" "$jid" "$pmode" "${want_sha:-}" </dev/null >/dev/null 2>&1 || v_rc=$?
+    if [[ "$v_rc" -eq 0 ]]; then
+      if [[ -f "$unverified_file" ]]; then
+        grep -vxF "$done_file" "$unverified_file" > "$unverified_file.tmp.$$" 2>/dev/null || true
+        if [[ -s "$unverified_file.tmp.$$" ]]; then
+          mv -f "$unverified_file.tmp.$$" "$unverified_file"
+        else
+          rm -f "$unverified_file.tmp.$$" "$unverified_file"
+        fi
+      fi
+      continue
+    fi
+    if [[ "$v_rc" -eq 124 || "$v_rc" -eq 137 ]]; then
+      touch "$unverified_file"
+      grep -qxF "$done_file" "$unverified_file" 2>/dev/null || printf '%s\n' "$done_file" >> "$unverified_file"
+      log_msg "FETCHED_PASS_VERIFY_TIMEOUT judge=${jid} pass_mode=${pmode}"
+      printf '%s\n' "FETCHED_PASS_VERIFY_TIMEOUT judge=${jid} pass_mode=${pmode}" >&2
       continue
     fi
     # Both files land as hidden .part downloads; only a pair whose rows match the judge_done sha256 is moved into
-    # place, so a judge is never counted completed (judge_done present) with missing or truncated rows. Deleting any
-    # in-place pair that failed the staged=False check immediately before checking fetch_halted / deadline is fail-closed:
-    # the VM's latest judge_done record is authoritative over any stale in-place pair with a mismatched sha256, so an
-    # expired deadline or cleanup skip checks every remaining pass with staged=False without performing new downloads.
+    # place, so a judge is never counted completed (judge_done present) with missing or truncated rows.
     if [[ -n "$done_file" && -n "$row_file" ]]; then
       rm -f "$OUT_DIR/judge_done/${done_file}" "$OUT_DIR/rows/${row_file}"
-    fi
-    if [[ "$fetch_halted" -eq 1 ]]; then
-      continue
+      if [[ -f "$unverified_file" ]]; then
+        grep -vxF "$done_file" "$unverified_file" > "$unverified_file.tmp.$$" 2>/dev/null || true
+        if [[ -s "$unverified_file.tmp.$$" ]]; then
+          mv -f "$unverified_file.tmp.$$" "$unverified_file"
+        else
+          rm -f "$unverified_file.tmp.$$" "$unverified_file"
+        fi
+      fi
     fi
     if rem_dl_timeout="$(remaining_fetch_timeout "$deadline_epoch" "$dl_timeout")"; then
       timeout -k "$COLAB_KILL_GRACE_SECONDS" "$rem_dl_timeout" colab download -s "$S" "/content/rdlab_run/judge_done/${done_file}" "$OUT_DIR/judge_done/.${done_file}.part" </dev/null >/dev/null 2>&1 || true
@@ -1947,6 +1983,52 @@ fetch_completed_judge_checkpoints() {
       rm -f "$OUT_DIR/judge_done/.${done_file}.part" "$OUT_DIR/rows/.${row_file}.part"
     fi
   done <<<"$done_passes"
+  if [[ -n "$halted_passes" ]]; then
+    local verdicts_file="$OUT_DIR/.halted_verdicts.$$" h_rc=0 ok_line bad_line
+    rm -f "$verdicts_file"
+    timeout -k "$COLAB_KILL_GRACE_SECONDS" "$verify_timeout" "$PYTHON_BIN" -c "$vmj; v.write_launcher_halted_pass_verdicts(Path(sys.argv[2]), sys.argv[3], Path(sys.argv[4]))" "$REPO_ROOT" "$OUT_DIR" "$halted_passes" "$verdicts_file" </dev/null >/dev/null 2>&1 || h_rc=$?
+    while IFS=$'\t' read -r jid pmode done_file row_file want_sha; do
+      [[ -n "$jid" && -n "$pmode" && -n "$done_file" && -n "$row_file" ]] || continue
+      ok_line="$(printf 'OK\t%s\t%s\t%s' "$jid" "$pmode" "$done_file")"
+      bad_line="$(printf 'BAD\t%s\t%s\t%s' "$jid" "$pmode" "$done_file")"
+      if [[ -f "$verdicts_file" ]] && grep -qxF "$ok_line" "$verdicts_file" 2>/dev/null; then
+        if [[ -f "$unverified_file" ]]; then
+          grep -vxF "$done_file" "$unverified_file" > "$unverified_file.tmp.$$" 2>/dev/null || true
+          if [[ -s "$unverified_file.tmp.$$" ]]; then
+            mv -f "$unverified_file.tmp.$$" "$unverified_file"
+          else
+            rm -f "$unverified_file.tmp.$$" "$unverified_file"
+          fi
+        fi
+      elif [[ -f "$verdicts_file" ]] && grep -qxF "$bad_line" "$verdicts_file" 2>/dev/null; then
+        rm -f "$OUT_DIR/judge_done/${done_file}" "$OUT_DIR/rows/${row_file}"
+        if [[ -f "$unverified_file" ]]; then
+          grep -vxF "$done_file" "$unverified_file" > "$unverified_file.tmp.$$" 2>/dev/null || true
+          if [[ -s "$unverified_file.tmp.$$" ]]; then
+            mv -f "$unverified_file.tmp.$$" "$unverified_file"
+          else
+            rm -f "$unverified_file.tmp.$$" "$unverified_file"
+          fi
+        fi
+      elif [[ "$h_rc" -eq 124 || "$h_rc" -eq 137 ]]; then
+        touch "$unverified_file"
+        grep -qxF "$done_file" "$unverified_file" 2>/dev/null || printf '%s\n' "$done_file" >> "$unverified_file"
+        log_msg "FETCHED_PASS_VERIFY_TIMEOUT judge=${jid} pass_mode=${pmode}"
+        printf '%s\n' "FETCHED_PASS_VERIFY_TIMEOUT judge=${jid} pass_mode=${pmode}" >&2
+      else
+        rm -f "$OUT_DIR/judge_done/${done_file}" "$OUT_DIR/rows/${row_file}"
+        if [[ -f "$unverified_file" ]]; then
+          grep -vxF "$done_file" "$unverified_file" > "$unverified_file.tmp.$$" 2>/dev/null || true
+          if [[ -s "$unverified_file.tmp.$$" ]]; then
+            mv -f "$unverified_file.tmp.$$" "$unverified_file"
+          else
+            rm -f "$unverified_file.tmp.$$" "$unverified_file"
+          fi
+        fi
+      fi
+    done <<<"$halted_passes"
+    rm -f "$verdicts_file"
+  fi
 }
 
 fetch_results_once() {
@@ -2372,10 +2454,16 @@ only_judges_list: list[str] | None = (
 payload["only_judges"] = only_judges_list
 payload["pass_mode"] = os.environ.get("RDLAB_OUTCOME_PASS_MODE", "").strip() or "binary"; payload.update({"judge_pass_modes": [p for p in os.environ.get("RDLAB_JUDGE_PASS_MODES", "").split(",") if p]} if payload["pass_mode"] == "per_judge" else {})  # noqa: E501
 jdone_dir = out_path.parent / "judge_done"
+unverified_file = out_path.parent / ".unverified_judge_done"
+unverified_names: set[str] = (
+    {ln.strip() for ln in unverified_file.read_text(encoding="utf-8", errors="replace").splitlines() if ln.strip()}
+    if unverified_file.is_file()
+    else set()
+)
 done_ids: set[str] = set()
 if jdone_dir.is_dir():
     for jf in sorted(jdone_dir.glob("*.json")):
-        if jf.is_file():
+        if jf.is_file() and jf.name not in unverified_names:
             done_ids.add(jf.stem)
 ordered_candidates: list[str] = []
 receipt_file = out_path.parent / "vm_receipt.json"
@@ -4629,6 +4717,7 @@ for sub_name, pat in (("rows", "*.jsonl"), ("anchor_rows", "*.jsonl"), ("judge_d
         for rf in sorted(src_sub.glob(pat)):
             if rf.is_file():
                 shutil.copyfile(rf, dst_sub / rf.name)
+(out_dir / ".unverified_judge_done").unlink(missing_ok=True)
 
 vm_judges.scrub_log_file_in_place(cli_log)
 for extra_f in (
@@ -4714,6 +4803,7 @@ except vm_judges.RefusalError as exc:
         out_dir / "boot_gatekeeper.json",
         out_dir / "boot_gatekeeper_goldens.filled.json",
         out_dir / "elephant_install.json",
+        out_dir / ".unverified_judge_done",
         out_dir / "p0a_report.json",
         out_dir / "window.json",
         out_dir / "outputs-closed.json",
