@@ -1754,7 +1754,8 @@ def _stub_window_failure_diagnostics(
     tail_lines: int = 60,
 ) -> str:
     """What a failed stub window left, for the assertion message (#106): the launcher's stderr, the VM's status.json (the
-    rig's copy and the fake VM's), and the tails of logs/vm.log and colab-cli.log. Reads only; never retries."""
+    rig's copy and the fake VM's), and the tails of logs/vm.log and colab-cli.log, passed through
+    `vm_judges.scrub_log_text` before it is printed. Reads only; never retries."""
 
     def _tail(path: Path) -> str:
         if not path.is_file():
@@ -1772,7 +1773,7 @@ def _stub_window_failure_diagnostics(
         ("colab-cli.log", out_dir / "colab-cli.log"),
     ):
         parts.append(f"--- {label} ---\n{_tail(path)}")
-    return "\n".join(parts)
+    return vm_judges.scrub_log_text("\n".join(parts))
 
 
 def test_items_upload_fails_at_6436a3a6_gate_and_passes_after_fix(

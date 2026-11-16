@@ -683,13 +683,15 @@ def check_vram_guard(
 
 
 def resolve_judge_vram_halt_mib(spec: JudgeSpec, window_vram_halt_mib: int) -> int:
-    """The VRAM ceiling one judge runs under. A judge whose spec carries a ceiling of its own (one that is not
-    `DEFAULT_VRAM_HALT_MIB`; today only vllm-sr/d3) always runs under it: a window-wide value (`RDLAB_VRAM_HALT_MIB`)
-    never replaces it (#107). Every other judge runs under the window's value. 0 (the CPU modes) stays 0 for every
-    judge."""
+    """The VRAM ceiling one judge runs under. A judge whose spec carries a positive ceiling of its own (one that is not
+    `DEFAULT_VRAM_HALT_MIB`; today only vllm-sr/d3, 68,000 MiB) always runs under it: a window-wide value
+    (`RDLAB_VRAM_HALT_MIB`) can neither lower nor raise it (#107; so `RDLAB_VRAM_HALT_MIB=20000` gives d3 68,000, where
+    before it gave 20,000). The window's value applies only to judges with no ceiling of their own. A spec value of 0
+    or below is treated as no ceiling of its own, so it never switches the guard off on a GPU window (#108 fix 1).
+    0 (the CPU modes) stays 0 for every judge."""
     window = int(window_vram_halt_mib)
     own = int(spec.vram_halt_mib)
-    if window == 0 or own == DEFAULT_VRAM_HALT_MIB:
+    if window == 0 or own <= 0 or own == DEFAULT_VRAM_HALT_MIB:
         return window
     return own
 

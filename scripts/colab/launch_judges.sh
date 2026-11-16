@@ -1539,10 +1539,11 @@ PY
 }
 
 # A counted, time-one, lock-check or sharded counted window refuses KIT_IDENTITY_UNAVAILABLE (no git, or not a git
-# worktree) or KIT_TREE_DIRTY (`git status --porcelain` not empty) before any colab call; stubs run and record what was
-# read. Prints the failure class on refusal.
+# worktree), KIT_TREE_DIRTY (`git status --porcelain` not empty) or KIT_VM_SCRIPT_MISMATCH (the vm_judges.py to be sent,
+# or this launcher, is not HEAD's tracked file) before any colab call; stubs run and record what was read. Prints the
+# failure class on refusal.
 kit_identity_gate() {
-  "$PYTHON_BIN" - "$REPO_ROOT" "$MODE" "${VM_DRYRUN:-0}" "${RDLAB_SHARD:-1/1}" "$KIT_HEAD_SHA" "$KIT_TREE_CLEAN" "$KIT_IDENTITY_UNAVAILABLE_REASON" <<'PY'
+  "$PYTHON_BIN" - "$REPO_ROOT" "$MODE" "${VM_DRYRUN:-0}" "${RDLAB_SHARD:-1/1}" "$KIT_HEAD_SHA" "$KIT_TREE_CLEAN" "$KIT_IDENTITY_UNAVAILABLE_REASON" "$KIT_VM_JUDGES_PY_SHA256" "$KIT_LAUNCH_JUDGES_SH_SHA256" <<'PY'
 import sys
 from pathlib import Path
 
@@ -1551,9 +1552,20 @@ sys.path.insert(0, str(repo_root / "src"))
 sys.path.insert(0, str(repo_root / "scripts" / "colab"))
 import vm_judges
 
-ident = {"kit_head_sha": sys.argv[5] or None, "kit_tree_clean": {"true": True, "false": False}.get(sys.argv[6])}
+ident = {
+    "kit_head_sha": sys.argv[5] or None,
+    "kit_tree_clean": {"true": True, "false": False}.get(sys.argv[6]),
+    "kit_vm_judges_py_sha256": sys.argv[8] or None,
+    "kit_launch_judges_sh_sha256": sys.argv[9] or None,
+}
 try:
     vm_judges.refuse_kit_identity_for_mode(ident, sys.argv[7] or None, mode, dryrun=vm_dryrun, shard_spec=shard)
+    # The sent vm_judges.py and this launcher must be HEAD's files in a counted window (#108 fix 1), with or without
+    # RDLAB_VM_SCRIPT: the VM-side check runs inside the sent script, so it cannot be the gate.
+    if vm_judges.is_counted_or_time_one_mode(mode, dryrun=vm_dryrun, shard_spec=shard):
+        vm_judges.refuse_kit_scripts_not_head(
+            ident, vm_judges.kit_head_script_sha256s(repo_root), mode, dryrun=vm_dryrun, shard_spec=shard
+        )
 except vm_judges.RefusalError as exc:
     print(getattr(exc, "failure_class", None) or getattr(exc, "code", None) or "KIT_IDENTITY_UNAVAILABLE")
     sys.stderr.write(f"{exc}\n")
@@ -2555,6 +2567,17 @@ payload["kit_head_sha"] = os.environ.get("RDLAB_OUTCOME_KIT_HEAD_SHA", "").strip
 payload["kit_tree_clean"] = {"true": True, "false": False}.get(os.environ.get("RDLAB_OUTCOME_KIT_TREE_CLEAN", "").strip())
 payload["kit_vm_judges_py_sha256"] = os.environ.get("RDLAB_OUTCOME_KIT_VM_JUDGES_PY_SHA256", "").strip() or None
 payload["kit_launch_judges_sh_sha256"] = os.environ.get("RDLAB_OUTCOME_KIT_LAUNCH_JUDGES_SH_SHA256", "").strip() or None
+# Whether the VM re-hashed the vm_judges.py it was sent (#108 fix 1), as its status.json says: passed, refused or
+# not_sent; null when the VM never reached that step (a refusal on the rig, a cap stop before it, no status fetched).
+payload["kit_vm_script_check"] = None
+_kit_status_p = out_path.parent / "status.json"
+if _kit_status_p.is_file():
+    try:
+        _kit_status_doc = json.loads(_kit_status_p.read_text(encoding="utf-8"))
+        if isinstance(_kit_status_doc, dict) and _kit_status_doc.get("kit_vm_script_check") in ("passed", "refused", "not_sent"):
+            payload["kit_vm_script_check"] = _kit_status_doc["kit_vm_script_check"]
+    except Exception:
+        pass
 jdone_dir = out_path.parent / "judge_done"
 repo_root_arg = sys.argv[19].strip() if len(sys.argv) > 19 else ""
 repo_src = (Path(repo_root_arg) if repo_root_arg else Path.cwd()) / "src"
@@ -3816,7 +3839,7 @@ fi
 mkdir -p "$STAGE_DIR"
 # Part files left in the stage dir by an earlier, interrupted launch must never be uploaded for this one.
 rm -f "$STAGED_PART_JSON_FILE" "$STAGED_PART_CHECKSUMS_FILE" "$STAGED_P0A_PART_JSON_FILE" "$STAGED_P0A_CHECKSUMS_FILE" "$STAGED_BINDING_FILE" "$RIG_BINDING_FILE"
-if ! "$PYTHON_BIN" - "$REPO_ROOT" "$ITEMS_FILE" "$STAGED_ITEMS_FILE" "$RECEIPTS_DIR" "$RECEIPTS_TAR" "$REPO_TAR" "$STAGED_DEVICE_PY" "$GOLDEN_ANCHOR_MANIFEST" "$ANCHOR_ITEMS_FILE" "$STAGED_ANCHOR_ITEMS_FILE" "$P0A_ITEMS_FILE" "$STAGED_P0A_ITEMS_FILE" "$COUNTED_ITEMS_FILE" "$COUNTED_MANIFEST_FILE" "$STAGED_BINDING_FILE" "$MODE" "${VM_DRYRUN:-0}" "$STAGED_PART_JSON_FILE" "$STAGED_PART_CHECKSUMS_FILE" "$(effective_part_dir "$ITEMS_FILE")" "$P0A_PART_DIR" "$STAGED_P0A_PART_JSON_FILE" "$STAGED_P0A_CHECKSUMS_FILE" <<'PY'
+if ! "$PYTHON_BIN" - "$REPO_ROOT" "$ITEMS_FILE" "$STAGED_ITEMS_FILE" "$RECEIPTS_DIR" "$RECEIPTS_TAR" "$REPO_TAR" "$STAGED_DEVICE_PY" "$GOLDEN_ANCHOR_MANIFEST" "$ANCHOR_ITEMS_FILE" "$STAGED_ANCHOR_ITEMS_FILE" "$P0A_ITEMS_FILE" "$STAGED_P0A_ITEMS_FILE" "$COUNTED_ITEMS_FILE" "$COUNTED_MANIFEST_FILE" "$STAGED_BINDING_FILE" "$MODE" "${VM_DRYRUN:-0}" "$STAGED_PART_JSON_FILE" "$STAGED_PART_CHECKSUMS_FILE" "$(effective_part_dir "$ITEMS_FILE")" "$P0A_PART_DIR" "$STAGED_P0A_PART_JSON_FILE" "$STAGED_P0A_CHECKSUMS_FILE" "$VM_SCRIPT" <<'PY'
 import datetime
 import json
 import shutil
@@ -3847,6 +3870,7 @@ raw_part_dir = sys.argv[20].strip() if len(sys.argv) > 20 else ""
 raw_p0a_part_dir = sys.argv[21].strip() if len(sys.argv) > 21 else ""
 raw_p0a_part_json_dst = sys.argv[22].strip() if len(sys.argv) > 22 else ""
 raw_p0a_checksums_dst = sys.argv[23].strip() if len(sys.argv) > 23 else ""
+raw_sent_vm_script = sys.argv[24].strip() if len(sys.argv) > 24 else ""
 
 sys.path.insert(0, str(repo_root / "src"))
 sys.path.insert(0, str(repo_root / "scripts" / "colab"))
@@ -3934,6 +3958,11 @@ tracked_files = vm_judges.tracked_repo_bundle_files(repo_root)
 raw_shard_manifest = (_os.environ.get("RDLAB_SHARD_MANIFEST") or "").strip()
 with tarfile.open(repo_tar, "w:gz") as tf:
     for rel in tracked_files:
+        # The bundle's vm_judges.py is the file `colab exec -f` sends (#108 fix 1), so the VM's re-hash compares what ran
+        # with what was recorded. A counted window has already been refused unless that file is HEAD's.
+        if rel == vm_judges.KIT_VM_SCRIPT_RELPATH and raw_sent_vm_script:
+            tf.add(Path(raw_sent_vm_script), arcname=rel, recursive=False)
+            continue
         tf.add(repo_root / rel, arcname=rel, recursive=False)
     if raw_shard_manifest:
         sm_path = Path(raw_shard_manifest)
@@ -4029,7 +4058,7 @@ fi
 log_msg "KIT_IDENTITY kit_head_sha=${KIT_HEAD_SHA:-null} kit_tree_clean=${KIT_TREE_CLEAN:-null} kit_vm_judges_py_sha256=${KIT_VM_JUDGES_PY_SHA256:-null} kit_launch_judges_sh_sha256=${KIT_LAUNCH_JUDGES_SH_SHA256:-null}"
 if ! KIT_GATE_CLASS="$(kit_identity_gate)"; then
   RUN_FAILURE_CLASS="${KIT_GATE_CLASS:-KIT_IDENTITY_UNAVAILABLE}"
-  RUN_WHY="refused before any colab call: ${RUN_FAILURE_CLASS} (a ${MODE} window records a clean kit commit)"
+  RUN_WHY="refused before any colab call: ${RUN_FAILURE_CLASS} (a ${MODE} window runs only a clean kit commit and HEAD's scripts)"
   exit 2
 fi
 if [[ -n "$KIT_IDENTITY_UNAVAILABLE_REASON" ]]; then

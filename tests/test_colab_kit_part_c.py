@@ -593,6 +593,8 @@ def test_launcher_ok_stub_window_records_the_kit_identity(tmp_path: Path) -> Non
     assert _outcome_kit(res["out_dir"]) == want
     _assert_window_kit(res, want)
     assert "KIT_IDENTITY kit_head_sha=" in (res["out_dir"] / "colab-cli.log").read_text(encoding="utf-8")
+    outcome = json.loads((res["out_dir"] / "outcome.draft.json").read_text(encoding="utf-8"))
+    assert outcome["kit_vm_script_check"] == "passed"
 
 
 def test_launcher_vm_refused_stub_window_records_the_kit_identity(tmp_path: Path) -> None:
@@ -606,17 +608,86 @@ def test_launcher_vm_refused_stub_window_records_the_kit_identity(tmp_path: Path
     _assert_window_kit(res, want)
 
 
-def test_launcher_tampered_vm_script_is_refused_on_the_vm(tmp_path: Path) -> None:
-    """The launcher sends a vm_judges.py that is not the repo bundle's (RDLAB_VM_SCRIPT, one comment added): the VM
-    refuses KIT_VM_SCRIPT_MISMATCH before any download, and the outcome records the hash of the file that was sent."""
-    tampered = tmp_path / "tampered" / "vm_judges.py"
-    tampered.parent.mkdir()
-    tampered.write_text(VM_JUDGES_PY.read_text(encoding="utf-8") + "# tampered\n", encoding="utf-8", newline="\n")
-    res = _launch(tmp_path, "tamper", extra=f"export RDLAB_VM_SCRIPT='{_to_wsl_path(tampered)}'; ")
-    assert res["proc"].returncode == 2, res["where"]
-    st = json.loads((res["out_dir"] / "status.json").read_text(encoding="utf-8"))
-    assert st["failure_class"] == "KIT_VM_SCRIPT_MISMATCH", st
-    assert _outcome_kit(res["out_dir"])["kit_vm_judges_py_sha256"] == _sha256(tampered)
+def _sent_copy(tmp_path: Path, tag: str, *, extra: str = "") -> Path:
+    """A copy of HEAD's vm_judges.py to send with RDLAB_VM_SCRIPT; `extra` appended (one byte or more) makes it differ."""
+    copy = tmp_path / f"sent_{tag}" / "vm_judges.py"
+    copy.parent.mkdir(parents=True)
+    copy.write_bytes(VM_JUDGES_PY.read_bytes() + extra.encode("utf-8"))
+    return copy
+
+
+def test_launcher_stub_with_a_changed_vm_script_runs_and_records_what_ran(tmp_path: Path) -> None:
+    """A stub on a dirty tree that sends a vm_judges.py differing from HEAD's (RDLAB_VM_SCRIPT, one comment added): it
+    runs to rc 0, records kit_tree_clean=false and the hash of the file that ran, and the VM's re-hash passed, because
+    the bundle carries the file that was sent (#108 fix 1). A changed scripts/colab/vm_judges.py inside the worktree
+    is refused earlier by the repo bundle's own REPO_TREE_DIRTY, in every mode, so the sent copy stands in for it."""
+    sent = _sent_copy(tmp_path, "stub", extra="# wip\n")
+    res = _launch(
+        tmp_path, "stubsent", extra=_git_shim(tmp_path, mode="dirty") + f"export RDLAB_VM_SCRIPT='{_to_wsl_path(sent)}'; "
+    )
+    assert res["proc"].returncode == 0, res["where"]
+    want = {**_expected_launcher_kit(sent, clean=False)}
+    assert want["kit_vm_judges_py_sha256"] == _sha256(sent) != _sha256(VM_JUDGES_PY)
+    assert _outcome_kit(res["out_dir"]) == want
+    _assert_window_kit(res, want)
+    outcome = json.loads((res["out_dir"] / "outcome.draft.json").read_text(encoding="utf-8"))
+    assert outcome["kit_vm_script_check"] == "passed"
+    bundled = res["env_paths"]["state_dir"] / "vm_fs" / "rdlab" / "scripts" / "colab" / "vm_judges.py"
+    assert bundled.read_bytes() == sent.read_bytes()
+
+
+@pytest.mark.parametrize("differs", [True, False])
+def test_launcher_counted_window_sends_only_heads_vm_script(tmp_path: Path, differs: bool) -> None:
+    """A real `--time-one` with RDLAB_VM_SCRIPT set: a copy one byte off HEAD's vm_judges.py is refused
+    KIT_VM_SCRIPT_MISMATCH on the rig before any colab call; a byte-identical copy runs to completion."""
+    sent = _sent_copy(tmp_path, "counted", extra="\n" if differs else "")
+    receipts_dir, hf_home, part, items = _e2e_time_one_inputs(tmp_path)
+    res = _e2e_fake_real_mode_window(
+        tmp_path,
+        mode="time-one",
+        items_file=items,
+        part_dir=part,
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        extra_exports=f"export RDLAB_VM_SCRIPT='{_to_wsl_path(sent)}'; ",
+        expect_fail=differs,
+        tag=f"sent_{differs}",
+    )
+    outcome = json.loads((res["out_dir"] / "outcome.draft.json").read_text(encoding="utf-8"))
+    assert outcome["kit_vm_judges_py_sha256"] == _sha256(sent)
+    if differs:
+        proc = res["proc"]
+        assert proc.returncode == 2, proc.stdout[-3000:] + proc.stderr[-3000:]
+        assert "KIT_VM_SCRIPT_MISMATCH" in proc.stderr
+        assert outcome["failure_class"] == "KIT_VM_SCRIPT_MISMATCH"
+        assert outcome["kit_vm_script_check"] is None
+        calls_log = res["env_paths"]["state_dir"] / "calls.jsonl"
+        calls = calls_log.read_text(encoding="utf-8") if calls_log.is_file() else ""
+        assert '"new"' not in calls and "upload" not in calls, calls[-2000:]
+    else:
+        assert outcome["outcome"] == "ok"
+        assert outcome["kit_vm_script_check"] == "passed"
+
+
+def test_rig_script_gate_branches(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = _git_repo(tmp_path)
+    vm_py, sh = repo / "scripts" / "colab" / "vm_judges.py", repo / "scripts" / "colab" / "launch_judges.sh"
+    head = vm_judges.kit_head_script_sha256s(repo)
+    assert head == {"kit_vm_judges_py_sha256": _sha256(vm_py), "kit_launch_judges_sh_sha256": _sha256(sh)}
+    same = {"kit_vm_judges_py_sha256": _sha256(vm_py), "kit_launch_judges_sh_sha256": _sha256(sh)}
+    vm_judges.refuse_kit_scripts_not_head(same, head, "counted")
+    for field in ("kit_vm_judges_py_sha256", "kit_launch_judges_sh_sha256"):
+        with pytest.raises(vm_judges.RefusalError) as exc_info:
+            vm_judges.refuse_kit_scripts_not_head({**same, field: "0" * 64}, head, "lock-check")
+        assert exc_info.value.failure_class == "KIT_VM_SCRIPT_MISMATCH"
+    with pytest.raises(vm_judges.RefusalError):
+        vm_judges.refuse_kit_scripts_not_head(same, {**head, "kit_vm_judges_py_sha256": None}, "time-one")
+    vm_judges.refuse_kit_scripts_not_head({**same, "kit_vm_judges_py_sha256": "0" * 64}, head, "stub")
+    vm_judges.refuse_kit_scripts_not_head({**same, "kit_vm_judges_py_sha256": "0" * 64}, head, "counted", dryrun=True)
+    assert vm_judges.kit_head_script_sha256s(tmp_path / "nowhere") == dict.fromkeys(head)
+    monkeypatch.setattr(vm_judges.shutil, "which", lambda _name, *a, **kw: None)
+    assert vm_judges.kit_head_script_sha256s(repo) == dict.fromkeys(head)
+
 
 
 def test_launcher_cap_stop_records_the_kit_identity(tmp_path: Path) -> None:
@@ -640,6 +711,7 @@ def test_launcher_cap_stop_records_the_kit_identity(tmp_path: Path) -> None:
     assert doc["outcome"] == "stopped_cost_cap"
     assert _outcome_kit(res["out_dir"]) == want
     assert not (res["out_dir"] / "window.json").exists()
+    assert doc["kit_vm_script_check"] is None
 
 
 def test_launcher_stub_runs_dirty_and_records_false(tmp_path: Path) -> None:
@@ -738,3 +810,77 @@ def test_bakeoff_judge_rebuild_of_window_json_keeps_the_kit_identity(tmp_path: P
     rebuilt = bakeoff_judge.build_window_manifest(run_dir, window_id="w-kit", mode="stub")
     assert {f: rebuilt[f] for f in KIT_FIELDS} == ident
     assert rebuilt["window_manifest_sha256"] == vm_doc["window_manifest_sha256"]
+
+
+# --- #108 fix 1: the late-failure receipt rewrite and the VRAM spec guard ------------------------------------------
+
+
+def test_receipt_write_failing_between_the_two_ok_receipts_still_rewrites_both(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The OK path's receipt.json write raises OSError after vm_receipt.json was written OK: the flag is already set, so
+    the unexpected-error handler rewrites both receipts as refused."""
+    real_write = Path.write_text
+    state = {"failed": False}
+
+    def _write(self: Path, data: str, *a: Any, **kw: Any) -> int:
+        if self.name == "receipt.json" and not state["failed"] and '"status": "refused"' not in data:
+            state["failed"] = True
+            raise OSError(28, "No space left on device")
+        return real_write(self, data, *a, **kw)
+
+    monkeypatch.setattr(Path, "write_text", _write)
+    run = _run_window(tmp_path, monkeypatch, "midreceipt")
+    assert run["rc"] == 2 and state["failed"]
+    doc = json.loads((run["run_dir"] / "vm_receipt.json").read_text(encoding="utf-8"))
+    assert doc["status"] == "refused" and doc["failure_class"] == "UNEXPECTED_ERROR", doc
+    assert json.loads((run["run_dir"] / "receipt.json").read_text(encoding="utf-8"))["status"] == "refused"
+
+
+class _UnprintableError(RuntimeError):
+    def __str__(self) -> str:  # noqa: D105
+        raise RuntimeError("this exception cannot be printed")
+
+
+def test_unexpected_error_whose_str_raises_still_reaches_run_end_and_the_pack(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _fail_at_ok_status(monkeypatch, _UnprintableError())
+    run = _run_window(tmp_path, monkeypatch, "badstr")
+    assert run["rc"] == 2
+    assert "UNEXPECTED_ERROR: step=" in capsys.readouterr().err
+    members = _tar_members(run["result_tar"])
+    last = json.loads(members[vm_judges.PROGRESS_FILENAME].decode("utf-8").splitlines()[-1])
+    assert last["kind"] == "run_end" and last["failure_class"] == "UNEXPECTED_ERROR"
+    for name in ("vm_receipt.json", "receipt.json"):
+        assert json.loads(members[name])["status"] == "refused", name
+
+
+def test_late_refusal_after_the_ok_receipts_rewrites_both(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A RefusalError at the OK status write (no planted file, so the failure pack succeeds): the tar's vm_receipt.json
+    and receipt.json both say refused."""
+    _fail_at_ok_status(monkeypatch, vm_judges.RefusalError("SIMULATED_LATE_REFUSAL", "after the result pack"))
+    run = _run_window(tmp_path, monkeypatch, "lateref")
+    assert run["rc"] == 2
+    members = _tar_members(run["result_tar"])
+    for name in ("vm_receipt.json", "receipt.json"):
+        doc = json.loads(members[name])
+        assert doc["status"] == "refused" and doc["failure_class"] == "SIMULATED_LATE_REFUSAL", (name, doc)
+        assert members[name] == (run["run_dir"] / name).read_bytes()
+    st = json.loads(run["status_file"].read_text(encoding="utf-8"))
+    assert st["kit_vm_script_check"] == "not_sent"
+
+
+def test_a_spec_ceiling_of_zero_or_below_never_switches_the_guard_off() -> None:
+    import dataclasses
+
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge
+
+    mini = bakeoff_judge.JUDGE_SPECS["d3-mini"]
+    for own in (0, -1):
+        spec = dataclasses.replace(mini, vram_halt_mib=own)
+        assert bakeoff_judge.resolve_judge_vram_halt_mib(spec, 26_000) == 26_000
+        assert bakeoff_judge.resolve_judge_vram_halt_mib(spec, 0) == 0
+    d3 = bakeoff_judge.JUDGE_SPECS["d3"]
+    assert bakeoff_judge.resolve_judge_vram_halt_mib(d3, 20_000) == 68_000  # a window value cannot lower d3's own
+    assert bakeoff_judge.resolve_judge_vram_halt_mib(d3, 90_000) == 68_000  # nor raise it
