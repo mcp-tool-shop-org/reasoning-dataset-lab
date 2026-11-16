@@ -683,12 +683,13 @@ def check_vram_guard(
 
 
 def resolve_judge_vram_halt_mib(spec: JudgeSpec, window_vram_halt_mib: int) -> int:
-    """The VRAM ceiling one judge runs under: the window's, unless the window is at the default ceiling and the judge's
-    spec carries a higher one (vllm-sr/d3), which then applies to that judge only. 0 (the CPU modes) stays 0, and any
-    other window value (the RDLAB_VRAM_HALT_MIB test hook) applies as given, to every judge, d3 included."""
+    """The VRAM ceiling one judge runs under. A judge whose spec carries a ceiling of its own (one that is not
+    `DEFAULT_VRAM_HALT_MIB`; today only vllm-sr/d3) always runs under it: a window-wide value (`RDLAB_VRAM_HALT_MIB`)
+    never replaces it (#107). Every other judge runs under the window's value. 0 (the CPU modes) stays 0 for every
+    judge."""
     window = int(window_vram_halt_mib)
     own = int(spec.vram_halt_mib)
-    if window != DEFAULT_VRAM_HALT_MIB or own <= DEFAULT_VRAM_HALT_MIB:
+    if window == 0 or own == DEFAULT_VRAM_HALT_MIB:
         return window
     return own
 
@@ -4931,7 +4932,7 @@ def run_bakeoff_judge(
         ) from exc
     resolved_out = check_output_dir_outside_repo(output_dir, repo_root=repo_root)
     spec = resolve_judge_spec(judge)
-    vram_halt_mib = resolve_judge_vram_halt_mib(spec, vram_halt_mib)  # the window's, or the judge's own when higher
+    vram_halt_mib = resolve_judge_vram_halt_mib(spec, vram_halt_mib)  # the judge's own ceiling, else the window's
     adapter = build_judge_adapter(spec)
     effective_dtype = DEFAULT_TORCH_DTYPE if str(torch_dtype).strip().lower() == "auto" else str(torch_dtype)
     eff_shard_spec = (

@@ -11,7 +11,6 @@ dir after the last pack."""
 from __future__ import annotations
 
 import hashlib
-import io
 import json
 import shutil
 import stat

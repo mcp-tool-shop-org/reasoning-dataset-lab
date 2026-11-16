@@ -444,9 +444,9 @@ def test_vram_ceiling_is_per_judge_and_only_d3_has_its_own() -> None:
             assert spec.vram_halt_mib == default, jid
         for window in (0, 10_000, 20_000, default, 30_000, 90_000):
             got = bakeoff_judge.resolve_judge_vram_halt_mib(spec, window)
-            # d3's own ceiling replaces only the default window value (the real GPU windows); 0 (stub) stays off, and
-            # any other value (the RDLAB_VRAM_HALT_MIB test hook) applies as given, to d3 too (the #100 review's C nit).
-            want = 68_000 if (jid == D3 and window == default) else window
+            # d3 always runs under its own ceiling: a window-wide value (RDLAB_VRAM_HALT_MIB) applies only to judges
+            # with none of their own (#107); 0 (stub) stays off for every judge.
+            want = 0 if window == 0 else (68_000 if jid == D3 else window)
             assert got == want, (jid, window)
 
 
