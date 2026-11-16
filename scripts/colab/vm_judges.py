@@ -16243,11 +16243,11 @@ def _load_run_records_module() -> Any:
     import importlib
 
     if "reasoning_dataset_lab.pilot_b.run_records" not in sys.modules:
-        candidates = [Path("/content/rdlab/src")]
-        if "__file__" in globals():
-            candidates.insert(0, Path(__file__).resolve().parents[2] / "src")
+        argv0 = Path(sys.argv[0]).resolve() if sys.argv and sys.argv[0] else Path.cwd()
+        argv_src = argv0.parents[2] / "src" if len(argv0.parents) > 2 else Path.cwd() / "src"
+        candidates = [argv_src, Path.cwd() / "src", Path("/content/rdlab/src")]
         for cand in candidates:
-            if cand.is_dir() and str(cand) not in sys.path:
+            if (cand / "reasoning_dataset_lab").is_dir() and str(cand) not in sys.path:
                 sys.path.insert(0, str(cand))
     return importlib.import_module("reasoning_dataset_lab.pilot_b.run_records")
 
