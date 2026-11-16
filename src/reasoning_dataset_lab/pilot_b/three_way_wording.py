@@ -346,13 +346,9 @@ def read_unverified_passes(
                     matched_jid = line[: -len(suffix)]
                     break
             if matched_mode is not None and matched_jid is not None:
-                if not _is_safe_unverified_token(matched_jid):
-                    raise ValueError(f"line {lineno}: invalid judge_id in {line!r}")
                 jid, pmode = matched_jid, matched_mode
             else:
                 jid = line[: -len(".json")]
-                if not _is_safe_unverified_token(jid):
-                    raise ValueError(f"line {lineno}: invalid judge_id in {line!r}")
                 pmode = ""
                 done_path = resolved_dir / "judge_done" / done_file
                 if done_path.is_file():

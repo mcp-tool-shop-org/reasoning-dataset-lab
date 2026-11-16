@@ -17599,21 +17599,11 @@
             },
             {
               "in": "read_unverified_passes",
-              "kind": "raise",
-              "line": 350
-            },
-            {
-              "in": "read_unverified_passes",
-              "kind": "raise",
-              "line": 355
-            },
-            {
-              "in": "read_unverified_passes",
               "kind": "except",
-              "line": 361
+              "line": 357
             }
           ],
-          "hash": "3b5e2765fe2ac79beedad4c7cc3ad68a3ed8e1b878087a3bcfe78b7a7ed02dac",
+          "hash": "761bb452eb871955a2d52203755ef590fe9ac9c1166a0a78ba55ceef78f876c8",
           "path": "src/reasoning_dataset_lab/pilot_b/three_way_wording.py",
           "sequences": []
         },
@@ -19364,6 +19354,7 @@
             "test_nli_transport_reads_labels_from_config_and_returns_the_softmax",
             "test_nli_transport_refuses_a_head_that_disagrees_with_config",
             "test_parse_and_validate_per_judge_plans",
+            "test_read_unverified_passes_edge_cases_and_malformed_lines",
             "test_rule_b_matches_the_hand_worked_fixture",
             "test_run_bakeoff_judge_picks_the_nli_transport_and_writes_its_rows",
             "test_six_arm_window_runs_in_one_window_with_judge_outer_and_scores",
@@ -19376,7 +19367,7 @@
             "test_vm_d3_family_gate_and_remote_code_arg",
             "test_vm_judges_copies_match_the_wording_table_and_the_specs"
           ],
-          "hash": "c920569c62e2bfe17ff252d1c8894867ec1beae296ba283a8afb5aace421dcd5",
+          "hash": "e1a4c7b6a23bdb85cae3f5f19997df6d6f77fdce4dfebb446c74f4390c4d3bf7",
           "importOrder": [
             "src/reasoning_dataset_lab/errors.py",
             "src/reasoning_dataset_lab/pilot_b/__init__.py",
@@ -21452,7 +21443,7 @@
   ],
   "engine": "1.26.0",
   "generatedFrom": {
-    "commit": "2fd7add0ae032f765bbf2a59e9eb829e1ac2be5d",
+    "commit": "13f6277fba21352b12d1005e46bbfefc713ccd59",
     "tracked": 194
   },
   "landings": [
