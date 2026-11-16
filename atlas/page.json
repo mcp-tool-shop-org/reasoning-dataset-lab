@@ -33,24 +33,40 @@
   ],
   "changes": {
     "fileCounts": {
-      "added": 2,
-      "changed": 4,
+      "added": 1,
+      "changed": 10,
       "moved": 0,
       "parts": 4,
       "removed": 0
     },
     "items": [
       {
+        "kind": "landing",
+        "sentence": "scripts/colab/launch_judges.sh is now also read by scripts/colab/vm_judges.py.",
+        "subjects": [
+          "scripts/colab/launch_judges.sh",
+          "scripts/colab/vm_judges.py"
+        ]
+      },
+      {
+        "kind": "landing",
+        "sentence": "scripts/colab/vm_judges.py is now also read by scripts/colab/vm_judges.py.",
+        "subjects": [
+          "scripts/colab/vm_judges.py",
+          "scripts/colab/vm_judges.py"
+        ]
+      },
+      {
         "kind": "counts",
-        "sentence": "Nothing structural changed since 2026-11-16; 2 files added and 4 changed content.",
+        "sentence": "1 file added and 10 changed content, across 4 parts.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "09f7354756315f13edbef474916a858f4e6250c3",
-      "generatedAt": "2026-11-16T13:48:31.843Z"
+      "commit": "2f04ca65f7a88b626c92aa59d90d0c03ba19652d",
+      "generatedAt": "2026-11-16T21:04:10.317Z"
     },
-    "unchanged": true
+    "unchanged": false
   },
   "changesTogether": [
     {
@@ -101,7 +117,7 @@
     {
       "a": "scripts/colab/vm_judges.py",
       "b": "tests/test_colab_judge_launcher.py",
-      "either": 51,
+      "either": 52,
       "partLabels": [
         "scripts",
         "tests"
@@ -111,7 +127,7 @@
         "tests"
       ],
       "relation": "b-imports-a",
-      "shared": 33
+      "shared": 34
     },
     {
       "a": "src/reasoning_dataset_lab/pilot_b/rendering.py",
@@ -135,9 +151,9 @@
     "Window: 180 days; a pair counts from 3 shared commits, since 12 source files reach 10 revisions; the floor rises to 10 when 25 do."
   ],
   "changesTogetherWithTests": 1,
-  "commit": "2f04ca65f7a88b626c92aa59d90d0c03ba19652d",
+  "commit": "8958590e1783e4cbc4227a2d8308b9d23328c57c",
   "defaultBranch": "main",
-  "derived": "9 parts, mostly Python (91 files), shell (3), CSS (2), TypeScript (2), Astro (1) and JavaScript (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.",
+  "derived": "9 parts, mostly Python (92 files), shell (3), CSS (2), TypeScript (2), Astro (1) and JavaScript (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.",
   "doors": [
     {
       "checks": [],
@@ -154,7 +170,7 @@
         {
           "boundary": "tests",
           "depth": 0,
-          "files": 55
+          "files": 56
         },
         {
           "boundary": "scripts",
@@ -292,12 +308,12 @@
       ]
     }
   ],
-  "generatedAt": "2026-11-16T21:04:10.317Z",
+  "generatedAt": "2026-11-16T22:23:05.030Z",
   "limits": [
     "8 import sites name a declared dependency that shares its name with a local module (role_set); they are read as the dependency, which is not in this repository.",
     "18 imports could not be resolved: `scripts/colab/vm_judges.py` imports a path built at run time; `scripts/colab/vm_judges.py` imports `device`, which is no module on its import path and no declared dependency, twice; `tests/test_bakeoff_judge_d3_transport.py` imports a path built at run time; and 14 more.",
-    "13 writes and 30 reads use paths built at run time and are not named here.",
-    "87 writes and 209 reads go to a path their caller passes, not to this repository.",
+    "14 writes and 30 reads use paths built at run time and are not named here.",
+    "90 writes and 210 reads go to a path their caller passes, not to this repository.",
     "11 reads go to the directory the command is run in, not to this repository.",
     "Statistics confidence is low: fewer than 25 source files reach 10 revisions in the window."
   ],
@@ -334,13 +350,13 @@
   "startReason": "This path follows rdlab (a command people run) from its entry, since ci runs only tests.",
   "summary": "reasoning-dataset-lab plans a dataset as a pre-registered map, builds items whose answer keys are constructed and proved by code, asks a local model only for the wording, and records the provenance of every item.",
   "summaryFrom": "person",
-  "testFiles": 71,
+  "testFiles": 72,
   "testedBy": {
-    "scripts": 13,
-    "src": 48
+    "scripts": 14,
+    "src": 49
   },
   "testedCodeParts": 2,
-  "unnamedWrites": 13,
+  "unnamedWrites": 14,
   "unread": [],
   "unreadFiles": 0,
   "unreadNote": [],
