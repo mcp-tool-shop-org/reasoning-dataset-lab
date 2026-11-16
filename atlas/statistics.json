@@ -99,7 +99,7 @@
       "confidence": "full",
       "highWater": null,
       "name": "scripts",
-      "qualifyingSourceCommits": 49,
+      "qualifyingSourceCommits": 50,
       "rebaseline": null
     },
     {
@@ -130,12 +130,12 @@
           "scripts"
         ]
       },
-      "cohesion": 0.192526,
+      "cohesion": 0.195796,
       "cohesionDropped": false,
       "confidence": "full",
       "highWater": null,
       "name": "src",
-      "qualifyingSourceCommits": 71,
+      "qualifyingSourceCommits": 73,
       "rebaseline": null
     },
     {
@@ -149,12 +149,12 @@
         "importsAndCoChanges": [],
         "importsOnly": []
       },
-      "cohesion": 0.169278,
+      "cohesion": 0.17001,
       "cohesionDropped": false,
       "confidence": "full",
       "highWater": null,
       "name": "tests",
-      "qualifyingSourceCommits": 101,
+      "qualifyingSourceCommits": 103,
       "rebaseline": null
     }
   ],
@@ -192,8 +192,8 @@
         "path": ".python-version"
       },
       {
-        "commits": 51,
-        "lines": 532,
+        "commits": 53,
+        "lines": 550,
         "path": "CHANGELOG.md"
       },
       {
@@ -257,8 +257,8 @@
         "path": "SHIP_GATE.md"
       },
       {
-        "commits": 49,
-        "lines": 891,
+        "commits": 50,
+        "lines": 901,
         "path": "atlas/README.md"
       },
       {
@@ -267,18 +267,18 @@
         "path": "atlas/boundaries.yaml"
       },
       {
-        "commits": 49,
-        "lines": 2932,
+        "commits": 50,
+        "lines": 2960,
         "path": "atlas/page.json"
       },
       {
-        "commits": 49,
-        "lines": 8005,
+        "commits": 50,
+        "lines": 8158,
         "path": "atlas/statistics.json"
       },
       {
-        "commits": 49,
-        "lines": 69876,
+        "commits": 50,
+        "lines": 70217,
         "path": "atlas/structure.json"
       },
       {
@@ -437,8 +437,8 @@
         "path": "scripts/colab/README.md"
       },
       {
-        "commits": 48,
-        "lines": 1001,
+        "commits": 49,
+        "lines": 1215,
         "path": "scripts/colab/REAL_SERVICE_ASSUMPTIONS.md"
       },
       {
@@ -457,8 +457,8 @@
         "path": "scripts/colab/generate_weights_table.py"
       },
       {
-        "commits": 48,
-        "lines": 6836,
+        "commits": 49,
+        "lines": 6977,
         "path": "scripts/colab/launch_judges.sh"
       },
       {
@@ -542,8 +542,8 @@
         "path": "scripts/colab/receipts/vllm-sr__d3.sha256.json"
       },
       {
-        "commits": 52,
-        "lines": 23181,
+        "commits": 53,
+        "lines": 23519,
         "path": "scripts/colab/vm_judges.py"
       },
       {
@@ -687,8 +687,8 @@
         "path": "src/reasoning_dataset_lab/pilot_b/anchored_two_hop.py"
       },
       {
-        "commits": 30,
-        "lines": 11482,
+        "commits": 31,
+        "lines": 11508,
         "path": "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py"
       },
       {
@@ -777,8 +777,8 @@
         "path": "src/reasoning_dataset_lab/pilot_b/schemas/report.schema.json"
       },
       {
-        "commits": 6,
-        "lines": 2273,
+        "commits": 7,
+        "lines": 2483,
         "path": "src/reasoning_dataset_lab/pilot_b/shortcut_probe.py"
       },
       {
@@ -1002,8 +1002,8 @@
         "path": "tests/test_colab_cli_kernel_contract.py"
       },
       {
-        "commits": 4,
-        "lines": 1572,
+        "commits": 5,
+        "lines": 1578,
         "path": "tests/test_colab_d5c_d3_27b.py"
       },
       {
@@ -1017,9 +1017,14 @@
         "path": "tests/test_colab_d5c_six_arm.py"
       },
       {
-        "commits": 39,
-        "lines": 31740,
+        "commits": 40,
+        "lines": 31778,
         "path": "tests/test_colab_judge_launcher.py"
+      },
+      {
+        "commits": 1,
+        "lines": 886,
+        "path": "tests/test_colab_kit_part_c.py"
       },
       {
         "commits": 4,
@@ -1027,8 +1032,8 @@
         "path": "tests/test_colab_only_judges_stub.py"
       },
       {
-        "commits": 1,
-        "lines": 206,
+        "commits": 2,
+        "lines": 207,
         "path": "tests/test_colab_runend_before_tar.py"
       },
       {
@@ -1157,8 +1162,8 @@
         "path": "tests/test_shortcut_probe.py"
       },
       {
-        "commits": 1,
-        "lines": 185,
+        "commits": 2,
+        "lines": 610,
         "path": "tests/test_shortcut_probe_feature_hooks.py"
       },
       {
@@ -1177,51 +1182,51 @@
     "level": "low",
     "reason": "fewer than 25 source files reach 10 revisions in the window"
   },
-  "generatedAt": "2026-11-16T21:04:10.317Z",
+  "generatedAt": "2026-11-16T22:23:05.030Z",
   "generatedFrom": {
-    "commit": "2f04ca65f7a88b626c92aa59d90d0c03ba19652d"
+    "commit": "8958590e1783e4cbc4227a2d8308b9d23328c57c"
   },
   "pairs": [
     {
       "a": "atlas/README.md",
       "b": "atlas/page.json",
-      "either": 45,
-      "shared": 45,
+      "either": 46,
+      "shared": 46,
       "strength": 1
     },
     {
       "a": "atlas/README.md",
       "b": "atlas/statistics.json",
-      "either": 45,
-      "shared": 45,
+      "either": 46,
+      "shared": 46,
       "strength": 1
     },
     {
       "a": "atlas/README.md",
       "b": "atlas/structure.json",
-      "either": 45,
-      "shared": 45,
+      "either": 46,
+      "shared": 46,
       "strength": 1
     },
     {
       "a": "atlas/page.json",
       "b": "atlas/statistics.json",
-      "either": 45,
-      "shared": 45,
+      "either": 46,
+      "shared": 46,
       "strength": 1
     },
     {
       "a": "atlas/page.json",
       "b": "atlas/structure.json",
-      "either": 45,
-      "shared": 45,
+      "either": 46,
+      "shared": 46,
       "strength": 1
     },
     {
       "a": "atlas/statistics.json",
       "b": "atlas/structure.json",
-      "either": 45,
-      "shared": 45,
+      "either": 46,
+      "shared": 46,
       "strength": 1
     },
     {
@@ -1241,58 +1246,58 @@
     {
       "a": "scripts/colab/REAL_SERVICE_ASSUMPTIONS.md",
       "b": "scripts/colab/launch_judges.sh",
-      "either": 47,
-      "shared": 37,
-      "strength": 0.787234
+      "either": 48,
+      "shared": 38,
+      "strength": 0.791667
     },
     {
       "a": "scripts/colab/REAL_SERVICE_ASSUMPTIONS.md",
+      "b": "scripts/colab/vm_judges.py",
+      "either": 50,
+      "shared": 40,
+      "strength": 0.8
+    },
+    {
+      "a": "scripts/colab/REAL_SERVICE_ASSUMPTIONS.md",
+      "b": "tests/fixtures/fake_colab.py",
+      "either": 46,
+      "shared": 24,
+      "strength": 0.521739
+    },
+    {
+      "a": "scripts/colab/REAL_SERVICE_ASSUMPTIONS.md",
+      "b": "tests/test_colab_judge_launcher.py",
+      "either": 51,
+      "shared": 31,
+      "strength": 0.607843
+    },
+    {
+      "a": "scripts/colab/launch_judges.sh",
       "b": "scripts/colab/vm_judges.py",
       "either": 49,
-      "shared": 39,
-      "strength": 0.795918
-    },
-    {
-      "a": "scripts/colab/REAL_SERVICE_ASSUMPTIONS.md",
-      "b": "tests/fixtures/fake_colab.py",
-      "either": 45,
-      "shared": 24,
-      "strength": 0.533333
-    },
-    {
-      "a": "scripts/colab/REAL_SERVICE_ASSUMPTIONS.md",
-      "b": "tests/test_colab_judge_launcher.py",
-      "either": 50,
-      "shared": 30,
-      "strength": 0.6
-    },
-    {
-      "a": "scripts/colab/launch_judges.sh",
-      "b": "scripts/colab/vm_judges.py",
-      "either": 48,
-      "shared": 40,
-      "strength": 0.833333
+      "shared": 41,
+      "strength": 0.836735
     },
     {
       "a": "scripts/colab/launch_judges.sh",
       "b": "tests/fixtures/fake_colab.py",
-      "either": 43,
+      "either": 44,
       "shared": 26,
-      "strength": 0.604651
+      "strength": 0.590909
     },
     {
       "a": "scripts/colab/launch_judges.sh",
       "b": "tests/test_colab_judge_launcher.py",
-      "either": 47,
-      "shared": 33,
-      "strength": 0.702128
+      "either": 48,
+      "shared": 34,
+      "strength": 0.708333
     },
     {
       "a": "scripts/colab/vm_judges.py",
       "b": "tests/test_colab_judge_launcher.py",
-      "either": 51,
-      "shared": 33,
-      "strength": 0.647059
+      "either": 52,
+      "shared": 34,
+      "strength": 0.653846
     },
     {
       "a": "src/reasoning_dataset_lab/__init__.py",
@@ -1346,9 +1351,9 @@
     {
       "a": "src/reasoning_dataset_lab/pilot_b/shortcut_probe.py",
       "b": "tests/test_shortcut_probe.py",
-      "either": 7,
+      "either": 8,
       "shared": 5,
-      "strength": 0.714286
+      "strength": 0.625
     },
     {
       "a": "src/reasoning_dataset_lab/pilot_b/value_certification.py",
@@ -1360,9 +1365,9 @@
     {
       "a": "tests/fixtures/fake_colab.py",
       "b": "tests/test_colab_judge_launcher.py",
-      "either": 43,
+      "either": 44,
       "shared": 22,
-      "strength": 0.511628
+      "strength": 0.5
     },
     {
       "a": "tests/test_colab_d5c_elephant.py",
@@ -1382,16 +1387,16 @@
     "floor": "fallen",
     "floorHeld": false,
     "floorTrigger": "revision-depth",
-    "headDate": "2026-11-16T16:02:57-05:00",
-    "inScopeFiles": 202,
+    "headDate": "2026-11-16T17:21:45-05:00",
+    "inScopeFiles": 203,
     "pinnedStart": null,
     "priorFloor": "fallen",
-    "qualifyingCommits": 114,
+    "qualifyingCommits": 116,
     "qualifyingMinimum": 30,
     "revisions": 5,
     "shared": 10,
     "sharedFloorUsed": 3,
-    "since": "2026-05-20T21:02:57.000Z",
+    "since": "2026-05-20T22:21:45.000Z",
     "sourceExtensions": [
       ".js",
       ".mjs",

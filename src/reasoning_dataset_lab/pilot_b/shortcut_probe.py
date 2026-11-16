@@ -15,9 +15,10 @@ permutation check):
 - `claim_all_tokens_in_material` (normalised value & token presence, gated);
 - `same_line_cooccurrence` and `min_entity_value_token_distance` (reported overall; gated within `not_supported`).
 - caller-supplied feature hooks (`FeatureHook`): a part whose item form needs a parser the probe does not have
-  (a template family's own sentence grammar) passes one hook per feature family. Each hook maps one item's
-  public fields to a list of tokens and becomes a gated token probe (three-class and binary) with the id
-  `hook:<probe_id>`, in the same Holm family. With no hooks the report is unchanged.
+  (a template family's own sentence grammar) passes one hook per feature family. Each hook maps a deep copy of
+  one item's public fields (`PUBLIC_ITEM_FIELDS`) to a sorted sequence of tokens (capped per item and in total
+  vocabulary) and becomes a gated token probe (three-class and binary) with the id `hook:<probe_id>`, in the same
+  Holm family. With no hooks (`()`, `[]`, or `None`) the report is unchanged.
 
 Hard gates:
 - Gate 1 (Option 1, `cluster_wilson_holm_v1`): a gated probe-task passes iff the base rate lies
@@ -34,7 +35,7 @@ Sealed keys (`keys.sealed.jsonl`) are read ONLY for ground-truth `key` labels an
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence, Set as AbstractSet
 import copy
 from dataclasses import asdict, dataclass, replace
 import itertools
@@ -352,16 +353,76 @@ class ShortcutProbeReport:
 
 FEATURE_HOOK_ID_RE = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
 FEATURE_HOOK_PREFIX = "hook:"
+# Caps bound per-item feature fan-out (256 slots/interactions per item) and cross-part vocabulary
+# (4,096 distinct tokens) so high-cardinality unmasked tokens cannot collapse bag-of-tokens OOF
+# generalisation while inflating the Holm family or blowing up the dense logistic fit.
+MAX_FEATURE_HOOK_TOKENS_PER_ITEM = 256
+MAX_FEATURE_HOOK_VOCABULARY = 4096
+# Public fields of an item row from `items.jsonl` (matching `schemas/item.schema.json`,
+# `waves_and_sealing._render_part`, `bakeoff_judge.STANDARD_SEALED_PART_ROW_KEYS`, and the built-in
+# probes): `id`, `triad_id`, `trait`, `kind`, `domain`, `closure`, `proof_basis`, `key_basis`,
+# `material`, `claim`, `messages`, `split`. Hooks see only deep copies of these fields.
+PUBLIC_ITEM_FIELDS: frozenset[str] = frozenset(
+    {
+        "id",
+        "triad_id",
+        "trait",
+        "kind",
+        "domain",
+        "closure",
+        "proof_basis",
+        "key_basis",
+        "material",
+        "claim",
+        "messages",
+        "split",
+    }
+)
+SEALED_KEY_FIELDS: frozenset[str] = frozenset(
+    {
+        "key",
+        "target_line",
+        "class",
+        "key_source",
+        "value_set_id",
+        "value_set_sha256",
+        "triad_handle",
+        "proof",
+        "provenance",
+        "blind_reads",
+        "verdict",
+        "correct",
+        "label",
+        "answer",
+        "expected_verdict",
+        "ground_truth",
+        "gold_label",
+        "key_contradicted",
+        "target_verdict",
+        "shuffle_seed",
+        "table_secret",
+        "commitment_key",
+    }
+)
 
 
 @dataclass(frozen=True)
 class FeatureHook:
     """A caller-supplied feature family for the shortcut probe.
 
-    `features` receives a deep copy of one item's public fields (the dict from `items.jsonl`; sealed keys are never
-    passed) and returns that item's feature tokens. The tokens are evaluated exactly like a built-in token probe:
-    triad-grouped out-of-fold, three-class and binary, both gated in the one Holm family. An interaction is a token
-    that joins several values (for example `"a=x|b=y"`). The probe is reported as `hook:<probe_id>`.
+    `features` receives a deep copy of one item restricted to `PUBLIC_ITEM_FIELDS` (`id`, `triad_id`,
+    `trait`, `kind`, `domain`, `closure`, `proof_basis`, `key_basis`, `material`, `claim`, `messages`,
+    `split`; sealed fields are never passed, and items carrying any sealed or keys-file field are refused
+    with `PROBE_SEALED_FIELD_IN_ITEM`). Each item's returned sequence of strings is sorted (keeping
+    duplicates) for order-free fold stratification and degeneracy checking, and each hook is invoked twice
+    per item (second pass in reverse item order) and refused with `PROBE_FEATURE_HOOK_FAILED` if results
+    differ. At most `MAX_FEATURE_HOOK_TOKENS_PER_ITEM` (256) tokens per item and
+    `MAX_FEATURE_HOOK_VOCABULARY` (4,096) distinct tokens across all items are allowed (preventing
+    per-item ID / high-cardinality tokenisation from invalidating the Holm-adjusted bag-of-tokens probe);
+    exceeding either is refused with `PROBE_FEATURE_HOOK_FAILED`. A hook that returns `[]` on every item
+    is refused with `PROBE_FEATURE_HOOK_EMPTY`, whereas a constant non-empty hook stays `degenerate=True`
+    (passing and excluded from the Holm family, as before). An interaction is a token that joins several
+    values (for example `"a=x|b=y"`). The probe is reported as `hook:<probe_id>`.
     """
 
     probe_id: str
@@ -369,10 +430,21 @@ class FeatureHook:
     features: Callable[[dict[str, Any]], Sequence[str]]
 
 
-def _validate_feature_hooks(feature_hooks: Sequence[FeatureHook]) -> None:
-    """Refuse a hook list that is not a sequence of well-formed, uniquely named `FeatureHook`s."""
+def _validate_feature_hooks(feature_hooks: Sequence[FeatureHook] | None) -> tuple[FeatureHook, ...]:
+    """Refuse anything other than `None` or a sequence of well-formed, uniquely named `FeatureHook`s."""
+    if feature_hooks is None:
+        return ()
+    if isinstance(feature_hooks, (str, bytes, bytearray, memoryview, range)) or not isinstance(
+        feature_hooks, Sequence
+    ):
+        raise usage_error(
+            "PROBE_BAD_FEATURE_HOOK",
+            f"feature_hooks must be a sequence of FeatureHook (or None), not {type(feature_hooks).__name__}.",
+            "Pass a list or tuple of FeatureHook, (), or None.",
+        )
+    hooks = tuple(feature_hooks)
     seen: set[str] = set()
-    for hook in feature_hooks:
+    for hook in hooks:
         if not isinstance(hook, FeatureHook):
             raise usage_error(
                 "PROBE_BAD_FEATURE_HOOK",
@@ -395,7 +467,7 @@ def _validate_feature_hooks(feature_hooks: Sequence[FeatureHook]) -> None:
             raise usage_error(
                 "PROBE_BAD_FEATURE_HOOK",
                 f"Feature hook {hook.probe_id!r} has no callable features function.",
-                "Pass a function that maps one item dict to a list of string tokens.",
+                "Pass a function that maps one item dict to a sequence of string tokens.",
             )
         if hook.probe_id in seen:
             raise usage_error(
@@ -404,13 +476,38 @@ def _validate_feature_hooks(feature_hooks: Sequence[FeatureHook]) -> None:
                 "Give every feature hook its own id.",
             )
         seen.add(hook.probe_id)
+    return hooks
 
 
-def _hook_tokens(hook: FeatureHook, item: dict[str, Any]) -> list[str]:
-    """Run one hook on a deep copy of one item and check its result; any failure is a named refusal."""
+def _public_item_copy(item: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a deep copy of `item` restricted strictly to `PUBLIC_ITEM_FIELDS`."""
+    return {k: copy.deepcopy(v) for k, v in item.items() if k in PUBLIC_ITEM_FIELDS}
+
+
+def _check_items_have_no_sealed_fields(
+    items: Sequence[Mapping[str, Any]],
+    extra_key_fields: AbstractSet[str] = frozenset(),
+) -> None:
+    """Refuse any item carrying `key`, `target_line`, a known sealed field, or a non-public keys-file field."""
+    forbidden = SEALED_KEY_FIELDS | (frozenset(extra_key_fields) - PUBLIC_ITEM_FIELDS)
+    for it in items:
+        leaked = sorted(
+            str(k) for k in it.keys() if str(k) in forbidden or str(k).lower() in SEALED_KEY_FIELDS
+        )
+        if leaked:
+            item_id = str(it.get("id", ""))
+            raise refused_error(
+                "PROBE_SEALED_FIELD_IN_ITEM",
+                f"Item {item_id!r} carries forbidden sealed field(s): {leaked}.",
+                "Strip sealed key fields from items before running the shortcut probe.",
+            )
+
+
+def _hook_tokens(hook: FeatureHook, item: Mapping[str, Any]) -> list[str]:
+    """Run one hook on a deep public-field copy of one item and return sorted tokens; refuse bad results."""
     item_id = str(item.get("id", ""))
     try:
-        out = hook.features(copy.deepcopy(item))
+        out = hook.features(_public_item_copy(item))
     except RdlabError:
         raise
     except Exception as exc:  # noqa: BLE001 - a hook's own failure becomes a refusal naming the hook
@@ -419,13 +516,55 @@ def _hook_tokens(hook: FeatureHook, item: dict[str, Any]) -> list[str]:
             f"Feature hook {hook.probe_id!r} failed on item {item_id!r} ({type(exc).__name__}).",
             "Fix the hook's parser for this item form; the probe does not skip items.",
         ) from None
-    if isinstance(out, str) or not isinstance(out, (list, tuple)) or not all(isinstance(t, str) for t in out):
+    if isinstance(out, (str, bytes, bytearray, memoryview, range)) or not isinstance(out, Sequence):
         raise refused_error(
             "PROBE_FEATURE_HOOK_FAILED",
-            f"Feature hook {hook.probe_id!r} returned something other than a list of strings for item {item_id!r}.",
-            "Return a list (or tuple) of string tokens for every item.",
+            f"Feature hook {hook.probe_id!r} returned something other than a sequence of strings for item {item_id!r}.",
+            "Return a list or tuple of string tokens for every item.",
         )
-    return list(out)
+    if len(out) > MAX_FEATURE_HOOK_TOKENS_PER_ITEM:
+        raise refused_error(
+            "PROBE_FEATURE_HOOK_FAILED",
+            f"Feature hook {hook.probe_id!r} returned {len(out)} tokens for item {item_id!r}, exceeding cap {MAX_FEATURE_HOOK_TOKENS_PER_ITEM}.",
+            f"Emit at most {MAX_FEATURE_HOOK_TOKENS_PER_ITEM} feature tokens per item.",
+        )
+    if not all(isinstance(t, str) for t in out):
+        raise refused_error(
+            "PROBE_FEATURE_HOOK_FAILED",
+            f"Feature hook {hook.probe_id!r} returned something other than a sequence of strings for item {item_id!r}.",
+            "Return a list or tuple of string tokens for every item.",
+        )
+    return sorted(out)
+
+
+def _collect_feature_hook_tokens(
+    hook: FeatureHook,
+    items: Sequence[Mapping[str, Any]],
+) -> list[list[str]]:
+    """Evaluate `hook` twice per item (forward then reverse order) and check determinism, emptiness, and vocab cap."""
+    first_pass = [_hook_tokens(hook, it) for it in items]
+    for idx in range(len(items) - 1, -1, -1):
+        if _hook_tokens(hook, items[idx]) != first_pass[idx]:
+            item_id = str(items[idx].get("id", ""))
+            raise refused_error(
+                "PROBE_FEATURE_HOOK_FAILED",
+                f"Feature hook {hook.probe_id!r} produced non-deterministic or item-order-dependent tokens for item {item_id!r}.",
+                "Make the hook a pure deterministic function of one item's public fields.",
+            )
+    vocab = {tok for toks in first_pass for tok in toks}
+    if not vocab:
+        raise refused_error(
+            "PROBE_FEATURE_HOOK_EMPTY",
+            f"Feature hook {hook.probe_id!r} yielded no tokens on any item.",
+            "Fix the hook's parser so it matches this item form, or omit the empty hook.",
+        )
+    if len(vocab) > MAX_FEATURE_HOOK_VOCABULARY:
+        raise refused_error(
+            "PROBE_FEATURE_HOOK_FAILED",
+            f"Feature hook {hook.probe_id!r} vocabulary size ({len(vocab)}) exceeds cap {MAX_FEATURE_HOOK_VOCABULARY}.",
+            f"Keep the hook's vocabulary across all items at or below {MAX_FEATURE_HOOK_VOCABULARY} distinct tokens.",
+        )
+    return first_pass
 
 
 def _tokenize(text: str) -> list[str]:
@@ -1409,8 +1548,10 @@ def load_items_and_keys(
             ) from exc
         items.append(obj)
 
-    # Read ONLY `id`, `key`, and `target_line` from sealed keys, never storing any other fields.
+    # Read ONLY `id`, `key`, and `target_line` from sealed keys, never storing any other fields
+    # (recording only field names so any item carrying a keys-file field can be refused).
     sealed_lookup: dict[str, dict[str, str | int]] = {}
+    keys_file_fields: set[str] = set()
     for line_no, raw in enumerate(
         keys_path.read_text(encoding="utf-8").splitlines(), start=1
     ):
@@ -1425,6 +1566,7 @@ def load_items_and_keys(
                 f"Malformed JSON in '{keys_path}' at line {line_no}: {exc}",
                 "Verify keys.sealed.jsonl integrity.",
             ) from exc
+        keys_file_fields.update(str(k) for k in obj.keys())
         item_id = str(obj.get("id", ""))
         key_label = str(obj.get("key", ""))
         target_line = int(obj.get("target_line", 0))
@@ -1454,6 +1596,8 @@ def load_items_and_keys(
             "Ensure keys.sealed.jsonl matches items.jsonl.",
         )
 
+    _check_items_have_no_sealed_fields(items, extra_key_fields=keys_file_fields)
+
     return items_path, items, sealed_lookup
 
 
@@ -1466,16 +1610,19 @@ def run_bakeoff_shortcut_probe(
     alpha: float = DEFAULT_GATE_ALPHA,
     share_bounds: tuple[float, float] = (SHARE_MIN, SHARE_MAX),
     n_folds: int = 5,
-    feature_hooks: Sequence[FeatureHook] = (),
+    feature_hooks: Sequence[FeatureHook] | None = (),
 ) -> ShortcutProbeReport:
     """Evaluate all shortcut probes on 3-class, binary, and within-not-supported tasks under Holm-adjusted triad-clustered Wilson intervals (Option 1) plus role/closure shares.
 
-    `feature_hooks` adds one gated token probe per `FeatureHook` (see its docstring); with none, the report is
-    exactly the report without the argument."""
+    `feature_hooks` adds one gated token probe per `FeatureHook` (see its docstring); passing `()`, `[]`, or
+    `None` leaves the report unchanged."""
+    validated_hooks = _validate_feature_hooks(feature_hooks)
     if not items:
         raise ValueError("items must not be empty")
-    feature_hooks = tuple(feature_hooks)
-    _validate_feature_hooks(feature_hooks)
+    _check_items_have_no_sealed_fields(
+        items,
+        extra_key_fields={str(k) for entry in sealed_keys.values() for k in entry},
+    )
 
     triad_ids = sorted({str(it["triad_id"]) for it in items})
     num_triads = len(triad_ids)
@@ -1880,14 +2027,14 @@ def run_bakeoff_shortcut_probe(
             feats_i_num,
         ),
     )
-    if feature_hooks:
+    if validated_hooks:
         raw_probes = raw_probes + tuple(
             _eval_token_probe(
                 FEATURE_HOOK_PREFIX + hook.probe_id,
                 f"(hook) {hook.description}",
-                [_hook_tokens(hook, it) for it in items],
+                _collect_feature_hook_tokens(hook, items),
             )
-            for hook in feature_hooks
+            for hook in validated_hooks
         )
 
     raw_proximity_probes = (
@@ -2116,10 +2263,11 @@ def evaluate_bakeoff_probe_files(
     out_path: Path,
     *,
     alpha: float = DEFAULT_GATE_ALPHA,
-    feature_hooks: Sequence[FeatureHook] = (),
+    feature_hooks: Sequence[FeatureHook] | None = (),
 ) -> dict[str, Any]:
     """Load `items.jsonl` and `keys.sealed.jsonl`, run the shortcut probe (with any `feature_hooks`), and write
-    `out_path`."""
+    `out_path`; `feature_hooks=()`, `[]`, or `None` leaves the report unchanged."""
+    validated_hooks = _validate_feature_hooks(feature_hooks)
     items_path, items, sealed_keys = load_items_and_keys(part_dir, keys_path)
     report = run_bakeoff_shortcut_probe(
         items,
@@ -2127,7 +2275,7 @@ def evaluate_bakeoff_probe_files(
         part_items_path=str(items_path),
         keys_path=str(keys_path),
         alpha=alpha,
-        feature_hooks=feature_hooks,
+        feature_hooks=validated_hooks,
     )
     payload = report.to_dict()
     out_path.parent.mkdir(parents=True, exist_ok=True)
