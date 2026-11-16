@@ -190,7 +190,7 @@ def test_arm2_two_questions_are_the_preregistered_words() -> None:
     ]
     assert words.threshold == 0.5
     assert [q.question_id for q in words.questions] == ["q1", "q2"]
-    assert three_way_wording.PASS_MODE_JUDGES[TWO_Q] == frozenset({"d3-mini"})
+    assert three_way_wording.PASS_MODE_JUDGES[TWO_Q] == frozenset({"d3-mini", "d3"})  # d3: arm 7Q (d3-27b prereg)
     for item in ITEMS:
         for order in ORDERS:
             prompt = _prompt("d3-mini", item, order, TWO_Q)
@@ -1603,9 +1603,15 @@ def test_merge_shards_merges_each_new_mode_by_its_own_judge_done(
         assert (sdir / "anchor_rows" / f"{judge_id}.{pass_mode}.jsonl").is_file()
         vm_judges.write_outputs_closed(sdir)
         shard_dirs.append(sdir)
+    # The default judge set is the mode's (every judge with a prompt in it); two-question also has d3 since the d3-27b
+    # kit, so its d3-mini-only shards name their judge.
+    default_ids = merge_shards._default_judge_ids_for_pass_mode(pass_mode)
+    assert set(default_ids) == set(three_way_wording.PASS_MODE_JUDGES[pass_mode])
+    pick: dict[str, Any] = {} if default_ids == (judge_id,) else {"expected_judge_ids": [judge_id]}
+    assert bool(pick) == (pass_mode == TWO_Q)
     rec = merge_shards.merge_shards(
         shard_dirs=shard_dirs, manifest_path=manifest_path, output_dir=tmp_path / "merged", items_path=items_path,
-        allow_unpinned_stub=True,
+        allow_unpinned_stub=True, **pick,
     )
     assert rec["status"] == "ok" and rec["pass_mode"] == pass_mode and rec["expected_judge_ids"] == [judge_id]
     (shard_dirs[0] / "judge_done" / f"{judge_id}.{pass_mode}.json").unlink()
@@ -1613,7 +1619,7 @@ def test_merge_shards_merges_each_new_mode_by_its_own_judge_done(
     with pytest.raises(merge_shards.MergeRefusalError):
         merge_shards.merge_shards(
             shard_dirs=shard_dirs, manifest_path=manifest_path, output_dir=tmp_path / "merged2", items_path=items_path,
-            allow_unpinned_stub=True,
+            allow_unpinned_stub=True, **pick,
         )
 
 
