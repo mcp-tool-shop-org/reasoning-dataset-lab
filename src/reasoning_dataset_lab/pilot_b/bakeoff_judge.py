@@ -194,6 +194,11 @@ class JudgeSpec:
     max_new_tokens: int
     card_snapshot_path: str
     card_snapshot_sha256: str
+    # The judge's own VRAM ceiling in MiB (`resolve_judge_vram_halt_mib`). Every judge but vllm-sr/d3 keeps the default,
+    # so its ceiling is the window's, as before. Not in `to_dict`, which keeps the recorded shape of every spec.
+    vram_halt_mib: int = DEFAULT_VRAM_HALT_MIB
+    # Licence-registry ids of the base model's card when the judge is a fine-tune (rnd `licences/registry.json`).
+    base_card_registry_ids: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -674,6 +679,17 @@ def check_vram_guard(
             "Lower batch/context usage or choose a model within the 26,000 MiB ceiling.",
         )
     return used_mib
+
+
+def resolve_judge_vram_halt_mib(spec: JudgeSpec, window_vram_halt_mib: int) -> int:
+    """The VRAM ceiling one judge runs under: the window's, unless the judge's spec carries a higher ceiling of its
+    own (vllm-sr/d3), which then applies to that judge only. 0 (no ceiling: the CPU modes) stays 0. A judge at the
+    default ceiling always gets the window's value unchanged, so every other judge behaves exactly as before."""
+    window = int(window_vram_halt_mib)
+    own = int(spec.vram_halt_mib)
+    if window <= 0 or own <= DEFAULT_VRAM_HALT_MIB:
+        return window
+    return max(window, own)
 
 
 def check_remote_code_gate(
@@ -1835,6 +1851,19 @@ class D3MiniAdapter(BaseJudgeAdapter):
         pass_mode: PassMode,
     ) -> ParsedJudgeReadout:
         top5 = response.verdict_top_logprobs[:5]
+        if response.done_reason == "error":
+            # #96 B1: the transport saw an answer that is missing, not a mapping, or carries `error`. Whatever else the
+            # answers hold (a `noul`, probabilities), the call is invalid, in every pass mode.
+            readout_cls = TwoQuestionReadout if pass_mode in TWO_QUESTION_PASS_MODES else ParsedJudgeReadout
+            return readout_cls(
+                state="unparseable",
+                done_reason=response.done_reason,
+                raw_verdict=None,
+                p_yes=None,
+                choice_probabilities=None,
+                verdict_top_logprobs=top5,
+                parse_note=D3_ERROR_PARSE_NOTE,
+            )
         sys_one = response.system_one_result
         if sys_one is None and response.raw_text.strip().startswith("{"):
             try:
@@ -4885,6 +4914,7 @@ def run_bakeoff_judge(
         ) from exc
     resolved_out = check_output_dir_outside_repo(output_dir, repo_root=repo_root)
     spec = resolve_judge_spec(judge)
+    vram_halt_mib = resolve_judge_vram_halt_mib(spec, vram_halt_mib)  # the window's, or the judge's own when higher
     adapter = build_judge_adapter(spec)
     effective_dtype = DEFAULT_TORCH_DTYPE if str(torch_dtype).strip().lower() == "auto" else str(torch_dtype)
     eff_shard_spec = (
@@ -8299,12 +8329,41 @@ ELEPHANT_JUDGE_ID = "elephant-1"
 # reviewed ones (all 8 compared by R&D, 2026-11-15), and `check_d3_remote_code_matches_review` re-proves that identity
 # at every load from the two receipts, refusing otherwise. Every row records how its gate passed
 # (`library_pins.remote_code_review`).
+# vllm-sr/d3, the 26.09B (27B-class) d3 (PREREG-d5c-fitted-two-question-and-d3-27b-2026-11-15, arms 7C and 7Q). Its
+# gate SHA is its own pin; seven of its eight files are byte-identical to d3-mini's reviewed ones and the eighth has its
+# own reviewed entry (`D3_REVIEWED_FILE_DELTAS_BY_JUDGE`).
+D3_JUDGE_ID = "d3"
+D3_REVISION = "62f07e54c6c3a5ff5f695107377edc43e1a86ea8"
 D3_REVIEWED_REVISION_BY_JUDGE: dict[str, str] = {
     D3_MINI_JUDGE_ID: D3_MINI_REVIEWED_REVISION,
     D3_FLASH_JUDGE_ID: D3_FLASH_REVISION,
+    D3_JUDGE_ID: D3_REVISION,
 }
 D3_FAMILY_JUDGE_IDS: frozenset[str] = frozenset(D3_REVIEWED_REVISION_BY_JUDGE)
 D3_REVIEWED_CODE_JUDGE_ID = D3_MINI_JUDGE_ID
+# The parse note of a d3-family call whose transport saw an `error` answer (#96 B1): unparseable in every pass mode.
+D3_ERROR_PARSE_NOTE = "d3 System One answer carried an error (done_reason=error); the call is unparseable"
+
+# The per-judge reviewed remote-code set. Each d3-family judge's eight files must equal d3-mini's reviewed receipt
+# entries, except the files named here for that judge, which must equal the entry given here instead (exact per judge:
+# d3-mini's own bytes for such a file are refused). d3-mini and d3-flash have no entry, so their checks are unchanged.
+# d3's `d3_runtime.py` at 62f07e54: R&D's delta review, 2026-11-15, diffed against d3-mini's reviewed bd0090dd. The only
+# change is one added docstring line (with its blank line) crediting perplexity-ai/pplx-decider-v1.1-27b for the
+# bidirectional attention approach; no code changed. The other seven files are byte-identical to d3-mini's.
+D3_REVIEWED_FILE_DELTAS_BY_JUDGE: dict[str, dict[str, dict[str, Any]]] = {
+    D3_JUDGE_ID: {
+        "d3_runtime.py": {
+            "sha256": "2d90e93ac06b9ca4a84e0610ab9acfa2d6793ea4b40eec1b4a3da47577bdea37",
+            "bytes": 95611,
+            "review": "R&D delta review 2026-11-15: one added docstring line vs vllm-sr/d3-mini @ bd0090dd; no code change",
+        },
+    },
+}
+# d3's VRAM ceiling, from its weights plus the workspace d3-mini's ceiling gives d3-mini:
+#   d3 weights: the .safetensors entries of its receipt, 52,176,025,120 bytes = 49,759 MiB (rounded up);
+#   d3-mini's workspace under the 26,000 MiB default: 26,000 - 8,661 MiB of weights (9,081,227,360 bytes) = 17,339 MiB;
+#   49,759 + 17,339 = 67,098 MiB, rounded up to 68,000 MiB; under the G4's 97,250 MiB with 29,250 MiB to spare.
+D3_VRAM_HALT_MIB = 68_000
 # Arm 5's input limit: an input over 512 tokens is an invalid call (never truncated).
 NLI_MAX_INPUT_TOKENS = 512
 
@@ -8327,6 +8386,24 @@ D5C_JUDGE_SPECS: dict[str, JudgeSpec] = dict(
             max_new_tokens=1,
             card_snapshot_path="cards/vllm-sr_d3-flash.md",
             card_snapshot_sha256="9297d4c74e21bbebf1d87aa0264dcd696cc874bd2d915f3b977bbcb36ca8ed0e",
+        ),
+        D3_JUDGE_ID: JudgeSpec(
+            judge_id=D3_JUDGE_ID,
+            judge_label="vllm-sr/d3",
+            repo_id="vllm-sr/d3",
+            revision=D3_REVISION,
+            card_registry_id="d3-card",
+            licence_registry_id="apache-2.0",
+            requires_remote_code=True,
+            remote_code_files=BAKEOFF_JUDGE_SPECS[D3_MINI_JUDGE_ID].remote_code_files,
+            supports_three_way=True,
+            has_probability=True,
+            verdict_position="system_one_readout",
+            max_new_tokens=1,
+            card_snapshot_path="cards/vllm-sr_d3.md",
+            card_snapshot_sha256="b8167cec1991daf0a1fa7f504a455a92d3564cb6bcb08a43d918cdfdc38bee05",
+            vram_halt_mib=D3_VRAM_HALT_MIB,
+            base_card_registry_ids=("qwen3.8-27b-card",),
         ),
         NLI_JUDGE_ID: JudgeSpec(
             judge_id=NLI_JUDGE_ID,
@@ -8368,11 +8445,13 @@ JUDGE_ALIASES.update(
     {
         "d3-flash": D3_FLASH_JUDGE_ID,
         "vllm-sr/d3-flash": D3_FLASH_JUDGE_ID,
+        "d3": D3_JUDGE_ID,
+        "vllm-sr/d3": D3_JUDGE_ID,
         "nli-deberta-v3-large": NLI_JUDGE_ID,
         "moritzlaurer/deberta-v3-large-mnli-fever-anli-ling-wanli": NLI_JUDGE_ID,
     }
 )
-MODEL_PARAM_BILLIONS_BY_JUDGE.update({D3_FLASH_JUDGE_ID: 8.39, NLI_JUDGE_ID: 0.435})
+MODEL_PARAM_BILLIONS_BY_JUDGE.update({D3_FLASH_JUDGE_ID: 8.39, D3_JUDGE_ID: 26.09, NLI_JUDGE_ID: 0.435})
 
 
 # --- the d3-family remote-code gate ---------------------------------------------------------------------------------
@@ -8423,16 +8502,19 @@ def _load_receipt_files(receipts_dir: Path, repo_id: str) -> Mapping[str, Any] |
 def check_d3_remote_code_matches_review(spec: JudgeSpec, snapshot_dir: Path, *, receipts_dir: Path) -> Path:
     """Return `snapshot_dir` once its remote code is the reviewed code. d3-mini's is the reviewed revision itself. For
     d3-flash, every one of the eight files' sha256 and size in its receipt (which `verify_snapshot_against_receipt` has
-    just proved the snapshot matches) must equal d3-mini's reviewed receipt entry; else `BAKEOFF_JUDGE_REMOTE_CODE_NOT_REVIEWED`."""
+    just proved the snapshot matches) must equal d3-mini's reviewed receipt entry; else `BAKEOFF_JUDGE_REMOTE_CODE_NOT_REVIEWED`.
+    For d3, the same rule, except that a file in its `D3_REVIEWED_FILE_DELTAS_BY_JUDGE` entry must equal that reviewed
+    entry instead (exact per judge: d3-mini's bytes for that file are refused too)."""
     if spec.judge_id == D3_REVIEWED_CODE_JUDGE_ID:
         return snapshot_dir
     reviewed_spec = BAKEOFF_JUDGE_SPECS[D3_REVIEWED_CODE_JUDGE_ID]
     reviewed = _load_receipt_files(receipts_dir, reviewed_spec.repo_id)
     own = _load_receipt_files(receipts_dir, spec.repo_id)
+    deltas = D3_REVIEWED_FILE_DELTAS_BY_JUDGE.get(spec.judge_id, {})
     differing: list[str] = []
     for rel in spec.remote_code_files:
         a = (own or {}).get(rel)
-        b = (reviewed or {}).get(rel)
+        b = deltas[rel] if rel in deltas else (reviewed or {}).get(rel)
         same = (
             isinstance(a, Mapping)
             and isinstance(b, Mapping)
@@ -8447,6 +8529,7 @@ def check_d3_remote_code_matches_review(spec: JudgeSpec, snapshot_dir: Path, *, 
             f"Judge '{spec.judge_id}' runs remote code cleared as byte-identical to {reviewed_spec.repo_id} @ "
             f"{reviewed_spec.revision[:8]}, but "
             + ("that reviewed receipt is missing" if reviewed is None else f"{differing} differ from it")
+            + (f" (or from this judge's own reviewed entries for {sorted(deltas)})" if deltas else "")
             + ".",
             "Put the reviewed d3-mini receipt in --receipts-dir; a differing file needs its own remote-code review.",
         )
@@ -8460,6 +8543,15 @@ def d3_remote_code_review_record(spec: JudgeSpec) -> dict[str, str] | None:
     if spec.judge_id == D3_REVIEWED_CODE_JUDGE_ID:
         return {"gate_sha": D3_MINI_REVIEWED_REVISION, "basis": "reviewed revision"}
     reviewed = BAKEOFF_JUDGE_SPECS[D3_REVIEWED_CODE_JUDGE_ID]
+    deltas = D3_REVIEWED_FILE_DELTAS_BY_JUDGE.get(spec.judge_id, {})
+    if deltas:
+        n_same = len(spec.remote_code_files) - len(deltas)
+        own = "; ".join(f"{rel} sha256 {d['sha256']} ({d['review']})" for rel, d in sorted(deltas.items()))
+        return {
+            "gate_sha": D3_REVIEWED_REVISION_BY_JUDGE[spec.judge_id],
+            "basis": f"{n_same} remote-code files byte-identical to {reviewed.repo_id} @ {reviewed.revision}; {own} "
+            "(receipts compared at load)",
+        }
     return {
         "gate_sha": D3_REVIEWED_REVISION_BY_JUDGE[spec.judge_id],
         "basis": f"8 remote-code files byte-identical to {reviewed.repo_id} @ {reviewed.revision} (receipts compared at load)",

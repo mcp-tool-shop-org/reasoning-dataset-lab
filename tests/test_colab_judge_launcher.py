@@ -2817,10 +2817,12 @@ def test_real_service_assumptions_weights_table_matches_receipts(
     assert doc_path.is_file()
 
     rows = generate_weights_table.load_weights_rows_from_receipts(receipts_dir)
-    assert len(rows) == 8  # the five downloaded receipts and the three D5c metadata receipts
-    assert sum(int(r["total_bytes"]) for r in rows) == vm_judges.EXPECTED_WEIGHTS_TOTAL_BYTES + vm_judges.ELEPHANT_WEIGHTS_BYTES
+    assert len(rows) == 9  # the five downloaded receipts and the four D5c metadata receipts
+    assert sum(int(r["total_bytes"]) for r in rows) == (
+        vm_judges.EXPECTED_WEIGHTS_TOTAL_BYTES + vm_judges.ELEPHANT_WEIGHTS_BYTES + vm_judges.D3_WEIGHTS_BYTES
+    )
     assert round(sum(float(r["seconds"]) for r in rows if r["seconds"] is not None), 1) == vm_judges.EXPECTED_WEIGHTS_DOWNLOAD_SECONDS
-    assert sorted(r["judge_id"] for r in rows if r["seconds"] is None) == ["d3-flash", "elephant-1", "nli-deberta-v3-large"]
+    assert sorted(r["judge_id"] for r in rows if r["seconds"] is None) == ["d3", "d3-flash", "elephant-1", "nli-deberta-v3-large"]
     for r in rows:
         from reasoning_dataset_lab.pilot_b.bakeoff_judge import JUDGE_SPECS
 
@@ -29379,7 +29381,8 @@ def test_issue90_merge_shards_derives_rows_and_anchor_rows_from_pass_mode_and_va
     bakeoff_judge.write_shard_manifest(base_manifest, future_manifest_path)
 
     sub_jid = "d3-mini"
-    assert merge_shards._default_judge_ids_for_pass_mode("three_way_two_question") == (sub_jid,)
+    # The mode's default set is d3-mini and d3 (arm 7Q); these shards are d3-mini's, so the merge names it.
+    assert merge_shards._default_judge_ids_for_pass_mode("three_way_two_question") == (sub_jid, "d3")
     future_shards: list[Path] = []
     for k_idx in (1, 2):
         src_s = tw_dir / f"shard_{k_idx}"

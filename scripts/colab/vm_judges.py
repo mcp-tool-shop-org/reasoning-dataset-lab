@@ -242,7 +242,8 @@ EXPECTED_DOWNLOAD_STACK_VERSIONS: dict[str, dict[str, str]] = {
 }
 
 # Disk preflight constants for the 5 bake-off judges, 2 D5c judges (metadata receipts) and 2 CPython 3.15 venvs:
-# - Weights total (sum of `total_bytes` across the 7 receipts other than elephant-1's; elephant-1 adds its own per window):
+# - Weights total (sum of `total_bytes` across the 7 receipts other than elephant-1's and d3's; each of those two adds its
+#   own per window that selects it):
 #   49,451,597,039 (the five) + 16,815,718,986 (d3-flash) + 4,136,145,852 (encoder) = 70,403,461,877 bytes (65.57 GiB)
 # - Rig download time across the 5 downloaded receipts: 123.9 + 264.8 + 130.1 + 128.5 + 150.1 = 797.4 s (797 s)
 # - Venvs compressed wheel/sdist sums:
@@ -253,7 +254,7 @@ EXPECTED_DOWNLOAD_STACK_VERSIONS: dict[str, dict[str, str]] = {
 #   2 * 5,558,620,263 = 11,117,240,526 bytes (10.35 GiB)
 # - Required free disk with 15% safety margin:
 #   ceil((70,403,461,877 + 11,117,240,526) * 1.15) = ceil(81,520,702,403 * 1.15) = 93,748,807,764 bytes (87.31 GiB)
-EXPECTED_WEIGHTS_TOTAL_BYTES = 70_403_461_877  # 7 receipts; elephant-1's and venv-elephant: compute_required_vm_disk_bytes
+EXPECTED_WEIGHTS_TOTAL_BYTES = 70_403_461_877  # 7 receipts; elephant-1, venv-elephant and d3: compute_required_vm_disk_bytes
 EXPECTED_WEIGHTS_DOWNLOAD_SECONDS = 797.4
 VENV_JUDGE_WHEEL_BYTES = 2_779_391_889
 VENV_D3_WHEEL_BYTES = 2_779_228_374
@@ -8658,8 +8659,11 @@ def _query_free_disk_bytes(path: Path) -> int:
 
 
 def compute_required_vm_disk_bytes() -> dict[str, int]:
-    """Compute required free bytes from `EXPECTED_WEIGHTS_TOTAL_BYTES` (matched to receipts), venvs estimate, and 15% margin."""
-    weights_bytes = EXPECTED_WEIGHTS_TOTAL_BYTES + elephant_window_extra_bytes()["weights_bytes"]
+    """Compute required free bytes from `EXPECTED_WEIGHTS_TOTAL_BYTES` (matched to receipts), venvs estimate, and 15% margin,
+    plus elephant-1's and vllm-sr/d3's weights (and venv-elephant) when the window selects them."""
+    weights_bytes = (
+        EXPECTED_WEIGHTS_TOTAL_BYTES + elephant_window_extra_bytes()["weights_bytes"] + d3_window_extra_bytes()["weights_bytes"]
+    )
     subtotal = weights_bytes + VENVS_ESTIMATED_BYTES + elephant_window_extra_bytes()["venv_bytes"]
     required = (
         subtotal * DISK_PREFLIGHT_MARGIN_NUMERATOR
@@ -13529,6 +13533,7 @@ def run_gate(args: argparse.Namespace) -> int:
                 f"Cannot create VM items directory '{items_dir}': {exc.strerror or exc}",
             ) from exc
 
+        gate_selected_judge_ids()  # the forwarded selection, checked before it sizes the disk (#94)
         disk_report = check_vm_disk_preflight(
             content_dir=content_dir,
             hf_home=hf_home,
@@ -15633,8 +15638,8 @@ THREE_WAY_PASS_MODES: frozenset[str] = frozenset(m for m in PASS_MODES if m != "
 PASS_MODE_JUDGES: dict[str, frozenset[str]] = {
     "binary": frozenset({"d3-mini", "flow-judge-v0.1", "granite-guardian-4.1-8b", "mu-judge", "nemotron-3-nano-4b"}),
     "three_way": frozenset({"mu-judge", "nemotron-3-nano-4b", "d3-mini", "flow-judge-v0.1"}),
-    "three_way_contradicted": frozenset({"mu-judge", "nemotron-3-nano-4b", "d3-mini", "d3-flash", "elephant-1"}),
-    "three_way_two_question": frozenset({"d3-mini"}),
+    "three_way_contradicted": frozenset({"mu-judge", "nemotron-3-nano-4b", "d3-mini", "d3-flash", "d3", "elephant-1"}),
+    "three_way_two_question": frozenset({"d3-mini", "d3"}),
     "three_way_symmetric": frozenset({"d3-mini"}),
     "three_way_nli": frozenset({"nli-deberta-v3-large"}),
 }
@@ -15700,11 +15705,17 @@ D3_FLASH_JUDGE_ID = "d3-flash"
 D3_FLASH_REVISION = "67e03e1bc157961c582ee7c6a35d9b15fada3dec"
 NLI_JUDGE_ID = "nli-deberta-v3-large"
 ELEPHANT_JUDGE_ID = "elephant-1"
+D3_JUDGE_ID = "d3"
+D3_REVISION = "62f07e54c6c3a5ff5f695107377edc43e1a86ea8"
 # d3-mini's gate SHA is the reviewed bd0090dd. d3-flash's is its own pin: its eight remote-code files are byte-identical
 # to d3-mini's reviewed ones (R&D, 2026-11-15), and the d3 transport re-proves that from the receipts at every load.
+# d3's is its own pin too: seven files byte-identical to d3-mini's, and d3_runtime.py checked against its own reviewed
+# entry (bakeoff_judge.D3_REVIEWED_FILE_DELTAS_BY_JUDGE) by the d3 transport at every load. The file set is the same
+# eight names, so the gate below needs no change for it.
 D3_REVIEWED_REVISION_BY_JUDGE: dict[str, str] = {
     D3_MINI_JUDGE_ID: D3_MINI_REVIEWED_REVISION,
     D3_FLASH_JUDGE_ID: D3_FLASH_REVISION,
+    D3_JUDGE_ID: D3_REVISION,
 }
 D3_FAMILY_JUDGE_IDS: frozenset[str] = frozenset(D3_REVIEWED_REVISION_BY_JUDGE)
 
@@ -15727,6 +15738,22 @@ D5C_JUDGE_SPECS: dict[str, JudgeSpec] = dict(
             max_new_tokens=1,
             card_snapshot_path="cards/vllm-sr_d3-flash.md",
             card_snapshot_sha256="9297d4c74e21bbebf1d87aa0264dcd696cc874bd2d915f3b977bbcb36ca8ed0e",
+        ),
+        D3_JUDGE_ID: JudgeSpec(
+            judge_id=D3_JUDGE_ID,
+            judge_label="vllm-sr/d3",
+            repo_id="vllm-sr/d3",
+            revision=D3_REVISION,
+            card_registry_id="d3-card",
+            licence_registry_id="apache-2.0",
+            requires_remote_code=True,
+            remote_code_files=BAKEOFF_JUDGE_SPECS[D3_MINI_JUDGE_ID].remote_code_files,
+            supports_three_way=True,
+            has_probability=True,
+            verdict_position="system_one_readout",
+            max_new_tokens=1,
+            card_snapshot_path="cards/vllm-sr_d3.md",
+            card_snapshot_sha256="b8167cec1991daf0a1fa7f504a455a92d3564cb6bcb08a43d918cdfdc38bee05",
         ),
         NLI_JUDGE_ID: JudgeSpec(
             judge_id=NLI_JUDGE_ID,
@@ -15793,6 +15820,58 @@ def check_d3_family_remote_code_gate(
         )
 
 
+
+# --- the judges a window selects, as the gate step sees them (#94; card 2026-11-15 v2 Part 7) -----------------------
+# The launcher forwards RDLAB_ONLY_JUDGES and RDLAB_JUDGE_PASS_MODES to `--step gate` (build_gate_env_args), so the
+# disk gate sizes the window it is about to run. Every other window's figure is unchanged.
+GATE_SELECTION_INVALID = "GATE_JUDGE_SELECTION_INVALID"
+# vllm-sr/d3's weights: total_bytes of scripts/colab/receipts/vllm-sr__d3.sha256.json. A window that selects d3 needs
+# room for them on top of the seven-receipt base; its venv is venv-d3, which the base already counts.
+D3_WEIGHTS_BYTES = 52_202_137_725
+
+
+def gate_selected_judge_ids(
+    raw_only_judges: str | None = None, raw_plan: str | None = None, *, from_env: bool = True
+) -> tuple[str, ...]:
+    """The judges the window names, checked: RDLAB_ONLY_JUDGES (a comma-separated list of known judge ids, no
+    whitespace, no empty or repeated item) and the judges of RDLAB_JUDGE_PASS_MODES (`parse_judge_pass_modes`), in
+    first-appearance order. Empty when neither is set. Refuses GATE_JUDGE_SELECTION_INVALID for a bad list and
+    JUDGE_PASS_MODES_INVALID for a bad plan, so the gate never sizes a window from a value it does not understand."""
+    if from_env:
+        raw_only_judges = os.environ.get("RDLAB_ONLY_JUDGES") if raw_only_judges is None else raw_only_judges
+        raw_plan = os.environ.get(JUDGE_PASS_MODES_ENV_VAR) if raw_plan is None else raw_plan
+    out: list[str] = []
+    if raw_only_judges is not None:
+        parts = str(raw_only_judges).split(",")
+        bad = (
+            not raw_only_judges
+            or any(ch.isspace() for ch in str(raw_only_judges))
+            or any(not p for p in parts)
+            or any(p not in JUDGE_SPECS for p in parts)
+            or len(set(parts)) != len(parts)
+        )
+        if bad:
+            raise RefusalError(
+                GATE_SELECTION_INVALID,
+                f"RDLAB_ONLY_JUDGES at the gate must be a comma-separated list of known judge ids with no whitespace, "
+                f"empty or repeated item (allowed: {sorted(JUDGE_SPECS)}), got {str(raw_only_judges)[:120]!r}",
+            )
+        out.extend(parts)
+    plan = parse_judge_pass_modes(raw_plan if raw_plan is not None else "")
+    for jid in plan_judge_ids(plan or ()):
+        if jid not in out:
+            out.append(jid)
+    return tuple(out)
+
+
+def d3_window_extra_bytes(raw_only_judges: str | None = None) -> dict[str, int]:
+    """The disk the window adds for vllm-sr/d3: its weights, only when RDLAB_ONLY_JUDGES (or RDLAB_JUDGE_PASS_MODES)
+    names d3; nothing otherwise, so every other window keeps its figure."""
+    if raw_only_judges is None:
+        named = D3_JUDGE_ID in gate_selected_judge_ids()
+    else:
+        named = D3_JUDGE_ID in str(raw_only_judges).split(",")
+    return {"weights_bytes": D3_WEIGHTS_BYTES if named else 0, "venv_bytes": 0}
 
 def receipt_tar_specs(raw_only_judges: str | None = None) -> list[JudgeSpec]:
     """The judges whose receipts the launcher packs for the VM: the five original judges, plus any D5c judge the window
