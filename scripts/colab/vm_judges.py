@@ -16193,6 +16193,7 @@ def elephant_install_commands(work_dir: Path, repo_dir: Path, snapshot_dir: Path
         ("checkout_decision_index", ["git", "-C", str(kit), "checkout", "-q", "-f", ELEPHANT_DECISION_INDEX_COMMIT]),
         ("torch_pin", [py, "-c", f"import torch; open({str(pins)!r}, 'w').write('torch==' + torch.__version__ + '\\n')"]),
         ("install_onejev", ["uv", "pip", "install", "--python", py, *cons, "-e", str(onejev), *ELEPHANT_SETUP_EXTRA_PACKAGES]),
+        ("resolve_causal_conv1d", ["uv", "pip", "install", "--dry-run", "--python", py, "--no-build-isolation", *cons, "causal-conv1d"]),
         ("build_causal_conv1d", ["uv", "pip", "install", "--python", py, "--no-build-isolation", *cons, "causal-conv1d"]),
         ("install_decision_index", ["uv", "pip", "install", "--python", py, "--no-deps", "-e", str(kit)]),
         ("import_check", [py, "-c", "import qev.engine, qev.readout, qev.schema"]),
@@ -16245,6 +16246,41 @@ def _git_head(path: Path, runner: Callable[..., Any]) -> str:
 
 def _elephant_env() -> dict[str, str]:
     return {**os.environ, **ELEPHANT_INSTALL_ENV}
+
+
+_CPU_CUDA_BUILD_MARKERS: tuple[str, ...] = (
+    "nvcc was not found",
+    "nvcc not found",
+    "nvcc / cuda toolkit unavailable",
+    "no such file or directory: 'nvcc'",
+    "/bin/nvcc",
+    "cuda_home environment variable is not set",
+    "cuda_home is none",
+    "bare_metal_version",
+    "no cuda runtime is found",
+    "cuda_runtime.h: no such file",
+    "cuda is not available",
+    "torch not compiled with cuda",
+)
+_NON_CUDA_RESOLUTION_OR_FETCH_MARKERS: tuple[str, ...] = (
+    "no solution found",
+    "unsatisfiable",
+    "failed to download",
+    "failed to fetch",
+    "network is unreachable",
+    "connection refused",
+    "name or service not known",
+    "temporary failure in name resolution",
+    "certificate verify failed",
+)
+
+
+def _is_cpu_cuda_build_failure(output: str) -> bool:
+    """Return True only when build output reflects missing CUDA/nvcc rather than resolution, fetch, or general C++ errors."""
+    low = str(output or "").lower()
+    if not low or any(bad in low for bad in _NON_CUDA_RESOLUTION_OR_FETCH_MARKERS):
+        return False
+    return any(marker in low for marker in _CPU_CUDA_BUILD_MARKERS)
 
 
 def ensure_elephant_venv(
@@ -16314,12 +16350,18 @@ def ensure_elephant_venv(
         elif stale.exists():
             stale.unlink()
     rec["clean_start"] = True
+    resolved_causal_conv1d = False
     t_start = clock()
     for name, argv in elephant_install_commands(work_dir, repo_dir, snapshot_dir):
         t0 = clock()
         step_timeout = elephant_step_timeout_seconds()
+        step_env = (
+            {**_elephant_env(), "CAUSAL_CONV1D_SKIP_CUDA_BUILD": "TRUE"}
+            if name == "resolve_causal_conv1d"
+            else _elephant_env()
+        )
         try:
-            res = runner(argv, capture_output=True, text=True, env=_elephant_env(), stdin=subprocess.DEVNULL, timeout=step_timeout)
+            res = runner(argv, capture_output=True, text=True, env=step_env, stdin=subprocess.DEVNULL, timeout=step_timeout)
         except subprocess.TimeoutExpired:
             rec["steps"].append({"step": name, "rc": None, "seconds": round(clock() - t0, 3), "timeout_seconds": step_timeout})
             rec["install_seconds"] = round(clock() - t_start, 3)
@@ -16330,15 +16372,22 @@ def ensure_elephant_venv(
         if name == "build_causal_conv1d":
             rec["causal_conv1d_build_seconds"] = step["seconds"]
         if rc != 0:
-            if name == "build_causal_conv1d" and stub_exercise:
-                # On CPU VMs CUDA kernels cannot compile; record cpu_cannot_build and proceed with decision-index and imports.
+            combined_out = f"{getattr(res, 'stderr', '') or ''}\n{getattr(res, 'stdout', '') or ''}"
+            if (
+                name == "build_causal_conv1d"
+                and stub_exercise
+                and resolved_causal_conv1d
+                and _is_cpu_cuda_build_failure(combined_out)
+            ):
+                # On CPU VMs CUDA kernels cannot compile; after dry-run resolution succeeded, record cpu_cannot_build
+                # for missing CUDA/nvcc and proceed through decision-index and imports.
                 tail = scrub_log_text(str(getattr(res, "stderr", "") or ""))[-2000:]
                 step["outcome"] = "cpu_cannot_build"
                 if tail:
                     step["stderr_tail"] = tail
                 rec["causal_conv1d_build_outcome"] = "cpu_cannot_build"
                 rec["note"] = (
-                    "causal-conv1d build exited non-zero on CPU under "
+                    "causal-conv1d resolution succeeded and build exited non-zero for missing CUDA/nvcc on CPU under "
                     f"{STUB_EXERCISE_ELEPHANT_INSTALL_ENV_VAR}=1 (cpu_cannot_build); "
                     "continued through install_decision_index and import_check"
                 )
@@ -16346,6 +16395,8 @@ def ensure_elephant_venv(
             rec["install_seconds"] = round(clock() - t_start, 3)
             tail = scrub_log_text(str(getattr(res, "stderr", "") or ""))[-2000:]
             return finish("failed", "ELEPHANT_INSTALL_FAILED", f"step {name} rc={rc}: {tail}")
+        if name == "resolve_causal_conv1d":
+            resolved_causal_conv1d = True
         if name == "apply_serve_patch":
             rec["serve_patch_applied"] = True
         if name in ("checkout_onejev", "checkout_decision_index"):

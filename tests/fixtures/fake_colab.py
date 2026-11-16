@@ -1426,6 +1426,7 @@ def run_fake_uv(argv: list[str]) -> int:
         editable_dirs: list[str] = []
         positional_pkgs: list[str] = []
         require_hashes = False
+        dry_run = False
         no_binary_pkgs: set[str] = set()
         only_binary_all = False
         idx = 2
@@ -1446,6 +1447,10 @@ def run_fake_uv(argv: list[str]) -> int:
             if tok in ("-e", "--editable") and idx + 1 < len(argv):
                 editable_dirs.append(argv[idx + 1])
                 idx += 2
+                continue
+            if tok == "--dry-run":
+                dry_run = True
+                idx += 1
                 continue
             if tok in ("--no-build-isolation", "--no-deps"):
                 idx += 1
@@ -1489,17 +1494,35 @@ def run_fake_uv(argv: list[str]) -> int:
             norm_pkgs = [p.split("[", 1)[0].strip().lower() for p in positional_pkgs]
             fail_pkg = os.environ.get("FAKE_COLAB_FAIL_UV_PKG", "").strip().lower()
             if fail_pkg and fail_pkg in norm_pkgs:
-                sys.stderr.write(f"error: Simulated failure installing `{fail_pkg}`\n")
+                sys.stderr.write(f"error: No solution found when resolving dependencies for `{fail_pkg}`\n")
                 return 2
-            if "causal-conv1d" in norm_pkgs and os.environ.get("FAKE_COLAB_CAUSAL_CONV1D_SUCCEED") != "1":
-                sys.stderr.write(
-                    "error: Failed to build `causal-conv1d`\n"
-                    "  Building wheel for causal-conv1d (setup.py) failed: nvcc / CUDA toolkit unavailable on CPU\n"
-                )
-                return 2
-            if editable_dirs and os.environ.get("FAKE_COLAB_UV_FAIL_EDITABLE") == "1":
-                sys.stderr.write("error: Failed to build editable package (FAKE_COLAB_UV_FAIL_EDITABLE=1)\n")
-                return 2
+            if dry_run:
+                if (
+                    "causal-conv1d" in norm_pkgs
+                    and os.environ.get("CAUSAL_CONV1D_SKIP_CUDA_BUILD") != "TRUE"
+                    and os.environ.get("FAKE_COLAB_CAUSAL_CONV1D_SUCCEED") != "1"
+                ):
+                    sys.stderr.write(
+                        "error: setup.py metadata failed without CAUSAL_CONV1D_SKIP_CUDA_BUILD: "
+                        "NameError: name 'bare_metal_version' is not defined\n"
+                    )
+                    return 2
+                sys.stderr.write(f"Resolved {len(editable_dirs) + len(norm_pkgs)} package(s) (dry-run)\n")
+                return 0
+            if "causal-conv1d" in norm_pkgs:
+                if os.environ.get("FAKE_COLAB_CAUSAL_CONV1D_NON_CUDA_FAIL") == "1":
+                    sys.stderr.write(
+                        "error: Failed to build `causal-conv1d`\n"
+                        "  csrc/causal_conv1d.cpp:42:2: error: non-CUDA C++ compilation error\n"
+                    )
+                    return 2
+                if os.environ.get("FAKE_COLAB_CAUSAL_CONV1D_SUCCEED") != "1":
+                    sys.stderr.write(
+                        "error: Failed to build `causal-conv1d`\n"
+                        "  UserWarning: causal_conv1d was requested, but nvcc was not found.\n"
+                        "  NameError: name 'bare_metal_version' is not defined\n"
+                    )
+                    return 2
             venv_root = venv_py_path.parent.parent
             site_pkgs = venv_root / "site-packages"
             site_pkgs.mkdir(parents=True, exist_ok=True)

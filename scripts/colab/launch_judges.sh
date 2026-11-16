@@ -1851,7 +1851,9 @@ fetch_completed_judge_checkpoints() {
   #   - Refuse: otherwise both downloads are deleted and one named line is logged and printed to stderr
   #     (FETCHED_JUDGE_DONE_INVALID, FETCHED_ROWS_MISSING or FETCHED_ROWS_SHA_MISMATCH), so the judge is not counted
   #     in judges_completed (which lists the judge_done files in place).
-  #   - Deadline: when the fetch deadline runs out between the two downloads, nothing of that pass is kept.
+  #   - Deadline / skip: any in-place pair of the current pass that failed verification is deleted before checking
+  #     the deadline; when the fetch deadline runs out (or CLEANUP_SKIP_FETCH=1) before or between its downloads,
+  #     nothing of that pass is kept.
   # A pass that has not finished is never fetched: the list comes only from judge_pass_done records.
   local dl_timeout="${1:-$PROGRESS_FETCH_TIMEOUT_SECONDS}" deadline_epoch="${2:-0}" rem_dl_timeout=""
   if [[ ! -f "$OUT_DIR/progress.jsonl" ]]; then
@@ -1877,13 +1879,14 @@ fetch_completed_judge_checkpoints() {
       continue
     fi
     # Both files land as hidden .part downloads; only a pair whose rows match the judge_done sha256 is moved into
-    # place, so a judge is never counted completed (judge_done present) with missing or truncated rows. Deleting a
-    # superseded in-place pair only after remaining_fetch_timeout succeeds (once re-fetch begins) is fail-closed:
-    # the VM's latest judge_done record is authoritative over any stale in-place pair with a mismatched sha256.
+    # place, so a judge is never counted completed (judge_done present) with missing or truncated rows. Deleting any
+    # in-place pair that failed the staged=False check immediately before checking the deadline is fail-closed: the
+    # VM's latest judge_done record is authoritative over any stale in-place pair with a mismatched sha256, so an
+    # expired deadline or cleanup skip never leaves an unverified or superseded pair in place.
+    if [[ -n "$done_file" && -n "$row_file" ]]; then
+      rm -f "$OUT_DIR/judge_done/${done_file}" "$OUT_DIR/rows/${row_file}"
+    fi
     if rem_dl_timeout="$(remaining_fetch_timeout "$deadline_epoch" "$dl_timeout")"; then
-      if [[ -n "$done_file" && -n "$row_file" ]]; then
-        rm -f "$OUT_DIR/judge_done/${done_file}" "$OUT_DIR/rows/${row_file}"
-      fi
       timeout -k "$COLAB_KILL_GRACE_SECONDS" "$rem_dl_timeout" colab download -s "$S" "/content/rdlab_run/judge_done/${done_file}" "$OUT_DIR/judge_done/.${done_file}.part" </dev/null >/dev/null 2>&1 || true
     else
       break
@@ -4565,13 +4568,15 @@ for rel_name in (
     if src.is_file():
         shutil.copyfile(src, out_dir / rel_name)
 
+stub_exercise_el = False
 src_elephant_install = extract_dir / "elephant_install.json"
 if src_elephant_install.is_file():
     try:
         el_doc = json.loads(src_elephant_install.read_text(encoding="utf-8", errors="replace"))
     except Exception:
         el_doc = {}
-    if isinstance(el_doc, dict) and el_doc.get("stub_exercise"):
+    if isinstance(el_doc, dict) and bool(el_doc.get("stub_exercise")):
+        stub_exercise_el = True
         shutil.copyfile(src_elephant_install, out_dir / "elephant_install.json")
 
 src_progress = extract_dir / "progress.jsonl"
@@ -4602,10 +4607,11 @@ for extra_f in (
     extract_dir / "session_env.json",
     extract_dir / "shard_manifest.json",
     extract_dir / "boot_gatekeeper.json",
-    extract_dir / "elephant_install.json",
 ):
     if extra_f.is_file():
         vm_judges.scrub_log_file_in_place(extra_f)
+if stub_exercise_el and src_elephant_install.is_file():
+    vm_judges.scrub_log_file_in_place(src_elephant_install)
 for jdone_parent in (out_dir / "judge_done", extract_dir / "judge_done"):
     if jdone_parent.is_dir():
         for jf in sorted(jdone_parent.glob("*.json")):

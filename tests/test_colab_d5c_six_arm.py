@@ -1646,7 +1646,13 @@ def test_bash_fetch_completed_judge_checkpoints_crash_empty_name_and_deadline_gu
     helpers_src = _extract_bash_fn("remaining_fetch_timeout") + "\n\n" + _extract_bash_fn("fetch_completed_judge_checkpoints")
 
     def _run_fetch_harness(
-        sub: Path, *, py_mode: str, deadline_epoch: int, seed_stale: bool = True
+        sub: Path,
+        *,
+        py_mode: str,
+        deadline_epoch: int,
+        seed_stale: bool = True,
+        cleanup_skip_fetch: int = 0,
+        helpers_override: str | None = None,
     ) -> tuple[subprocess.CompletedProcess[str], list[str], Path]:
         sub.mkdir(parents=True, exist_ok=True)
         out_dir = sub / "out"
@@ -1702,6 +1708,8 @@ def test_bash_fetch_completed_judge_checkpoints_crash_empty_name_and_deadline_gu
             "fi\n"
             'if [[ "$code" == *"staged=True"* ]]; then\n'
             f'  if [[ "{py_mode}" == "crash_staged" ]]; then\n'
+            '    cp "$4/judge_done/.d3-mini.json.part" "$4/judge_done/d3-mini.json"\n'
+            '    cp "$4/rows/.d3-mini.jsonl.part" "$4/rows/d3-mini.jsonl"\n'
             "    exit 42\n"
             "  fi\n"
             '  "$REAL_PY" "$@"\n'
@@ -1723,11 +1731,11 @@ def test_bash_fetch_completed_judge_checkpoints_crash_empty_name_and_deadline_gu
             f'PYTHON_BIN="{_to_wsl_path(fake_py)}"\n'
             'S="fake-session"\n'
             'PASS_MODE="binary"\n'
-            "CLEANUP_SKIP_FETCH=0\n"
+            f"CLEANUP_SKIP_FETCH={cleanup_skip_fetch}\n"
             "DOWNLOAD_TIMEOUT_SECONDS=30\n"
             "COLAB_KILL_GRACE_SECONDS=5\n"
             'log_msg() { printf "%s\\n" "$*" >> "$OUT_DIR/colab-cli.log"; }\n'
-            + helpers_src
+            + (helpers_override if helpers_override is not None else helpers_src)
             + f"\nfetch_completed_judge_checkpoints 30 {deadline_epoch}\n",
             encoding="utf-8",
             newline="\n",
@@ -1737,7 +1745,7 @@ def test_bash_fetch_completed_judge_checkpoints_crash_empty_name_and_deadline_gu
         dl_calls = colab_log.read_text(encoding="utf-8").splitlines() if colab_log.is_file() else []
         return proc, dl_calls, out_dir
 
-    # B2: Python crashes during staged=True verification without touching files -> bash fallback removes stale pair & .part.
+    # B2: staged=True moves .part into destination before crashing -> only the fallback rm in bash cleans up.
     proc_b2, dl_b2, out_b2 = _run_fetch_harness(tmp_path / "b2", py_mode="crash_staged", deadline_epoch=0, seed_stale=True)
     assert proc_b2.returncode == 0, proc_b2.stderr
     assert len(dl_b2) == 2
@@ -1746,6 +1754,19 @@ def test_bash_fetch_completed_judge_checkpoints_crash_empty_name_and_deadline_gu
     assert "FETCHED_JUDGE_DONE_INVALID" in proc_b2.stderr
     assert "FETCHED_JUDGE_DONE_INVALID" in (out_b2 / "colab-cli.log").read_text(encoding="utf-8")
 
+    # Prove B2 pins the crash-path fallback rm: replacing the second rm_line with ':' leaves moved destination files behind.
+    rm_line = 'rm -f "$OUT_DIR/judge_done/${done_file}" "$OUT_DIR/rows/${row_file}"'
+    assert helpers_src.count(rm_line) == 2
+    head_part, sep, tail_part = helpers_src.rpartition(rm_line)
+    assert sep == rm_line
+    mutated_helpers = f"{head_part}:{tail_part}"
+    proc_b2_mut, _, out_b2_mut = _run_fetch_harness(
+        tmp_path / "b2_mut", py_mode="crash_staged", deadline_epoch=0, seed_stale=True, helpers_override=mutated_helpers
+    )
+    assert proc_b2_mut.returncode == 0
+    assert (out_b2_mut / "judge_done" / "d3-mini.json").is_file()
+    assert (out_b2_mut / "rows" / "d3-mini.jsonl").is_file()
+
     # C1: empty done_file / row_file entries are skipped safely without rm or colab calls.
     proc_c1, dl_c1, out_c1 = _run_fetch_harness(tmp_path / "c1", py_mode="empty_fields", deadline_epoch=0, seed_stale=True)
     assert proc_c1.returncode == 0, proc_c1.stderr
@@ -1753,9 +1774,17 @@ def test_bash_fetch_completed_judge_checkpoints_crash_empty_name_and_deadline_gu
     assert (out_c1 / "judge_done" / "d3-mini.json").is_file()
     assert (out_c1 / "rows" / "d3-mini.jsonl").is_file()
 
-    # C4: expired deadline (1 < now) breaks before deleting pre-existing in-place files.
+    # A1 (C4 fail-closed delete): both deadline break and CLEANUP_SKIP_FETCH=1 delete failed in-place pairs before breaking.
     proc_c4, dl_c4, out_c4 = _run_fetch_harness(tmp_path / "c4_expired", py_mode="normal", deadline_epoch=1, seed_stale=True)
     assert proc_c4.returncode == 0, proc_c4.stderr
     assert dl_c4 == []
-    assert (out_c4 / "judge_done" / "d3-mini.json").is_file()
-    assert (out_c4 / "rows" / "d3-mini.jsonl").is_file()
+    assert not (out_c4 / "judge_done" / "d3-mini.json").exists()
+    assert not (out_c4 / "rows" / "d3-mini.jsonl").exists()
+
+    proc_skip, dl_skip, out_skip = _run_fetch_harness(
+        tmp_path / "c4_skip", py_mode="normal", deadline_epoch=0, seed_stale=True, cleanup_skip_fetch=1
+    )
+    assert proc_skip.returncode == 0, proc_skip.stderr
+    assert dl_skip == []
+    assert not (out_skip / "judge_done" / "d3-mini.json").exists()
+    assert not (out_skip / "rows" / "d3-mini.jsonl").exists()

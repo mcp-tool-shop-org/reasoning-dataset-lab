@@ -286,11 +286,19 @@ class _Runner:
     """A fake subprocess runner over the real step list: `git rev-parse HEAD` answers the pinned commit unless `heads`
     overrides it, and `fail_step` makes that step exit 1 (with a token in its stderr, which must be scrubbed)."""
 
-    def __init__(self, ctx: dict[str, Path], *, fail_step: str | None = None, heads: dict[str, str] | None = None) -> None:
+    def __init__(
+        self,
+        ctx: dict[str, Path],
+        *,
+        fail_step: str | None = None,
+        heads: dict[str, str] | None = None,
+        fail_stderr: str = "nvcc not found hf_SecretToken12345678901234",
+    ) -> None:
         self.names = {tuple(a): n for n, a in vm_judges.elephant_install_commands(ctx["work_dir"], ctx["repo_dir"], ctx["snapshot_dir"])}
         self.calls: list[tuple[list[str], dict[str, str]]] = []
         self.fail_step = fail_step
         self.heads = heads or {}
+        self.fail_stderr = fail_stderr
 
     def __call__(self, argv: list[str], **kw: Any) -> Any:
         self.calls.append((list(argv), dict(kw.get("env") or {})))
@@ -299,7 +307,7 @@ class _Runner:
             want = vm_judges.ELEPHANT_ONEJEV_COMMIT if leaf == "OneJev" else vm_judges.ELEPHANT_DECISION_INDEX_COMMIT
             return types.SimpleNamespace(returncode=0, stdout=self.heads.get(leaf, want) + "\n", stderr="")
         if self.fail_step and self.names.get(tuple(argv)) == self.fail_step:
-            return types.SimpleNamespace(returncode=1, stdout="", stderr="nvcc not found hf_SecretToken12345678901234")
+            return types.SimpleNamespace(returncode=1, stdout="", stderr=self.fail_stderr)
         return types.SimpleNamespace(returncode=0, stdout="", stderr="")
 
 
@@ -884,6 +892,24 @@ def test_stub_exercise_elephant_install_unit_cpu_cannot_build_and_step_failures(
     build_step = next(s for s in rec["steps"] if s["step"] == "build_causal_conv1d")
     assert build_step["rc"] == 1 and build_step["outcome"] == "cpu_cannot_build"
     assert vm_judges.elephant_venv_name() == "venv-judge"
+    res_env = next(env for argv, env in runner.calls if runner.names.get(tuple(argv)) == "resolve_causal_conv1d")
+    bld_env = next(env for argv, env in runner.calls if runner.names.get(tuple(argv)) == "build_causal_conv1d")
+    assert res_env.get("CAUSAL_CONV1D_SKIP_CUDA_BUILD") == "TRUE"
+    assert "CAUSAL_CONV1D_SKIP_CUDA_BUILD" not in bld_env
+
+    # Non-CUDA failure on build_causal_conv1d (e.g. C++ error or resolution conflict) refuses even under stub_exercise.
+    monkeypatch.setattr(vm_judges, "_LAST_ELEPHANT_INSTALL", None)
+    non_cuda_rec = vm_judges.ensure_elephant_venv(
+        **_ctx(tmp_path / "non_cuda"),
+        real=False,
+        stub_exercise=True,
+        runner=_Runner(_ctx(tmp_path / "non_cuda"), fail_step="build_causal_conv1d", fail_stderr="csrc/causal_conv1d.cpp:42: error: syntax error"),
+        which=lambda _n: "/usr/bin/git",
+        clock=_clock(),
+    )
+    assert non_cuda_rec["status"] == "failed" and non_cuda_rec["failure_class"] == "ELEPHANT_INSTALL_FAILED"
+    assert vm_judges._is_cpu_cuda_build_failure("UserWarning: nvcc was not found") is True
+    assert vm_judges._is_cpu_cuda_build_failure("No solution found when resolving dependencies") is False
 
     # Even if causal-conv1d hypothetically succeeded under stub_exercise, elephant_venv_name stays venv-judge.
     ok_stub = vm_judges.ensure_elephant_venv(
@@ -920,6 +946,7 @@ def test_stub_exercise_elephant_install_unit_cpu_cannot_build_and_step_failures(
         "clone_onejev",
         "apply_serve_patch",
         "install_onejev",
+        "resolve_causal_conv1d",
         "install_decision_index",
         "import_check",
     ):
@@ -1026,7 +1053,7 @@ def test_stub_exercise_elephant_install_e2e_runs_all_steps_and_keeps_child_stub(
         if cmd[0].endswith("/venv-elephant/bin/python") and len(cmd) >= 3 and cmd[1] == "-c" and "torch.__version__" in cmd[2]:
             return "torch_pin"
         if cmd[:3] == ["uv", "pip", "install"] and any("venv-elephant" in a for a in cmd) and "causal-conv1d" in cmd:
-            return "build_causal_conv1d"
+            return "resolve_causal_conv1d" if "--dry-run" in cmd else "build_causal_conv1d"
         if cmd[:3] == ["uv", "pip", "install"] and any("venv-elephant" in a for a in cmd) and any(a.endswith("/OneJev") for a in cmd):
             return "install_onejev"
         if cmd[:3] == ["uv", "pip", "install"] and any("venv-elephant" in a for a in cmd) and any(a.endswith("/decision-index") for a in cmd):
@@ -1089,6 +1116,59 @@ def test_stub_exercise_elephant_install_e2e_runs_all_steps_and_keeps_child_stub(
         fail_el_doc = json.loads(member.read().decode("utf-8"))
     assert fail_el_doc["status"] == "failed" and fail_el_doc["failure_class"] == "ELEPHANT_INSTALL_FAILED"
     assert fail_el_doc["stub_exercise"] is True
+
+    # B1 (resolution failure & non-CUDA build failure) + C6 (pin mismatch & causal-conv1d build success) E2E checks.
+    for case_tag, extra_env, want_rc, want_fc, want_substr in (
+        ("b1_resolve_fail", "export FAKE_COLAB_FAIL_UV_PKG=causal-conv1d; ", 2, "ELEPHANT_INSTALL_FAILED", "resolve_causal_conv1d"),
+        ("b1_non_cuda", "export FAKE_COLAB_CAUSAL_CONV1D_NON_CUDA_FAIL=1; ", 2, "ELEPHANT_INSTALL_FAILED", "build_causal_conv1d"),
+        ("c6_bad_head", f"export FAKE_COLAB_ELEPHANT_BAD_HEAD={'deadbeef' * 5}; ", 2, "ELEPHANT_SOURCE_PIN_MISMATCH", "ELEPHANT_SOURCE_PIN_MISMATCH"),
+    ):
+        _, c_exports = _launcher_env(tmp_path, case_tag)
+        _c_snap = tmp_path / f"snap_{case_tag}"
+        _add_elephant_snapshot(_c_snap / "receipts", _c_snap / "hf_home")
+        c_full_exports = (
+            c_exports.replace("export VM_DRYRUN=1;", "export VM_DRYRUN=0;")
+            + "export FAKE_COLAB_ENABLE_FAKE_HF_DOWNLOAD=1; "
+            + f"export RDLAB_ONLY_JUDGES={ELEPHANT}; "
+            + "export RDLAB_STUB_EXERCISE_ELEPHANT_INSTALL=1; "
+            + extra_env
+        )
+        c_out = tmp_path / f"out_{case_tag}"
+        c_proc = _run_launcher(
+            c_full_exports,
+            f"--stub --pass-mode {CONTRA} --out-dir '{_to_wsl_path(c_out)}' --run-id el-{case_tag}",
+        )
+        assert c_proc.returncode == want_rc, f"{case_tag}: stdout={c_proc.stdout}\nstderr={c_proc.stderr}"
+        c_status = json.loads((c_out / "status.json").read_text(encoding="utf-8"))
+        assert c_status["failure_class"] == want_fc and want_substr in c_status["reason"]
+
+    # C6: causal-conv1d succeeds -> status="ok", stub_exercise=True, judging child STILL --stub in venv-judge.
+    ok_env, ok_exports = _launcher_env(tmp_path, "c6_succeed")
+    ok_snap = tmp_path / "snap_c6_succeed"
+    _add_elephant_snapshot(ok_snap / "receipts", ok_snap / "hf_home")
+    ok_full_exports = (
+        ok_exports.replace("export VM_DRYRUN=1;", "export VM_DRYRUN=0;")
+        + "export FAKE_COLAB_ENABLE_FAKE_HF_DOWNLOAD=1; "
+        + f"export RDLAB_ONLY_JUDGES={ELEPHANT}; "
+        + "export RDLAB_STUB_EXERCISE_ELEPHANT_INSTALL=1; "
+        + "export FAKE_COLAB_CAUSAL_CONV1D_SUCCEED=1; "
+    )
+    ok_out = tmp_path / "out_c6_succeed"
+    ok_proc = _run_launcher(
+        ok_full_exports,
+        f"--stub --pass-mode {CONTRA} --out-dir '{_to_wsl_path(ok_out)}' --run-id el-c6-succeed",
+    )
+    assert ok_proc.returncode == 0, f"stdout={ok_proc.stdout}\nstderr={ok_proc.stderr}"
+    ok_el_doc = json.loads((ok_out / "elephant_install.json").read_text(encoding="utf-8"))
+    assert ok_el_doc["status"] == "ok" and ok_el_doc["stub_exercise"] is True
+    ok_rec = json.loads((ok_out / "vm_receipt.json").read_text(encoding="utf-8"))
+    assert ok_rec["elephant_install"]["status"] == "ok"
+    ok_j_rows = [
+        json.loads(ln)
+        for ln in (ok_env["state_dir"] / "judge_subprocesses.jsonl").read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    assert len(ok_j_rows) == 1 and ok_j_rows[0]["venv"] == "venv-judge" and "--stub" in ok_j_rows[0]["cmd"]
 
 
 def test_stub_without_opt_in_is_byte_identical(tmp_path: Path) -> None:

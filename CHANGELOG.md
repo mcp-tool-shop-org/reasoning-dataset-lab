@@ -6,6 +6,12 @@ All notable changes to `reasoning-dataset-lab` are documented here. The format i
 
 ## Unreleased
 
+### Opt-in CPU stub `elephant-1` install hook & `#96` follow-ups
+
+- **Opt-in CPU stub install hook (`RDLAB_STUB_EXERCISE_ELEPHANT_INSTALL=1`):** allowed only with `--stub` (no `--until`, no `--session-smoke`, and `elephant-1` in planned judges; refused otherwise with `STUB_EXERCISE_ELEPHANT_INSTALL_INVALID` and listed in `FORBIDDEN_COUNTED_TEST_HOOK_NAMES`). Runs all `ensure_elephant_venv` steps into `venv-elephant` (`resolve_causal_conv1d` dry-run with `CAUSAL_CONV1D_SKIP_CUDA_BUILD=TRUE` followed by `build_causal_conv1d`), records missing-CUDA/`nvcc` build failures as `cpu_cannot_build` while continuing through `install_decision_index` and `import_check`, keeps the stub judging child in `venv-judge` with zero weights loaded, and refuses with `ELEPHANT_INSTALL_FAILED` on resolution or non-CUDA failures.
+- **Real-window behavior change in `ensure_elephant_venv`:** `_git_head` (`git rev-parse HEAD` after checkout) now catches `subprocess.TimeoutExpired` and classifies it as `ELEPHANT_INSTALL_TIMEOUT`, so real windows mark `elephant-1` `failed_to_run` and continue running other planned judges on that timeout instead of letting the exception escape.
+- **`#96` follow-ups (from `#95` review):** empty-name guards before every `rm` in `fetch_completed_judge_checkpoints` (`C1`), fail-closed stale-pair deletion before checking the fetch deadline with VM-latest-record documentation (`C4`), crash/empty-name/deadline bash harness tests (`B2`), and `REAL_SERVICE_ASSUMPTIONS.md` / `README.md` (`C2`, `C3`, `:345`) doc updates.
+
 ### The D5c judge window, arm 4: elephant-1 through qev
 
 - **Judge `elephant-1`** (baselabs/elephant-1 at b3f8a934), in `three_way_contradicted` with arm 1's d3-style words. It runs through `ElephantDecisionTransport`: `qev.engine.DecisionEngine` from OneJev at 81ce62f1 plus the snapshot's `serve.patch`, over the receipt-verified local snapshot.

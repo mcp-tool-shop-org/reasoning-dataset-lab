@@ -225,7 +225,7 @@
           "path": ".python-version"
         },
         {
-          "hash": "efd8ec97ee20ca0adf9b712a4aee876e91767f2640db0f7148725f296704e617",
+          "hash": "f4b10b1aff839e0561b9bb15d1442a8d0c6caeb0d46801fad5ff97f9b3dd5a61",
           "path": "CHANGELOG.md"
         },
         {
@@ -308,7 +308,7 @@
           "path": "scripts/colab/README.md"
         },
         {
-          "hash": "a3e20c7ce4bb93d68c99c5813a76dc8d81d6afc933515481e0c1e4dfe8750d2e",
+          "hash": "4ba12bdc6b63d66c81ab1fe209ed174af8824fbcf549a8208b67bea58a618eb2",
           "path": "scripts/colab/REAL_SERVICE_ASSUMPTIONS.md"
         },
         {
@@ -421,7 +421,7 @@
           "path": "scripts/colab/generate_weights_table.py"
         },
         {
-          "hash": "fe3c6935c7f99398494760da3c5658e036590eddf8bf767c5d6e125886f684c9",
+          "hash": "3e04b94fa1088eb98a4cd6e14215045114145213fdc70d016899a7a9cd7aea3c",
           "path": "scripts/colab/launch_judges.sh"
         },
         {
@@ -3916,30 +3916,30 @@
             {
               "in": "ensure_elephant_venv",
               "kind": "except",
-              "line": 16323
+              "line": 16365
             },
             {
               "in": "ensure_elephant_venv",
               "kind": "except",
-              "line": 16356
+              "line": 16407
             },
             {
               "in": "_apply_elephant_install",
               "kind": "raise",
-              "line": 16392
+              "line": 16443
             },
             {
               "in": "_apply_elephant_install",
               "kind": "except",
-              "line": 16400
+              "line": 16451
             },
             {
               "in": "_apply_elephant_install",
               "kind": "raise",
-              "line": 16414
+              "line": 16465
             }
           ],
-          "hash": "eb65518ee3af1205ffe8bbe48df298791d2636337133626922e5ca9ae12886b3",
+          "hash": "2ab889ee79bf202d039233e0263a46da9bec174caeeedc0dc0ca4f1c243ec92a",
           "importOrder": [
             "src/reasoning_dataset_lab/pilot_b/device.py",
             "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py"
@@ -18538,7 +18538,7 @@
             "set_fake_uv_python_315_state",
             "setup_fake_colab_environment"
           ],
-          "hash": "16564ede89bfab547ce0628a9b9d6d2ed5b14a1adf492a9957e5e35c57c6ad2b",
+          "hash": "f3739c4a537f70384a8f6a40be57a48fd820f79ade177dcdc7d6eb5ece1fe287",
           "importsFiles": [
             "scripts/colab/vm_judges.py"
           ],
@@ -19108,7 +19108,7 @@
             "test_venv_elephant_install_steps_env_timings_and_record",
             "test_venv_elephant_is_built_once_per_window_across_subblocks"
           ],
-          "hash": "1737a4eceb70947ed276d0772b21577d759c3adfac1168a19bbe8de9718eb1f3",
+          "hash": "5e82132da4823e61c1b3fc07de2d7f78e6371adbb69ecfd57afdb7f54a9687eb",
           "importsFiles": [
             "src/reasoning_dataset_lab/errors.py",
             "src/reasoning_dataset_lab/pilot_b/__init__.py",
@@ -19166,7 +19166,7 @@
             "test_vm_d3_family_gate_and_remote_code_arg",
             "test_vm_judges_copies_match_the_wording_table_and_the_specs"
           ],
-          "hash": "a31a34985417ef07e564ff175e42c81ff3af161796060ff95fd260300c379ae7",
+          "hash": "55da080592359166cda74b7cf97b9c6a98ca6fdfc93409d93b860bdfb94bb413",
           "importOrder": [
             "src/reasoning_dataset_lab/errors.py",
             "src/reasoning_dataset_lab/pilot_b/__init__.py",
@@ -21242,7 +21242,7 @@
   ],
   "engine": "1.26.0",
   "generatedFrom": {
-    "commit": "5afaa424432a144fd356bf1e793ecf9333b63ebe",
+    "commit": "a7092ecd891a317bfc30c50bd4593e0f314fb685",
     "tracked": 192
   },
   "landings": [
