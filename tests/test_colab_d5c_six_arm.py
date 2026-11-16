@@ -2793,10 +2793,16 @@ def test_read_unverified_passes_edge_cases_and_malformed_lines(
         f"d3-mini\t{TWO_Q}\td3-mini.{TWO_Q}.json\n", encoding="utf-8"
     )
     combined = run_records.collect_run_unverified_passes(out_b1)
-    assert [(e["judge_id"], e["pass_mode"]) for e in combined] == [
-        ("d3-mini", TWO_Q),
-        (ENCODER, NLI),
+    assert [(e["judge_id"], e["pass_mode"], e["reason"]) for e in combined] == [
+        ("d3-mini", TWO_Q, "unverified_pass"),
+        (ENCODER, NLI, "incomplete_rows"),
     ]
+    msg_unv, hint_unv = run_records.format_unverified_or_incomplete_refusal(combined, subject="shard 1/2", extra_note="note")
+    assert "unverified pass(es)" in msg_unv and "reverify-unverified" in hint_unv
+    msg_inc, hint_inc = run_records.format_unverified_or_incomplete_refusal([combined[1]], subject="Run dir")
+    assert "rows present for a pass the outcome does not list as completed" in msg_inc
+    assert "timed-out" not in msg_inc
+    assert f"vm_judges.py exclude-incomplete <out_dir> --judge {ENCODER} --pass-mode {NLI}" in hint_inc
 
     # Invalid rows entry (`rows/.jsonl`) raises ValueError.
     (out_b1 / "rows" / ".jsonl").write_text("{}\n", encoding="utf-8")
@@ -2804,10 +2810,62 @@ def test_read_unverified_passes_edge_cases_and_malformed_lines(
         run_records.read_outcome_unverified_passes(out_b1)
 
 
-def test_vm_judges_reverify_unverified_cli_verifies_and_prunes_offline(tmp_path: Path) -> None:
-    """PR #102 B3: `python scripts/colab/vm_judges.py reverify-unverified <out_dir>` re-runs
-    `launcher_verify_fetched_pass(staged=False, want_sha256=<from progress.jsonl>)` offline without a tight timeout,
-    prunes only verified entries, updates `outcome.draft.json`, and refuses malformed/missing inputs."""
+def test_dangling_and_live_symlinks_refused_in_run_records_and_reverify(tmp_path: Path) -> None:
+    """PR #102 r2 B-2 & C-a: dangling symlinks on `.unverified_judge_done` and `outcome.draft.json` raise
+    `ValueError('not a regular file')` (removing `or ...is_symlink()` fails the test because `.exists()` is False),
+    and live symlinks are refused without writing through to their target."""
+    probe = tmp_path / "symlink_probe"
+    try:
+        probe.symlink_to(tmp_path / "probe_missing")
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"symlinks unavailable on this host: {exc}")
+    finally:
+        if probe.is_symlink():
+            probe.unlink()
+
+    sym_dir = tmp_path / "sym_dir"
+    sym_dir.mkdir()
+    marker_link = sym_dir / run_records.UNVERIFIED_JUDGE_DONE_FILENAME
+    marker_link.symlink_to(tmp_path / "missing_marker_target")
+    assert not marker_link.exists() and marker_link.is_symlink()
+    with pytest.raises(ValueError, match="not a regular file"):
+        run_records.read_unverified_passes(sym_dir)
+    marker_link.unlink()
+
+    outcome_link = sym_dir / run_records.OUTCOME_DRAFT_FILENAME
+    outcome_link.symlink_to(tmp_path / "missing_outcome_target")
+    assert not outcome_link.exists() and outcome_link.is_symlink()
+    with pytest.raises(ValueError, match="not a regular file"):
+        run_records.read_outcome_unverified_passes(sym_dir)
+    outcome_link.unlink()
+
+    # C-a: live symlink `.unverified_judge_done -> outside.txt` is refused and never written through.
+    outside_target = tmp_path / "outside_marker.txt"
+    outside_bytes = f"d3-mini:{CONTRA}\n".encode("utf-8")
+    outside_target.write_bytes(outside_bytes)
+    outcome_link.write_text(
+        json.dumps({"pass_mode": CONTRA, "judges_completed": [], "unverified_passes": [f"d3-mini:{CONTRA}"]}) + "\n",
+        encoding="utf-8",
+    )
+    marker_link.symlink_to(outside_target)
+    assert marker_link.exists() and marker_link.is_symlink()
+    with pytest.raises(ValueError, match="not a regular file"):
+        run_records.read_unverified_passes(sym_dir)
+    with pytest.raises(vm_judges.RefusalError) as exc_sym_rev:
+        vm_judges.reverify_unverified(sym_dir)
+    assert exc_sym_rev.value.code == "REVERIFY_UNVERIFIED_MALFORMED"
+    assert outside_target.read_bytes() == outside_bytes
+    assert marker_link.is_symlink()
+
+
+def test_vm_judges_reverify_unverified_cli_verifies_and_prunes_offline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """PR #102 B3 + r2 B-1, B-4, C-b, C-c: `reverify-unverified` refuses on live runs (`REVERIFY_UNVERIFIED_RUN_LIVE`),
+    rebuilds candidates from marker + `progress.jsonl` while ignoring a stale `unverified_passes_malformed` flag (clearing
+    it only when the marker parses and keeping passes with no 64-hex progress sha unverified), turns outcome write errors
+    into `REVERIFY_UNVERIFIED_WRITE_FAILED` before touching the marker, and honours `RDLAB_REPO_DIR`."""
+    import os
     import subprocess
 
     vm_py = Path(__file__).resolve().parents[1] / "scripts" / "colab" / "vm_judges.py"
@@ -2844,9 +2902,21 @@ def test_vm_judges_reverify_unverified_cli_verifies_and_prunes_offline(tmp_path:
     )
     assert bad_dir.returncode == 2 and "REVERIFY_UNVERIFIED_INVALID_DIR" in bad_dir.stderr
 
-    # Malformed marker on reverify-unverified exits 2 (`REVERIFY_UNVERIFIED_MALFORMED`) and records malformed in outcome.
     marker_p = out_dir / run_records.UNVERIFIED_JUDGE_DONE_FILENAME
     outcome_p = out_dir / run_records.OUTCOME_DRAFT_FILENAME
+    marker_p.write_text(f"d3-mini\t{CONTRA}\td3-mini.json\n", encoding="utf-8", newline="\n")
+
+    # B-4 (1): Missing `outcome.draft.json` -> refuses `REVERIFY_UNVERIFIED_RUN_LIVE` (rc 2), marker untouched.
+    live_no_outcome = subprocess.run(
+        [sys.executable, str(vm_py), "reverify-unverified", str(out_dir)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert live_no_outcome.returncode == 2 and "REVERIFY_UNVERIFIED_RUN_LIVE" in live_no_outcome.stderr
+    assert marker_p.is_file()
+
+    # Malformed marker on reverify-unverified exits 2 (`REVERIFY_UNVERIFIED_MALFORMED`) and records malformed in outcome.
     outcome_p.write_text(
         json.dumps(
             {
@@ -2859,6 +2929,33 @@ def test_vm_judges_reverify_unverified_cli_verifies_and_prunes_offline(tmp_path:
         + "\n",
         encoding="utf-8",
     )
+
+    # B-4 (2): Live `status.json` (`status: "running"`, live `launcher_pid`) and `.rig_launcher.pid` / `.rig_watchdog_armed` refuse.
+    status_p = out_dir / "status.json"
+    status_p.write_text(json.dumps({"status": "running", "launcher_pid": os.getpid()}) + "\n", encoding="utf-8")
+    live_status_proc = subprocess.run(
+        [sys.executable, str(vm_py), "reverify-unverified", str(out_dir)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert live_status_proc.returncode == 2 and "REVERIFY_UNVERIFIED_RUN_LIVE" in live_status_proc.stderr
+    status_p.unlink()
+
+    rig_pid_p = out_dir / ".rig_launcher.pid"
+    rig_pid_p.write_text(f"{os.getpid()}\n", encoding="utf-8")
+    with pytest.raises(vm_judges.RefusalError) as exc_live_pid:
+        vm_judges.reverify_unverified(out_dir)
+    assert exc_live_pid.value.code == "REVERIFY_UNVERIFIED_RUN_LIVE"
+    rig_pid_p.unlink()
+
+    rig_wd_p = out_dir / ".rig_watchdog_armed"
+    rig_wd_p.write_text("", encoding="utf-8")
+    with pytest.raises(vm_judges.RefusalError) as exc_live_wd:
+        vm_judges.reverify_unverified(out_dir)
+    assert exc_live_wd.value.code == "REVERIFY_UNVERIFIED_RUN_LIVE"
+    rig_wd_p.unlink()
+
     marker_p.write_text("d3-mini\tbogus\td3-mini.json\n", encoding="utf-8")
     mal_proc = subprocess.run(
         [sys.executable, str(vm_py), "reverify-unverified", str(out_dir)],
@@ -2869,8 +2966,69 @@ def test_vm_judges_reverify_unverified_cli_verifies_and_prunes_offline(tmp_path:
     assert mal_proc.returncode == 2 and "REVERIFY_UNVERIFIED_MALFORMED" in mal_proc.stderr
     assert json.loads(outcome_p.read_text(encoding="utf-8"))["unverified_passes_malformed"] is True
 
+    # B-1 (a): While marker is still bad, `unverified_passes_malformed` stays True. Once the marker is fixed,
+    # `reverify-unverified` ignores the stale `unverified_passes_malformed` flag, rebuilds candidates from marker +
+    # `progress.jsonl`, keeps any pass without a 64-hex progress sha unverified, and clears the flag; when all shas are
+    # valid 64-hex matches, it exits 0!
+    progress_p = out_dir / "progress.jsonl"
+    marker_p.write_text(f"d3-mini\t{CONTRA}\td3-mini.json\n", encoding="utf-8", newline="\n")
+    progress_p.write_text(
+        json.dumps({"kind": "judge_pass_done", "judge": "d3-mini", "pass_mode": CONTRA, "sha256": d3_sha})
+        + "\n"
+        + json.dumps({"kind": "judge_pass_done", "judge": FLASH, "pass_mode": CONTRA, "sha256": "not-64-hex"})
+        + "\n",
+        encoding="utf-8",
+    )
+    b1_no_hex = subprocess.run(
+        [sys.executable, str(vm_py), "reverify-unverified", str(out_dir)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert b1_no_hex.returncode == 2, b1_no_hex.stderr
+    b1_no_hex_doc = json.loads(outcome_p.read_text(encoding="utf-8"))
+    assert "unverified_passes_malformed" not in b1_no_hex_doc
+    assert b1_no_hex_doc["judges_completed"] == ["d3-mini"]
+    assert b1_no_hex_doc["unverified_passes"] == [f"{FLASH}:{CONTRA}"]
+
+    # Exact B-1 test: write the malformed flag, fix the marker, run reverify with valid 64-hex shas, expect rc 0.
+    outcome_p.write_text(
+        json.dumps(
+            {
+                "pass_mode": CONTRA,
+                "only_judges": ["d3-mini", FLASH],
+                "judges_completed": [],
+                "unverified_passes": [],
+                "unverified_passes_malformed": True,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    marker_p.write_text(f"d3-mini\t{CONTRA}\td3-mini.json\n", encoding="utf-8", newline="\n")
+    progress_p.write_text(
+        json.dumps({"kind": "judge_pass_done", "judge": "d3-mini", "pass_mode": CONTRA, "sha256": d3_sha})
+        + "\n"
+        + json.dumps({"kind": "judge_pass_done", "judge": FLASH, "pass_mode": CONTRA, "sha256": flash_sha})
+        + "\n",
+        encoding="utf-8",
+    )
+    b1_ok = subprocess.run(
+        [sys.executable, str(vm_py), "reverify-unverified", str(out_dir)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert b1_ok.returncode == 0, b1_ok.stderr
+    b1_ok_doc = json.loads(outcome_p.read_text(encoding="utf-8"))
+    assert "unverified_passes_malformed" not in b1_ok_doc
+    assert b1_ok_doc["judges_completed"] == ["d3-mini", FLASH]
+    assert b1_ok_doc["unverified_passes"] == []
+    assert not marker_p.exists()
+
     # Seed two timed-out passes: `d3-mini` matches `progress.jsonl`, while `d3-flash` is superseded (`want_sha256`
     # in `progress.jsonl` differs from `judge_done/d3-flash.json`).
+    progress_p.unlink()
     marker_p.write_text(
         f"d3-mini\t{CONTRA}\td3-mini.json\n{FLASH}\t{CONTRA}\t{FLASH}.json\n",
         encoding="utf-8",
@@ -2900,7 +3058,6 @@ def test_vm_judges_reverify_unverified_cli_verifies_and_prunes_offline(tmp_path:
     assert json.loads(no_prog.stdout)["verified"] == []
 
     # Write `progress.jsonl` where `d3-mini` matches `d3_sha` and `d3-flash` has `wrong_sha`.
-    progress_p = out_dir / "progress.jsonl"
     progress_p.write_text(
         json.dumps({"kind": "judge_pass_done", "judge": "d3-mini", "pass_mode": CONTRA, "sha256": d3_sha})
         + "\n"
@@ -2926,6 +3083,24 @@ def test_vm_judges_reverify_unverified_cli_verifies_and_prunes_offline(tmp_path:
     assert partial_outcome["reverified_unverified_passes"] == [f"d3-mini:{CONTRA}"]
     assert len(partial_outcome["reverify_unverified_history"]) == 2
 
+    # C-b: An outcome write failure raises named `REVERIFY_UNVERIFIED_WRITE_FAILED` (CLI rc 2, no traceback) BEFORE
+    # pruning `.unverified_judge_done`.
+    progress_p.write_text(
+        json.dumps({"kind": "judge_pass_done", "judge": "d3-mini", "pass_mode": CONTRA, "sha256": d3_sha})
+        + "\n"
+        + json.dumps({"kind": "judge_pass_done", "judge": FLASH, "pass_mode": CONTRA, "sha256": flash_sha})
+        + "\n",
+        encoding="utf-8",
+    )
+    orig_replace = os.replace
+    monkeypatch.setattr(os, "replace", lambda _s, _d: (_ for _ in ()).throw(PermissionError("read-only outcome")))
+    write_fail_rc = vm_judges._cli_reverify_unverified([str(out_dir)])
+    monkeypatch.setattr(os, "replace", orig_replace)
+    assert write_fail_rc == 2
+    write_fail_err = capsys.readouterr().err
+    assert "REVERIFY_UNVERIFIED_WRITE_FAILED" in write_fail_err and "Traceback" not in write_fail_err
+    assert marker_p.read_text(encoding="utf-8") == f"{FLASH}\t{CONTRA}\t{FLASH}.json\n"
+
     # Scoring still refuses while `d3-flash` remains unverified.
     with pytest.raises(RdlabError) as exc_still_unv:
         bakeoff_judge_score.score_bakeoff_outputs(
@@ -2938,15 +3113,8 @@ def test_vm_judges_reverify_unverified_cli_verifies_and_prunes_offline(tmp_path:
     assert exc_still_unv.value.code == "BAKEOFF_SCORE_UNVERIFIED_PASS"
     assert FLASH in str(exc_still_unv.value)
 
-    # Once `progress.jsonl` carries the matching sha256 for `d3-flash`, `reverify-unverified` prunes the marker (`rc=0`),
-    # updates `outcome.draft.json`, and allows scoring cleanly.
-    progress_p.write_text(
-        json.dumps({"kind": "judge_pass_done", "judge": "d3-mini", "pass_mode": CONTRA, "sha256": d3_sha})
-        + "\n"
-        + json.dumps({"kind": "judge_pass_done", "judge": FLASH, "pass_mode": CONTRA, "sha256": flash_sha})
-        + "\n",
-        encoding="utf-8",
-    )
+    # Once `os.replace` is restored, `reverify-unverified` prunes the marker (`rc=0`), updates `outcome.draft.json`,
+    # and allows scoring cleanly.
     ok_proc = subprocess.run(
         [sys.executable, str(vm_py), "reverify-unverified", str(out_dir)],
         capture_output=True,
@@ -2973,3 +3141,253 @@ def test_vm_judges_reverify_unverified_cli_verifies_and_prunes_offline(tmp_path:
         bootstrap_resamples=20,
     )
     assert {s["judge_id"] for s in scored_rep["three_way_pass"]} == {"d3-mini", FLASH}
+
+    # C-c: `_load_run_records_module` honours `RDLAB_REPO_DIR` and turns ImportError into `RUN_RECORDS_UNAVAILABLE`.
+    repo_root = Path(__file__).resolve().parents[1]
+    monkeypatch.delitem(sys.modules, "reasoning_dataset_lab.pilot_b.run_records", raising=False)
+    monkeypatch.setenv("RDLAB_REPO_DIR", str(repo_root))
+    monkeypatch.setattr(sys, "path", [])
+    monkeypatch.setattr(sys, "argv", ["ipykernel_launcher.py"])
+    monkeypatch.chdir(tmp_path)
+    loaded_rr = vm_judges._load_run_records_module()
+    assert loaded_rr.OUTCOME_DRAFT_FILENAME == "outcome.draft.json"
+    assert str(repo_root / "src") in sys.path
+
+    monkeypatch.delitem(sys.modules, "reasoning_dataset_lab.pilot_b.run_records", raising=False)
+    monkeypatch.setenv("RDLAB_REPO_DIR", str(tmp_path / "no_repo"))
+    monkeypatch.setattr(sys, "path", [])
+    with pytest.raises(vm_judges.RefusalError) as exc_no_rr:
+        vm_judges._load_run_records_module()
+    assert exc_no_rr.value.code == "RUN_RECORDS_UNAVAILABLE"
+
+
+def test_exclude_incomplete_cli_on_lockcheck_1a_run8_shape_unblocks_merge_and_scoring(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PR #102 r2 B-3: a fixture shaped like `colab-runs/lockcheck-1a-run8` (`d3-mini` completed in `judges_completed`,
+    partial `rows/flow-judge-v0.1.jsonl` + `anchor_rows/flow-judge-v0.1.jsonl` with no `judge_done`) is refused with
+    `rows present for a pass the outcome does not list as completed` (not as a timed-out verify) and a hint naming
+    `vm_judges.py exclude-incomplete <out_dir> --judge flow-judge-v0.1 --pass-mode binary`; running that command moves
+    the incomplete rows (and any pair) to `rows.incomplete/`, records who/when/pass in `outcome.draft.json`, and allows
+    merge and scoring to proceed without counting `flow-judge-v0.1`."""
+    import merge_shards
+    import os
+    import shutil
+    import subprocess
+
+    from tests.test_colab_judge_launcher import _make_stratified_public_items
+
+    for k in list(os.environ):
+        if vm_judges.is_forbidden_counted_test_hook(k):
+            monkeypatch.delenv(k, raising=False)
+    monkeypatch.delenv("VM_DRYRUN", raising=False)
+
+    vm_py = Path(__file__).resolve().parents[1] / "scripts" / "colab" / "vm_judges.py"
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "rec")
+    items_path = _make_stratified_public_items(tmp_path / "items", count=6)
+    manifest_doc = bakeoff_judge.build_shard_manifest(
+        items_path, num_shards=2, anchor_count=2, stratified_anchor_count=2, canary_anchor_count=0, pass_mode="binary"
+    )
+    manifest_path = tmp_path / "shard_manifest.json"
+    manifest_sha = bakeoff_judge.write_shard_manifest(manifest_doc, manifest_path)
+    d3_spec = JUDGE_SPECS["d3-mini"]
+
+    shard_dirs: list[Path] = []
+    for k_idx in (1, 2):
+        sdir = tmp_path / f"shard_{k_idx}"
+        sdir.mkdir()
+        spec_str = f"{k_idx}/2"
+        s_env = vm_judges.collect_and_write_session_env(
+            sdir, receipts_dir=receipts_dir, mode="stub", shard_spec=spec_str, phase="start", dryrun=True
+        )
+        s_env = vm_judges.collect_and_write_session_env(
+            sdir, receipts_dir=receipts_dir, mode="stub", shard_spec=spec_str, phase="end", dryrun=True, prior_session_env=s_env
+        )
+        bakeoff_judge.run_bakeoff_judge(
+            part_dir=items_path,
+            output_dir=sdir,
+            judge="d3-mini",
+            pass_mode="binary",
+            fake_transport=True,
+            allow_remote_code_reviewed=d3_spec.revision,
+            shard_spec=spec_str,
+            shard_manifest_path=manifest_path,
+            shard_manifest_sha256=manifest_sha,
+            session_fingerprint_sha256=s_env["session_fingerprint_sha256"],
+        )
+        (sdir / run_records.OUTCOME_DRAFT_FILENAME).write_text(
+            json.dumps(
+                {
+                    "id": f"lockcheck-1a-run8-s{k_idx}",
+                    "outcome": "failed" if k_idx == 1 else "ok",
+                    "pass_mode": "binary",
+                    "only_judges": None,
+                    "judges_completed": ["d3-mini"],
+                    "unverified_passes": [],
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        if k_idx == 1:
+            # Shape of `colab-runs/lockcheck-1a-run8`: partial `rows/flow-judge-v0.1.jsonl` + `anchor_rows/flow-judge-v0.1.jsonl`,
+            # no `judge_done/flow-judge-v0.1.json`, `status.json` JUDGE_CHILD_TIMEOUT.
+            (sdir / "rows" / "flow-judge-v0.1.jsonl").write_text('{"judge_id":"flow-judge-v0.1","partial":true}\n', encoding="utf-8")
+            (sdir / "anchor_rows" / "flow-judge-v0.1.jsonl").write_text('{"judge_id":"flow-judge-v0.1","partial":true}\n', encoding="utf-8")
+            (sdir / "status.json").write_text(
+                json.dumps({"step": "run_judges_pipeline", "rc": 2, "status": "refused", "failure_class": "JUDGE_CHILD_TIMEOUT"}) + "\n",
+                encoding="utf-8",
+            )
+        vm_judges.write_outputs_closed(sdir)
+        shard_dirs.append(sdir)
+
+    # Also build a single-dir scoring fixture of the exact `lockcheck-1a-run8` shape.
+    score_items_p = _make_synthetic_public_items(tmp_path / "score_items_run8", count=6)
+    score_dir = tmp_path / "score_run8"
+    bakeoff_judge.run_bakeoff_judge(
+        part_dir=score_items_p,
+        output_dir=score_dir,
+        judge="d3-mini",
+        pass_mode="binary",
+        fake_transport=True,
+        allow_remote_code_reviewed=d3_spec.revision,
+    )
+    (score_dir / "rows" / "flow-judge-v0.1.jsonl").write_text('{"judge_id":"flow-judge-v0.1","partial":true}\n', encoding="utf-8")
+    (score_dir / run_records.OUTCOME_DRAFT_FILENAME).write_text(
+        json.dumps({"pass_mode": "binary", "judges_completed": ["d3-mini"], "unverified_passes": []}) + "\n",
+        encoding="utf-8",
+    )
+    bakeoff_judge.close_bakeoff_outputs(score_dir)
+    raw_three_way_keys = _three_way_keys(tmp_path / "tw_keys", count=6)
+    bin_keys_p = tmp_path / "bin_keys.jsonl"
+    bin_key_rows = []
+    for k_ln in raw_three_way_keys.read_text(encoding="utf-8").splitlines():
+        if not k_ln.strip():
+            continue
+        kd = json.loads(k_ln)
+        if kd.get("label_key") == "cannot_tell":
+            kd["label_key"] = "supported"
+        bin_key_rows.append(json.dumps(kd))
+    bin_keys_p.write_text("\n".join(bin_key_rows) + "\n", encoding="utf-8")
+
+    # 1. Before `exclude-incomplete`: both merge and scoring refuse with the dedicated incomplete-rows wording and hint.
+    with pytest.raises(merge_shards.MergeRefusalError) as exc_m_inc:
+        merge_shards.merge_shards(
+            shard_dirs=shard_dirs,
+            manifest_path=manifest_path,
+            output_dir=tmp_path / "merged_inc_refused",
+            items_path=items_path,
+            expected_judge_ids=["d3-mini"],
+            allow_unpinned_stub=True,
+        )
+    assert exc_m_inc.value.failure_class == "MERGE_UNVERIFIED_PASS"
+    assert "rows present for a pass the outcome does not list as completed" in exc_m_inc.value.detail
+    assert "timed-out" not in exc_m_inc.value.detail
+    assert "vm_judges.py exclude-incomplete <out_dir> --judge flow-judge-v0.1 --pass-mode binary" in exc_m_inc.value.detail
+
+    with pytest.raises(RdlabError) as exc_s_inc:
+        bakeoff_judge_score.score_bakeoff_outputs(
+            judge_output_dir=score_dir,
+            keys_path=bin_keys_p,
+            public_out_path=tmp_path / "score_inc_refused" / "public.json",
+            sealed_rows_out_path=tmp_path / "score_inc_refused" / "sealed",
+            bootstrap_resamples=20,
+        )
+    assert exc_s_inc.value.code == "BAKEOFF_SCORE_UNVERIFIED_PASS"
+    assert "rows present for a pass the outcome does not list as completed" in str(exc_s_inc.value)
+    assert "timed-out" not in str(exc_s_inc.value)
+    assert "vm_judges.py exclude-incomplete <out_dir> --judge flow-judge-v0.1 --pass-mode binary" in str(exc_s_inc.value)
+
+    # Completed pass (`d3-mini`) cannot be excluded (`EXCLUDE_INCOMPLETE_ALREADY_COMPLETED`).
+    refuse_done = subprocess.run(
+        [sys.executable, str(vm_py), "exclude-incomplete", str(shard_dirs[0]), "--judge", "d3-mini", "--pass-mode", "binary"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert refuse_done.returncode == 2 and "EXCLUDE_INCOMPLETE_ALREADY_COMPLETED" in refuse_done.stderr
+
+    # 2. Run `exclude-incomplete` on `shard_1` and `score_run8`.
+    for target_dir in (shard_dirs[0], score_dir):
+        excl_proc = subprocess.run(
+            [
+                sys.executable,
+                str(vm_py),
+                "exclude-incomplete",
+                str(target_dir),
+                "--judge",
+                "flow-judge-v0.1",
+                "--pass-mode",
+                "binary",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert excl_proc.returncode == 0, excl_proc.stderr
+        excl_rep = json.loads(excl_proc.stdout)
+        assert excl_rep["status"] == "ok"
+        assert excl_rep["excluded"]["pass"] == "flow-judge-v0.1:binary"
+        assert excl_rep["excluded"]["by"] == "operator"
+        assert excl_rep["excluded"]["at"].endswith("Z")
+        assert not (target_dir / "rows" / "flow-judge-v0.1.jsonl").exists()
+        assert (target_dir / "rows.incomplete" / "flow-judge-v0.1.jsonl").is_file()
+        odoc_after = json.loads((target_dir / run_records.OUTCOME_DRAFT_FILENAME).read_text(encoding="utf-8"))
+        assert len(odoc_after["excluded_incomplete_passes"]) == 1
+        assert odoc_after["excluded_incomplete_passes"][0]["pass"] == "flow-judge-v0.1:binary"
+
+    assert not (shard_dirs[0] / "anchor_rows" / "flow-judge-v0.1.jsonl").exists()
+    assert (shard_dirs[0] / "rows.incomplete" / "anchor_rows" / "flow-judge-v0.1.jsonl").is_file()
+
+    # 3. Merge with `--only-judges d3-mini` and scoring now proceed without `flow-judge-v0.1` and never count it.
+    merged_rec = merge_shards.merge_shards(
+        shard_dirs=shard_dirs,
+        manifest_path=manifest_path,
+        output_dir=tmp_path / "merged_after_exclude",
+        items_path=items_path,
+        expected_judge_ids=["d3-mini"],
+        allow_unpinned_stub=True,
+    )
+    assert merged_rec["status"] == "ok" and merged_rec["expected_judge_ids"] == ["d3-mini"]
+    merged_readout = json.loads((tmp_path / "merged_after_exclude" / "merged_readout.json").read_text(encoding="utf-8"))
+    assert merged_readout["expected_judge_ids"] == ["d3-mini"]
+    assert "flow-judge-v0.1" not in json.dumps(merged_readout)
+
+    # Default 5-judge merge still refuses because `flow-judge-v0.1` is absent, never counted.
+    with pytest.raises(merge_shards.MergeRefusalError):
+        merge_shards.merge_shards(
+            shard_dirs=shard_dirs,
+            manifest_path=manifest_path,
+            output_dir=tmp_path / "merged_all5_refused",
+            items_path=items_path,
+            allow_unpinned_stub=True,
+        )
+
+    score_rep = bakeoff_judge_score.score_bakeoff_outputs(
+        judge_output_dir=score_dir,
+        keys_path=bin_keys_p,
+        public_out_path=tmp_path / "score_after_exclude" / "public.json",
+        sealed_rows_out_path=tmp_path / "score_after_exclude" / "sealed",
+        bootstrap_resamples=20,
+    )
+    assert [s["judge_id"] for s in score_rep["judges"]] == ["d3-mini"]
+    assert [s["judge_id"] for s in score_rep["counted_set"]["judges"]] == ["d3-mini"]
+
+    # Also verify `exclude-incomplete` moves any `judge_done` pair and prunes `.unverified_judge_done` when present.
+    pair_dir = tmp_path / "pair_exclude"
+    shutil.copytree(score_dir, pair_dir)
+    (pair_dir / "rows" / "mu-judge.jsonl").write_text('{"judge_id":"mu-judge"}\n', encoding="utf-8")
+    (pair_dir / "judge_done" / "mu-judge.json").write_text('{"judge_id":"mu-judge","pass_mode":"binary"}\n', encoding="utf-8")
+    (pair_dir / run_records.UNVERIFIED_JUDGE_DONE_FILENAME).write_text("mu-judge\tbinary\tmu-judge.json\n", encoding="utf-8")
+    pair_proc = subprocess.run(
+        [sys.executable, str(vm_py), "exclude-incomplete", str(pair_dir), "--judge", "mu-judge", "--pass-mode", "binary", "--by", "reviewer"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert pair_proc.returncode == 0, pair_proc.stderr
+    assert (pair_dir / "rows.incomplete" / "mu-judge.jsonl").is_file()
+    assert (pair_dir / "rows.incomplete" / "judge_done" / "mu-judge.json").is_file()
+    assert not (pair_dir / run_records.UNVERIFIED_JUDGE_DONE_FILENAME).exists()
+    pair_outcome = json.loads((pair_dir / run_records.OUTCOME_DRAFT_FILENAME).read_text(encoding="utf-8"))
+    assert pair_outcome["excluded_incomplete_passes"][-1]["by"] == "reviewer"

@@ -1741,7 +1741,7 @@ rm -rf "$RATE_REREAD_STATE" "$RATE_REREADS_FILE" "$RATE_TRIP_MARKER" "$RATE_RERE
   "$CLEANUP_STARTED_MARKER" "$WATCHDOG_ARMED_MARKER" "$TRIP_STARTED_FILE" "$PROBE_EXEC_OUT_TMP" 2>/dev/null || true
 RUN_END_DETECTED_MARKER="$OUT_DIR/.rig_run_end_detected"
 EXEC_OUT_TMP="$OUT_DIR/.rig_exec_out.tmp"
-touch "$CLI_LOG"
+LAUNCHER_PID_FILE="$OUT_DIR/.rig_launcher.pid"; printf '%s\n' "$$" > "$LAUNCHER_PID_FILE"; touch "$CLI_LOG"
 
 now_epoch_seconds() {
   if [[ -n "${RDLAB_FAKE_CLOCK_FILE:-}" ]] && [[ -f "$RDLAB_FAKE_CLOCK_FILE" ]]; then
@@ -2847,7 +2847,7 @@ PY
 
 cleanup_rig_temp_markers() {
   rm -rf "$DEADLINE_MARKER" "$FETCH_CLAIM_DIR" "$FETCH_DONE_MARKER" "$RUN_END_DETECTED_MARKER" \
-    "$EXEC_OUT_TMP" "$PROBE_EXEC_OUT_TMP" "$EXEC_PID_FILE" "$STOP_CLAIM_DIR" "$STOP_PATH_FILE" \
+    "$EXEC_OUT_TMP" "$PROBE_EXEC_OUT_TMP" "$EXEC_PID_FILE" "$LAUNCHER_PID_FILE" "$STOP_CLAIM_DIR" "$STOP_PATH_FILE" \
     "$STOP_COMPLETED_MARKER" "$STOP_EXHAUSTED_MARKER" "$CLEANUP_STARTED_MARKER" "$WATCHDOG_ARMED_MARKER" \
     "$TRIP_STARTED_FILE" "$OUT_DIR/.rig_stopped" "$OUT_DIR"/progress.jsonl.tmp.* 2>/dev/null || true
 }

@@ -77,6 +77,7 @@ from reasoning_dataset_lab.pilot_b.run_records import (
     REVERIFY_HINT_TEMPLATE,
     UNVERIFIED_JUDGE_DONE_FILENAME,
     collect_run_unverified_passes,
+    format_unverified_or_incomplete_refusal,
 )
 from reasoning_dataset_lab.pilot_b.three_way_wording import (
     INCONSISTENT_VERDICT,
@@ -2331,16 +2332,11 @@ def score_bakeoff_outputs(
             REVERIFY_HINT_TEMPLATE,
         ) from exc
     if unverified_entries:
-        first_u = unverified_entries[0]
-        listed = ", ".join(f"{u['judge_id']}:{u['pass_mode']}" for u in unverified_entries)
-        raise refused_error(
-            "BAKEOFF_SCORE_UNVERIFIED_PASS",
-            f"Run directory '{resolved_judge_dir}' lists unverified pass(es) [{listed}] in "
-            f"{UNVERIFIED_JUDGE_DONE_FILENAME} or {OUTCOME_DRAFT_FILENAME} (first: judge={first_u['judge_id']} "
-            f"pass_mode={first_u['pass_mode']} judge_done/{first_u['done_file']}); "
-            "scoring refuses to count rows from an unverified timed-out pass.",
-            REVERIFY_HINT_TEMPLATE,
+        msg, hint = format_unverified_or_incomplete_refusal(
+            unverified_entries,
+            subject=f"Run directory '{resolved_judge_dir}'",
         )
+        raise refused_error("BAKEOFF_SCORE_UNVERIFIED_PASS", msg, hint)
     # After the tamper check (so a modified dir is reported as such) and before any key is read or any byte is written.
     check_sealed_out_targets_free(sealed_jsonl_path, sealed_csv_path, overwrite=overwrite)
     keys_by_id = load_sealed_keys(keys_path)

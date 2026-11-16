@@ -43,6 +43,7 @@ from reasoning_dataset_lab.pilot_b.run_records import (
     REVERIFY_HINT_TEMPLATE,
     UNVERIFIED_JUDGE_DONE_FILENAME,
     collect_run_unverified_passes,
+    format_unverified_or_incomplete_refusal,
 )
 from reasoning_dataset_lab.pilot_b.three_way_wording import (
     PASS_MODE_CHOICES,
@@ -1134,28 +1135,22 @@ def _check_shard_unverified_passes(
         ) from exc
     if not entries:
         return []
-    matched: list[dict[str, str]] = []
-    for entry in entries:
-        u_jid = entry["judge_id"]
-        u_mode = entry["pass_mode"]
-        u_done = entry["done_file"]
-        if not allow_unverified:
-            raise MergeRefusalError(
-                "MERGE_UNVERIFIED_PASS",
-                f"shard {expected_spec} pass judge={u_jid} pass_mode={u_mode} "
-                f"(judge_done/{u_done}) is unverified in {UNVERIFIED_JUDGE_DONE_FILENAME} or "
-                f"{OUTCOME_DRAFT_FILENAME} (every unverified pass in a shard blocks merge, including passes "
-                f"outside --only-judges / expected_judge_ids). {REVERIFY_HINT_TEMPLATE}",
-            )
-        matched.append(
-            {
-                "shard": expected_spec,
-                "judge_id": u_jid,
-                "pass_mode": u_mode,
-                "done_file": u_done,
-            }
+    if not allow_unverified:
+        msg, hint = format_unverified_or_incomplete_refusal(
+            entries,
+            subject=f"shard {expected_spec}",
+            extra_note="every unverified or incomplete pass in a shard blocks merge, including passes outside --only-judges / expected_judge_ids",
         )
-    return matched
+        raise MergeRefusalError("MERGE_UNVERIFIED_PASS", f"{msg} {hint}")
+    return [
+        {
+            "shard": expected_spec,
+            "judge_id": entry["judge_id"],
+            "pass_mode": entry["pass_mode"],
+            "done_file": entry["done_file"],
+        }
+        for entry in entries
+    ]
 
 
 def merge_shards(
