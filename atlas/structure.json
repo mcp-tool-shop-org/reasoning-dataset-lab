@@ -225,7 +225,7 @@
           "path": ".python-version"
         },
         {
-          "hash": "f4b10b1aff839e0561b9bb15d1442a8d0c6caeb0d46801fad5ff97f9b3dd5a61",
+          "hash": "ccfb9118eebb7a98d87998707277554f5c1aea46bad74fe2e21713691e8e57a5",
           "path": "CHANGELOG.md"
         },
         {
@@ -308,7 +308,7 @@
           "path": "scripts/colab/README.md"
         },
         {
-          "hash": "4ba12bdc6b63d66c81ab1fe209ed174af8824fbcf549a8208b67bea58a618eb2",
+          "hash": "6052f6fce966a8359fe7466bdf7ee35a834832152b09eccf4f4b7bf5211f6b28",
           "path": "scripts/colab/REAL_SERVICE_ASSUMPTIONS.md"
         },
         {
@@ -421,7 +421,7 @@
           "path": "scripts/colab/generate_weights_table.py"
         },
         {
-          "hash": "3e04b94fa1088eb98a4cd6e14215045114145213fdc70d016899a7a9cd7aea3c",
+          "hash": "c31ac7e37e3777a71b79955d1c9ea581b37ee5dd1336778e267f5a0db59bb85e",
           "path": "scripts/colab/launch_judges.sh"
         },
         {
@@ -3916,30 +3916,30 @@
             {
               "in": "ensure_elephant_venv",
               "kind": "except",
-              "line": 16365
+              "line": 16386
             },
             {
               "in": "ensure_elephant_venv",
               "kind": "except",
-              "line": 16407
+              "line": 16428
             },
             {
               "in": "_apply_elephant_install",
               "kind": "raise",
-              "line": 16443
+              "line": 16464
             },
             {
               "in": "_apply_elephant_install",
               "kind": "except",
-              "line": 16451
+              "line": 16472
             },
             {
               "in": "_apply_elephant_install",
               "kind": "raise",
-              "line": 16465
+              "line": 16486
             }
           ],
-          "hash": "2ab889ee79bf202d039233e0263a46da9bec174caeeedc0dc0ca4f1c243ec92a",
+          "hash": "462303f6144d984051ed617d582ae81f1c59c3424cc3eaac4b565821bd604aff",
           "importOrder": [
             "src/reasoning_dataset_lab/pilot_b/device.py",
             "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py"
@@ -18539,7 +18539,7 @@
             "set_fake_uv_python_315_state",
             "setup_fake_colab_environment"
           ],
-          "hash": "9d337865e920b72cbdd668e75c7da4a63380db0fe4891a91e8c655e5fbc42116",
+          "hash": "9570414693facf83de9639ffa87d002092dbc78a9e46fb2c959d620e18fd7b35",
           "importsFiles": [
             "scripts/colab/vm_judges.py"
           ],
@@ -19082,6 +19082,8 @@
             "test_an_install_record_whose_serve_patch_is_not_the_receipts_is_refused",
             "test_an_install_step_past_its_timeout_fails_closed",
             "test_an_outside_allowed_token_mass_makes_the_row_unparseable_with_a_named_reason",
+            "test_b1_prime_cpu_cuda_build_failure_classifier_table",
+            "test_b3_build_env_strips_ambient_skip_and_real_window_verifies_cuda_kernels_on_fake",
             "test_elephant_chat_template_is_the_pinned_one_and_opens_an_empty_think_block",
             "test_elephant_flipped_weight_byte_is_refused_before_the_model_loads",
             "test_elephant_metadata_receipt_and_preflight",
@@ -19097,6 +19099,7 @@
             "test_qev_wrapper_strings_are_the_preregistered_ones",
             "test_seven_arm_stub_window_with_elephant_and_scores_outside_mass",
             "test_stub_child_writes_elephant_rows_with_outside_mass",
+            "test_stub_exercise_c3_scrub_gate_pinned_on_non_hook_elephant_install_json",
             "test_stub_exercise_elephant_install_e2e_runs_all_steps_and_keeps_child_stub",
             "test_stub_exercise_elephant_install_refused_outside_eligible_stub_plan",
             "test_stub_exercise_elephant_install_unit_cpu_cannot_build_and_step_failures",
@@ -19109,13 +19112,24 @@
             "test_venv_elephant_install_steps_env_timings_and_record",
             "test_venv_elephant_is_built_once_per_window_across_subblocks"
           ],
-          "hash": "5e82132da4823e61c1b3fc07de2d7f78e6371adbb69ecfd57afdb7f54a9687eb",
+          "hash": "1601a3e98ef61cc220033e5c9219bd704cdee1c171a9184792ab4929a20e3f9c",
+          "importOrder": [
+            "src/reasoning_dataset_lab/errors.py",
+            "src/reasoning_dataset_lab/pilot_b/__init__.py",
+            "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py",
+            "src/reasoning_dataset_lab/pilot_b/bakeoff_judge_score.py",
+            "src/reasoning_dataset_lab/pilot_b/three_way_wording.py",
+            "tests/test_colab_d5c_six_arm.py",
+            "tests/test_colab_judge_launcher.py",
+            "tests/fixtures/fake_colab.py"
+          ],
           "importsFiles": [
             "src/reasoning_dataset_lab/errors.py",
             "src/reasoning_dataset_lab/pilot_b/__init__.py",
             "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py",
             "src/reasoning_dataset_lab/pilot_b/bakeoff_judge_score.py",
             "src/reasoning_dataset_lab/pilot_b/three_way_wording.py",
+            "tests/fixtures/fake_colab.py",
             "tests/test_colab_d5c_six_arm.py",
             "tests/test_colab_judge_launcher.py"
           ],
@@ -19167,7 +19181,7 @@
             "test_vm_d3_family_gate_and_remote_code_arg",
             "test_vm_judges_copies_match_the_wording_table_and_the_specs"
           ],
-          "hash": "55da080592359166cda74b7cf97b9c6a98ca6fdfc93409d93b860bdfb94bb413",
+          "hash": "d83bee15ada677ced4269ef741adf45d74045bc5b6f917c4b18b8bbd40222fe6",
           "importOrder": [
             "src/reasoning_dataset_lab/errors.py",
             "src/reasoning_dataset_lab/pilot_b/__init__.py",
@@ -21243,7 +21257,7 @@
   ],
   "engine": "1.26.0",
   "generatedFrom": {
-    "commit": "fa0f86e4ceb0eb3a9b69830d1472a2890b64a339",
+    "commit": "b59cf98861d6e47a6997567dd0b78588c7001c29",
     "tracked": 192
   },
   "landings": [

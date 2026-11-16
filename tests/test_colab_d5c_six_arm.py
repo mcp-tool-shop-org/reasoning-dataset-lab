@@ -1672,6 +1672,11 @@ def test_bash_fetch_completed_judge_checkpoints_crash_empty_name_and_deadline_gu
         if seed_stale:
             (out_dir / "judge_done" / done_name).write_text('{"judge_id":"d3-mini","sha256":"0000"}\n', encoding="utf-8")
             (out_dir / "rows" / rows_name).write_text('{"stale":1}\n', encoding="utf-8")
+            if py_mode == "multi_pass":
+                (out_dir / "judge_done" / "mu-judge.json").write_text('{"judge_id":"mu-judge","sha256":"22222222"}\n', encoding="utf-8")
+                (out_dir / "rows" / "mu-judge.jsonl").write_text('{"valid":1}\n', encoding="utf-8")
+                (out_dir / "judge_done" / "flow-judge-v0.1.json").write_text('{"judge_id":"flow-judge-v0.1","sha256":"0000"}\n', encoding="utf-8")
+                (out_dir / "rows" / "flow-judge-v0.1.jsonl").write_text('{"stale":1}\n', encoding="utf-8")
 
         colab_log = sub / "colab_downloads.log"
         cli_log = out_dir / "colab-cli.log"
@@ -1704,12 +1709,19 @@ def test_bash_fetch_completed_judge_checkpoints_crash_empty_name_and_deadline_gu
             f'  if [[ "{py_mode}" == "empty_fields" ]]; then\n'
             '    printf "d3-mini\\tbinary\\td3-mini.json\\n"\n'
             '    printf "d3-mini\\tbinary\\n"\n'
+            f'  elif [[ "{py_mode}" == "multi_pass" ]]; then\n'
+            '    printf "d3-mini\\tbinary\\td3-mini.json\\td3-mini.jsonl\\t11111111\\n"\n'
+            '    printf "mu-judge\\tbinary\\tmu-judge.json\\tmu-judge.jsonl\\t22222222\\n"\n'
+            '    printf "flow-judge-v0.1\\tbinary\\tflow-judge-v0.1.json\\tflow-judge-v0.1.jsonl\\t33333333\\n"\n'
             "  else\n"
             '    printf "d3-mini\\tbinary\\td3-mini.json\\td3-mini.jsonl\\tffffffff\\n"\n'
             "  fi\n"
             "  exit 0\n"
             "fi\n"
             'if [[ "$code" == *"staged=False"* ]]; then\n'
+            f'  if [[ "{py_mode}" == "multi_pass" && "$5" == "mu-judge" ]]; then\n'
+            "    exit 0\n"
+            "  fi\n"
             "  exit 1\n"
             "fi\n"
             'if [[ "$code" == *"staged=True"* ]]; then\n'
@@ -1794,3 +1806,18 @@ def test_bash_fetch_completed_judge_checkpoints_crash_empty_name_and_deadline_gu
     assert dl_skip == []
     assert not (out_skip / "judge_done" / "d3-mini.json").exists()
     assert not (out_skip / "rows" / "d3-mini.jsonl").exists()
+
+    # B4: after a fetch halt (deadline expired or CLEANUP_SKIP_FETCH=1), remaining passes still run staged=False:
+    # stale pairs on later passes (flow-judge-v0.1) are deleted while valid pairs (mu-judge) are kept, with 0 downloads.
+    for b4_tag, dl_epoch, skip_flag in (("b4_deadline", 1, 0), ("b4_skip", 0, 1)):
+        proc_b4, dl_b4, out_b4 = _run_fetch_harness(
+            tmp_path / b4_tag, py_mode="multi_pass", deadline_epoch=dl_epoch, seed_stale=True, cleanup_skip_fetch=skip_flag
+        )
+        assert proc_b4.returncode == 0, proc_b4.stderr
+        assert dl_b4 == []
+        assert not (out_b4 / "judge_done" / "d3-mini.json").exists()
+        assert not (out_b4 / "rows" / "d3-mini.jsonl").exists()
+        assert (out_b4 / "judge_done" / "mu-judge.json").is_file()
+        assert (out_b4 / "rows" / "mu-judge.jsonl").is_file()
+        assert not (out_b4 / "judge_done" / "flow-judge-v0.1.json").exists()
+        assert not (out_b4 / "rows" / "flow-judge-v0.1.jsonl").exists()

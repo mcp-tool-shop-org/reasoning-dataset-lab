@@ -301,7 +301,10 @@ class _Runner:
         *,
         fail_step: str | None = None,
         heads: dict[str, str] | None = None,
-        fail_stderr: str = "nvcc not found hf_SecretToken12345678901234",
+        fail_stderr: str = (
+            "UserWarning: nvcc was not found hf_SecretToken12345678901234\n"
+            "NameError: name 'bare_metal_version' is not defined"
+        ),
     ) -> None:
         self.names = {tuple(a): n for n, a in vm_judges.elephant_install_commands(ctx["work_dir"], ctx["repo_dir"], ctx["snapshot_dir"])}
         self.calls: list[tuple[list[str], dict[str, str]]] = []
@@ -891,7 +894,10 @@ def test_stub_exercise_elephant_install_unit_cpu_cannot_build_and_step_failures(
     rec = vm_judges.ensure_elephant_venv(
         **ctx, real=False, stub_exercise=True, runner=runner, which=lambda _n: "/usr/bin/git", clock=_clock()
     )
-    want_steps = [n for n, _ in vm_judges.elephant_install_commands(ctx["work_dir"], ctx["repo_dir"], ctx["snapshot_dir"])]
+    want_steps = [
+        n for n, _ in vm_judges.elephant_install_commands(ctx["work_dir"], ctx["repo_dir"], ctx["snapshot_dir"], real=False)
+    ]
+    assert "verify_causal_conv1d_cuda" not in want_steps
     assert [s["step"] for s in rec["steps"]] == want_steps
     assert rec["status"] == "cpu_cannot_build"
     assert rec["causal_conv1d_build_outcome"] == "cpu_cannot_build"
@@ -917,14 +923,15 @@ def test_stub_exercise_elephant_install_unit_cpu_cannot_build_and_step_failures(
         clock=_clock(),
     )
     assert non_cuda_rec["status"] == "failed" and non_cuda_rec["failure_class"] == "ELEPHANT_INSTALL_FAILED"
-    assert vm_judges._is_cpu_cuda_build_failure("UserWarning: nvcc was not found") is True
+    assert vm_judges._is_cpu_cuda_build_failure("UserWarning: nvcc was not found") is False
     assert vm_judges._is_cpu_cuda_build_failure("No solution found when resolving dependencies") is False
 
-    # Even if causal-conv1d hypothetically succeeded under stub_exercise, elephant_venv_name stays venv-judge.
+    # Even if causal-conv1d hypothetically succeeded under stub_exercise, verify_causal_conv1d_cuda is skipped & venv stays venv-judge.
     ok_stub = vm_judges.ensure_elephant_venv(
         **ctx, real=False, stub_exercise=True, runner=_Runner(ctx), which=lambda _n: "/usr/bin/git", clock=_clock()
     )
     assert ok_stub["status"] == "ok" and ok_stub["stub_exercise"] is True
+    assert "verify_causal_conv1d_cuda" not in [s["step"] for s in ok_stub["steps"]]
     assert vm_judges.elephant_venv_name() == "venv-judge"
 
     # Non-stub skipped record in same run_dir is not memo-reused when stub_exercise=True runs next.
@@ -999,9 +1006,10 @@ def test_stub_exercise_elephant_install_unit_cpu_cannot_build_and_step_failures(
 
 def test_stub_exercise_elephant_install_e2e_runs_all_steps_and_keeps_child_stub(tmp_path: Path) -> None:
     """Opt-in `RDLAB_STUB_EXERCISE_ELEPHANT_INSTALL=1` on `--stub --pass-mode three_way_contradicted` with `elephant-1`
-    runs all 13 `ensure_elephant_venv` commands in exact order into `venv-elephant`, records `cpu_cannot_build` plainly
-    in `vm_receipt.json` & `elephant_install.json`, keeps `--stub` judging child in `venv-judge` with zero weights,
-    and fails the rung if any non-causal-conv1d install step fails."""
+    runs all non-real `ensure_elephant_venv` commands in exact order into `venv-elephant` (skipping the real-window
+    `verify_causal_conv1d_cuda` check), records `cpu_cannot_build` plainly in `vm_receipt.json` & `elephant_install.json`,
+    keeps `--stub` judging child in `venv-judge` with zero weights, and fails the rung if any non-causal-conv1d install
+    step fails."""
     env_paths, base_exports = _launcher_env(tmp_path, "el_hook")
     snap_dir = tmp_path / "snap_el_hook"
     _add_elephant_snapshot(snap_dir / "receipts", snap_dir / "hf_home")
@@ -1031,7 +1039,7 @@ def test_stub_exercise_elephant_install_e2e_runs_all_steps_and_keeps_child_stub(
     assert receipt["elephant_install"]["status"] == "cpu_cannot_build"
     assert receipt["elephant_install"]["causal_conv1d_build_outcome"] == "cpu_cannot_build"
     assert [s["step"] for s in receipt["elephant_install"]["steps"]] == [
-        n for n, _ in vm_judges.elephant_install_commands(tmp_path / "w", tmp_path / "r", tmp_path / "s")
+        n for n, _ in vm_judges.elephant_install_commands(tmp_path / "w", tmp_path / "r", tmp_path / "s", real=False)
     ]
 
     # Inspect fake VM subprocess log for exact step order and venv isolation.
@@ -1073,8 +1081,10 @@ def test_stub_exercise_elephant_install_e2e_runs_all_steps_and_keeps_child_stub(
 
     observed_steps = [s for s in (_match_step(c) for c in run_cmds) if s is not None]
     assert observed_steps == [
-        n for n, _ in vm_judges.elephant_install_commands(tmp_path / "w", tmp_path / "r", tmp_path / "s")
+        n for n, _ in vm_judges.elephant_install_commands(tmp_path / "w", tmp_path / "r", tmp_path / "s", real=False)
     ]
+    assert "verify_causal_conv1d_cuda" not in observed_steps
+    assert not any("causal_conv1d_cuda" in arg for c in run_cmds for arg in c)
     # venv-judge must never receive any elephant-install uv pip install calls (only venv-elephant is touched).
     assert not any(
         c[:3] == ["uv", "pip", "install"]
@@ -1178,6 +1188,7 @@ def test_stub_exercise_elephant_install_e2e_runs_all_steps_and_keeps_child_stub(
         if ln.strip()
     ]
     assert len(ok_j_rows) == 1 and ok_j_rows[0]["venv"] == "venv-judge" and "--stub" in ok_j_rows[0]["cmd"]
+    assert "verify_causal_conv1d_cuda" not in [s["step"] for s in ok_el_doc["steps"]]
 
 
 def test_stub_without_opt_in_is_byte_identical(tmp_path: Path) -> None:
@@ -1251,3 +1262,258 @@ def test_stub_exercise_elephant_install_refused_outside_eligible_stub_plan(
             "stub", "1", judge_ids=("d3-mini", "d3-flash"), pass_mode="three_way_contradicted"
         )
     assert exc_info.value.code == "STUB_EXERCISE_ELEPHANT_INSTALL_INVALID"
+
+
+@pytest.mark.parametrize(
+    ("case_name", "output", "want"),
+    [
+        ("disk_full_alone", "OSError: [Errno 28] No space left on device", False),
+        (
+            "disk_full_with_nvcc_warning",
+            "UserWarning: nvcc was not found.\nOSError: [Errno 28] No space left on device",
+            False,
+        ),
+        (
+            "gxx_error_cmdline_mentions_nvcc",
+            "/usr/local/cuda/bin/nvcc -c csrc/x.cu\ncsrc/x.cpp:1: error: expected ';'",
+            False,
+        ),
+        (
+            "uv_network_error_sending_request",
+            "error: Request failed after 3 retries\n"
+            "  Caused by: error sending request for url (https://files.pythonhosted.org/...)\n"
+            "UserWarning: nvcc was not found",
+            False,
+        ),
+        ("uv_dns_error", "error: Failed to fetch: dns error: failed to lookup address information", False),
+        ("uv_timeout", "error: operation timed out\nnvcc not found", False),
+        (
+            "torch_import_error_mentions_cuda",
+            "ModuleNotFoundError: No module named 'torch'\nCUDA is not available",
+            False,
+        ),
+        (
+            "permission_denied_with_bare_metal",
+            "PermissionError: [Errno 13] Permission denied: '/content/venv'\nNameError: name 'bare_metal_version'",
+            False,
+        ),
+        ("oom_killed_with_nvcc", "nvcc not found\nKilled", False),
+        ("resolution_conflict", "× No solution found when resolving dependencies", False),
+        ("hash_mismatch", "error: Hash mismatch for causal-conv1d", False),
+        (
+            "real_cpu_case",
+            "UserWarning: causal_conv1d was requested, but nvcc was not found.\nNameError: name 'bare_metal_version' is not defined",
+            True,
+        ),
+        ("cuda_home_none", "OSError: CUDA_HOME environment variable is not set", True),
+        ("empty", "", False),
+        (
+            "uv_sdist_trailing_hint",
+            "NameError: name 'bare_metal_version' is not defined\n\nhint: Build failures usually indicate a problem with the package or the build environment",
+            True,
+        ),
+        (
+            "bare_metal_not_final_error",
+            "NameError: name 'bare_metal_version' is not defined\nRuntimeError: post-build failure",
+            False,
+        ),
+    ],
+)
+def test_b1_prime_cpu_cuda_build_failure_classifier_table(case_name: str, output: str, want: bool) -> None:
+    """B1': `_is_cpu_cuda_build_failure` matches only the known final CPU error (`bare_metal_version` NameError or
+    `CUDA_HOME` unset/None), drops `/bin/nvcc`, and refuses network/timeout/disk/OOM/permission/import failures."""
+    assert vm_judges._is_cpu_cuda_build_failure(output) is want, case_name
+
+
+def test_b3_build_env_strips_ambient_skip_and_real_window_verifies_cuda_kernels_on_fake(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B3: (1) Even when `CAUSAL_CONV1D_SKIP_CUDA_BUILD` is set in ambient `os.environ`, `ensure_elephant_venv` pops it
+    from `build_causal_conv1d` and every non-resolve step; (2) real windows run `verify_causal_conv1d_cuda` right
+    after `build_causal_conv1d` and fail closed (`ELEPHANT_INSTALL_FAILED` / `failed_to_run` before judging) when
+    `causal_conv1d_cuda` is unimportable on the fake."""
+    import subprocess
+    from tests.fixtures import fake_colab
+
+    monkeypatch.setenv("CAUSAL_CONV1D_SKIP_CUDA_BUILD", "TRUE")
+
+    ctx_unit = _ctx(tmp_path / "unit_real")
+    r_real = _Runner(ctx_unit)
+    rec_unit_real = vm_judges.ensure_elephant_venv(
+        **ctx_unit, real=True, runner=r_real, which=lambda _n: "/usr/bin/git", clock=_clock()
+    )
+    assert rec_unit_real["status"] == "ok"
+    for argv, env in r_real.calls:
+        step_name = r_real.names.get(tuple(argv))
+        if step_name == "resolve_causal_conv1d":
+            assert env.get("CAUSAL_CONV1D_SKIP_CUDA_BUILD") == "TRUE"
+        else:
+            assert "CAUSAL_CONV1D_SKIP_CUDA_BUILD" not in env, step_name
+    assert [s["step"] for s in rec_unit_real["steps"]] == [
+        n for n, _ in vm_judges.elephant_install_commands(ctx_unit["work_dir"], ctx_unit["repo_dir"], ctx_unit["snapshot_dir"], real=True)
+    ]
+    assert "verify_causal_conv1d_cuda" in [s["step"] for s in rec_unit_real["steps"]]
+
+    ctx_stub = _ctx(tmp_path / "unit_stub")
+    r_stub = _Runner(ctx_stub, fail_step="build_causal_conv1d")
+    rec_unit_stub = vm_judges.ensure_elephant_venv(
+        **ctx_stub, real=False, stub_exercise=True, runner=r_stub, which=lambda _n: "/usr/bin/git", clock=_clock()
+    )
+    assert rec_unit_stub["status"] == "cpu_cannot_build"
+    assert "verify_causal_conv1d_cuda" not in [s["step"] for s in rec_unit_stub["steps"]]
+    for argv, env in r_stub.calls:
+        step_name = r_stub.names.get(tuple(argv))
+        if step_name != "resolve_causal_conv1d":
+            assert "CAUSAL_CONV1D_SKIP_CUDA_BUILD" not in env, step_name
+
+    # Fake uv + fake venv-elephant python real-window checks with ambient CAUSAL_CONV1D_SKIP_CUDA_BUILD=TRUE.
+    fake_env = fake_colab.setup_fake_colab_environment(tmp_path / "b3_fake")
+    monkeypatch.setenv("PATH", fake_colab.build_hermetic_path(fake_env))
+    monkeypatch.setenv("FAKE_COLAB_STATE_DIR", _to_wsl_path(fake_env["state_dir"]))
+    repo_root = Path(__file__).resolve().parents[1]
+
+    def _run_fake_vm_step(argv: list[str], **kw: Any) -> Any:
+        vcs_res = fake_colab.handle_fake_vm_vcs(argv)
+        if vcs_res is not None:
+            return vcs_res
+        return subprocess.run(argv, **kw)
+
+    def _setup_work_with_judge_venv(tag: str, *, omit_cuda_mod: bool) -> dict[str, Any]:
+        sub_root = tmp_path / tag
+        work_dir = sub_root / "work"
+        run_dir = sub_root / "run"
+        hf_home = sub_root / "hf"
+        _add_elephant_snapshot(sub_root / "rec", hf_home)
+        uv_st = json.loads(fake_env["uv_state_file"].read_text(encoding="utf-8"))
+        uv_st["causal_conv1d_succeed"] = True
+        uv_st["omit_causal_conv1d_cuda"] = omit_cuda_mod
+        fake_env["uv_state_file"].write_text(json.dumps(uv_st, indent=2) + "\n", encoding="utf-8")
+        mk = subprocess.run(
+            [str(fake_env["fake_bin"] / "uv"), "venv", "--python", sys.executable, str(work_dir / "venv-judge")],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert mk.returncode == 0, mk.stderr
+        return {"work_dir": work_dir, "repo_dir": repo_root, "run_dir": run_dir, "hf_home": hf_home, "sub_root": sub_root}
+
+    # Case 1: causal_conv1d_cuda cannot be imported -> verify_causal_conv1d_cuda refuses before judging or decision-index.
+    monkeypatch.setattr(vm_judges, "_LAST_ELEPHANT_INSTALL", None)
+    b3_fail = _setup_work_with_judge_venv("b3_missing_cuda", omit_cuda_mod=True)
+    fail_progress = b3_fail["sub_root"] / "progress.jsonl"
+    fail_metrics: dict[str, Any] = {}
+    specs = vm_judges._select_judge_specs(("d3-mini", ELEPHANT))
+    passes = vm_judges._judge_passes(
+        specs,
+        CONTRA,
+        elephant={
+            "work_dir": b3_fail["work_dir"],
+            "repo_dir": b3_fail["repo_dir"],
+            "run_dir": b3_fail["run_dir"],
+            "hf_home": b3_fail["hf_home"],
+            "progress_path": fail_progress,
+            "metrics": fail_metrics,
+            "real": True,
+            "runner": _run_fake_vm_step,
+            "which": lambda _n: "/usr/bin/git",
+            "clock": _clock(),
+        },
+    )
+    assert [(j, m) for j, _s, m, _k in passes] == [("d3-mini", CONTRA)]
+    assert fail_metrics[ELEPHANT]["run_status"] == "failed_to_run"
+    assert fail_metrics[ELEPHANT]["failure_class"] == "ELEPHANT_INSTALL_FAILED"
+    el_fail_rec = json.loads((b3_fail["run_dir"] / "elephant_install.json").read_text(encoding="utf-8"))
+    assert el_fail_rec["status"] == "failed" and "verify_causal_conv1d_cuda" in el_fail_rec["detail"]
+    fail_steps = [s["step"] for s in el_fail_rec["steps"]]
+    assert fail_steps[-2:] == ["build_causal_conv1d", "verify_causal_conv1d_cuda"]
+    assert "install_decision_index" not in fail_steps and "import_check" not in fail_steps
+    prog_rows = [json.loads(ln) for ln in fail_progress.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    assert [(r["kind"], r["judge_id"], r["failure_class"]) for r in prog_rows] == [
+        ("judge_failed", ELEPHANT, "ELEPHANT_INSTALL_FAILED")
+    ]
+
+    # Case 2: ambient CAUSAL_CONV1D_SKIP_CUDA_BUILD=TRUE is popped for build_causal_conv1d, fake uv creates causal_conv1d_cuda, ok!
+    monkeypatch.setattr(vm_judges, "_LAST_ELEPHANT_INSTALL", None)
+    b3_ok = _setup_work_with_judge_venv("b3_ok_cuda", omit_cuda_mod=False)
+    ok_snap = vm_judges._resolve_snapshot_dir_for_spec(ESPEC, hf_home=b3_ok["hf_home"])
+    ok_rec = vm_judges.ensure_elephant_venv(
+        work_dir=b3_ok["work_dir"],
+        repo_dir=b3_ok["repo_dir"],
+        run_dir=b3_ok["run_dir"],
+        snapshot_dir=ok_snap,
+        real=True,
+        runner=_run_fake_vm_step,
+        which=lambda _n: "/usr/bin/git",
+        clock=_clock(),
+    )
+    assert ok_rec["status"] == "ok"
+    assert [s["step"] for s in ok_rec["steps"]] == [
+        n for n, _ in vm_judges.elephant_install_commands(b3_ok["work_dir"], b3_ok["repo_dir"], ok_snap, real=True)
+    ]
+    assert ok_rec["steps"][-3]["step"] == "verify_causal_conv1d_cuda" and ok_rec["steps"][-3]["rc"] == 0
+
+
+def test_stub_exercise_c3_scrub_gate_pinned_on_non_hook_elephant_install_json(tmp_path: Path) -> None:
+    """C7: pin C3's post-fetch scrub gate (`launch_judges.sh:4613`). When `stub_exercise` is absent/false,
+    an unredacted token in `extracted/elephant_install.json` fails the rig log guard and quarantines outputs;
+    ungating line `:4613` (`if src_elephant_install.is_file():`) lets the same leak slip through (`rc=0`)."""
+    import subprocess
+    import tarfile
+
+    repo_root = Path(__file__).resolve().parents[1]
+    sh_text = (repo_root / "scripts" / "colab" / "launch_judges.sh").read_text(encoding="utf-8")
+    anchor = "# Extract result.tar.gz, run log guard on all kept logs and outputs, and write outputs-closed.json before any key read."
+    assert anchor in sh_text
+    heredoc = sh_text.split(anchor, 1)[1].split("<<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
+    gate_line = "if stub_exercise_el and src_elephant_install.is_file():"
+    assert heredoc.count(gate_line) == 1
+
+    items_file = tmp_path / "items.jsonl"
+    items_file.write_text(json.dumps({"id": "i1", "material": "safe state", "claim": "safe claim"}) + "\n", encoding="utf-8")
+
+    def _run_post_fetch(tag: str, code: str, el_payload: dict[str, Any]) -> tuple[subprocess.CompletedProcess[str], Path]:
+        sub = tmp_path / tag
+        out_dir = sub / "out"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        cli_log = out_dir / "colab-cli.log"
+        cli_log.write_text("clean log\n", encoding="utf-8")
+        stage = sub / "tar_src"
+        stage.mkdir(parents=True, exist_ok=True)
+        (stage / "progress.jsonl").write_text('{"kind":"run_end"}\n', encoding="utf-8")
+        (stage / "vm_receipt.json").write_text('{"status":"ok"}\n', encoding="utf-8")
+        (stage / "elephant_install.json").write_text(json.dumps(el_payload) + "\n", encoding="utf-8")
+        tar_p = out_dir / "result.tar.gz"
+        with tarfile.open(tar_p, "w:gz") as tf:
+            for name in ("progress.jsonl", "vm_receipt.json", "elephant_install.json"):
+                tf.add(stage / name, arcname=name)
+        script_p = sub / "post_fetch.py"
+        script_p.write_text(code, encoding="utf-8")
+        proc = subprocess.run(
+            [sys.executable, str(script_p), str(repo_root), str(out_dir), str(items_file), str(cli_log)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return proc, out_dir
+
+    leaked_non_hook = {"status": "ok", "detail": "hf_SecretToken12345678901234"}
+    proc_pinned, out_pinned = _run_post_fetch("pinned_non_hook", heredoc, leaked_non_hook)
+    assert proc_pinned.returncode != 0
+    assert "LOG_GUARD_UNREDACTED_TOKEN" in proc_pinned.stderr
+    assert not (out_pinned / "elephant_install.json").exists()
+    assert not (out_pinned / "extracted").exists()
+    assert json.loads((out_pinned / "vm_receipt.json").read_text(encoding="utf-8"))["failure_class"] == "LOG_GUARD_UNREDACTED_TOKEN"
+
+    # Mutation check (w5): ungating C3 drops the failure on the same non-hook payload.
+    ungated = heredoc.replace(gate_line, "if src_elephant_install.is_file():", 1)
+    proc_ungated, out_ungated = _run_post_fetch("ungated_non_hook", ungated, leaked_non_hook)
+    assert proc_ungated.returncode == 0, proc_ungated.stderr
+    assert "hf_[REDACTED]" in (out_ungated / "extracted" / "elephant_install.json").read_text(encoding="utf-8")
+
+    # Eligible stub_exercise=True scrubs extracted/elephant_install.json in place and passes.
+    leaked_hook = {"status": "cpu_cannot_build", "stub_exercise": True, "detail": "hf_SecretToken12345678901234"}
+    proc_hook, out_hook = _run_post_fetch("stub_hook_ok", heredoc, leaked_hook)
+    assert proc_hook.returncode == 0, proc_hook.stderr
+    assert "hf_[REDACTED]" in (out_hook / "elephant_install.json").read_text(encoding="utf-8")
+    ext_txt = (out_hook / "extracted" / "elephant_install.json").read_text(encoding="utf-8")
+    assert "hf_[REDACTED]" in ext_txt and "hf_SecretToken" not in ext_txt

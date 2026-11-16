@@ -1496,11 +1496,19 @@ def run_fake_uv(argv: list[str]) -> int:
             if fail_pkg and fail_pkg in norm_pkgs:
                 sys.stderr.write(f"error: No solution found when resolving dependencies for `{fail_pkg}`\n")
                 return 2
+            _cc_succeed = (
+                os.environ.get("FAKE_COLAB_CAUSAL_CONV1D_SUCCEED") == "1"
+                or bool(uv_state.get("causal_conv1d_succeed"))
+            )
+            _omit_cc_cuda = (
+                os.environ.get("FAKE_COLAB_OMIT_CAUSAL_CONV1D_CUDA") == "1"
+                or bool(uv_state.get("omit_causal_conv1d_cuda"))
+            )
             if dry_run:
                 if (
                     "causal-conv1d" in norm_pkgs
                     and os.environ.get("CAUSAL_CONV1D_SKIP_CUDA_BUILD") != "TRUE"
-                    and os.environ.get("FAKE_COLAB_CAUSAL_CONV1D_SUCCEED") != "1"
+                    and not _cc_succeed
                 ):
                     sys.stderr.write(
                         "error: setup.py metadata failed without CAUSAL_CONV1D_SKIP_CUDA_BUILD: "
@@ -1516,7 +1524,7 @@ def run_fake_uv(argv: list[str]) -> int:
                         "  csrc/causal_conv1d.cpp:42:2: error: non-CUDA C++ compilation error\n"
                     )
                     return 2
-                if os.environ.get("FAKE_COLAB_CAUSAL_CONV1D_SUCCEED") != "1":
+                if not _cc_succeed:
                     sys.stderr.write(
                         "error: Failed to build `causal-conv1d`\n"
                         "  UserWarning: causal_conv1d was requested, but nvcc was not found.\n"
@@ -1568,6 +1576,16 @@ def run_fake_uv(argv: list[str]) -> int:
                     "source": "wheel",
                     "installed_by": "pip_install",
                 }
+            if (
+                "causal-conv1d" in norm_pkgs
+                and os.environ.get("CAUSAL_CONV1D_SKIP_CUDA_BUILD", "").upper() != "TRUE"
+                and not _omit_cc_cuda
+            ):
+                (site_pkgs / "causal_conv1d_cuda.py").write_text(
+                    "# fake causal_conv1d_cuda compiled extension\n",
+                    encoding="utf-8",
+                    newline="\n",
+                )
             pkg_db_path.write_text(
                 json.dumps(installed_db, indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",

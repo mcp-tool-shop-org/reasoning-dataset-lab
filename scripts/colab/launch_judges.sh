@@ -1884,9 +1884,8 @@ fetch_completed_judge_checkpoints() {
   #   - Refuse: otherwise both downloads are deleted and one named line is logged and printed to stderr
   #     (FETCHED_JUDGE_DONE_INVALID, FETCHED_ROWS_MISSING or FETCHED_ROWS_SHA_MISMATCH), so the judge is not counted
   #     in judges_completed (which lists the judge_done files in place).
-  #   - Deadline / skip: any in-place pair of the current pass that failed verification is deleted before checking
-  #     the deadline; when the fetch deadline runs out (or CLEANUP_SKIP_FETCH=1) before or between its downloads,
-  #     nothing of that pass is kept.
+  #   - Deadline / skip: any in-place pair of a pass that fails staged=False verification is deleted even after the
+  #     fetch deadline expires (or CLEANUP_SKIP_FETCH=1), while stopping further downloads on subsequent passes.
   # A pass that has not finished is never fetched: the list comes only from judge_pass_done records.
   local dl_timeout="${1:-$PROGRESS_FETCH_TIMEOUT_SECONDS}" deadline_epoch="${2:-0}" rem_dl_timeout=""
   if [[ ! -f "$OUT_DIR/progress.jsonl" ]]; then
@@ -1903,7 +1902,7 @@ fetch_completed_judge_checkpoints() {
     return 0
   fi
   mkdir -p "$OUT_DIR/rows" "$OUT_DIR/judge_done"
-  local jid pmode done_file row_file want_sha refusal
+  local jid pmode done_file row_file want_sha refusal fetch_halted=0
   while IFS=$'\t' read -r jid pmode done_file row_file want_sha; do
     [[ -n "$jid" && -n "$pmode" && -n "$done_file" && -n "$row_file" ]] || continue
     # Item 9: a pass is skipped only when its rows in place match its judge_done sha256 (and the VM's latest record);
@@ -1913,19 +1912,25 @@ fetch_completed_judge_checkpoints() {
     fi
     # Both files land as hidden .part downloads; only a pair whose rows match the judge_done sha256 is moved into
     # place, so a judge is never counted completed (judge_done present) with missing or truncated rows. Deleting any
-    # in-place pair that failed the staged=False check immediately before checking the deadline is fail-closed: the
-    # VM's latest judge_done record is authoritative over any stale in-place pair with a mismatched sha256, so an
-    # expired deadline or cleanup skip never leaves an unverified or superseded pair in place.
+    # in-place pair that failed the staged=False check immediately before checking fetch_halted / deadline is fail-closed:
+    # the VM's latest judge_done record is authoritative over any stale in-place pair with a mismatched sha256, so an
+    # expired deadline or cleanup skip checks every remaining pass with staged=False without performing new downloads.
     if [[ -n "$done_file" && -n "$row_file" ]]; then
       rm -f "$OUT_DIR/judge_done/${done_file}" "$OUT_DIR/rows/${row_file}"
+    fi
+    if [[ "$fetch_halted" -eq 1 ]]; then
+      continue
     fi
     if rem_dl_timeout="$(remaining_fetch_timeout "$deadline_epoch" "$dl_timeout")"; then
       timeout -k "$COLAB_KILL_GRACE_SECONDS" "$rem_dl_timeout" colab download -s "$S" "/content/rdlab_run/judge_done/${done_file}" "$OUT_DIR/judge_done/.${done_file}.part" </dev/null >/dev/null 2>&1 || true
     else
-      break
+      fetch_halted=1
+      continue
     fi
     if rem_dl_timeout="$(remaining_fetch_timeout "$deadline_epoch" "$dl_timeout")"; then
       timeout -k "$COLAB_KILL_GRACE_SECONDS" "$rem_dl_timeout" colab download -s "$S" "/content/rdlab_run/rows/${row_file}" "$OUT_DIR/rows/.${row_file}.part" </dev/null >/dev/null 2>&1 || true
+    else
+      fetch_halted=1
     fi
     # Fail closed: on a missing judge_done, a missing rows file or a sha256 mismatch both downloads (and any stale
     # destination files from an interrupted run) are deleted and the named refusal is logged.
@@ -4708,6 +4713,7 @@ except vm_judges.RefusalError as exc:
         out_dir / "golden_anchor_manifest.json.sha256",
         out_dir / "boot_gatekeeper.json",
         out_dir / "boot_gatekeeper_goldens.filled.json",
+        out_dir / "elephant_install.json",
         out_dir / "p0a_report.json",
         out_dir / "window.json",
         out_dir / "outputs-closed.json",
