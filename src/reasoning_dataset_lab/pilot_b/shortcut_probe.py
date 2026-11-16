@@ -14,6 +14,10 @@ permutation check):
 - (i) claim length;
 - `claim_all_tokens_in_material` (normalised value & token presence, gated);
 - `same_line_cooccurrence` and `min_entity_value_token_distance` (reported overall; gated within `not_supported`).
+- caller-supplied feature hooks (`FeatureHook`): a part whose item form needs a parser the probe does not have
+  (a template family's own sentence grammar) passes one hook per feature family. Each hook maps one item's
+  public fields to a list of tokens and becomes a gated token probe (three-class and binary) with the id
+  `hook:<probe_id>`, in the same Holm family. With no hooks the report is unchanged.
 
 Hard gates:
 - Gate 1 (Option 1, `cluster_wilson_holm_v1`): a gated probe-task passes iff the base rate lies
@@ -30,7 +34,8 @@ Sealed keys (`keys.sealed.jsonl`) are read ONLY for ground-truth `key` labels an
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+import copy
 from dataclasses import asdict, dataclass, replace
 import itertools
 import json
@@ -343,6 +348,84 @@ class ShortcutProbeReport:
             "gate_2_shares_passed": self.gate_2_shares_passed,
             "passed": self.passed,
         }
+
+
+FEATURE_HOOK_ID_RE = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
+FEATURE_HOOK_PREFIX = "hook:"
+
+
+@dataclass(frozen=True)
+class FeatureHook:
+    """A caller-supplied feature family for the shortcut probe.
+
+    `features` receives a deep copy of one item's public fields (the dict from `items.jsonl`; sealed keys are never
+    passed) and returns that item's feature tokens. The tokens are evaluated exactly like a built-in token probe:
+    triad-grouped out-of-fold, three-class and binary, both gated in the one Holm family. An interaction is a token
+    that joins several values (for example `"a=x|b=y"`). The probe is reported as `hook:<probe_id>`.
+    """
+
+    probe_id: str
+    description: str
+    features: Callable[[dict[str, Any]], Sequence[str]]
+
+
+def _validate_feature_hooks(feature_hooks: Sequence[FeatureHook]) -> None:
+    """Refuse a hook list that is not a sequence of well-formed, uniquely named `FeatureHook`s."""
+    seen: set[str] = set()
+    for hook in feature_hooks:
+        if not isinstance(hook, FeatureHook):
+            raise usage_error(
+                "PROBE_BAD_FEATURE_HOOK",
+                f"A feature hook must be a FeatureHook, not {type(hook).__name__}.",
+                "Wrap each feature function in shortcut_probe.FeatureHook(probe_id, description, features).",
+            )
+        if not isinstance(hook.probe_id, str) or not FEATURE_HOOK_ID_RE.fullmatch(hook.probe_id):
+            raise usage_error(
+                "PROBE_BAD_FEATURE_HOOK",
+                f"Feature hook id {hook.probe_id!r} is not a lowercase identifier of at most 64 characters.",
+                "Use an id such as 'claim_polarity' ([a-z][a-z0-9_]*).",
+            )
+        if not isinstance(hook.description, str) or not hook.description.strip():
+            raise usage_error(
+                "PROBE_BAD_FEATURE_HOOK",
+                f"Feature hook {hook.probe_id!r} has no description.",
+                "Give every hook a one-line description of the feature family it measures.",
+            )
+        if not callable(hook.features):
+            raise usage_error(
+                "PROBE_BAD_FEATURE_HOOK",
+                f"Feature hook {hook.probe_id!r} has no callable features function.",
+                "Pass a function that maps one item dict to a list of string tokens.",
+            )
+        if hook.probe_id in seen:
+            raise usage_error(
+                "PROBE_BAD_FEATURE_HOOK",
+                f"Feature hook id {hook.probe_id!r} is used twice.",
+                "Give every feature hook its own id.",
+            )
+        seen.add(hook.probe_id)
+
+
+def _hook_tokens(hook: FeatureHook, item: dict[str, Any]) -> list[str]:
+    """Run one hook on a deep copy of one item and check its result; any failure is a named refusal."""
+    item_id = str(item.get("id", ""))
+    try:
+        out = hook.features(copy.deepcopy(item))
+    except RdlabError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - a hook's own failure becomes a refusal naming the hook
+        raise refused_error(
+            "PROBE_FEATURE_HOOK_FAILED",
+            f"Feature hook {hook.probe_id!r} failed on item {item_id!r} ({type(exc).__name__}).",
+            "Fix the hook's parser for this item form; the probe does not skip items.",
+        ) from None
+    if isinstance(out, str) or not isinstance(out, (list, tuple)) or not all(isinstance(t, str) for t in out):
+        raise refused_error(
+            "PROBE_FEATURE_HOOK_FAILED",
+            f"Feature hook {hook.probe_id!r} returned something other than a list of strings for item {item_id!r}.",
+            "Return a list (or tuple) of string tokens for every item.",
+        )
+    return list(out)
 
 
 def _tokenize(text: str) -> list[str]:
@@ -1383,10 +1466,16 @@ def run_bakeoff_shortcut_probe(
     alpha: float = DEFAULT_GATE_ALPHA,
     share_bounds: tuple[float, float] = (SHARE_MIN, SHARE_MAX),
     n_folds: int = 5,
+    feature_hooks: Sequence[FeatureHook] = (),
 ) -> ShortcutProbeReport:
-    """Evaluate all shortcut probes on 3-class, binary, and within-not-supported tasks under Holm-adjusted triad-clustered Wilson intervals (Option 1) plus role/closure shares."""
+    """Evaluate all shortcut probes on 3-class, binary, and within-not-supported tasks under Holm-adjusted triad-clustered Wilson intervals (Option 1) plus role/closure shares.
+
+    `feature_hooks` adds one gated token probe per `FeatureHook` (see its docstring); with none, the report is
+    exactly the report without the argument."""
     if not items:
         raise ValueError("items must not be empty")
+    feature_hooks = tuple(feature_hooks)
+    _validate_feature_hooks(feature_hooks)
 
     triad_ids = sorted({str(it["triad_id"]) for it in items})
     num_triads = len(triad_ids)
@@ -1791,6 +1880,15 @@ def run_bakeoff_shortcut_probe(
             feats_i_num,
         ),
     )
+    if feature_hooks:
+        raw_probes = raw_probes + tuple(
+            _eval_token_probe(
+                FEATURE_HOOK_PREFIX + hook.probe_id,
+                f"(hook) {hook.description}",
+                [_hook_tokens(hook, it) for it in items],
+            )
+            for hook in feature_hooks
+        )
 
     raw_proximity_probes = (
         _eval_proximity_probe(
@@ -2018,8 +2116,10 @@ def evaluate_bakeoff_probe_files(
     out_path: Path,
     *,
     alpha: float = DEFAULT_GATE_ALPHA,
+    feature_hooks: Sequence[FeatureHook] = (),
 ) -> dict[str, Any]:
-    """Load `items.jsonl` and `keys.sealed.jsonl`, run the shortcut probe, and write `out_path`."""
+    """Load `items.jsonl` and `keys.sealed.jsonl`, run the shortcut probe (with any `feature_hooks`), and write
+    `out_path`."""
     items_path, items, sealed_keys = load_items_and_keys(part_dir, keys_path)
     report = run_bakeoff_shortcut_probe(
         items,
@@ -2027,6 +2127,7 @@ def evaluate_bakeoff_probe_files(
         part_items_path=str(items_path),
         keys_path=str(keys_path),
         alpha=alpha,
+        feature_hooks=feature_hooks,
     )
     payload = report.to_dict()
     out_path.parent.mkdir(parents=True, exist_ok=True)
