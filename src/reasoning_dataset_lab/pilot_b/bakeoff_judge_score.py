@@ -72,6 +72,12 @@ from typing import Any
 
 from reasoning_dataset_lab.errors import RdlabError, refused_error
 from reasoning_dataset_lab.pilot_b.anchored_two_hop import ANCHORED_ELIGIBLE_DOMAINS
+from reasoning_dataset_lab.pilot_b.run_records import (
+    OUTCOME_DRAFT_FILENAME,
+    REVERIFY_HINT_TEMPLATE,
+    UNVERIFIED_JUDGE_DONE_FILENAME,
+    collect_run_unverified_passes,
+)
 from reasoning_dataset_lab.pilot_b.three_way_wording import (
     INCONSISTENT_VERDICT,
     TWO_QUESTION_PASS_MODES,
@@ -2315,6 +2321,26 @@ def score_bakeoff_outputs(
     sealed_jsonl_path, sealed_csv_path = resolve_sealed_out_paths(sealed_rows_out_path)
 
     closed_doc = verify_outputs_closed(resolved_judge_dir)
+    # Refuse before touching sealed keys or outputs if .unverified_judge_done or outcome.draft.json marks an unverified pass.
+    try:
+        unverified_entries = collect_run_unverified_passes(resolved_judge_dir)
+    except (OSError, ValueError) as exc:
+        raise refused_error(
+            "BAKEOFF_SCORE_UNVERIFIED_PASS",
+            f"Malformed {UNVERIFIED_JUDGE_DONE_FILENAME} or {OUTCOME_DRAFT_FILENAME} in '{resolved_judge_dir}': {exc}.",
+            REVERIFY_HINT_TEMPLATE,
+        ) from exc
+    if unverified_entries:
+        first_u = unverified_entries[0]
+        listed = ", ".join(f"{u['judge_id']}:{u['pass_mode']}" for u in unverified_entries)
+        raise refused_error(
+            "BAKEOFF_SCORE_UNVERIFIED_PASS",
+            f"Run directory '{resolved_judge_dir}' lists unverified pass(es) [{listed}] in "
+            f"{UNVERIFIED_JUDGE_DONE_FILENAME} or {OUTCOME_DRAFT_FILENAME} (first: judge={first_u['judge_id']} "
+            f"pass_mode={first_u['pass_mode']} judge_done/{first_u['done_file']}); "
+            "scoring refuses to count rows from an unverified timed-out pass.",
+            REVERIFY_HINT_TEMPLATE,
+        )
     # After the tamper check (so a modified dir is reported as such) and before any key is read or any byte is written.
     check_sealed_out_targets_free(sealed_jsonl_path, sealed_csv_path, overwrite=overwrite)
     keys_by_id = load_sealed_keys(keys_path)

@@ -70,6 +70,7 @@ from reasoning_dataset_lab.pilot_b.device import (
 )
 
 OrderMode = Literal["AB", "BA"]
+from reasoning_dataset_lab.pilot_b.run_records import OUTCOME_DRAFT_FILENAME, REVERIFY_HINT_TEMPLATE, UNVERIFIED_JUDGE_DONE_FILENAME, collect_run_unverified_passes  # noqa: E501
 from reasoning_dataset_lab.pilot_b.three_way_wording import NLI_PASS_MODES, PASS_MODE_CHOICES, THREE_WAY_PASS_MODES, TWO_QUESTION_PASS_MODES, PassMode, judge_done_filename_for_pass, judge_supports_pass_mode, rows_filename_is_three_way, three_way_wording  # noqa: E501
 DoneReason = Literal["stop", "length", "error"]
 RowState = Literal["parsed", "unparseable", "length_stop"]
@@ -4707,7 +4708,27 @@ def check_bakeoff_logprob_mass(
         )
     pilot_identity = verify_pinned_pilot_part_dir(part_dir)
 
-    rows_dir = Path(judge_output_dir) / ROWS_DIRNAME
+    resolved_judge_dir = Path(judge_output_dir).resolve()
+    try:
+        unverified_entries = collect_run_unverified_passes(resolved_judge_dir)
+    except (OSError, ValueError) as exc:
+        raise refused_error(
+            "BAKEOFF_LOGPROB_MASS_UNVERIFIED_PASS",
+            f"Malformed {UNVERIFIED_JUDGE_DONE_FILENAME} or {OUTCOME_DRAFT_FILENAME} in '{resolved_judge_dir}': {exc}.",
+            REVERIFY_HINT_TEMPLATE,
+        ) from exc
+    if unverified_entries:
+        first_u = unverified_entries[0]
+        listed = ", ".join(f"{u['judge_id']}:{u['pass_mode']}" for u in unverified_entries)
+        raise refused_error(
+            "BAKEOFF_LOGPROB_MASS_UNVERIFIED_PASS",
+            f"Run directory '{resolved_judge_dir}' lists unverified pass(es) [{listed}] in "
+            f"{UNVERIFIED_JUDGE_DONE_FILENAME} or {OUTCOME_DRAFT_FILENAME} (first: judge={first_u['judge_id']} "
+            f"pass_mode={first_u['pass_mode']}); refusing to score/measure an unverified pass.",
+            REVERIFY_HINT_TEMPLATE,
+        )
+
+    rows_dir = resolved_judge_dir / ROWS_DIRNAME
     if not rows_dir.is_dir():
         raise refused_error(
             "BAKEOFF_LOGPROB_MASS_NO_ROWS",

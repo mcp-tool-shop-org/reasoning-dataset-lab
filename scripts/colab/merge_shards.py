@@ -38,6 +38,12 @@ from reasoning_dataset_lab.pilot_b.bakeoff_judge import (
     normalize_anchor_verdict_code,
 )
 from reasoning_dataset_lab.pilot_b.bakeoff_judge import JUDGE_SPECS
+from reasoning_dataset_lab.pilot_b.run_records import (
+    OUTCOME_DRAFT_FILENAME,
+    REVERIFY_HINT_TEMPLATE,
+    UNVERIFIED_JUDGE_DONE_FILENAME,
+    collect_run_unverified_passes,
+)
 from reasoning_dataset_lab.pilot_b.three_way_wording import (
     PASS_MODE_CHOICES,
     THREE_WAY_PASS_MODES,
@@ -143,9 +149,11 @@ def guard_no_test_hooks_in_counted_mode(
     mode: str | None = None,
     dryrun: bool = False,
     any_real: bool | None = None,
+    allow_unverified: bool = False,
     environ: Mapping[str, str] | None = None,
 ) -> None:
-    """Refuse with `TEST_HOOK_IN_COUNTED_MODE` if any test/override hook is set in any real merge mode."""
+    """Refuse with `TEST_HOOK_IN_COUNTED_MODE` if any test/override hook (or `--allow-unverified`) is active in any
+    real merge mode."""
     env_map = environ if environ is not None else os.environ
     eff_dryrun = bool(dryrun or str(env_map.get("VM_DRYRUN", "") or "").strip() == "1")
     if isinstance(any_counted, bool) or any_real is not None:
@@ -173,11 +181,13 @@ def guard_no_test_hooks_in_counted_mode(
         for k, v in env_map.items()
         if is_forbidden_counted_test_hook(str(k)) and str(v or "").strip() != ""
     )
+    if allow_unverified:
+        active_hooks.append("--allow-unverified")
     if active_hooks:
         joined = ", ".join(active_hooks)
         raise MergeRefusalError(
             TEST_HOOK_IN_COUNTED_MODE,
-            f"Test or override hook environment variable(s) forbidden in real shard merge: {joined}",
+            f"Test or override hook / flag forbidden in real shard merge: {joined}",
         )
 
 EXPECTED_JUDGE_IDS: tuple[str, ...] = (
@@ -1105,6 +1115,49 @@ def _refuse_manifest_inside_shard_dir(
             )
 
 
+def _check_shard_unverified_passes(
+    sdir: Path,
+    *,
+    expected_spec: str,
+    manifest_pass_mode: str,
+    allow_unverified: bool,
+) -> list[dict[str, str]]:
+    """Refuse (`MERGE_UNVERIFIED_PASS`) if any pass in `sdir` is unverified in `.unverified_judge_done` or
+    `outcome.draft.json` (including passes outside `expected_judge_ids`) unless `allow_unverified=True` (stub-only)."""
+    try:
+        entries = collect_run_unverified_passes(sdir, default_pass_mode=manifest_pass_mode)
+    except (OSError, ValueError) as exc:
+        raise MergeRefusalError(
+            "MERGE_UNVERIFIED_PASS",
+            f"shard {expected_spec} has malformed {UNVERIFIED_JUDGE_DONE_FILENAME} or {OUTCOME_DRAFT_FILENAME}: "
+            f"{exc}. {REVERIFY_HINT_TEMPLATE}",
+        ) from exc
+    if not entries:
+        return []
+    matched: list[dict[str, str]] = []
+    for entry in entries:
+        u_jid = entry["judge_id"]
+        u_mode = entry["pass_mode"]
+        u_done = entry["done_file"]
+        if not allow_unverified:
+            raise MergeRefusalError(
+                "MERGE_UNVERIFIED_PASS",
+                f"shard {expected_spec} pass judge={u_jid} pass_mode={u_mode} "
+                f"(judge_done/{u_done}) is unverified in {UNVERIFIED_JUDGE_DONE_FILENAME} or "
+                f"{OUTCOME_DRAFT_FILENAME} (every unverified pass in a shard blocks merge, including passes "
+                f"outside --only-judges / expected_judge_ids). {REVERIFY_HINT_TEMPLATE}",
+            )
+        matched.append(
+            {
+                "shard": expected_spec,
+                "judge_id": u_jid,
+                "pass_mode": u_mode,
+                "done_file": u_done,
+            }
+        )
+    return matched
+
+
 def merge_shards(
     *,
     shard_dirs: list[Path],
@@ -1118,6 +1171,7 @@ def merge_shards(
     items_path: Path | None = None,
     expected_manifest_sha256: str | None = None,
     allow_unpinned_stub: bool = False,
+    allow_unverified: bool = False,
 ) -> dict[str, Any]:
     """Verify all five cross-shard gates and write sealed-safe merged readout and receipt.
 
@@ -1151,7 +1205,7 @@ def merge_shards(
     )
     rig_real_mode = not bool(allow_unpinned_stub)
     if rig_real_mode:
-        guard_no_test_hooks_in_counted_mode(any_real=True)
+        guard_no_test_hooks_in_counted_mode(any_real=True, allow_unverified=bool(allow_unverified))
     _refuse_manifest_inside_shard_dir(manifest_path, (*shard_dirs, *raw_replacement_dirs))
     has_manifest_pin = bool(
         expected_manifest_sha256 is not None and str(expected_manifest_sha256).strip()
@@ -1395,7 +1449,7 @@ def merge_shards(
             "stub merge (--allow-unpinned-stub) refused because one or more shard session_env.json "
             "files indicate real mode or are missing/invalid",
         )
-    guard_no_test_hooks_in_counted_mode(any_real=any_real)
+    guard_no_test_hooks_in_counted_mode(any_real=any_real, allow_unverified=bool(allow_unverified))
     if any_real and not has_manifest_pin:
         raise MergeRefusalError(
             "MERGE_MANIFEST_PIN_REQUIRED",
@@ -1498,6 +1552,24 @@ def merge_shards(
     active_shard_dirs = list(shard_dirs)
     quarantined_shards: list[dict[str, Any]] = []
 
+    # Pre-check unverified passes on every original shard and every replacement shard BEFORE anchor loading or
+    # tombstone writes, so neither partial-fetch anchor drift nor a tombstone write occurs before MERGE_UNVERIFIED_PASS.
+    for shard_idx, sdir in enumerate(active_shard_dirs, start=1):
+        spec = f"{shard_idx}/{num_shards}"
+        _check_shard_unverified_passes(
+            sdir,
+            expected_spec=spec,
+            manifest_pass_mode=manifest_pass_mode,
+            allow_unverified=bool(allow_unverified),
+        )
+    for repl_spec, repl_dir in sorted(replacement_by_spec.items()):
+        _check_shard_unverified_passes(
+            repl_dir,
+            expected_spec=f"replacement {repl_spec}",
+            manifest_pass_mode=manifest_pass_mode,
+            allow_unverified=bool(allow_unverified),
+        )
+
     if anchor_item_ids and (golden_anchor_rows is not None or replacement_by_spec):
         prelim_anchors: dict[str, dict[tuple[str, str, str], dict[str, Any]]] = {}
         for shard_idx, sdir in enumerate(active_shard_dirs, start=1):
@@ -1586,6 +1658,7 @@ def merge_shards(
     per_shard_session_fingerprints: dict[str, str] = {}
     per_shard_verified_recovery: dict[str, bool] = {}
     per_shard_modes: dict[str, str] = {}
+    unverified_passes: list[dict[str, str]] = []
 
     # Gate (a), (b), (e) accumulators
     seen_triples: dict[tuple[str, str, str], str] = {}
@@ -1737,6 +1810,15 @@ def merge_shards(
 
         has_recovery = _shard_has_verified_recovery(sdir)
         per_shard_verified_recovery[expected_spec] = has_recovery
+
+        unverified_passes.extend(
+            _check_shard_unverified_passes(
+                sdir,
+                expected_spec=expected_spec,
+                manifest_pass_mode=manifest_pass_mode,
+                allow_unverified=bool(allow_unverified),
+            )
+        )
 
         # Gate (e) & row collection across all expected judges
         for jid in expected_judge_ids:
@@ -2211,6 +2293,11 @@ def merge_shards(
             "vs_golden": golden_comparisons,
         },
     }
+    if allow_unverified or unverified_passes:
+        merged_readout["allow_unverified"] = bool(allow_unverified)
+        merged_readout["unverified_passes"] = list(
+            dict.fromkeys(f"{u['judge_id']}:{u['pass_mode']}" for u in unverified_passes)
+        )
     merge_receipt = {
         "schema_version": "1.0",
         "status": "ok",
@@ -2268,6 +2355,9 @@ def merge_shards(
         },
         "merged_readout_sha256": _canonical_json_sha256(merged_readout),
     }
+    if allow_unverified or unverified_passes:
+        merge_receipt["allow_unverified"] = bool(allow_unverified)
+        merge_receipt["unverified_passes"] = unverified_passes
 
     (output_dir / "merged_readout.json").write_text(
         json.dumps(merged_readout, indent=2, sort_keys=True) + "\n",
@@ -2349,6 +2439,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     p.add_argument(
+        "--allow-unverified",
+        action="store_true",
+        help=(
+            "Stub/test opt-in only: permit merging passes listed in .unverified_judge_done "
+            "(never set by any wrapper; refused in counted/real modes)"
+        ),
+    )
+    p.add_argument(
         "--only-judges",
         nargs="+",
         default=None,
@@ -2386,6 +2484,7 @@ def main(argv: list[str] | None = None) -> int:
             items_path=Path(args.items) if args.items else None,
             expected_manifest_sha256=args.expected_manifest_sha256,
             allow_unpinned_stub=bool(args.allow_unpinned_stub),
+            allow_unverified=bool(args.allow_unverified),
         )
     except MergeRefusalError as exc:
         sys.stderr.write(f"{exc}\n")

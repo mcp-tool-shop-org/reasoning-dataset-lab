@@ -3042,7 +3042,7 @@ def _check_logprob_mass_one_mode(
             f"part_json_sha256={got.get('part_json_sha256')!r}.",
         )
     assert verified_pilot_identity is not None
-    rows_dir = Path(judge_output_dir) / ROWS_DIRNAME
+    rows_dir = _checked_logprob_rows_dir(Path(judge_output_dir))
     if not rows_dir.is_dir():
         raise RefusalError(
             "BAKEOFF_LOGPROB_MASS_NO_ROWS",
@@ -14304,7 +14304,7 @@ def build_vm_receipt_doc(
 
 def main(argv: list[str] | None = None) -> int:
     global _ACTIVE_VM_LOG_PATH, _ACTIVE_RUN_WALL_DEADLINE_MONOTONIC
-
+    if list(sys.argv[1:] if argv is None else argv)[:1] == ["reverify-unverified"]: return _cli_reverify_unverified(list(sys.argv[1:] if argv is None else argv)[1:])  # noqa: E501
     try:
         args = parse_args(argv)
     except SystemExit as exc:
@@ -16235,6 +16235,49 @@ def write_launcher_halted_pass_verdicts(out_dir: Path, halted_tsv: str, verdicts
             fh.flush()
 
 
+UNVERIFIED_JUDGE_DONE_FILENAME = ".unverified_judge_done"
+
+
+def _load_run_records_module() -> Any:
+    """Import `reasoning_dataset_lab.pilot_b.run_records` (adding local or VM `src/` to `sys.path` if needed)."""
+    import importlib
+
+    if "reasoning_dataset_lab.pilot_b.run_records" not in sys.modules:
+        argv0 = Path(sys.argv[0]).resolve() if sys.argv and sys.argv[0] else Path.cwd()
+        argv_src = argv0.parents[2] / "src" if len(argv0.parents) > 2 else Path.cwd() / "src"
+        candidates = [argv_src, Path.cwd() / "src", Path("/content/rdlab/src")]
+        for cand in candidates:
+            if (cand / "reasoning_dataset_lab").is_dir() and str(cand) not in sys.path:
+                sys.path.insert(0, str(cand))
+    return importlib.import_module("reasoning_dataset_lab.pilot_b.run_records")
+
+
+def _checked_logprob_rows_dir(judge_output_dir: Path) -> Path:
+    """Refuse (`BAKEOFF_LOGPROB_MASS_UNVERIFIED_PASS`) via the shared `run_records` reader if any pass is unverified."""
+    run_records = _load_run_records_module()
+    resolved_dir = Path(judge_output_dir)
+    try:
+        unverified_entries = run_records.collect_run_unverified_passes(resolved_dir)
+    except (OSError, ValueError) as exc:
+        raise RefusalError(
+            "BAKEOFF_LOGPROB_MASS_UNVERIFIED_PASS",
+            f"Malformed {UNVERIFIED_JUDGE_DONE_FILENAME} or {run_records.OUTCOME_DRAFT_FILENAME} in "
+            f"'{resolved_dir}': {exc}.",
+            hint=run_records.REVERIFY_HINT_TEMPLATE,
+        ) from exc
+    if unverified_entries:
+        first_u = unverified_entries[0]
+        listed = ", ".join(f"{u['judge_id']}:{u['pass_mode']}" for u in unverified_entries)
+        raise RefusalError(
+            "BAKEOFF_LOGPROB_MASS_UNVERIFIED_PASS",
+            f"Run directory '{resolved_dir}' lists unverified pass(es) [{listed}] in "
+            f"{UNVERIFIED_JUDGE_DONE_FILENAME} or {run_records.OUTCOME_DRAFT_FILENAME} "
+            f"(first: judge={first_u['judge_id']} pass_mode={first_u['pass_mode']}); refusing to read rows.",
+            hint=run_records.REVERIFY_HINT_TEMPLATE,
+        )
+    return resolved_dir / ROWS_DIRNAME
+
+
 # --- arm 4: venv-elephant, built on the VM only (never on the rig), before elephant-1's first pass ----------------
 # setup.sh (elephant-1's, pinned in its receipt) installs OneJev @81ce62f + serve.patch and the decision-index kit into
 # the active interpreter and may apt-install git. Here, by R&D's ruling of 2026-11-15:
@@ -16626,6 +16669,150 @@ def _apply_elephant_install(passes: list[tuple[str, Any, str, str]], ctx: Mappin
                 },
             )
     return kept
+
+
+def reverify_unverified(out_dir: Path) -> tuple[int, dict[str, Any]]:
+    """Offline unpaid re-verification (`python scripts/colab/vm_judges.py reverify-unverified <out_dir>`).
+
+    Re-runs `launcher_verify_fetched_pass(staged=False, want_sha256=<from progress.jsonl>)` per `.unverified_judge_done`
+    entry with no tight timeout, prunes only the entries that verify, and updates `outcome.draft.json` when present.
+    Returns `(0, report)` when all marker entries verify (or none remain) and `(2, report)` when any entry fails.
+    """
+    resolved_dir = Path(out_dir)
+    if not resolved_dir.is_dir():
+        raise RefusalError(
+            "REVERIFY_UNVERIFIED_INVALID_DIR",
+            f"Run directory '{out_dir}' does not exist or is not a directory.",
+        )
+    run_records = _load_run_records_module()
+    outcome_path = resolved_dir / run_records.OUTCOME_DRAFT_FILENAME
+    window_pass_mode = "binary"
+    for meta_p in (outcome_path, resolved_dir / "window.json"):
+        if meta_p.is_file():
+            try:
+                mdoc = json.loads(meta_p.read_text(encoding="utf-8"))
+                if isinstance(mdoc, Mapping) and str(mdoc.get("pass_mode") or "").strip():
+                    window_pass_mode = str(mdoc["pass_mode"]).strip()
+                    break
+            except (OSError, ValueError):
+                pass
+    default_pmode = window_pass_mode if window_pass_mode in PASS_MODES else "binary"
+
+    try:
+        entries = run_records.collect_run_unverified_passes(resolved_dir, default_pass_mode=default_pmode)
+    except (OSError, ValueError) as exc:
+        if outcome_path.is_file():
+            try:
+                odoc = json.loads(outcome_path.read_text(encoding="utf-8"))
+                if isinstance(odoc, dict):
+                    odoc["judges_completed"] = []
+                    odoc["unverified_passes"] = []
+                    odoc["unverified_passes_malformed"] = True
+                    outcome_path.write_text(json.dumps(odoc, indent=2) + "\n", encoding="utf-8", newline="\n")
+            except (OSError, ValueError):
+                pass
+        raise RefusalError(
+            "REVERIFY_UNVERIFIED_MALFORMED",
+            f"Malformed {UNVERIFIED_JUDGE_DONE_FILENAME} or {run_records.OUTCOME_DRAFT_FILENAME} in '{resolved_dir}': {exc}.",
+        ) from exc
+
+    want_sha_by_pass = {
+        (r["judge_id"], r["pass_mode"]): r["sha256"]
+        for r in launcher_completed_passes(resolved_dir / PROGRESS_FILENAME, window_pass_mode)
+    }
+    verified: list[dict[str, str]] = []
+    still_unverified: list[dict[str, str]] = []
+    for entry in entries:
+        jid, pmode = entry["judge_id"], entry["pass_mode"]
+        want_sha = want_sha_by_pass.get((jid, pmode), "")
+        if not want_sha:
+            still_unverified.append(
+                {**entry, "reason": f"PROGRESS_SHA_MISSING: no 64-hex judge_pass_done sha256 in {PROGRESS_FILENAME}"}
+            )
+            continue
+        ok, reason = launcher_verify_fetched_pass(resolved_dir, jid, pmode, staged=False, want_sha256=want_sha)
+        if ok:
+            verified.append(entry)
+        else:
+            still_unverified.append({**entry, "reason": reason or "FETCHED_ROWS_WANT_SHA_MISMATCH"})
+
+    marker_path = resolved_dir / UNVERIFIED_JUDGE_DONE_FILENAME
+    if not still_unverified:
+        marker_path.unlink(missing_ok=True)
+    else:
+        marker_path.write_text(
+            "".join(f"{e['judge_id']}\t{e['pass_mode']}\t{e['done_file']}\n" for e in still_unverified),
+            encoding="utf-8",
+            newline="\n",
+        )
+
+    verified_labels = [f"{e['judge_id']}:{e['pass_mode']}" for e in verified]
+    still_labels = [f"{e['judge_id']}:{e['pass_mode']}" for e in still_unverified]
+    if outcome_path.is_file():
+        odoc = json.loads(outcome_path.read_text(encoding="utf-8"))
+        odoc.pop("unverified_passes_malformed", None)
+        odoc["unverified_passes"] = still_labels
+        still_done_names = {e["done_file"] for e in still_unverified}
+        jdone_dir = resolved_dir / JUDGE_DONE_DIRNAME
+        done_ids = (
+            {jf.stem for jf in sorted(jdone_dir.glob("*.json")) if jf.is_file() and jf.name not in still_done_names}
+            if jdone_dir.is_dir()
+            else set()
+        )
+        ordered_candidates: list[str] = []
+        vm_rec_path = resolved_dir / "vm_receipt.json"
+        if vm_rec_path.is_file():
+            try:
+                rdoc = json.loads(vm_rec_path.read_text(encoding="utf-8"))
+                if isinstance(rdoc, Mapping) and isinstance(rdoc.get("judge_order"), list):
+                    ordered_candidates = [str(x) for x in rdoc["judge_order"]]
+            except (OSError, ValueError):
+                pass
+        if not ordered_candidates and isinstance(odoc.get("only_judges"), list):
+            ordered_candidates = [str(x) for x in odoc["only_judges"]]
+        completed = [c for c in ordered_candidates if c in done_ids]
+        for d in sorted(done_ids):
+            if d not in completed:
+                completed.append(d)
+        odoc["judges_completed"] = completed
+        prev_rev = odoc.get("reverified_unverified_passes")
+        odoc["reverified_unverified_passes"] = list(
+            dict.fromkeys(
+                [*(x for x in (prev_rev if isinstance(prev_rev, list) else []) if isinstance(x, str)), *verified_labels]
+            )
+        )
+        hist = list(odoc["reverify_unverified_history"]) if isinstance(odoc.get("reverify_unverified_history"), list) else []
+        hist.append(
+            {
+                "at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "verified": verified_labels,
+                "still_unverified": still_labels,
+            }
+        )
+        odoc["reverify_unverified_history"] = hist
+        outcome_path.write_text(json.dumps(odoc, indent=2) + "\n", encoding="utf-8", newline="\n")
+
+    rc = 0 if not still_unverified else 2
+    report = {
+        "status": "ok" if rc == 0 else "incomplete",
+        "out_dir": str(resolved_dir),
+        "verified": verified_labels,
+        "still_unverified": still_labels,
+    }
+    return rc, report
+
+
+def _cli_reverify_unverified(argv: list[str]) -> int:
+    if len(argv) != 1 or not argv[0].strip() or argv[0].startswith("-"):
+        sys.stderr.write("usage: vm_judges.py reverify-unverified <out_dir>\n")
+        return 2
+    try:
+        rc, report = reverify_unverified(Path(argv[0]))
+    except RefusalError as exc:
+        sys.stderr.write(f"{exc.code}: {exc.message}\n")
+        return 2
+    sys.stdout.write(json.dumps(report, sort_keys=True) + "\n")
+    return rc
 
 
 if __name__ == "__main__":
