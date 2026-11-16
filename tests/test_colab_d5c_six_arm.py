@@ -1951,6 +1951,7 @@ def test_bash_fetch_completed_judge_checkpoints_crash_empty_name_and_deadline_gu
         assert not (out_b4 / "judge_done" / "flow-judge-v0.1.json").exists()
         assert not (out_b4 / "rows" / "flow-judge-v0.1.jsonl").exists()
         assert doc_b4["judges_completed"] == ["mu-judge"]
+        assert doc_b4["unverified_passes"] == []
 
     # B7 + C14: pre-halt verify timeout (rc 124 and rc 137 after SIGTERM ignore + SIGKILL grace) KEEPS the pair on
     # disk, excludes it from judges_completed via .unverified_judge_done, and logs FETCHED_PASS_VERIFY_TIMEOUT.
@@ -1969,6 +1970,8 @@ def test_bash_fetch_completed_judge_checkpoints_crash_empty_name_and_deadline_gu
         assert (out_b7 / "rows" / "d3-mini.jsonl").is_file()
         assert (out_b7 / "judge_done" / "mu-judge.json").is_file()
         assert doc_b7["judges_completed"] == ["mu-judge"]
+        assert doc_b7["unverified_passes"] == ["d3-mini:binary"]
+        assert (out_b7 / ".unverified_judge_done").read_text(encoding="utf-8").strip() == "d3-mini\tbinary\td3-mini.json"
         cli_txt = (out_b7 / "colab-cli.log").read_text(encoding="utf-8")
         assert "FETCHED_PASS_VERIFY_TIMEOUT judge=d3-mini pass_mode=binary" in cli_txt
         assert "FETCHED_PASS_VERIFY_TIMEOUT judge=d3-mini pass_mode=binary" in proc_b7.stderr
@@ -1993,6 +1996,7 @@ def test_bash_fetch_completed_judge_checkpoints_crash_empty_name_and_deadline_gu
     assert (out_b8_s / "judge_done" / "d3-mini.json").is_file()
     assert (out_b8_s / "rows" / "d3-mini.jsonl").is_file()
     assert doc_b8_s["judges_completed"] == ["mu-judge"]
+    assert doc_b8_s["unverified_passes"] == ["d3-mini:binary"]
     cli_b8 = (out_b8_s / "colab-cli.log").read_text(encoding="utf-8")
     assert "FETCHED_PASS_VERIFY_TIMEOUT judge=d3-mini pass_mode=binary" in cli_b8
     assert "FETCHED_PASS_VERIFY_TIMEOUT judge=mu-judge" not in cli_b8
@@ -2028,3 +2032,267 @@ def test_bash_fetch_completed_judge_checkpoints_crash_empty_name_and_deadline_gu
     assert not (out_c14_mut / "judge_done" / "d3-mini.json").exists()
     assert not (out_c14_mut / "rows" / "d3-mini.jsonl").exists()
     assert "FETCHED_PASS_VERIFY_TIMEOUT" not in proc_c14_mut.stderr
+
+
+def test_merge_shards_and_scorer_refuse_unverified_pass_and_keep_clean_fixture_byte_identical(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """PR #99 fix-2 follow-up (Refs #94): `merge_shards` refuses (`MERGE_UNVERIFIED_PASS`) any pass listed in
+    `.unverified_judge_done` unless `--allow-unverified` (stub-only, refused with `TEST_HOOK_IN_COUNTED_MODE` in
+    counted modes); scorers (`score_bakeoff_outputs`, `check_bakeoff_logprob_mass`) refuse `.unverified_judge_done`;
+    without the marker, `merge_shards` emits byte-identical `merged_readout.json` / `merge_receipt.json`."""
+    import merge_shards
+    import os
+    import shutil
+
+    from tests.test_colab_judge_launcher import REPO_ROOT, _make_stratified_public_items
+
+    for k in list(os.environ):
+        if vm_judges.is_forbidden_counted_test_hook(k):
+            monkeypatch.delenv(k, raising=False)
+    monkeypatch.delenv("VM_DRYRUN", raising=False)
+
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "rec")
+    _add_d5c_snapshots(receipts_dir, hf_home)
+    items_path = _make_stratified_public_items(tmp_path / "items", count=6)
+    manifest_doc = bakeoff_judge.build_shard_manifest(
+        items_path, num_shards=2, anchor_count=2, stratified_anchor_count=2, canary_anchor_count=0, pass_mode=CONTRA
+    )
+    manifest_path = tmp_path / "shard_manifest.json"
+    manifest_sha = bakeoff_judge.write_shard_manifest(manifest_doc, manifest_path)
+    spec = JUDGE_SPECS["d3-mini"]
+    shard_dirs: list[Path] = []
+    for k_idx in (1, 2):
+        sdir = tmp_path / f"shard_{k_idx}"
+        sdir.mkdir()
+        spec_str = f"{k_idx}/2"
+        s_env = vm_judges.collect_and_write_session_env(
+            sdir, receipts_dir=receipts_dir, mode="stub", shard_spec=spec_str, phase="start", dryrun=True
+        )
+        s_env = vm_judges.collect_and_write_session_env(
+            sdir, receipts_dir=receipts_dir, mode="stub", shard_spec=spec_str, phase="end", dryrun=True, prior_session_env=s_env
+        )
+        bakeoff_judge.run_bakeoff_judge(
+            part_dir=items_path,
+            output_dir=sdir,
+            judge="d3-mini",
+            pass_mode=CONTRA,
+            fake_transport=True,
+            allow_remote_code_reviewed=spec.revision if spec.requires_remote_code else None,
+            shard_spec=spec_str,
+            shard_manifest_path=manifest_path,
+            shard_manifest_sha256=manifest_sha,
+            session_fingerprint_sha256=s_env["session_fingerprint_sha256"],
+        )
+        vm_judges.write_outputs_closed(sdir)
+        shard_dirs.append(sdir)
+
+    # 1. Clean baseline merge without .unverified_judge_done has neither extra key.
+    out_clean_1 = tmp_path / "merged_clean_1"
+    merge_shards.merge_shards(
+        shard_dirs=shard_dirs,
+        manifest_path=manifest_path,
+        output_dir=out_clean_1,
+        items_path=items_path,
+        expected_judge_ids=["d3-mini"],
+        allow_unpinned_stub=True,
+    )
+    clean_readout_bytes = (out_clean_1 / "merged_readout.json").read_bytes()
+    clean_receipt_bytes = (out_clean_1 / "merge_receipt.json").read_bytes()
+    clean_readout_doc = json.loads(clean_readout_bytes.decode("utf-8"))
+    clean_receipt_doc = json.loads(clean_receipt_bytes.decode("utf-8"))
+    assert "allow_unverified" not in clean_readout_doc and "unverified_passes" not in clean_readout_doc
+    assert "allow_unverified" not in clean_receipt_doc and "unverified_passes" not in clean_receipt_doc
+
+    # 2. Marking one unverified pass refuses with MERGE_UNVERIFIED_PASS naming judge and pass_mode
+    #    (TSV, plain legacy filename, and an unrelated/unrequested pass such as elephant-1).
+    marker_p = shard_dirs[0] / three_way_wording.UNVERIFIED_JUDGE_DONE_FILENAME
+    for marker_text, exp_jid, exp_mode in (
+        (f"d3-mini\t{CONTRA}\td3-mini.json\n", "d3-mini", CONTRA),
+        ("d3-mini.json\n", "d3-mini", CONTRA),
+        (f"elephant-1\t{CONTRA}\telephant-1.json\n", "elephant-1", CONTRA),
+    ):
+        marker_p.write_text(marker_text, encoding="utf-8", newline="\n")
+        with pytest.raises(merge_shards.MergeRefusalError) as exc_unv:
+            merge_shards.merge_shards(
+                shard_dirs=shard_dirs,
+                manifest_path=manifest_path,
+                output_dir=tmp_path / "merged_refused",
+                items_path=items_path,
+                expected_judge_ids=["d3-mini"],
+                allow_unpinned_stub=True,
+            )
+        assert exc_unv.value.failure_class == "MERGE_UNVERIFIED_PASS"
+        assert exp_jid in exc_unv.value.detail and exp_mode in exc_unv.value.detail
+
+    # CLI exit 2 with MERGE_UNVERIFIED_PASS when marker is present.
+    marker_p.write_text(f"d3-mini\t{CONTRA}\td3-mini.json\n", encoding="utf-8", newline="\n")
+    cli_rc = merge_shards.main(
+        [
+            "--shard-dirs",
+            str(shard_dirs[0]),
+            str(shard_dirs[1]),
+            "--manifest",
+            str(manifest_path),
+            "--output-dir",
+            str(tmp_path / "merged_cli_refused"),
+            "--items",
+            str(items_path),
+            "--only-judges",
+            "d3-mini",
+            "--allow-unpinned-stub",
+        ]
+    )
+    assert cli_rc == 2
+    cli_err = capsys.readouterr().err
+    assert "MERGE_UNVERIFIED_PASS" in cli_err and "d3-mini" in cli_err and CONTRA in cli_err
+
+    # 3. Partial-fetch shard lacking anchor_rows/ still refuses MERGE_UNVERIFIED_PASS (not anchor drift).
+    partial_s0 = tmp_path / "shard_1_partial"
+    shutil.copytree(shard_dirs[0], partial_s0)
+    shutil.rmtree(partial_s0 / "anchor_rows")
+    with pytest.raises(merge_shards.MergeRefusalError) as exc_partial:
+        merge_shards.merge_shards(
+            shard_dirs=[partial_s0, shard_dirs[1]],
+            manifest_path=manifest_path,
+            output_dir=tmp_path / "merged_partial_refused",
+            items_path=items_path,
+            expected_judge_ids=["d3-mini"],
+            allow_unpinned_stub=True,
+        )
+    assert exc_partial.value.failure_class == "MERGE_UNVERIFIED_PASS"
+
+    # 4. Stub --allow-unverified permits merge and records plain unverified_passes; counted modes refuse it.
+    out_allowed = tmp_path / "merged_allowed"
+    cli_allow_rc = merge_shards.main(
+        [
+            "--shard-dirs",
+            str(shard_dirs[0]),
+            str(shard_dirs[1]),
+            "--manifest",
+            str(manifest_path),
+            "--output-dir",
+            str(out_allowed),
+            "--items",
+            str(items_path),
+            "--only-judges",
+            "d3-mini",
+            "--allow-unpinned-stub",
+            "--allow-unverified",
+        ]
+    )
+    assert cli_allow_rc == 0, capsys.readouterr().err
+    allowed_readout = json.loads((out_allowed / "merged_readout.json").read_text(encoding="utf-8"))
+    allowed_receipt = json.loads((out_allowed / "merge_receipt.json").read_text(encoding="utf-8"))
+    assert allowed_readout["allow_unverified"] is True
+    assert allowed_readout["unverified_passes"] == [f"d3-mini:{CONTRA}"]
+    assert allowed_receipt["allow_unverified"] is True
+    assert allowed_receipt["unverified_passes"] == [
+        {"shard": "1/2", "judge_id": "d3-mini", "pass_mode": CONTRA, "done_file": "d3-mini.json"}
+    ]
+
+    with pytest.raises(merge_shards.MergeRefusalError) as exc_hook:
+        merge_shards.merge_shards(
+            shard_dirs=shard_dirs,
+            manifest_path=manifest_path,
+            output_dir=tmp_path / "merged_real_refused",
+            items_path=items_path,
+            expected_judge_ids=["d3-mini"],
+            expected_manifest_sha256=manifest_sha,
+            allow_unpinned_stub=False,
+            allow_unverified=True,
+        )
+    assert exc_hook.value.failure_class == merge_shards.TEST_HOOK_IN_COUNTED_MODE
+    with pytest.raises(merge_shards.MergeRefusalError) as exc_guard:
+        merge_shards.guard_no_test_hooks_in_counted_mode(any_real=True, allow_unverified=True)
+    assert exc_guard.value.failure_class == merge_shards.TEST_HOOK_IN_COUNTED_MODE
+    for sh_path in (REPO_ROOT / "scripts").rglob("*.sh"):
+        assert "--allow-unverified" not in sh_path.read_text(encoding="utf-8"), sh_path
+
+    # 5. Removing .unverified_judge_done yields byte-identical clean merge outputs.
+    marker_p.unlink()
+    out_clean_2 = tmp_path / "merged_clean_2"
+    merge_shards.merge_shards(
+        shard_dirs=shard_dirs,
+        manifest_path=manifest_path,
+        output_dir=out_clean_2,
+        items_path=items_path,
+        expected_judge_ids=["d3-mini"],
+        allow_unpinned_stub=True,
+    )
+    assert (out_clean_2 / "merged_readout.json").read_bytes() == clean_readout_bytes
+    assert (out_clean_2 / "merge_receipt.json").read_bytes() == clean_receipt_bytes
+
+    # 6. Scorers & pilot logprob-mass checkers refuse any pass in .unverified_judge_done and succeed once removed.
+    score_items_p = _make_synthetic_public_items(tmp_path / "score_items", count=6)
+    judge_dir = tmp_path / "score_run_dir"
+    bakeoff_judge.run_bakeoff_judge(
+        part_dir=score_items_p,
+        output_dir=judge_dir,
+        judge="d3-mini",
+        pass_mode=CONTRA,
+        fake_transport=True,
+        allow_remote_code_reviewed=spec.revision if spec.requires_remote_code else None,
+    )
+    bakeoff_judge.close_bakeoff_outputs(judge_dir)
+    keys_p = _three_way_keys(tmp_path / "score_keys", count=6)
+    clean_pub_1 = tmp_path / "score_clean_1" / "public.json"
+    bakeoff_judge_score.score_bakeoff_outputs(
+        judge_output_dir=judge_dir,
+        keys_path=keys_p,
+        public_out_path=clean_pub_1,
+        sealed_rows_out_path=tmp_path / "score_clean_1" / "sealed",
+        bootstrap_resamples=20,
+    )
+
+    score_marker = judge_dir / three_way_wording.UNVERIFIED_JUDGE_DONE_FILENAME
+    score_marker.write_text(f"d3-mini\t{CONTRA}\td3-mini.json\n", encoding="utf-8", newline="\n")
+    with pytest.raises(RdlabError) as exc_score:
+        bakeoff_judge_score.score_bakeoff_outputs(
+            judge_output_dir=judge_dir,
+            keys_path=keys_p,
+            public_out_path=tmp_path / "score_refused" / "public.json",
+            sealed_rows_out_path=tmp_path / "score_refused" / "sealed",
+            bootstrap_resamples=20,
+        )
+    assert exc_score.value.code == "BAKEOFF_SCORE_UNVERIFIED_PASS"
+    assert "d3-mini" in str(exc_score.value) and CONTRA in str(exc_score.value)
+
+    monkeypatch.setattr(vm_judges, "is_pinned_pilot_identity", lambda _identity: True)
+    with pytest.raises(vm_judges.RefusalError) as exc_vm_mass:
+        vm_judges.check_bakeoff_logprob_mass(judge_dir, verified_pilot_identity={"part_id": "p"}, pass_mode=CONTRA)
+    assert exc_vm_mass.value.code == "BAKEOFF_LOGPROB_MASS_UNVERIFIED_PASS"
+
+    monkeypatch.setattr(bakeoff_judge, "verify_pinned_pilot_part_dir", lambda _part_dir: {"part_id": "p"})
+    with pytest.raises(RdlabError) as exc_bj_mass:
+        bakeoff_judge.check_bakeoff_logprob_mass(judge_output_dir=judge_dir, part_dir=tmp_path)
+    assert exc_bj_mass.value.code == "BAKEOFF_LOGPROB_MASS_UNVERIFIED_PASS"
+
+    # Also pin three_way_wording.read_unverified_passes on TSV, colon, plain non-legacy filename, and traversal rejection.
+    parse_dir = tmp_path / "parse_dir"
+    parse_dir.mkdir()
+    (parse_dir / three_way_wording.UNVERIFIED_JUDGE_DONE_FILENAME).write_text(
+        f"d3-mini\t{CONTRA}\td3-mini.json\nd3-mini:{TWO_Q}\n{ENCODER}.{NLI}.json\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    parsed_entries = three_way_wording.read_unverified_passes(parse_dir)
+    assert [(e["judge_id"], e["pass_mode"], e["done_file"]) for e in parsed_entries] == [
+        ("d3-mini", CONTRA, "d3-mini.json"),
+        ("d3-mini", TWO_Q, f"d3-mini.{TWO_Q}.json"),
+        (ENCODER, NLI, f"{ENCODER}.{NLI}.json"),
+    ]
+    (parse_dir / three_way_wording.UNVERIFIED_JUDGE_DONE_FILENAME).write_text("../escape.json\n", encoding="utf-8")
+    with pytest.raises(ValueError):
+        three_way_wording.read_unverified_passes(parse_dir)
+
+    score_marker.unlink()
+    clean_pub_2 = tmp_path / "score_clean_2" / "public.json"
+    bakeoff_judge_score.score_bakeoff_outputs(
+        judge_output_dir=judge_dir,
+        keys_path=keys_p,
+        public_out_path=clean_pub_2,
+        sealed_rows_out_path=tmp_path / "score_clean_2" / "sealed",
+        bootstrap_resamples=20,
+    )
+    assert clean_pub_2.read_bytes() == clean_pub_1.read_bytes()

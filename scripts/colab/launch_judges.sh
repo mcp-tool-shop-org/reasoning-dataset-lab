@@ -1928,7 +1928,7 @@ fetch_completed_judge_checkpoints() {
     timeout -k "$COLAB_KILL_GRACE_SECONDS" "$verify_timeout" "$PYTHON_BIN" -c "$vmj; sys.exit(0 if v.launcher_verify_fetched_pass(Path(sys.argv[2]), sys.argv[3], sys.argv[4], staged=False, want_sha256=sys.argv[5])[0] else 1)" "$REPO_ROOT" "$OUT_DIR" "$jid" "$pmode" "${want_sha:-}" </dev/null >/dev/null 2>&1 || v_rc=$?
     if [[ "$v_rc" -eq 0 ]]; then
       if [[ -f "$unverified_file" ]]; then
-        grep -vxF "$done_file" "$unverified_file" > "$unverified_file.tmp.$$" 2>/dev/null || true
+        awk -F '\t' -v df="$done_file" '$0 != df && $3 != df' "$unverified_file" > "$unverified_file.tmp.$$" 2>/dev/null || true
         if [[ -s "$unverified_file.tmp.$$" ]]; then
           mv -f "$unverified_file.tmp.$$" "$unverified_file"
         else
@@ -1938,8 +1938,10 @@ fetch_completed_judge_checkpoints() {
       continue
     fi
     if [[ "$v_rc" -eq 124 || "$v_rc" -eq 137 ]]; then
+      local unverified_entry
+      unverified_entry="$(printf '%s\t%s\t%s' "$jid" "$pmode" "$done_file")"
       touch "$unverified_file"
-      grep -qxF "$done_file" "$unverified_file" 2>/dev/null || printf '%s\n' "$done_file" >> "$unverified_file"
+      grep -qxF "$unverified_entry" "$unverified_file" 2>/dev/null || printf '%s\n' "$unverified_entry" >> "$unverified_file"
       log_msg "FETCHED_PASS_VERIFY_TIMEOUT judge=${jid} pass_mode=${pmode}"
       printf '%s\n' "FETCHED_PASS_VERIFY_TIMEOUT judge=${jid} pass_mode=${pmode}" >&2
       continue
@@ -1949,7 +1951,7 @@ fetch_completed_judge_checkpoints() {
     if [[ -n "$done_file" && -n "$row_file" ]]; then
       rm -f "$OUT_DIR/judge_done/${done_file}" "$OUT_DIR/rows/${row_file}"
       if [[ -f "$unverified_file" ]]; then
-        grep -vxF "$done_file" "$unverified_file" > "$unverified_file.tmp.$$" 2>/dev/null || true
+        awk -F '\t' -v df="$done_file" '$0 != df && $3 != df' "$unverified_file" > "$unverified_file.tmp.$$" 2>/dev/null || true
         if [[ -s "$unverified_file.tmp.$$" ]]; then
           mv -f "$unverified_file.tmp.$$" "$unverified_file"
         else
@@ -1993,7 +1995,7 @@ fetch_completed_judge_checkpoints() {
       bad_line="$(printf 'BAD\t%s\t%s\t%s' "$jid" "$pmode" "$done_file")"
       if [[ -f "$verdicts_file" ]] && grep -qxF "$ok_line" "$verdicts_file" 2>/dev/null; then
         if [[ -f "$unverified_file" ]]; then
-          grep -vxF "$done_file" "$unverified_file" > "$unverified_file.tmp.$$" 2>/dev/null || true
+          awk -F '\t' -v df="$done_file" '$0 != df && $3 != df' "$unverified_file" > "$unverified_file.tmp.$$" 2>/dev/null || true
           if [[ -s "$unverified_file.tmp.$$" ]]; then
             mv -f "$unverified_file.tmp.$$" "$unverified_file"
           else
@@ -2003,7 +2005,7 @@ fetch_completed_judge_checkpoints() {
       elif [[ -f "$verdicts_file" ]] && grep -qxF "$bad_line" "$verdicts_file" 2>/dev/null; then
         rm -f "$OUT_DIR/judge_done/${done_file}" "$OUT_DIR/rows/${row_file}"
         if [[ -f "$unverified_file" ]]; then
-          grep -vxF "$done_file" "$unverified_file" > "$unverified_file.tmp.$$" 2>/dev/null || true
+          awk -F '\t' -v df="$done_file" '$0 != df && $3 != df' "$unverified_file" > "$unverified_file.tmp.$$" 2>/dev/null || true
           if [[ -s "$unverified_file.tmp.$$" ]]; then
             mv -f "$unverified_file.tmp.$$" "$unverified_file"
           else
@@ -2011,14 +2013,16 @@ fetch_completed_judge_checkpoints() {
           fi
         fi
       elif [[ "$h_rc" -eq 124 || "$h_rc" -eq 137 ]]; then
+        local unverified_entry
+        unverified_entry="$(printf '%s\t%s\t%s' "$jid" "$pmode" "$done_file")"
         touch "$unverified_file"
-        grep -qxF "$done_file" "$unverified_file" 2>/dev/null || printf '%s\n' "$done_file" >> "$unverified_file"
+        grep -qxF "$unverified_entry" "$unverified_file" 2>/dev/null || printf '%s\n' "$unverified_entry" >> "$unverified_file"
         log_msg "FETCHED_PASS_VERIFY_TIMEOUT judge=${jid} pass_mode=${pmode}"
         printf '%s\n' "FETCHED_PASS_VERIFY_TIMEOUT judge=${jid} pass_mode=${pmode}" >&2
       else
         rm -f "$OUT_DIR/judge_done/${done_file}" "$OUT_DIR/rows/${row_file}"
         if [[ -f "$unverified_file" ]]; then
-          grep -vxF "$done_file" "$unverified_file" > "$unverified_file.tmp.$$" 2>/dev/null || true
+          awk -F '\t' -v df="$done_file" '$0 != df && $3 != df' "$unverified_file" > "$unverified_file.tmp.$$" 2>/dev/null || true
           if [[ -s "$unverified_file.tmp.$$" ]]; then
             mv -f "$unverified_file.tmp.$$" "$unverified_file"
           else
@@ -2455,11 +2459,53 @@ payload["only_judges"] = only_judges_list
 payload["pass_mode"] = os.environ.get("RDLAB_OUTCOME_PASS_MODE", "").strip() or "binary"; payload.update({"judge_pass_modes": [p for p in os.environ.get("RDLAB_JUDGE_PASS_MODES", "").split(",") if p]} if payload["pass_mode"] == "per_judge" else {})  # noqa: E501
 jdone_dir = out_path.parent / "judge_done"
 unverified_file = out_path.parent / ".unverified_judge_done"
-unverified_names: set[str] = (
-    {ln.strip() for ln in unverified_file.read_text(encoding="utf-8", errors="replace").splitlines() if ln.strip()}
-    if unverified_file.is_file()
-    else set()
-)
+unverified_names: set[str] = set()
+unverified_passes: list[str] = []
+if unverified_file.is_file():
+    for raw_u in unverified_file.read_text(encoding="utf-8", errors="replace").splitlines():
+        line_u = raw_u.strip()
+        if not line_u:
+            continue
+        if "\t" in line_u:
+            parts_u = [p.strip() for p in line_u.split("\t")]
+            if len(parts_u) == 3 and parts_u[0] and parts_u[1] and parts_u[2]:
+                u_jid, u_mode, u_done = parts_u
+                unverified_names.add(u_done)
+                u_label = f"{u_jid}:{u_mode}"
+                if u_label not in unverified_passes:
+                    unverified_passes.append(u_label)
+        elif ":" in line_u:
+            u_jid, u_mode = [p.strip() for p in line_u.split(":", 1)]
+            if u_jid and u_mode:
+                unverified_names.add(
+                    f"{u_jid}.json" if u_mode in ("binary", "three_way", "three_way_contradicted") else f"{u_jid}.{u_mode}.json"
+                )
+                u_label = f"{u_jid}:{u_mode}"
+                if u_label not in unverified_passes:
+                    unverified_passes.append(u_label)
+        else:
+            unverified_names.add(line_u)
+            u_done_p = jdone_dir / line_u
+            u_mode = ""
+            if u_done_p.is_file():
+                try:
+                    u_doc = json.loads(u_done_p.read_text(encoding="utf-8"))
+                    if isinstance(u_doc, dict) and str(u_doc.get("pass_mode") or "").strip():
+                        u_mode = str(u_doc["pass_mode"]).strip()
+                except Exception:
+                    pass
+            u_jid = line_u[:-5] if line_u.endswith(".json") else line_u
+            if not u_mode:
+                for known_m in ("three_way_two_question", "three_way_symmetric", "three_way_nli"):
+                    if line_u.endswith(f".{known_m}.json"):
+                        u_mode = known_m
+                        u_jid = line_u[: -len(f".{known_m}.json")]
+                        break
+            if not u_mode:
+                u_mode = payload["pass_mode"] if payload["pass_mode"] != "per_judge" else "unknown"
+            u_label = f"{u_jid}:{u_mode}"
+            if u_label not in unverified_passes:
+                unverified_passes.append(u_label)
 done_ids: set[str] = set()
 if jdone_dir.is_dir():
     for jf in sorted(jdone_dir.glob("*.json")):
@@ -2481,6 +2527,7 @@ for jid in sorted(done_ids):
     if jid not in completed_judges:
         completed_judges.append(jid)
 payload["judges_completed"] = completed_judges
+payload["unverified_passes"] = unverified_passes
 # The launcher's own part binding (what it checked row by row, against which hashes), labelled checked_by "launcher";
 # the VM's re-check is in vm_receipt.json's part_identity (checked_by "vm").
 binding_file = out_path.parent / "launcher_part_binding.json"

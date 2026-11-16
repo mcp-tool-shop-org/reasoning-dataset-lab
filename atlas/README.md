@@ -1,6 +1,6 @@
 # reasoning-dataset-lab: how it works
 
-Mapped at 2026-11-16 from commit 184caab by Atlas 1.26.0.
+Mapped at 2026-11-16 from commit 2fd7add by Atlas 1.26.0.
 
 ## What this is
 
@@ -8,9 +8,9 @@ reasoning-dataset-lab plans a dataset as a pre-registered map, builds items whos
 
 9 parts, mostly Python (88 files), shell (3), CSS (2), TypeScript (2), Astro (1) and JavaScript (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.
 
-## What changed since 2026-11-16 (1701586)
+## What changed since 2026-11-16 (184caab)
 
-Nothing structural changed since 2026-11-16; 8 files changed content.
+Nothing structural changed since 2026-11-16; 9 files changed content.
 
 ## What comes in
 
@@ -88,7 +88,7 @@ Read those in order to follow one run of rdlab end to end. This path follows rdl
 - 8 import sites name a declared dependency that shares its name with a local module (role_set); they are read as the dependency, which is not in this repository.
 - 16 imports could not be resolved: `scripts/colab/vm_judges.py` imports `device`, which is no module on its import path and no declared dependency, twice; `tests/test_bakeoff_judge_d3_transport.py` imports a path built at run time; `tests/test_counted_pin_and_no_capacity.py` imports `promote_goldens`, which is no module on its import path and no declared dependency; and 12 more.
 - 13 writes and 30 reads use paths built at run time and are not named here.
-- 84 writes and 195 reads go to a path their caller passes, not to this repository.
+- 84 writes and 198 reads go to a path their caller passes, not to this repository.
 - 11 reads go to the directory the command is run in, not to this repository.
 - Statistics confidence is low: fewer than 25 source files reach 10 revisions in the window.
 

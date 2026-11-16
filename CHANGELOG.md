@@ -6,6 +6,12 @@ All notable changes to `reasoning-dataset-lab` are documented here. The format i
 
 ## Unreleased
 
+### Unverified timed-out passes blocked from merge and scoring (`Refs #94`)
+
+- **`.unverified_judge_done` enforced downstream:** `three_way_wording.read_unverified_passes` parses `.unverified_judge_done` (`judge_id\tpass_mode\tdone_file`, `judge_id:pass_mode`, or `<done_file>`), `fetch_completed_judge_checkpoints` writes tab-separated `<judge_id>\t<pass_mode>\t<done_file>`, and `write_outcome_draft` records `outcome.draft.json["unverified_passes"]` as plain `"<judge_id>:<pass_mode>"` labels alongside `judges_completed`.
+- **`merge_shards`:** refuses (`MERGE_UNVERIFIED_PASS`, naming shard, judge, and pass mode) whenever any pass is listed in `.unverified_judge_done`, unless `--allow-unverified` (`allow_unverified=True`) is explicitly passed on the stub/test path (`allow_unverified` is refused with `TEST_HOOK_IN_COUNTED_MODE` in counted/real modes and is never set by any wrapper). When no shard lists `.unverified_judge_done` and `--allow-unverified` is unset, `merged_readout.json` and `merge_receipt.json` stay byte-identical; when `--allow-unverified` permits merging an unverified pass in stub mode, `merged_readout.json` and `merge_receipt.json` record `"unverified_passes"` plainly.
+- **Scorers / pilot mass checks:** `bakeoff_judge_score.score_bakeoff_outputs` refuses with `BAKEOFF_SCORE_UNVERIFIED_PASS`, and `check_bakeoff_logprob_mass` (`bakeoff_judge.py` and `vm_judges.py`) refuses with `BAKEOFF_LOGPROB_MASS_UNVERIFIED_PASS` when `.unverified_judge_done` is present.
+
 ### Follow-ups from the #100 merge-gate review
 
 - **Merge default changed (#100):** `merge_shards`' default judge set for `three_way_two_question` is now `(d3-mini, d3)`, because d3 has a prompt in that mode. A merge of d3-mini-only two-question shards (standalone Arm 2) must name its judge (`expected_judge_ids=["d3-mini"]`, or `--only-judges d3-mini` on the CLI); without it the merge refuses offline (`MergeRefusalError`). CAL and HOLD windows run both judges and match the default.

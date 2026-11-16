@@ -3042,7 +3042,7 @@ def _check_logprob_mass_one_mode(
             f"part_json_sha256={got.get('part_json_sha256')!r}.",
         )
     assert verified_pilot_identity is not None
-    rows_dir = Path(judge_output_dir) / ROWS_DIRNAME
+    rows_dir = _checked_logprob_rows_dir(Path(judge_output_dir))
     if not rows_dir.is_dir():
         raise RefusalError(
             "BAKEOFF_LOGPROB_MASS_NO_ROWS",
@@ -16233,6 +16233,32 @@ def write_launcher_halted_pass_verdicts(out_dir: Path, halted_tsv: str, verdicts
             ok, _ = launcher_verify_fetched_pass(out_dir, jid, pmode, staged=False, want_sha256=want_sha)
             fh.write(f"{'OK' if ok else 'BAD'}\t{jid}\t{pmode}\t{done_file}\n")
             fh.flush()
+
+
+UNVERIFIED_JUDGE_DONE_FILENAME = ".unverified_judge_done"
+
+
+def _checked_logprob_rows_dir(judge_output_dir: Path) -> Path:
+    """Refuse (`BAKEOFF_LOGPROB_MASS_UNVERIFIED_PASS`) if `judge_output_dir` records any unverified pass."""
+    marker = Path(judge_output_dir) / UNVERIFIED_JUDGE_DONE_FILENAME
+    if marker.is_file():
+        lines = [ln.strip() for ln in marker.read_text(encoding="utf-8", errors="replace").splitlines() if ln.strip()]
+        if lines:
+            first = lines[0]
+            if "\t" in first:
+                parts = [p.strip() for p in first.split("\t")]
+                desc = f"judge={parts[0]} pass_mode={parts[1]}" if len(parts) >= 2 else first
+            elif ":" in first:
+                parts = [p.strip() for p in first.split(":", 1)]
+                desc = f"judge={parts[0]} pass_mode={parts[1]}"
+            else:
+                desc = first
+            raise RefusalError(
+                "BAKEOFF_LOGPROB_MASS_UNVERIFIED_PASS",
+                f"Run directory '{judge_output_dir}' lists unverified pass(es) in "
+                f"{UNVERIFIED_JUDGE_DONE_FILENAME} ({desc}); refusing to read rows.",
+            )
+    return Path(judge_output_dir) / ROWS_DIRNAME
 
 
 # --- arm 4: venv-elephant, built on the VM only (never on the rig), before elephant-1's first pass ----------------
