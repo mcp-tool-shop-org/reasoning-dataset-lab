@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 import copy
+import functools
 import json
 import math
 from pathlib import Path
@@ -674,27 +675,42 @@ def test_all_12_sh_leak_fixtures_fail_new_gate_and_print_margin_and_z(
 # Provenance of the pinned null-permutation failure counts below:
 # Command:
 #   uv run python tests/tools/compute_null_perm_pins.py
-# Commit SHAs run at (identical output at all commits):
-#   - 987d954c (987d954c7ba81982397c4c47885047694569f40a, PR #42 base on main, original unsplit probe loop)
-#   - 29a5ba91 (29a5ba910b414927ee11b63b19cdf50ddfb340f0, PR #42 branch test-suite-speed initial head)
-#   - cced6dac (cced6dac8d7563aedfae204f8cfba9dbd459f4c9, PR #42 fix round commit)
-# Output:
+# Output (identical per-permutation results to 987d954c / 29a5ba91 / cced6dac / 691b0a19):
 #   unsplit (n_perms=200, seed=20261030, n_triads=34): new_gate_fails=0/200 (0.00%), old_flat_0.05_fails=174/200 (87.00%)
-#   chunk [0:50):    new_gate_fails=0/50, old_flat_0.05_fails=42/50
-#   chunk [50:100):  new_gate_fails=0/50, old_flat_0.05_fails=43/50
-#   chunk [100:150): new_gate_fails=0/50, old_flat_0.05_fails=42/50
-#   chunk [150:200): new_gate_fails=0/50, old_flat_0.05_fails=47/50
-#   _NULL_PERM_EXPECTED_NEW_FAILS_BY_CHUNK = (0, 0, 0, 0)
-#   _NULL_PERM_EXPECTED_OLD_FAILS_BY_CHUNK = (42, 43, 42, 47)
-#   _NULL_PERM_UNSPLIT_NEW_FAILS = 0
-#   _NULL_PERM_UNSPLIT_OLD_FAILS = 174
+#   50-perm subtotals: [0:50)=42, [50:100)=43, [100:150)=42, [150:200)=47 (unchanged)
+#   20 chunks of 10 ([10*k:10*(k+1)) for k=0..19):
+#     _NULL_PERM_EXPECTED_NEW_FAILS_BY_CHUNK = (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+#     _NULL_PERM_EXPECTED_OLD_FAILS_BY_CHUNK = (7, 7, 9, 9, 10, 9, 10, 7, 8, 9, 7, 10, 7, 9, 9, 10, 8, 9, 10, 10)
+#     _NULL_PERM_UNSPLIT_NEW_FAILS = 0
+#     _NULL_PERM_UNSPLIT_OLD_FAILS = 174
 # If the shortcut probe changes on purpose, re-run this script and update the pins in the same PR; the ≤2% bound is asserted on the combined count.
 _NULL_PERM_TOTAL = 200
-_NULL_PERM_CHUNK_SIZE = 50
-_NULL_PERM_NUM_CHUNKS = 4
+_NULL_PERM_CHUNK_SIZE = 10
+_NULL_PERM_NUM_CHUNKS = 20
 _NULL_PERM_SEED = 20261030
-_NULL_PERM_EXPECTED_NEW_FAILS_BY_CHUNK: tuple[int, int, int, int] = (0, 0, 0, 0)
-_NULL_PERM_EXPECTED_OLD_FAILS_BY_CHUNK: tuple[int, int, int, int] = (42, 43, 42, 47)
+_NULL_PERM_EXPECTED_NEW_FAILS_BY_CHUNK: tuple[int, ...] = (0,) * _NULL_PERM_NUM_CHUNKS
+_NULL_PERM_EXPECTED_OLD_FAILS_BY_CHUNK: tuple[int, ...] = (
+    7,
+    7,
+    9,
+    9,
+    10,
+    9,
+    10,
+    7,
+    8,
+    9,
+    7,
+    10,
+    7,
+    9,
+    9,
+    10,
+    8,
+    9,
+    10,
+    10,
+)
 _NULL_PERM_UNSPLIT_NEW_FAILS = 0
 _NULL_PERM_UNSPLIT_OLD_FAILS = 174
 _NULL_PERM_UNSPLIT_FALSE_FAIL_RATE = 0.0
@@ -723,6 +739,26 @@ def _pre_draw_null_permutation_keys(
     return all_perm_keys
 
 
+@functools.lru_cache(maxsize=1)
+def _cached_null_permutation_inputs() -> tuple[
+    list[dict[str, Any]],
+    dict[str, dict[str, str | int]],
+    list[dict[str, dict[str, Any]]],
+]:
+    """Build the 34-triad clean fixture and pre-draw the 200 fixed-seed permutation key dicts once per worker."""
+    items, sealed_keys = _build_clean_fixture(34)
+    items_by_tid: dict[str, list[str]] = defaultdict(list)
+    for it in items:
+        items_by_tid[str(it["triad_id"])].append(str(it["id"]))
+    all_perm_keys = _pre_draw_null_permutation_keys(
+        sealed_keys,
+        items_by_tid,
+        n_perms=_NULL_PERM_TOTAL,
+        seed=_NULL_PERM_SEED,
+    )
+    return items, sealed_keys, all_perm_keys
+
+
 def _combine_null_permutation_chunk_stats(
     chunk_new_fails: tuple[int, ...],
     chunk_old_fails: tuple[int, ...],
@@ -741,13 +777,17 @@ def _combine_null_permutation_chunk_stats(
 
 
 def test_gate_1_null_permutation_pins_sum_to_unsplit_and_combined_rate_le_2pct() -> None:
-    """Fast test verifying the 4-chunk null-permutation pins sum to the pinned unsplit count and satisfy <= 2%."""
+    """Fast test verifying the 20-chunk null-permutation pins sum to the pinned unsplit count and satisfy <= 2%."""
     assert len(_NULL_PERM_EXPECTED_NEW_FAILS_BY_CHUNK) == _NULL_PERM_NUM_CHUNKS
     assert len(_NULL_PERM_EXPECTED_OLD_FAILS_BY_CHUNK) == _NULL_PERM_NUM_CHUNKS
     assert _NULL_PERM_NUM_CHUNKS * _NULL_PERM_CHUNK_SIZE == _NULL_PERM_TOTAL
 
     assert sum(_NULL_PERM_EXPECTED_NEW_FAILS_BY_CHUNK) == _NULL_PERM_UNSPLIT_NEW_FAILS
     assert sum(_NULL_PERM_EXPECTED_OLD_FAILS_BY_CHUNK) == _NULL_PERM_UNSPLIT_OLD_FAILS
+    assert tuple(
+        sum(_NULL_PERM_EXPECTED_OLD_FAILS_BY_CHUNK[5 * g : 5 * (g + 1)])
+        for g in range(4)
+    ) == (42, 43, 42, 47)
 
     comb_new, comb_rate, comb_old, comb_old_rate = _combine_null_permutation_chunk_stats(
         _NULL_PERM_EXPECTED_NEW_FAILS_BY_CHUNK,
@@ -764,33 +804,14 @@ def test_gate_1_null_permutation_pins_sum_to_unsplit_and_combined_rate_le_2pct()
 
     # The pre-draw yields one key set per permutation. This does not check the RNG sequence: the independent anchor to
     # the original unsplit loop is tests/tools/compute_null_perm_pins.py plus the live per-chunk tests' exact counts.
-    items, sealed_keys = _build_clean_fixture(34)
-    items_by_tid: dict[str, list[str]] = defaultdict(list)
-    for it in items:
-        items_by_tid[str(it["triad_id"])].append(str(it["id"]))
-    all_perm_keys = _pre_draw_null_permutation_keys(
-        sealed_keys,
-        items_by_tid,
-        n_perms=_NULL_PERM_TOTAL,
-        seed=_NULL_PERM_SEED,
-    )
+    _, _, all_perm_keys = _cached_null_permutation_inputs()
     assert len(all_perm_keys) == _NULL_PERM_TOTAL
 
 
-@pytest.mark.parametrize("chunk_idx", (0, 1, 2, 3))
+@pytest.mark.parametrize("chunk_idx", range(_NULL_PERM_NUM_CHUNKS))
 def test_gate_1_null_within_triad_permutation_false_fail_rate_le_2pct(chunk_idx: int) -> None:
     """Card so Req 4(b): Within-triad label permutation of a mock part (fixed seed, >=200 permutations) has false-fail rate <= 2%."""
-    items, sealed_keys = _build_clean_fixture(34)
-    items_by_tid: dict[str, list[str]] = defaultdict(list)
-    for it in items:
-        items_by_tid[str(it["triad_id"])].append(str(it["id"]))
-
-    all_perm_keys = _pre_draw_null_permutation_keys(
-        sealed_keys,
-        items_by_tid,
-        n_perms=_NULL_PERM_TOTAL,
-        seed=_NULL_PERM_SEED,
-    )
+    items, _, all_perm_keys = _cached_null_permutation_inputs()
     assert [
         pk
         for k in range(_NULL_PERM_NUM_CHUNKS)

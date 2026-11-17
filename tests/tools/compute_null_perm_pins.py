@@ -3,7 +3,7 @@
 Runs the original unsplit 200-permutation loop from 987d954c:tests/test_shortcut_probe.py
 (seed=20261030, _build_clean_fixture(34), sorted triad order) in one pass and prints:
 - the unsplit new-gate and old-gate fail counts;
-- the per-chunk counts for chunks [0:50), [50:100), [100:150) and [150:200).
+- the per-chunk counts for the 20 chunks [10*k:10*(k+1)) (k = 0..19).
 """
 
 from __future__ import annotations
@@ -16,11 +16,9 @@ from typing import Any
 from reasoning_dataset_lab.pilot_b.shortcut_probe import run_bakeoff_shortcut_probe
 from reasoning_dataset_lab.pilot_b.variety import DOMAIN_CATALOGUE
 
-CHUNK_RANGES: tuple[tuple[int, int], ...] = (
-    (0, 50),
-    (50, 100),
-    (100, 150),
-    (150, 200),
+CHUNK_SIZE = 10
+CHUNK_RANGES: tuple[tuple[int, int], ...] = tuple(
+    (CHUNK_SIZE * k, CHUNK_SIZE * (k + 1)) for k in range(20)
 )
 
 
@@ -133,8 +131,8 @@ def compute_pins() -> None:
 
     new_gate_fails = 0
     old_flat_margin_fails = 0
-    chunk_new_fails = [0, 0, 0, 0]
-    chunk_old_fails = [0, 0, 0, 0]
+    chunk_new_fails = [0] * len(CHUNK_RANGES)
+    chunk_old_fails = [0] * len(CHUNK_RANGES)
 
     for perm_idx in range(n_perms):
         perm_keys = copy.deepcopy(sealed_keys)
@@ -147,7 +145,7 @@ def compute_pins() -> None:
                 perm_keys[iid]["key"] = new_lbl
 
         rep = run_bakeoff_shortcut_probe(items, perm_keys)
-        chunk_idx = perm_idx // 50
+        chunk_idx = perm_idx // CHUNK_SIZE
         if not rep.gate_1_oof_passed:
             new_gate_fails += 1
             chunk_new_fails[chunk_idx] += 1

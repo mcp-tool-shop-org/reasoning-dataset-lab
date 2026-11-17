@@ -9,7 +9,7 @@
       "externals": 0,
       "files": [
         {
-          "hash": "bc52ec7319768a5196fda8d16e7c10a371a2a6a339a6afe84a8499f73fe062f1",
+          "hash": "d77163e37ddb0c80216e3fec895075e7241cffa941d65d03102e0ae0d9763ace",
           "path": ".github/workflows/ci.yml"
         },
         {
@@ -223,10 +223,6 @@
         {
           "hash": "1253c91eccb2aac1c6ff2ac03fd69c1aaa0b221abd3d1bf5b563c12602452b4e",
           "path": ".python-version"
-        },
-        {
-          "hash": "0b43bb2faee169028184f955e7587574c07ef4862531e95a7178e56b73c2db32",
-          "path": "CHANGELOG.md"
         },
         {
           "hash": "367e5141e4f5884e5791c4021f33a9faa958840a5decf44e1b273a87aad1c459",
@@ -18090,120 +18086,120 @@
             {
               "in": "_check_items_have_no_sealed_fields",
               "kind": "raise",
-              "line": 502
+              "line": 511
             },
             {
               "in": "_hook_tokens",
               "kind": "except",
-              "line": 514
-            },
-            {
-              "in": "_hook_tokens",
-              "kind": "raise",
-              "line": 515
-            },
-            {
-              "in": "_hook_tokens",
-              "kind": "except",
-              "line": 516
-            },
-            {
-              "in": "_hook_tokens",
-              "kind": "raise",
-              "line": 517
-            },
-            {
-              "in": "_hook_tokens",
-              "kind": "raise",
               "line": 523
             },
             {
               "in": "_hook_tokens",
               "kind": "raise",
-              "line": 529
+              "line": 524
+            },
+            {
+              "in": "_hook_tokens",
+              "kind": "except",
+              "line": 525
             },
             {
               "in": "_hook_tokens",
               "kind": "raise",
-              "line": 535
+              "line": 526
             },
             {
               "in": "_hook_tokens",
               "kind": "raise",
-              "line": 541
+              "line": 532
+            },
+            {
+              "in": "_hook_tokens",
+              "kind": "raise",
+              "line": 538
+            },
+            {
+              "in": "_hook_tokens",
+              "kind": "raise",
+              "line": 544
+            },
+            {
+              "in": "_hook_tokens",
+              "kind": "raise",
+              "line": 550
             },
             {
               "in": "_collect_feature_hook_tokens",
               "kind": "raise",
-              "line": 563
+              "line": 572
             },
             {
               "in": "_collect_feature_hook_tokens",
               "kind": "raise",
-              "line": 570
+              "line": 579
             },
             {
               "in": "_collect_feature_hook_tokens",
               "kind": "raise",
-              "line": 576
+              "line": 585
             },
             {
               "in": "resolve_part_items_path",
               "kind": "raise",
-              "line": 1528
+              "line": 1603
             },
             {
               "in": "load_items_and_keys",
               "kind": "raise",
-              "line": 1542
-            },
-            {
-              "in": "load_items_and_keys",
-              "kind": "except",
-              "line": 1557
-            },
-            {
-              "in": "load_items_and_keys",
-              "kind": "raise",
-              "line": 1558
+              "line": 1617
             },
             {
               "in": "load_items_and_keys",
               "kind": "except",
-              "line": 1577
+              "line": 1632
             },
             {
               "in": "load_items_and_keys",
               "kind": "raise",
-              "line": 1578
+              "line": 1633
+            },
+            {
+              "in": "load_items_and_keys",
+              "kind": "except",
+              "line": 1652
             },
             {
               "in": "load_items_and_keys",
               "kind": "raise",
-              "line": 1588
+              "line": 1653
             },
             {
               "in": "load_items_and_keys",
               "kind": "raise",
-              "line": 1599
+              "line": 1663
             },
             {
               "in": "load_items_and_keys",
               "kind": "raise",
-              "line": 1607
+              "line": 1674
+            },
+            {
+              "in": "load_items_and_keys",
+              "kind": "raise",
+              "line": 1682
             },
             {
               "in": "_run_bakeoff_shortcut_probe_validated",
               "kind": "raise",
-              "line": 1659
+              "line": 1734
             },
             {
               "in": "_run_bakeoff_shortcut_probe_validated",
               "kind": "raise",
-              "line": 1679
+              "line": 1754
             }
           ],
-          "hash": "524a9a18d2e5ffcdb22206c456f8c9e959d2ca34bbc6dc34aef18ba490b1c799",
+          "hash": "2ddf589352f2d77827564e8e79f4bfe77185f11c4db443510c0eda95d71196f2",
           "importsFiles": [
             "src/reasoning_dataset_lab/errors.py",
             "src/reasoning_dataset_lab/pilot_b/anchored_two_hop.py",
@@ -21370,7 +21366,7 @@
             "test_normalised_value_forms_do_not_hide_or_create_overlap",
             "test_old_flat_margin_behaviour_is_gone_and_header_reports_mde"
           ],
-          "hash": "5d200a26577bcdf8b10d867b0a586d34b1d0cb31afe8148168bc1014ee518e1e",
+          "hash": "f63cca2578dfd2b5b17cb7c2caaabaa22bd4ca273118426185773091054ecab0",
           "importsFiles": [
             "src/reasoning_dataset_lab/cli.py",
             "src/reasoning_dataset_lab/errors.py",
@@ -21409,7 +21405,7 @@
             "test_two_hooks_mutation_isolation_second_hook_sees_original",
             "test_whitespace_only_token_is_refused"
           ],
-          "hash": "90ffa30b995e9fd42bf31795040544b5a1b01b06dfea5f28050e079f86eec021",
+          "hash": "79f5c6e401806e3dda2ec8e63989e70e5d9c00441f41873c654b605643f9e6e1",
           "importsFiles": [
             "src/reasoning_dataset_lab/errors.py",
             "src/reasoning_dataset_lab/pilot_b/shortcut_probe.py",
@@ -21422,7 +21418,7 @@
           "exports": [
             "compute_pins"
           ],
-          "hash": "77865bfaeb3209687f4d142e2147a59fe5fd7e78440f7e9703e7675767ed6ce8",
+          "hash": "32c5445eb9d51c0814d3a1582e9653d74b03bd1021d8b1d8b8607a1e625c163b",
           "importsFiles": [
             "src/reasoning_dataset_lab/pilot_b/shortcut_probe.py",
             "src/reasoning_dataset_lab/pilot_b/variety.py"
@@ -22182,8 +22178,8 @@
   ],
   "engine": "1.26.0",
   "generatedFrom": {
-    "commit": "c2b66bf550498fd1dbbaf085753efc97b1a70a2c",
-    "tracked": 198
+    "commit": "3efb2e2e8ad89717a78d7627005ca926b3ad2820",
+    "tracked": 197
   },
   "landings": [
     {

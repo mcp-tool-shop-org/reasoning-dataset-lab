@@ -6,6 +6,13 @@ All notable changes to `reasoning-dataset-lab` are documented here. The format i
 
 ## Unreleased
 
+### Speed up shortcut-probe OOF classifiers and Gate-1 null-permutation CI scheduling (`Refs #114`)
+
+- **Work-stealing xdist scheduling (`.github/workflows/ci.yml`):** added `--dist worksteal` to all three `pytest -n auto` test legs (`test`, `test-py313`, `test-py314`) so idle workers steal trailing slow tests instead of waiting behind a single overloaded worker.
+- **20×10 Gate-1 null-permutation chunking and worker cache (`tests/test_shortcut_probe.py`, `tests/tools/compute_null_perm_pins.py`):** split the 200 fixed-seed permutations (`_NULL_PERM_TOTAL = 200`, `_NULL_PERM_SEED = 20261030`) into 20 chunks of 10 (`[10*k:10*(k+1))`) instead of 4 chunks of 50 with identical per-permutation keys, exact pins (`0/200` new-gate fails, `174/200` old flat-0.05 fails), and `<= 2%` bound, and cached the shared 34-triad fixture and pre-drawn keys per xdist worker (`_cached_null_permutation_inputs`).
+- **Per-fold unique-vector forward softmax pass (`src/reasoning_dataset_lab/pilot_b/shortcut_probe.py`):** in `_oof_token_classifier_detailed` and `_oof_numeric_classifier_detailed`, deduplicated per-fold training feature vectors so each epoch evaluates `exp`/softmax once per distinct vector while accumulating gradients in exact sample order, yielding byte-identical `ShortcutProbeReport` outputs.
+- **CI test-leg timeouts (`.github/workflows/ci.yml`):** lowered `timeout-minutes` on `test`, `test-py313`, and `test-py314` from `40` back to `25` now that all three legs finish under 20 minutes.
+
 ### Shortcut-probe feature-hook empty-token refusal and `#111` follow-ups (`Refs #112`)
 
 - **Empty/whitespace hook tokens (`#112` item 1):** `_hook_tokens` refuses any `""` or whitespace-only token (`not t.strip()`) per item with `PROBE_FEATURE_HOOK_FAILED` (`EXIT_REFUSED`), naming the hook id and item id (never item text), so a hook returning `[""]` on every item can no longer pass as a constant degenerate hook. `PROBE_FEATURE_HOOK_EMPTY` stays for a hook returning `[]` on every item; `FeatureHook`'s docstring documents both rules.

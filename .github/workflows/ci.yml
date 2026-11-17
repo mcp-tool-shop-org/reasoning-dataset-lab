@@ -29,7 +29,7 @@ jobs:
   # Python 3.15. The main leg: coverage with the 90% floor, the Codecov upload and the Atlas check run here once.
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 25
     permissions:
       contents: read
       id-token: write
@@ -45,7 +45,7 @@ jobs:
         run: uv sync --frozen
 
       - name: Run pytest with coverage (floor 90%)
-        run: uv run pytest -v -n auto --cov=reasoning_dataset_lab --cov-report=term-missing --cov-report=xml --cov-fail-under=90
+        run: uv run pytest -v -n auto --dist worksteal --cov=reasoning_dataset_lab --cov-report=term-missing --cov-report=xml --cov-fail-under=90
 
       - name: Validate example map
         run: uv run rdlab map check examples/t10-pilot-a.map.yaml
@@ -73,7 +73,7 @@ jobs:
   # Python 3.13. Tests without coverage; a job of its own so the check named "test" keeps its name (it runs on 3.15).
   test-py313:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 25
     permissions:
       contents: read
     steps:
@@ -88,7 +88,7 @@ jobs:
         run: uv sync --frozen
 
       - name: Run pytest (no coverage on this leg)
-        run: uv run pytest -v --no-cov -n auto
+        run: uv run pytest -v --no-cov -n auto --dist worksteal
 
       - name: Validate example map
         run: uv run rdlab map check examples/t10-pilot-a.map.yaml
@@ -96,7 +96,7 @@ jobs:
   # Python 3.14. Tests without coverage; a job of its own so the check named "test" keeps its name (it runs on 3.15).
   test-py314:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 25
     permissions:
       contents: read
     steps:
@@ -111,7 +111,7 @@ jobs:
         run: uv sync --frozen
 
       - name: Run pytest (no coverage on this leg)
-        run: uv run pytest -v --no-cov -n auto
+        run: uv run pytest -v --no-cov -n auto --dist worksteal
 
       - name: Validate example map
         run: uv run rdlab map check examples/t10-pilot-a.map.yaml
