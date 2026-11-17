@@ -33,3 +33,7 @@ It is not a network server, does not listen on any port, and does not collect te
 The risks are a crafted map or project file, and a model's output being trusted as if it were an answer key. The first is
 handled by validating before use. The second is handled by design: keys are built and proved by code, and model output is
 only ever the wording, checked by blind readers.
+
+## Dependency advisories
+
+- **2026-11-17:** the site's npm audit (CI) carries one reviewed, time-boxed exception in `.github/audit-allowlist.json`: GHSA-fc5q-39xc-vjpf (npm id 1247710, picomatch `<=4.0.7`, ReDoS, high, no patched release yet), expiring 2026-12-17. picomatch reaches this repo only through the static-site build toolchain (astro, vite, tinyglobby); exploiting it needs an attacker-supplied glob, every glob in our site config is our own, and the site ships static HTML, so nothing uses picomatch at run time. The exception stops applying at its expiry, if the advisory's range changes, or once npm reports a fix, and it is removed in the PR that bumps picomatch. Every other high or critical advisory still fails CI.
