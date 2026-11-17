@@ -33,40 +33,24 @@
   ],
   "changes": {
     "fileCounts": {
-      "added": 1,
-      "changed": 10,
+      "added": 0,
+      "changed": 3,
       "moved": 0,
-      "parts": 4,
+      "parts": 3,
       "removed": 0
     },
     "items": [
       {
-        "kind": "landing",
-        "sentence": "scripts/colab/launch_judges.sh is now also read by scripts/colab/vm_judges.py.",
-        "subjects": [
-          "scripts/colab/launch_judges.sh",
-          "scripts/colab/vm_judges.py"
-        ]
-      },
-      {
-        "kind": "landing",
-        "sentence": "scripts/colab/vm_judges.py is now also read by scripts/colab/vm_judges.py.",
-        "subjects": [
-          "scripts/colab/vm_judges.py",
-          "scripts/colab/vm_judges.py"
-        ]
-      },
-      {
         "kind": "counts",
-        "sentence": "1 file added and 10 changed content, across 4 parts.",
+        "sentence": "Nothing structural changed since 2026-11-16; 3 files changed content.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "2f04ca65f7a88b626c92aa59d90d0c03ba19652d",
-      "generatedAt": "2026-11-16T21:04:10.317Z"
+      "commit": "8958590e1783e4cbc4227a2d8308b9d23328c57c",
+      "generatedAt": "2026-11-16T22:23:05.030Z"
     },
-    "unchanged": false
+    "unchanged": true
   },
   "changesTogether": [
     {
@@ -151,7 +135,7 @@
     "Window: 180 days; a pair counts from 3 shared commits, since 12 source files reach 10 revisions; the floor rises to 10 when 25 do."
   ],
   "changesTogetherWithTests": 1,
-  "commit": "8958590e1783e4cbc4227a2d8308b9d23328c57c",
+  "commit": "c2b66bf550498fd1dbbaf085753efc97b1a70a2c",
   "defaultBranch": "main",
   "derived": "9 parts, mostly Python (92 files), shell (3), CSS (2), TypeScript (2), Astro (1) and JavaScript (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.",
   "doors": [
@@ -308,7 +292,7 @@
       ]
     }
   ],
-  "generatedAt": "2026-11-16T22:23:05.030Z",
+  "generatedAt": "2026-11-17T00:26:37.912Z",
   "limits": [
     "8 import sites name a declared dependency that shares its name with a local module (role_set); they are read as the dependency, which is not in this repository.",
     "18 imports could not be resolved: `scripts/colab/vm_judges.py` imports a path built at run time; `scripts/colab/vm_judges.py` imports `device`, which is no module on its import path and no declared dependency, twice; `tests/test_bakeoff_judge_d3_transport.py` imports a path built at run time; and 14 more.",
