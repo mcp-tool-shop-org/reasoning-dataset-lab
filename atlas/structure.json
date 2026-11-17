@@ -9,7 +9,7 @@
       "externals": 0,
       "files": [
         {
-          "hash": "07bd99da49ce8b25286e1b3cadafbaade79a38296025a0f98e4bdaf18b528e1d",
+          "hash": "d77163e37ddb0c80216e3fec895075e7241cffa941d65d03102e0ae0d9763ace",
           "path": ".github/workflows/ci.yml"
         },
         {
@@ -223,10 +223,6 @@
         {
           "hash": "1253c91eccb2aac1c6ff2ac03fd69c1aaa0b221abd3d1bf5b563c12602452b4e",
           "path": ".python-version"
-        },
-        {
-          "hash": "1690e8f485a2ba2ce5ad20e4e4fff26f57bdf0390f99d1a2be7b0de5f3c25f67",
-          "path": "CHANGELOG.md"
         },
         {
           "hash": "367e5141e4f5884e5791c4021f33a9faa958840a5decf44e1b273a87aad1c459",
@@ -18060,62 +18056,52 @@
             {
               "in": "_validate_feature_hooks",
               "kind": "raise",
-              "line": 440
+              "line": 445
             },
             {
               "in": "_validate_feature_hooks",
               "kind": "raise",
-              "line": 449
+              "line": 454
             },
             {
               "in": "_validate_feature_hooks",
               "kind": "raise",
-              "line": 455
+              "line": 460
             },
             {
               "in": "_validate_feature_hooks",
               "kind": "raise",
-              "line": 461
+              "line": 466
             },
             {
               "in": "_validate_feature_hooks",
               "kind": "raise",
-              "line": 467
+              "line": 472
             },
             {
               "in": "_validate_feature_hooks",
               "kind": "raise",
-              "line": 473
+              "line": 478
             },
             {
               "in": "_check_items_have_no_sealed_fields",
               "kind": "raise",
-              "line": 499
-            },
-            {
-              "in": "_hook_tokens",
-              "kind": "except",
               "line": 511
             },
             {
               "in": "_hook_tokens",
+              "kind": "except",
+              "line": 523
+            },
+            {
+              "in": "_hook_tokens",
               "kind": "raise",
-              "line": 512
+              "line": 524
             },
             {
               "in": "_hook_tokens",
               "kind": "except",
-              "line": 513
-            },
-            {
-              "in": "_hook_tokens",
-              "kind": "raise",
-              "line": 514
-            },
-            {
-              "in": "_hook_tokens",
-              "kind": "raise",
-              "line": 520
+              "line": 525
             },
             {
               "in": "_hook_tokens",
@@ -18128,77 +18114,92 @@
               "line": 532
             },
             {
-              "in": "_collect_feature_hook_tokens",
+              "in": "_hook_tokens",
               "kind": "raise",
-              "line": 549
+              "line": 538
+            },
+            {
+              "in": "_hook_tokens",
+              "kind": "raise",
+              "line": 544
+            },
+            {
+              "in": "_hook_tokens",
+              "kind": "raise",
+              "line": 550
             },
             {
               "in": "_collect_feature_hook_tokens",
               "kind": "raise",
-              "line": 556
+              "line": 572
             },
             {
               "in": "_collect_feature_hook_tokens",
               "kind": "raise",
-              "line": 562
+              "line": 579
+            },
+            {
+              "in": "_collect_feature_hook_tokens",
+              "kind": "raise",
+              "line": 585
             },
             {
               "in": "resolve_part_items_path",
               "kind": "raise",
-              "line": 1580
+              "line": 1603
             },
             {
               "in": "load_items_and_keys",
               "kind": "raise",
-              "line": 1594
-            },
-            {
-              "in": "load_items_and_keys",
-              "kind": "except",
-              "line": 1609
-            },
-            {
-              "in": "load_items_and_keys",
-              "kind": "raise",
-              "line": 1610
+              "line": 1617
             },
             {
               "in": "load_items_and_keys",
               "kind": "except",
-              "line": 1629
+              "line": 1632
             },
             {
               "in": "load_items_and_keys",
               "kind": "raise",
-              "line": 1630
+              "line": 1633
+            },
+            {
+              "in": "load_items_and_keys",
+              "kind": "except",
+              "line": 1652
             },
             {
               "in": "load_items_and_keys",
               "kind": "raise",
-              "line": 1640
+              "line": 1653
             },
             {
               "in": "load_items_and_keys",
               "kind": "raise",
-              "line": 1651
+              "line": 1663
             },
             {
               "in": "load_items_and_keys",
               "kind": "raise",
-              "line": 1659
+              "line": 1674
             },
             {
-              "in": "run_bakeoff_shortcut_probe",
+              "in": "load_items_and_keys",
               "kind": "raise",
-              "line": 1687
+              "line": 1682
             },
             {
-              "in": "run_bakeoff_shortcut_probe",
+              "in": "_run_bakeoff_shortcut_probe_validated",
               "kind": "raise",
-              "line": 1707
+              "line": 1734
+            },
+            {
+              "in": "_run_bakeoff_shortcut_probe_validated",
+              "kind": "raise",
+              "line": 1754
             }
           ],
-          "hash": "88f9b3ad2963ef42b03650e04123173a59cccdbf8f6e5c9646bdbde9510782fb",
+          "hash": "2ddf589352f2d77827564e8e79f4bfe77185f11c4db443510c0eda95d71196f2",
           "importsFiles": [
             "src/reasoning_dataset_lab/errors.py",
             "src/reasoning_dataset_lab/pilot_b/anchored_two_hop.py",
@@ -21384,8 +21385,13 @@
             "test_a_label_leaking_hook_fails_gate_1_and_joins_the_holm_family",
             "test_all_empty_hook_is_refused_while_constant_nonempty_stays_degenerate",
             "test_an_uninformative_hook_passes",
+            "test_case_folded_keys_file_field_on_item_is_refused",
+            "test_double_pass_refusal_message_names_per_call_nondeterminism",
+            "test_empty_string_token_on_every_item_is_refused",
+            "test_empty_string_token_with_nonempty_token_on_one_item_is_refused",
             "test_evaluate_files_passes_the_hooks_through",
             "test_evaluate_files_refuses_item_carrying_field_from_keys_file",
+            "test_evaluate_files_validates_feature_hooks_once",
             "test_hook_exceeding_per_item_token_cap_is_refused",
             "test_hook_exceeding_vocabulary_cap_is_refused",
             "test_hook_receives_only_public_allowlist_fields",
@@ -21396,9 +21402,10 @@
             "test_non_sequence_or_string_feature_hooks_refused_before_any_work",
             "test_nondeterministic_or_order_dependent_hook_is_refused",
             "test_only_the_interaction_token_carries_an_xor_shortcut",
-            "test_two_hooks_mutation_isolation_second_hook_sees_original"
+            "test_two_hooks_mutation_isolation_second_hook_sees_original",
+            "test_whitespace_only_token_is_refused"
           ],
-          "hash": "6e199361ec2701558868fd4fe8b0b22380b424e422dc118d67161b9e5cd703eb",
+          "hash": "79f5c6e401806e3dda2ec8e63989e70e5d9c00441f41873c654b605643f9e6e1",
           "importsFiles": [
             "src/reasoning_dataset_lab/errors.py",
             "src/reasoning_dataset_lab/pilot_b/shortcut_probe.py",
@@ -22171,8 +22178,8 @@
   ],
   "engine": "1.26.0",
   "generatedFrom": {
-    "commit": "f756535af12a2dcd5e224364cf27644c79433f5d",
-    "tracked": 198
+    "commit": "3efb2e2e8ad89717a78d7627005ca926b3ad2820",
+    "tracked": 197
   },
   "landings": [
     {

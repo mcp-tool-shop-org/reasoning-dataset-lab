@@ -181,6 +181,11 @@ def test_a_hook_sees_a_copy_of_public_fields_only() -> None:
     before = json.dumps(items, sort_keys=True)
     run_bakeoff_shortcut_probe(items, keys, feature_hooks=[FeatureHook("nosy", "mutates its input", nosy)])
     assert json.dumps(items, sort_keys=True) == before
+    # Shows `nosy` runs twice per item (forward then reverse pass), mutating its input dict leaves caller
+    # `items` intact, and `key`/`target_line` are absent; does not show public allow-list stripping of extra
+    # item fields (`_build_clean_fixture` carries none; see `test_hook_receives_only_public_allowlist_fields`)
+    # or pre-#111 copy-isolation regression (pre-#111 `ab7c808` already deep-copied and failed here only on the
+    # 1-pass vs 2-pass call count).
     assert len(seen_keys) == 2 * len(items)
     expected_ids = [str(it["id"]) for it in items]
     assert seen_ids[: len(items)] == expected_ids
@@ -519,6 +524,9 @@ def test_two_hooks_mutation_isolation_second_hook_sees_original() -> None:
         ],
     )
     assert json.dumps(items, sort_keys=True) == before
+    # Shows `mutator`'s in-place edits do not corrupt `items` or what `observer` sees across both passes;
+    # does not distinguish #111 from pre-#111 (`ab7c808`) on isolation because `ab7c808` already deep-copied per
+    # hook call and failed this test only on the `2 * len(items)` call count.
     assert len(observed) == 2 * len(items)
     for item_id, claim, messages, domain in observed:
         assert (claim, messages, domain) == expected[item_id]
@@ -554,3 +562,178 @@ def test_evaluate_files_passes_the_hooks_through(tmp_path: Path) -> None:
     assert written["passed"] is False
     plain = evaluate_bakeoff_probe_files(items_path, keys_path, tmp_path / "plain.json")
     assert "hook:form" not in {p["probe_id"] for p in plain["probes"]}
+
+
+def test_empty_string_token_on_every_item_is_refused() -> None:
+    items, keys = _build_clean_fixture(6)
+    with pytest.raises(RdlabError) as exc_info:
+        run_bakeoff_shortcut_probe(
+            items,
+            keys,
+            feature_hooks=[FeatureHook("blank_const", "empty string on every item", lambda _it: [""])],
+        )
+    assert exc_info.value.code == "PROBE_FEATURE_HOOK_FAILED"
+    assert exc_info.value.exit_code == EXIT_REFUSED
+    msg = str(exc_info.value)
+    assert "blank_const" in msg
+    assert str(items[0]["id"]) in msg
+    assert str(items[0]["claim"]) not in msg
+    assert str(items[0]["material"]) not in msg
+
+    with pytest.raises(RdlabError) as exc_empty:
+        run_bakeoff_shortcut_probe(
+            items,
+            keys,
+            feature_hooks=[FeatureHook("empty_seq", "no tokens", lambda _it: [])],
+        )
+    assert exc_empty.value.code == "PROBE_FEATURE_HOOK_EMPTY"
+    assert exc_empty.value.exit_code == EXIT_REFUSED
+
+
+def test_empty_string_token_with_nonempty_token_on_one_item_is_refused() -> None:
+    items, keys = _build_clean_fixture(6)
+    bad_id = str(items[3]["id"])
+    with pytest.raises(RdlabError) as exc_info:
+        run_bakeoff_shortcut_probe(
+            items,
+            keys,
+            feature_hooks=[
+                FeatureHook(
+                    "partial_blank",
+                    "non-empty plus empty string on one item",
+                    lambda it: ["x", ""] if str(it["id"]) == bad_id else ["x"],
+                )
+            ],
+        )
+    assert exc_info.value.code == "PROBE_FEATURE_HOOK_FAILED"
+    assert exc_info.value.exit_code == EXIT_REFUSED
+    msg = str(exc_info.value)
+    assert "partial_blank" in msg
+    assert bad_id in msg
+    assert str(items[3]["claim"]) not in msg
+    assert str(items[3]["material"]) not in msg
+
+
+@pytest.mark.parametrize("bad_tokens", [[" "], ["\t\n"], ["x", "   "]])
+def test_whitespace_only_token_is_refused(bad_tokens: list[str]) -> None:
+    items, keys = _build_clean_fixture(6)
+    with pytest.raises(RdlabError) as exc_info:
+        run_bakeoff_shortcut_probe(
+            items,
+            keys,
+            feature_hooks=[FeatureHook("ws_tok", "whitespace token", lambda _it: list(bad_tokens))],
+        )
+    assert exc_info.value.code == "PROBE_FEATURE_HOOK_FAILED"
+    assert exc_info.value.exit_code == EXIT_REFUSED
+    msg = str(exc_info.value)
+    assert "ws_tok" in msg
+    assert str(items[0]["id"]) in msg
+    assert str(items[0]["claim"]) not in msg
+    assert str(items[0]["material"]) not in msg
+
+
+@pytest.mark.parametrize(
+    ("key_field", "item_field"),
+    [
+        ("custom_keys_only", "Custom_Keys_Only"),
+        ("custom_keys_only", "CUSTOM_KEYS_ONLY"),
+        ("Custom_Keys_Only", "custom_keys_only"),
+        # A keys field whose lowercase form is a public name stays refused when carried exactly (#113 review B1).
+        ("Claim", "Claim"),
+    ],
+)
+def test_case_folded_keys_file_field_on_item_is_refused(
+    tmp_path: Path, key_field: str, item_field: str
+) -> None:
+    items, keys = _build_clean_fixture(6)
+    keys_mem = copy.deepcopy(keys)
+    keys_mem[items[0]["id"]][key_field] = "secret"  # type: ignore[typeddict-unknown-key]
+    items_mem = copy.deepcopy(items)
+    items_mem[0][item_field] = "exposed_secret"
+    items_mem[0]["domain"] = "unknown_domain"
+    hook_calls: list[str] = []
+
+    def recorder(it: dict[str, Any]) -> list[str]:
+        hook_calls.append(str(it["id"]))
+        return ["x"]
+
+    with pytest.raises(RdlabError) as exc_info:
+        run_bakeoff_shortcut_probe(
+            items_mem,
+            keys_mem,
+            feature_hooks=[FeatureHook("rec", "should not run", recorder)],
+        )
+    assert exc_info.value.code == "PROBE_SEALED_FIELD_IN_ITEM"
+    assert exc_info.value.exit_code == EXIT_REFUSED
+    assert hook_calls == []
+    assert "exposed_secret" not in str(exc_info.value)
+
+    items_files = copy.deepcopy(items)
+    items_files[0][item_field] = "exposed_secret"
+    items_path = tmp_path / "items.jsonl"
+    keys_path = tmp_path / "keys.sealed.jsonl"
+    items_path.write_text("".join(json.dumps(it) + "\n" for it in items_files), encoding="utf-8")
+    keys_path.write_text(
+        "".join(json.dumps({"id": i, **k, key_field: "secret"}) + "\n" for i, k in keys.items()),
+        encoding="utf-8",
+    )
+    out = tmp_path / "report.json"
+    with pytest.raises(RdlabError) as exc_files:
+        evaluate_bakeoff_probe_files(items_path, keys_path, out)
+    assert exc_files.value.code == "PROBE_SEALED_FIELD_IN_ITEM"
+    assert exc_files.value.exit_code == EXIT_REFUSED
+    assert "exposed_secret" not in str(exc_files.value)
+    assert not out.exists()
+
+
+def test_double_pass_refusal_message_names_per_call_nondeterminism() -> None:
+    items, keys = _build_clean_fixture(6)
+    calls = 0
+
+    def per_call(it: dict[str, Any]) -> list[str]:
+        nonlocal calls
+        calls += 1
+        return [f"c_{calls}"]
+
+    with pytest.raises(RdlabError) as exc_info:
+        run_bakeoff_shortcut_probe(
+            items,
+            keys,
+            feature_hooks=[FeatureHook("per_call", "varies per call", per_call)],
+        )
+    assert exc_info.value.code == "PROBE_FEATURE_HOOK_FAILED"
+    assert exc_info.value.exit_code == EXIT_REFUSED
+    msg = str(exc_info.value)
+    assert "non-deterministic per call" in msg
+    assert "item-order-dependent" not in msg
+    assert "per_call" in msg
+    assert str(items[-1]["id"]) in msg
+    assert str(items[-1]["claim"]) not in msg
+    assert str(items[-1]["material"]) not in msg
+
+
+def test_evaluate_files_validates_feature_hooks_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    items, keys = _build_clean_fixture(12)
+    _tag_items(items, keys, lambda idx, _lbl: str(idx % 2))
+    items_path = tmp_path / "items.jsonl"
+    keys_path = tmp_path / "keys.sealed.jsonl"
+    items_path.write_text("".join(json.dumps(it) + "\n" for it in items), encoding="utf-8")
+    keys_path.write_text(
+        "".join(json.dumps({"id": i, **k}) + "\n" for i, k in keys.items()),
+        encoding="utf-8",
+    )
+    orig_validate = shortcut_probe._validate_feature_hooks
+    validate_calls = 0
+
+    def counting_validate(feature_hooks: Any) -> Any:
+        nonlocal validate_calls
+        validate_calls += 1
+        return orig_validate(feature_hooks)
+
+    monkeypatch.setattr(shortcut_probe, "_validate_feature_hooks", counting_validate)
+    out = tmp_path / "report.json"
+    payload = evaluate_bakeoff_probe_files(items_path, keys_path, out, feature_hooks=[_form_hook()])
+    assert validate_calls == 1
+    assert "hook:form" in {p["probe_id"] for p in payload["probes"]}
