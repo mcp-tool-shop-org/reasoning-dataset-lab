@@ -6,6 +6,13 @@ All notable changes to `reasoning-dataset-lab` are documented here. The format i
 
 ## Unreleased
 
+### Schedules-arm follow-ups and `THREE_WAY_PARTIAL_UPLOAD` launcher refusal (`#120` follow-ups)
+
+- **No-skip guard in C4 unit test (`tests/test_colab_d5c_schedules_arm.py`, `#120` review `B1`):** wrapped the set-but-missing and set-and-present calls in `test_external_addendum_env_var_unset_missing_and_present_cases` (`_call_live_check_no_skip`, `_assert_live_check_fails_no_skip`) so an unexpected `pytest.skip.Exception` calls `pytest.fail` rather than letting the test report skipped.
+- **Stub row-path golden test (`tests/test_colab_d5c_schedules_arm.py`):** added `test_schedules_stub_row_path_receipts_match_46fcdb11_goldens`, running `bakeoff_judge.run_bakeoff_judge(..., fake_transport=True)` for `three_way_schedules` on `gold-01`/`gold-02` × `AB`/`BA` and asserting every row and generation receipt's `prompt_sha256` (and `receipt_sha256`) matches `GOLDEN_SCHEDULES_PROMPT_SHA256_46FCDB11`.
+- **Binary-only comment (`scripts/colab/vm_judges.py`):** documented above `_stdlib_assemble_prompt_text` that it builds binary prompts only for `build_shard_manifest_stdlib` and `run_boot_gatekeeper`, while three-way passes build and hash prompts inside `bakeoff_judge` (`JUDGE_RUNNER_MODULE`).
+- **Launcher refusal for partial three-way uploads (`scripts/colab/vm_judges.py`, `scripts/colab/launch_judges.sh`, `tests/test_colab_three_way_partial_upload.py`):** added `THREE_WAY_PARTIAL_UPLOAD`, `active_three_way_modes_in_plan`, and `requires_three_way_whole_part_upload`, and wired `PASS_MODE` through `bind_items_to_part` / `preflight_part_manifest` and `launch_judges.sh` (`check_part_manifest_beside_items` and live staging) so any real `--time-one` upload under a single three-way `--pass-mode` or a `RDLAB_JUDGE_PASS_MODES` plan with at least one three-way mode refuses before any `colab` call unless the upload is the whole part in exact part order (`rule="whole_part_in_order"`); binary-only `--time-one` probes and explicit `--stub` / `dryrun` plumbing runs stay exempt.
+
 ### Golden `prompt_sha256` pins and explicit addendum path for `three_way_schedules` (`#119` follow-ups `B5`, `C4`)
 
 - **Golden assembled-prompt hashes (`tests/test_colab_d5c_schedules_arm.py`, `#119` `B5`):** added `GOLDEN_SCHEDULES_PROMPT_SHA256_46FCDB11` pinning `prompt_sha256` for `three_way_schedules` × `d3-mini` × (`gold-01`, `gold-02`) × (`AB`, `BA`) computed via `build_judge_adapter(JUDGE_SPECS["d3-mini"]).assemble_prompt(..., pass_mode="three_way_schedules")` at `46fcdb11`, and added `test_schedules_prompts_match_46fcdb11_goldens_byte_for_byte` while leaving every existing `prompt_sha256` pin untouched.
