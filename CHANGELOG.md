@@ -6,6 +6,12 @@ All notable changes to `reasoning-dataset-lab` are documented here. The format i
 
 ## Unreleased
 
+### D5c schedules-wording arm (`three_way_schedules`)
+
+- **Wording table (`src/reasoning_dataset_lab/pilot_b/three_way_wording.py`):** added `"three_way_schedules"` to `PassMode`, `PASS_MODE_CHOICES`, `PASS_MODE_JUDGES` (`frozenset({"d3-mini"})`), and `THREE_WAY_WORDINGS` with only the `"the_state"` family, `question_id="verdict"`, and options `A`/`B`/`C` (`supported` / `contradicted` / `can't tell` mapped to `supported` / `unsupported` / `cannot_tell`) using the exact shown words from `PREREG-d5c-v2-analysis-addendum-2026-11-17-v2.md` §4 (`80d55df2`). Non-legacy `judge_done/<judge>.three_way_schedules.json` naming applies automatically.
+- **Pass-mode wiring (`scripts/colab/vm_judges.py`, `scripts/colab/launch_judges.sh`, `src/reasoning_dataset_lab/cli.py`, `scripts/colab/README.md`):** registered `three_way_schedules` in `vm_judges.PASS_MODES` and `vm_judges.PASS_MODE_JUDGES`, the launcher usage/help/refusal lists, and `rdlab bakeoff-judge --pass-mode` help.
+- **Tests (`tests/test_colab_d5c_schedules_arm.py`, `tests/test_colab_three_way_contradicted_pass_mode.py`):** added a byte-pin test against the addendum §4 table copy (and live addendum file when present), wording-ban checks, `vm_judges`/`launch_judges.sh`/`cli` sync checks, non-`d3-mini` refusals (`BAKEOFF_JUDGE_THREE_WAY_UNSUPPORTED`), `prompt_sha256` immutability checks, and fake-transport `run_bakeoff_judge` + `bakeoff_judge_score` end-to-end tests.
+
 ### Speed up shortcut-probe OOF classifiers and Gate-1 null-permutation CI scheduling (`Refs #114`)
 
 - **Work-stealing xdist scheduling (`.github/workflows/ci.yml`):** added `--dist worksteal` to all three `pytest -n auto` test legs (`test`, `test-py313`, `test-py314`) so idle workers steal trailing slow tests instead of waiting behind a single overloaded worker.

@@ -565,8 +565,9 @@ def _build_parser() -> _StructuredArgumentParser:
         default="binary",
         help=(
             "Pass mode: binary (primary), three_way (separate pass for capable judges), three_way_contradicted "
-            "(the plain-word 3-way arm), or a D5c arm: three_way_two_question, three_way_symmetric (d3-mini) or "
-            "three_way_nli (the NLI encoder). Each arm's judges and shown words are in three_way_wording.py."
+            "(the plain-word 3-way arm), or a D5c arm: three_way_two_question, three_way_symmetric (d3-mini), "
+            "three_way_schedules (d3-mini), or three_way_nli (the NLI encoder). Each arm's judges and shown words "
+            "are in three_way_wording.py."
         ),
     )
     bj_parser.add_argument(

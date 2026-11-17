@@ -191,7 +191,7 @@ ANCHOR_ROWS_DIRNAME = "anchor_rows"
 # `rows/<judge>.three_way.jsonl`; only the stub and time-one windows take one.
 PASS_MODE_ENV_VAR = "RDLAB_PASS_MODE"
 DEFAULT_PASS_MODE = "binary"
-PASS_MODES: tuple[str, ...] = ("binary", "three_way", "three_way_contradicted", "three_way_two_question", "three_way_symmetric", "three_way_nli")  # noqa: E501  (three_way_wording.PASS_MODE_CHOICES)
+PASS_MODES: tuple[str, ...] = ("binary", "three_way", "three_way_contradicted", "three_way_two_question", "three_way_symmetric", "three_way_nli", "three_way_schedules")  # noqa: E501  (three_way_wording.PASS_MODE_CHOICES)
 THREE_WAY_PASS_WINDOW_MODES: frozenset[str] = frozenset({"stub", "time-one", "time_one"})
 THREE_WAY_CLASS_LABELS: tuple[str, ...] = ("supported", "unsupported", "cannot_tell")
 THREE_WAY_OPTION_TOKENS: tuple[str, ...] = ("a", "b", "c")
@@ -15960,7 +15960,6 @@ def _pack_failure_result_tar(run_dir: Path, tar_path: Path) -> None:
 
 
 
-
 # --- 3-way pass modes and the D5c judge window (defined here, after every line REAL_SERVICE_ASSUMPTIONS.md cites, so
 # the citations hold). vm_judges runs before the package imports on the VM, so it keeps its own copies of the wording
 # table's lists (`reasoning_dataset_lab.pilot_b.three_way_wording`), pinned equal by tests. Build card 2026-11-15 v4;
@@ -15974,6 +15973,7 @@ PASS_MODE_JUDGES: dict[str, frozenset[str]] = {
     "three_way_two_question": frozenset({"d3-mini", "d3"}),
     "three_way_symmetric": frozenset({"d3-mini"}),
     "three_way_nli": frozenset({"nli-deberta-v3-large"}),
+    "three_way_schedules": frozenset({"d3-mini"}),
 }
 # The arms with no rubric fallback and the judges each has a wording for (every 3-way arm except `three_way`).
 THREE_WAY_WORDED_JUDGES_BY_MODE: dict[str, frozenset[str]] = {

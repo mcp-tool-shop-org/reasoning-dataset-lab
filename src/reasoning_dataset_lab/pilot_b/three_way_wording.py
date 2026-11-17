@@ -20,6 +20,7 @@ PassMode = Literal[
     "three_way_two_question",
     "three_way_symmetric",
     "three_way_nli",
+    "three_way_schedules",
 ]
 
 # The internal gold-label classes of a 3-way pass. Rows, keys and the scorer use these names only; what a judge is
@@ -119,6 +120,29 @@ THREE_WAY_WORDINGS: dict[str, dict[str, ThreeWayWording]] = {
             ),
         ),
     },
+    # PREREG-d5c-v2-analysis-addendum-2026-11-17-v2 §4 (sha256 80d55df2): schedules-wording arm, d3-mini only
+    # ("the_state" family only), keeping the baseline's shown keys and option order while defining "schedule" and
+    # "fits the state". Neither "unsupported" nor any snake_case label appears in what is shown.
+    "three_way_schedules": {
+        "the_state": ThreeWayWording(
+            instruction=(
+                "Judge the claim against the state. Treat each event as a single instant: the moment it begins. "
+                "A schedule gives every event a time, and it fits the state when every fact in the state holds. "
+                "Which option holds? Claim: {claim}"
+            ),
+            question_id="verdict",
+            options=(
+                ThreeWayOption("A", "supported", "Every schedule that fits the state makes the claim true.", "supported"),
+                ThreeWayOption("B", "contradicted", "No schedule that fits the state makes the claim true.", "unsupported"),
+                ThreeWayOption(
+                    "C",
+                    "can't tell",
+                    "Some schedules that fit the state make the claim true, and some do not.",
+                    "cannot_tell",
+                ),
+            ),
+        ),
+    },
 }
 
 
@@ -210,6 +234,7 @@ PASS_MODE_JUDGES: dict[str, frozenset[str]] = {
     "three_way_two_question": frozenset({"d3-mini", "d3"}),
     "three_way_symmetric": frozenset({"d3-mini"}),
     "three_way_nli": frozenset({"nli-deberta-v3-large"}),
+    "three_way_schedules": frozenset({"d3-mini"}),
 }
 # Every pass mode, in the order the CLIs and the launcher list them. The rows file of each (judge, mode) pass is named
 # by `rows_filename_for_pass` from this list; vm_judges keeps a copy (it runs before the package imports), pinned by a
@@ -221,6 +246,7 @@ PASS_MODE_CHOICES: tuple[str, ...] = (
     "three_way_two_question",
     "three_way_symmetric",
     "three_way_nli",
+    "three_way_schedules",
 )
 THREE_WAY_PASS_MODES: frozenset[str] = frozenset(m for m in PASS_MODE_CHOICES if m != "binary")
 CHOICE_PASS_MODES: frozenset[str] = frozenset(THREE_WAY_WORDINGS)
