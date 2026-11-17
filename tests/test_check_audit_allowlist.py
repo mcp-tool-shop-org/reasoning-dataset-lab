@@ -324,7 +324,7 @@ def test_the_committed_allowlist_holds_exactly_the_one_dated_exception():
 
 
 def test_ci_runs_the_gate_in_the_site_audit_step_and_triggers_on_its_files():
-    ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8").replace("\r\n", "\n")
     assert "npm audit --audit-level=high --json > audit-report.json" in ci
     assert (
         'node ../scripts/check-audit-allowlist.mjs audit-report.json ../.github/audit-allowlist.json "$AUDIT_EXIT"'
