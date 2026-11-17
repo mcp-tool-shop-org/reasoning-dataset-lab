@@ -33,24 +33,63 @@
   ],
   "changes": {
     "fileCounts": {
-      "added": 0,
-      "changed": 3,
+      "added": 5,
+      "changed": 8,
       "moved": 0,
-      "parts": 4,
-      "removed": 1
+      "parts": 5,
+      "removed": 0
     },
     "items": [
       {
+        "kind": "door",
+        "sentence": "ci's push trigger now also names `.github/audit-allowlist.json` and `scripts/**`.",
+        "subjects": [
+          ".github/workflows/ci.yml"
+        ]
+      },
+      {
+        "kind": "door",
+        "sentence": "ci now also runs scripts/check-audit-allowlist.mjs.",
+        "subjects": [
+          ".github/workflows/ci.yml",
+          "scripts/check-audit-allowlist.mjs"
+        ]
+      },
+      {
+        "kind": "landing",
+        "sentence": "site/audit-report.json is now written by .github/workflows/ci.yml.",
+        "subjects": [
+          "site/audit-report.json",
+          ".github/workflows/ci.yml"
+        ]
+      },
+      {
+        "kind": "landing",
+        "sentence": ".github/audit-allowlist.json is now read by .github/workflows/ci.yml.",
+        "subjects": [
+          ".github/audit-allowlist.json",
+          ".github/workflows/ci.yml"
+        ]
+      },
+      {
+        "kind": "landing",
+        "sentence": "site/package-lock.json is now read by .github/workflows/ci.yml.",
+        "subjects": [
+          "site/package-lock.json",
+          ".github/workflows/ci.yml"
+        ]
+      },
+      {
         "kind": "counts",
-        "sentence": "Nothing structural changed since 2026-11-17; 1 file removed and 3 changed content.",
+        "sentence": "5 files added and 8 changed content, across 5 parts.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "f756535af12a2dcd5e224364cf27644c79433f5d",
-      "generatedAt": "2026-11-17T04:17:35.942Z"
+      "commit": "3efb2e2e8ad89717a78d7627005ca926b3ad2820",
+      "generatedAt": "2026-11-17T04:52:59.434Z"
     },
-    "unchanged": true
+    "unchanged": false
   },
   "changesTogether": [
     {
@@ -101,7 +140,7 @@
     {
       "a": "scripts/colab/vm_judges.py",
       "b": "tests/test_colab_judge_launcher.py",
-      "either": 52,
+      "either": 53,
       "partLabels": [
         "scripts",
         "tests"
@@ -135,9 +174,9 @@
     "Window: 180 days; a pair counts from 3 shared commits, since 12 source files reach 10 revisions; the floor rises to 10 when 25 do."
   ],
   "changesTogetherWithTests": 1,
-  "commit": "3efb2e2e8ad89717a78d7627005ca926b3ad2820",
+  "commit": "ff213f7cff141aefd4d91d28b05c02aa66f3a065",
   "defaultBranch": "main",
-  "derived": "9 parts, mostly Python (92 files), shell (3), CSS (2), TypeScript (2), Astro (1) and JavaScript (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.",
+  "derived": "9 parts, mostly Python (94 files), shell (3), CSS (2), JavaScript (2), TypeScript (2) and Astro (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.",
   "doors": [
     {
       "checks": [],
@@ -152,14 +191,14 @@
       "pushes": false,
       "reach": [
         {
-          "boundary": "tests",
+          "boundary": "scripts",
           "depth": 0,
-          "files": 56
+          "files": 7
         },
         {
-          "boundary": "scripts",
-          "depth": 1,
-          "files": 6
+          "boundary": "tests",
+          "depth": 0,
+          "files": 58
         },
         {
           "boundary": "src",
@@ -168,9 +207,10 @@
         }
       ],
       "runs": [
+        "scripts/check-audit-allowlist.mjs",
         "tests/"
       ],
-      "runsCount": 1,
+      "runsCount": 2,
       "runsMore": 0,
       "sends": [
         "uploads coverage to Codecov"
@@ -178,9 +218,10 @@
       "stages": [],
       "triggers": [
         "on a pull request",
-        "on a push to main touching 11 paths",
+        "on a push to main touching 13 paths",
         "or by hand"
-      ]
+      ],
+      "untracked": "site/audit-report.json, which is not tracked"
     },
     {
       "checks": [],
@@ -292,11 +333,12 @@
       ]
     }
   ],
-  "generatedAt": "2026-11-17T04:52:59.434Z",
+  "generatedAt": "2026-11-17T18:38:43.395Z",
   "limits": [
     "8 import sites name a declared dependency that shares its name with a local module (role_set); they are read as the dependency, which is not in this repository.",
     "18 imports could not be resolved: `scripts/colab/vm_judges.py` imports a path built at run time; `scripts/colab/vm_judges.py` imports `device`, which is no module on its import path and no declared dependency, twice; `tests/test_bakeoff_judge_d3_transport.py` imports a path built at run time; and 14 more.",
-    "14 writes and 30 reads use paths built at run time and are not named here.",
+    "14 writes and 34 reads use paths built at run time and are not named here.",
+    "1 write goes to places this repository does not track, so it is not listed as generated.",
     "90 writes and 210 reads go to a path their caller passes, not to this repository.",
     "11 reads go to the directory the command is run in, not to this repository.",
     "Statistics confidence is low: fewer than 25 source files reach 10 revisions in the window."
@@ -331,13 +373,13 @@
     "src/reasoning_dataset_lab/pilot_b/canary_config.json",
     "src/reasoning_dataset_lab/pilot_b/lockcheck_anchors.py"
   ],
-  "startReason": "This path follows rdlab (a command people run) from its entry, since ci runs only tests.",
+  "startReason": "This path follows rdlab (a command people run) from its entry, since ci runs only tests and scripts that import no code here.",
   "summary": "reasoning-dataset-lab plans a dataset as a pre-registered map, builds items whose answer keys are constructed and proved by code, asks a local model only for the wording, and records the provenance of every item.",
   "summaryFrom": "person",
-  "testFiles": 72,
+  "testFiles": 74,
   "testedBy": {
-    "scripts": 14,
-    "src": 49
+    "scripts": 15,
+    "src": 50
   },
   "testedCodeParts": 2,
   "unnamedWrites": 14,

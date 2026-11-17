@@ -6,6 +6,15 @@ All notable changes to `reasoning-dataset-lab` are documented here. The format i
 
 ## Unreleased
 
+### Site npm audit: a reviewed, dated exception for GHSA-fc5q-39xc-vjpf (picomatch)
+
+- **Gate (`scripts/check-audit-allowlist.mjs`, `.github/audit-allowlist.json`):** ported brand's reviewed-exception gate for `npm audit` (brand `1f72fa0`; entry format as brand `afb9611`). The site audit step now runs `npm audit --audit-level=high --json` and passes the report to the script, which fails on any high or critical advisory that no non-expired exception covers. Additions in the port, all fail-closed: the report's shape is always checked; a transitive finding is judged by the advisories it resolves to; and an exception applies only while its `package` and `range` (`<=4.0.7`, whitespace ignored) match the advisory and npm reports no fix for the package (a semver-major suggestion to downgrade another package below its locked version, as npm makes today for `@astrojs/starlight` 0.42.7 -> 0.39.3, is not a fix).
+- **The one exception:** npm id `1247710` (GHSA-fc5q-39xc-vjpf, picomatch ReDoS, high; no patched release), added 2026-11-17, expires 2026-12-17, approved by `mcp-tool-shop`. picomatch reaches the repo only through the static-site build toolchain. Remove it in the PR that bumps to a patched picomatch.
+- **CI (`.github/workflows/ci.yml`):** only the "Audit the site's npm tree" step changes (`npm ci` is kept), and the push paths gain `scripts/**` and `.github/audit-allowlist.json`, which `.github/workflows/**` does not cover.
+- **Tests (`tests/test_check_audit_allowlist.py`):** pytest runs the script through `node` on synthetic v2 reports: clean and allowed-only pass; another advisory, another picomatch id, the allowed advisory plus any other, an unresolvable or advisory-less transitive entry, a changed range, a reported fix, an expired exception, a wrong package, a missing range, a malformed report or lockfile, and a non-zero npm exit with nothing flagged all fail.
+- **SECURITY.md:** one dated line on the exception.
+- **astro 7.4.1 -> 7.4.12 (`site/package-lock.json` only; `site/package.json` keeps `^7.3.1`):** fixes astro's own advisories 1246685 (GHSA-mh32-jxcr-mh9f, low) and 1246686 (GHSA-r3h5-4585-7x3w, moderate). picomatch made astro a high finding, so the gate counted them; `npm update astro` moved only what astro 7.4.12's dependency ranges pull in (vite 8.3.5 -> 8.3.8, rolldown 1.2.16 -> 1.2.19, shiki 4.5.0 -> 4.6.0, @astrojs/markdown-satteri 0.4.6 -> 0.4.10, among others).
+
 ### D5c schedules-wording arm (`three_way_schedules`)
 
 - **Wording table (`src/reasoning_dataset_lab/pilot_b/three_way_wording.py`):** added `"three_way_schedules"` to `PassMode`, `PASS_MODE_CHOICES`, `PASS_MODE_JUDGES` (`frozenset({"d3-mini"})`), and `THREE_WAY_WORDINGS` with only the `"the_state"` family, `question_id="verdict"`, and options `A`/`B`/`C` (`supported` / `contradicted` / `can't tell` mapped to `supported` / `unsupported` / `cannot_tell`) using the exact shown words from `PREREG-d5c-v2-analysis-addendum-2026-11-17-v2.md` §4 (`80d55df2`). Non-legacy `judge_done/<judge>.three_way_schedules.json` naming applies automatically.

@@ -1,30 +1,36 @@
 # reasoning-dataset-lab: how it works
 
-Mapped at 2026-11-17 from commit 3efb2e2 by Atlas 1.26.0.
+Mapped at 2026-11-17 from commit ff213f7 by Atlas 1.26.0.
 
 ## What this is
 
 reasoning-dataset-lab plans a dataset as a pre-registered map, builds items whose answer keys are constructed and proved by code, asks a local model only for the wording, and records the provenance of every item. (written by a person)
 
-9 parts, mostly Python (92 files), shell (3), CSS (2), TypeScript (2), Astro (1) and JavaScript (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.
+9 parts, mostly Python (94 files), shell (3), CSS (2), JavaScript (2), TypeScript (2) and Astro (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.
 
-## What changed since 2026-11-17 (f756535)
+## What changed since 2026-11-17 (3efb2e2)
 
-Nothing structural changed since 2026-11-17; 1 file removed and 3 changed content.
+- ci's push trigger now also names `.github/audit-allowlist.json` and `scripts/**`.
+- ci now also runs scripts/check-audit-allowlist.mjs.
+- site/audit-report.json is now written by .github/workflows/ci.yml.
+- .github/audit-allowlist.json is now read by .github/workflows/ci.yml.
+- site/package-lock.json is now read by .github/workflows/ci.yml.
+- 5 files added and 8 changed content, across 5 parts.
 
 ## What comes in
 
-1. **ci.** On a pull request; on a push to main touching 11 paths; or by hand. Runs tests/.
+1. **ci.** On a pull request; on a push to main touching 13 paths; or by hand. Runs scripts/check-audit-allowlist.mjs and tests/.
 2. **Deploy site to GitHub Pages.** On a push to main touching 2 paths; or by hand. Runs site/astro.config.mjs and site/src/.
 3. **Release.** When a release is published. Checks src/reasoning_dataset_lab/.
 4. **rdlab** (a command people run). Runs src/reasoning_dataset_lab/cli.py.
 
 ## What happens through ci
 
-1. The workflow runs tests/ in tests.
-2. That reaches scripts (6 files) and src (29 files).
+1. The workflow runs scripts/check-audit-allowlist.mjs in scripts and tests/ in tests.
+2. That reaches src (29 files).
 3. It writes to src/reasoning_dataset_lab/pilot_b/canary_config.json.
-4. It uploads coverage to Codecov.
+4. It also writes to site/audit-report.json, which is not tracked.
+5. It uploads coverage to Codecov.
 
 ## Who reads the results
 
@@ -48,7 +54,7 @@ Nothing structural changed since 2026-11-17; 1 file removed and 3 changed conten
 - **src/reasoning_dataset_lab/pilot_b/value_certification.py** and **tests/test_pilot_b_value_certification.py** changed together in 8 of 8 commits, and the tests part imports the src part.
 - **src/reasoning_dataset_lab/pilot_b/models_and_build.py** and **tests/test_pilot_b_ollama_adapters.py** changed together in 10 of 12 commits, and the tests part imports the src part.
 - **src/reasoning_dataset_lab/pilot_b/fact_tables.py** and **tests/test_pilot_b_variety.py** changed together in 5 of 7 commits, and the tests part imports the src part.
-- **scripts/colab/vm_judges.py** and **tests/test_colab_judge_launcher.py** changed together in 34 of 52 commits, and the tests part imports the scripts part.
+- **scripts/colab/vm_judges.py** and **tests/test_colab_judge_launcher.py** changed together in 34 of 53 commits, and the tests part imports the scripts part.
 - **src/reasoning_dataset_lab/pilot_b/rendering.py** and **tests/test_pilot_b_part_b.py** changed together in 5 of 9 commits, and the tests part imports the src part.
 
 1 file changed together with its own test, as expected.
@@ -81,13 +87,14 @@ People write .github/, certification/, docs/, examples/, the repository root and
 
 src/reasoning_dataset_lab/cli.py → src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py → src/reasoning_dataset_lab/pilot_b/canary_config.json → src/reasoning_dataset_lab/pilot_b/lockcheck_anchors.py
 
-Read those in order to follow one run of rdlab end to end. This path follows rdlab (a command people run) from its entry, since ci runs only tests.
+Read those in order to follow one run of rdlab end to end. This path follows rdlab (a command people run) from its entry, since ci runs only tests and scripts that import no code here.
 
 ## What this map cannot see
 
 - 8 import sites name a declared dependency that shares its name with a local module (role_set); they are read as the dependency, which is not in this repository.
 - 18 imports could not be resolved: `scripts/colab/vm_judges.py` imports a path built at run time; `scripts/colab/vm_judges.py` imports `device`, which is no module on its import path and no declared dependency, twice; `tests/test_bakeoff_judge_d3_transport.py` imports a path built at run time; and 14 more.
-- 14 writes and 30 reads use paths built at run time and are not named here.
+- 14 writes and 34 reads use paths built at run time and are not named here.
+- 1 write goes to places this repository does not track, so it is not listed as generated.
 - 90 writes and 210 reads go to a path their caller passes, not to this repository.
 - 11 reads go to the directory the command is run in, not to this repository.
 - Statistics confidence is low: fewer than 25 source files reach 10 revisions in the window.
