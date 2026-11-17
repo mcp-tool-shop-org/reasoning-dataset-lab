@@ -118,9 +118,14 @@ def test_arm_wording_table_is_the_preregistered_words() -> None:
         ("B", "contradicted", "The state proves the claim false.", "unsupported"),
         ("C", "can't tell", "The state neither entails nor contradicts the claim.", "cannot_tell"),
     ]
-    # The choice arms are these three (arm 6 is the D5c symmetric arm, pinned in its own tests); the internal gold
-    # labels are their own constant, untouched by the shown words.
-    assert set(three_way_wording.THREE_WAY_WORDINGS) == {"three_way", ARM, "three_way_symmetric"}
+    # The choice arms are these four (symmetric and schedules are pinned in their own tests); the internal gold labels
+    # are their own constant, untouched by the shown words.
+    assert set(three_way_wording.THREE_WAY_WORDINGS) == {
+        "three_way",
+        ARM,
+        "three_way_symmetric",
+        "three_way_schedules",
+    }
     assert three_way_wording.THREE_WAY_INTERNAL_CLASSES == INTERNAL
     assert three_way_wording.THREE_WAY_WORDING_FAMILY_BY_JUDGE == {
         "mu-judge": "STATE",

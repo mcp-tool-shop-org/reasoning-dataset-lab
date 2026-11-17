@@ -127,7 +127,7 @@ REREAD_RESERVED_RT=""
 
 usage() {
   cat <<'EOF'
-Usage: scripts/colab/launch_judges.sh [--session-smoke] [--probe] [--stub] [--time-one] [--lock-check] [--lock-check-stub] [--lock-check-phase anchors|p0a|all] [--counted] [--counted-stub] [--card A100|G4|L4|T4] [--shape standard|high-mem] [--until STEP] [--dry] [--resume] [--run-id ID] [--out-dir DIR] [--items-file FILE] [--part-dir DIR] [--anchor-items FILE] [--p0a-items FILE] [--p0a-part-dir DIR] [--counted-items FILE] [--counted-manifest FILE] [--receipts-dir DIR] [--cap UNITS] [--max-rate UNITS_PER_H] [--pass-mode binary|three_way|three_way_contradicted|three_way_two_question|three_way_symmetric|three_way_nli|per_judge]
+Usage: scripts/colab/launch_judges.sh [--session-smoke] [--probe] [--stub] [--time-one] [--lock-check] [--lock-check-stub] [--lock-check-phase anchors|p0a|all] [--counted] [--counted-stub] [--card A100|G4|L4|T4] [--shape standard|high-mem] [--until STEP] [--dry] [--resume] [--run-id ID] [--out-dir DIR] [--items-file FILE] [--part-dir DIR] [--anchor-items FILE] [--p0a-items FILE] [--p0a-part-dir DIR] [--counted-items FILE] [--counted-manifest FILE] [--receipts-dir DIR] [--cap UNITS] [--max-rate UNITS_PER_H] [--pass-mode binary|three_way|three_way_contradicted|three_way_two_question|three_way_symmetric|three_way_nli|three_way_schedules|per_judge]
 
 Options:
   --session-smoke      Run the CPU session smoke check only (open, verify row, stop, verify gone)
@@ -193,7 +193,7 @@ Options:
                        (ASSIGNMENTS_UNREADABLE). Every re-read is in rate_rereads.jsonl and outcome.draft.json.
 
   --pass-mode M        binary (default), three_way, three_way_contradicted, three_way_two_question, three_way_symmetric,
-                       three_way_nli or per_judge (or set RDLAB_PASS_MODE). A 3-way mode runs every judge on that arm's
+                       three_way_nli, three_way_schedules or per_judge (or set RDLAB_PASS_MODE). A 3-way mode runs every judge on that arm's
                        prompt and writes rows/<judge>.<mode>.jsonl; per_judge (the default when RDLAB_JUDGE_PASS_MODES
                        is set) runs each judge in its own modes, RDLAB_JUDGE_PASS_MODES=judge:mode,... in that order, with
                        RDLAB_ONLY_JUDGES = the plan's judges in order. 3-way modes are allowed only with --stub and
@@ -318,7 +318,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --pass-mode)
       if [[ $# -lt 2 ]] || [[ -z "${2:-}" ]]; then
-        echo "PASS_MODE_INVALID: --pass-mode requires a value (allowed: binary, three_way, three_way_contradicted, three_way_two_question, three_way_symmetric, three_way_nli, per_judge)" >&2
+        echo "PASS_MODE_INVALID: --pass-mode requires a value (allowed: binary, three_way, three_way_contradicted, three_way_two_question, three_way_symmetric, three_way_nli, three_way_schedules, per_judge)" >&2
         exit 2
       fi
       PASS_MODE="$2"
@@ -958,7 +958,7 @@ fi
 
 # --- The pass mode (vm_judges.PASS_MODES, or per_judge with RDLAB_JUDGE_PASS_MODES); checked in the preflight below ---
 if [[ "$PASS_MODE_FLAG" -eq 1 ]] && [[ -z "$PASS_MODE" ]]; then
-  echo "PASS_MODE_INVALID: --pass-mode requires a value (allowed: binary, three_way, three_way_contradicted, three_way_two_question, three_way_symmetric, three_way_nli, per_judge)" >&2
+  echo "PASS_MODE_INVALID: --pass-mode requires a value (allowed: binary, three_way, three_way_contradicted, three_way_two_question, three_way_symmetric, three_way_nli, three_way_schedules, per_judge)" >&2
   exit 2
 fi
 if [[ -z "$PASS_MODE" ]]; then
