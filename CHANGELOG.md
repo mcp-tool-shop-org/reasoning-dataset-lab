@@ -6,6 +6,12 @@ All notable changes to `reasoning-dataset-lab` are documented here. The format i
 
 ## Unreleased
 
+### Speed up shortcut-probe OOF classifiers and Gate-1 null-permutation CI scheduling (`Refs #114`)
+
+- **Work-stealing xdist scheduling (`.github/workflows/ci.yml`):** added `--dist worksteal` to all three `pytest -n auto` test legs (`test`, `test-py313`, `test-py314`) so idle workers steal trailing slow tests instead of waiting behind a single overloaded worker.
+- **20×10 Gate-1 null-permutation chunking and worker cache (`tests/test_shortcut_probe.py`, `tests/tools/compute_null_perm_pins.py`):** split the 200 fixed-seed permutations (`_NULL_PERM_TOTAL = 200`, `_NULL_PERM_SEED = 20261030`) into 20 chunks of 10 (`[10*k:10*(k+1))`) instead of 4 chunks of 50 with identical per-permutation keys, exact pins (`0/200` new-gate fails, `174/200` old flat-0.05 fails), and `<= 2%` bound, and cached the shared 34-triad fixture and pre-drawn keys per xdist worker (`_cached_null_permutation_inputs`).
+- **Per-fold unique-vector forward softmax pass (`src/reasoning_dataset_lab/pilot_b/shortcut_probe.py`):** in `_oof_token_classifier_detailed` and `_oof_numeric_classifier_detailed`, deduplicated per-fold training feature vectors so each epoch evaluates `exp`/softmax once per distinct vector while accumulating gradients in exact sample order, yielding byte-identical `ShortcutProbeReport` outputs.
+
 ### Harden shortcut-probe feature hooks (`Refs #109`, `Refs #110`)
 
 - **Input validation (`#110` item 1):** `run_bakeoff_shortcut_probe` and `evaluate_bakeoff_probe_files` accept `feature_hooks: Sequence[FeatureHook] | None = ()`, treating `None` identically to `()`. Anything other than `None` or a valid `Sequence[FeatureHook]` (including `str`, `bytes`, `bytearray`, `memoryview`, `range`, a bare `FeatureHook`, `set`/`frozenset`, `dict`, or other non-`Sequence`) is refused with `PROBE_BAD_FEATURE_HOOK` (`EXIT_USAGE`) before any item check or file read runs.

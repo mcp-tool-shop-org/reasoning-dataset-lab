@@ -832,6 +832,13 @@ def _oof_token_classifier_detailed(
     correct_nb = 0
     correct_perm = 0
     total = 0
+    _exp = math.exp
+    _log = math.log
+    _sqrt = math.sqrt
+    _max = max
+    _min = min
+    _sum = sum
+    class_range = range(n_classes)
 
     for fold in range(eff_folds):
         train = [s for s in samples if fold_map[s[0]] != fold]
@@ -845,85 +852,114 @@ def _oof_token_classifier_detailed(
         vocab: set[str] = set()
         for _, feats, label in train:
             class_counts[label] += 1
+            fc = feat_counts[label]
             for f in feats:
-                feat_counts[label][f] += 1
+                fc[f] += 1
                 total_feats_by_class[label] += 1
                 vocab.add(f)
         n_train = len(train)
-        v_size = max(len(vocab), 1)
+        v_size = _max(len(vocab), 1)
 
         vocab_list = sorted(vocab)
         f_to_idx = {f: i for i, f in enumerate(vocab_list)}
         dim = len(vocab_list)
+        dim_range = range(dim)
 
-        def _vec(feats: Sequence[str]) -> dict[int, float]:
+        def _vec(feats: Sequence[str]) -> tuple[tuple[int, float], ...]:
             counts = Counter(f_to_idx[f] for f in feats if f in f_to_idx)
-            norm = math.sqrt(sum(v * v for v in counts.values())) or 1.0
-            return {k: v / norm for k, v in counts.items()}
+            norm = _sqrt(_sum(v * v for v in counts.values())) or 1.0
+            return tuple((k, v / norm) for k, v in counts.items())
 
-        train_vecs = [_vec(s[1]) for s in train]
-        train_y = [c_to_idx[s[2]] for s in train]
+        # Deduplicate per-fold training vectors: weights are constant across an epoch,
+        # so the forward softmax pass only needs to run once per distinct feature vector.
+        u_map: dict[tuple[tuple[int, float], ...], int] = {}
+        unique_vecs: list[tuple[tuple[int, float], ...]] = []
+        train_u_y: list[tuple[int, int]] = []
+        for s in train:
+            xv = _vec(s[1])
+            u_idx = u_map.get(xv)
+            if u_idx is None:
+                u_idx = len(unique_vecs)
+                u_map[xv] = u_idx
+                unique_vecs.append(xv)
+            train_u_y.append((u_idx, c_to_idx[s[2]]))
+
         biases = [
-            math.log((class_counts[classes[c]] + 1e-6) / n_train)
-            for c in range(n_classes)
+            _log((class_counts[classes[c]] + 1e-6) / n_train)
+            for c in class_range
         ]
-        weights = [[0.0] * dim for _ in range(n_classes)]
+        weights = [[0.0] * dim for _ in class_range]
         lr = 0.2
         l2 = 1.0
         for _ in range(60):
             grad_w = [
-                [l2 * w / n_train for w in weights[c]] for c in range(n_classes)
+                [l2 * w / n_train for w in weights[c]] for c in class_range
             ]
             grad_b = [0.0] * n_classes
-            for x_dict, y_idx in zip(train_vecs, train_y):
+            probs_by_u: list[list[float]] = []
+            for x_items in unique_vecs:
                 scores = [
-                    max(
+                    _max(
                         -20.0,
-                        min(
+                        _min(
                             20.0,
                             biases[c]
-                            + sum(weights[c][k] * v for k, v in x_dict.items()),
+                            + _sum([weights[c][k] * v for k, v in x_items]),
                         ),
                     )
-                    for c in range(n_classes)
+                    for c in class_range
                 ]
-                m_s = max(scores)
-                exps = [math.exp(s - m_s) for s in scores]
-                z = sum(exps)
-                for c in range(n_classes):
-                    err = (exps[c] / z - (1.0 if c == y_idx else 0.0)) / n_train
+                m_s = _max(scores)
+                exps = [_exp(s - m_s) for s in scores]
+                z = _sum(exps)
+                probs_by_u.append([exps[c] / z for c in class_range])
+            for u_idx, y_idx in train_u_y:
+                probs = probs_by_u[u_idx]
+                x_items = unique_vecs[u_idx]
+                for c in class_range:
+                    err = (probs[c] - (1.0 if c == y_idx else 0.0)) / n_train
                     grad_b[c] += err
-                    for k, v in x_dict.items():
-                        grad_w[c][k] += err * v
-            for c in range(n_classes):
+                    gwc = grad_w[c]
+                    for k, v in x_items:
+                        gwc[k] += err * v
+            for c in class_range:
                 biases[c] -= lr * grad_b[c]
-                for d in range(dim):
-                    weights[c][d] -= lr * grad_w[c][d]
+                wc = weights[c]
+                gwc = grad_w[c]
+                for d in dim_range:
+                    wc[d] -= lr * gwc[d]
+
+        nb_log_probs = [
+            _log((class_counts[c] + alpha) / (n_train + alpha * n_classes))
+            for c in classes
+        ]
+        nb_denoms = [total_feats_by_class[c] + alpha * v_size for c in classes]
+        nb_counters = [feat_counts[c] for c in classes]
 
         test_by_tid: dict[str, list[tuple[list[float], int]]] = defaultdict(list)
         for tid, feats, true_label in test:
             y_idx = c_to_idx[true_label]
-            scale = 1.0 / max(math.sqrt(len(feats)), 1.0)
-            nb_scores: list[float] = []
-            for c in classes:
-                log_prob = math.log(
-                    (class_counts[c] + alpha) / (n_train + alpha * n_classes)
+            scale = 1.0 / _max(_sqrt(len(feats)), 1.0)
+            nb_scores = [
+                nb_log_probs[ci]
+                + scale
+                * _sum(
+                    [
+                        _log((nb_counters[ci].get(f, 0) + alpha) / nb_denoms[ci])
+                        for f in feats
+                    ]
                 )
-                denom = total_feats_by_class[c] + alpha * v_size
-                c_counter = feat_counts[c]
-                ll = sum(
-                    math.log((c_counter.get(f, 0) + alpha) / denom) for f in feats
-                )
-                nb_scores.append(log_prob + scale * ll)
-            if nb_scores.index(max(nb_scores)) == y_idx:
+                for ci in class_range
+            ]
+            if nb_scores.index(_max(nb_scores)) == y_idx:
                 correct_nb += 1
 
-            x_dict = _vec(feats)
+            x_items = _vec(feats)
             lr_scores = [
-                biases[c] + sum(weights[c][k] * v for k, v in x_dict.items())
-                for c in range(n_classes)
+                biases[c] + _sum([weights[c][k] * v for k, v in x_items])
+                for c in class_range
             ]
-            if lr_scores.index(max(lr_scores)) == y_idx:
+            if lr_scores.index(_max(lr_scores)) == y_idx:
                 correct_gd += 1
 
             test_by_tid[tid].append((nb_scores, y_idx))
@@ -935,9 +971,9 @@ def _oof_token_classifier_detailed(
             )
 
     return (
-        correct_gd / max(total, 1),
-        correct_nb / max(total, 1),
-        correct_perm / max(total, 1),
+        correct_gd / _max(total, 1),
+        correct_nb / _max(total, 1),
+        correct_perm / _max(total, 1),
         is_deg,
     )
 
@@ -970,6 +1006,14 @@ def _oof_numeric_classifier_detailed(
     correct_cent = 0
     correct_perm = 0
     total = 0
+    _exp = math.exp
+    _log = math.log
+    _sqrt = math.sqrt
+    _max = max
+    _min = min
+    _sum = sum
+    class_range = range(n_classes)
+    dim_range = range(dim)
 
     for fold in range(eff_folds):
         train = [s for s in samples if fold_map[s[0]] != fold]
@@ -977,83 +1021,105 @@ def _oof_numeric_classifier_detailed(
         if not test or not train:
             continue
 
+        n_tr = len(train)
         means = [0.0] * dim
         stds = [1.0] * dim
-        for d in range(dim):
+        for d in dim_range:
             vals = [s[1][d] for s in train]
-            m = sum(vals) / len(vals)
-            var = sum((v - m) ** 2 for v in vals) / len(vals)
+            m = _sum(vals) / n_tr
+            var = _sum([(v - m) ** 2 for v in vals]) / n_tr
             means[d] = m
-            stds[d] = math.sqrt(var) if var > 1e-12 else 1.0
+            stds[d] = _sqrt(var) if var > 1e-12 else 1.0
 
-        def _norm(x: tuple[float, ...]) -> list[float]:
-            return [(x[d] - means[d]) / stds[d] for d in range(dim)]
-
-        train_x = [_norm(s[1]) for s in train]
+        train_x = [
+            tuple((s[1][d] - means[d]) / stds[d] for d in dim_range)
+            for s in train
+        ]
         train_y = [c_to_idx[s[2]] for s in train]
-        n_tr = len(train_x)
+
+        # Deduplicate normalised training feature vectors so forward softmax runs once per unique vector.
+        u_map: dict[tuple[float, ...], int] = {}
+        unique_x: list[tuple[float, ...]] = []
+        unique_nz: list[tuple[tuple[int, float], ...]] = []
+        train_u_y: list[tuple[int, int]] = []
+        for xv, y_idx in zip(train_x, train_y):
+            u_idx = u_map.get(xv)
+            if u_idx is None:
+                u_idx = len(unique_x)
+                u_map[xv] = u_idx
+                unique_x.append(xv)
+                unique_nz.append(tuple((d, v) for d, v in enumerate(xv) if v != 0.0))
+            train_u_y.append((u_idx, y_idx))
 
         class_counts = Counter(train_y)
         log_priors = [
-            math.log((class_counts[c] + 1e-6) / n_tr) for c in range(n_classes)
+            _log((class_counts[c] + 1e-6) / n_tr) for c in class_range
         ]
         biases = list(log_priors)
-        weights = [[0.0] * dim for _ in range(n_classes)]
+        weights = [[0.0] * dim for _ in class_range]
         lr = 0.15
         l2 = 0.1
         for _ in range(60):
-            grad_w = [[l2 * w for w in weights[c]] for c in range(n_classes)]
+            grad_w = [[l2 * w for w in weights[c]] for c in class_range]
             grad_b = [0.0] * n_classes
-            for x_vec, y_idx in zip(train_x, train_y):
+            probs_by_u: list[list[float]] = []
+            for xv in unique_x:
                 scores = [
-                    max(
+                    _max(
                         -20.0,
-                        min(
+                        _min(
                             20.0,
                             biases[c]
-                            + sum(weights[c][d] * x_vec[d] for d in range(dim)),
+                            + _sum([weights[c][d] * xv[d] for d in dim_range]),
                         ),
                     )
-                    for c in range(n_classes)
+                    for c in class_range
                 ]
-                m_s = max(scores)
-                exps = [math.exp(s - m_s) for s in scores]
-                z = sum(exps)
-                for c in range(n_classes):
-                    err = (exps[c] / z - (1.0 if c == y_idx else 0.0)) / n_tr
+                m_s = _max(scores)
+                exps = [_exp(s - m_s) for s in scores]
+                z = _sum(exps)
+                probs_by_u.append([exps[c] / z for c in class_range])
+            for u_idx, y_idx in train_u_y:
+                probs = probs_by_u[u_idx]
+                nz_items = unique_nz[u_idx]
+                for c in class_range:
+                    err = (probs[c] - (1.0 if c == y_idx else 0.0)) / n_tr
                     grad_b[c] += err
-                    for d in range(dim):
-                        grad_w[c][d] += err * x_vec[d]
-            for c in range(n_classes):
+                    gwc = grad_w[c]
+                    for d, v in nz_items:
+                        gwc[d] += err * v
+            for c in class_range:
                 biases[c] -= lr * grad_b[c]
-                for d in range(dim):
-                    weights[c][d] -= lr * grad_w[c][d]
+                wc = weights[c]
+                gwc = grad_w[c]
+                for d in dim_range:
+                    wc[d] -= lr * gwc[d]
 
-        centroids = [[0.0] * dim for _ in range(n_classes)]
-        for c in range(n_classes):
+        centroids = [[0.0] * dim for _ in class_range]
+        for c in class_range:
             c_vecs = [x for x, y in zip(train_x, train_y) if y == c]
             if c_vecs:
                 centroids[c] = [
-                    sum(x[d] for x in c_vecs) / len(c_vecs) for d in range(dim)
+                    _sum([x[d] for x in c_vecs]) / len(c_vecs) for d in dim_range
                 ]
 
         test_by_tid: dict[str, list[tuple[list[float], int]]] = defaultdict(list)
         for tid, raw_x, true_lbl in test:
-            nx = _norm(raw_x)
+            nx = [(raw_x[d] - means[d]) / stds[d] for d in dim_range]
             y_idx = c_to_idx[true_lbl]
             gd_scores = [
-                biases[c] + sum(weights[c][d] * nx[d] for d in range(dim))
-                for c in range(n_classes)
+                biases[c] + _sum([weights[c][d] * nx[d] for d in dim_range])
+                for c in class_range
             ]
-            if gd_scores.index(max(gd_scores)) == y_idx:
+            if gd_scores.index(_max(gd_scores)) == y_idx:
                 correct_gd += 1
 
             cent_scores = [
                 log_priors[c]
-                - 0.5 * sum((nx[d] - centroids[c][d]) ** 2 for d in range(dim))
-                for c in range(n_classes)
+                - 0.5 * _sum([(nx[d] - centroids[c][d]) ** 2 for d in dim_range])
+                for c in class_range
             ]
-            if cent_scores.index(max(cent_scores)) == y_idx:
+            if cent_scores.index(_max(cent_scores)) == y_idx:
                 correct_cent += 1
 
             test_by_tid[tid].append((gd_scores, y_idx))
@@ -1065,9 +1131,9 @@ def _oof_numeric_classifier_detailed(
             )
 
     return (
-        correct_gd / max(total, 1),
-        correct_cent / max(total, 1),
-        correct_perm / max(total, 1),
+        correct_gd / _max(total, 1),
+        correct_cent / _max(total, 1),
+        correct_perm / _max(total, 1),
         is_deg,
     )
 
