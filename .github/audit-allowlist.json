@@ -1,0 +1,15 @@
+{
+  "description": "Reviewed, time-boxed npm-audit exceptions, enforced by scripts/check-audit-allowlist.mjs from ci.yml. Procedure: open a normal PR adding an entry below with the advisory's numeric id (the `source` field from `npm audit --json`), the affected package, a reason it can't be fixed immediately, your GitHub username as approvedBy, today's date as addedOn, and expiresOn no more than ~30 days out. A maintainer reviews and merges that PR like any other change -- the exception is recorded in git history, not typed into a runner console under time pressure. Once expiresOn passes, the exception silently stops applying and the advisory blocks CI again until it is renewed (with a fresh justification) or fixed for real. Remove the entry the moment a real fix lands -- this file is a documented escalation valve, not a place to bury advisories indefinitely.",
+  "port": "Ported from mcp-tool-shop-org/brand (scripts/check-audit-allowlist.mjs and this file, brand 1f72fa0; entry format as brand afb9611). This port reads `npm audit --json` from site/. It also needs `range` on each entry: the advisory's vulnerable range as npm reports it (whitespace is ignored when comparing). An entry stops applying at expiresOn, or as soon as the reported range differs from `range`, or npm reports a fix for the package, whichever comes first.",
+  "exceptions": [
+    {
+      "id": "1247710",
+      "package": "picomatch",
+      "range": "<=4.0.7",
+      "reason": "GHSA-fc5q-39xc-vjpf (ReDoS through repeated extglobs, high): every version <= 4.0.7 is affected and no patched release exists yet. picomatch reaches this repo only through the static-site build toolchain (astro, via vite and tinyglobby); exploiting it needs an attacker-supplied glob pattern, and every glob in our site config is our own. The site ships static HTML, so nothing at run time uses picomatch. Remove this entry in the PR that bumps to a patched picomatch.",
+      "approvedBy": "mcp-tool-shop",
+      "addedOn": "2026-11-17",
+      "expiresOn": "2026-12-17"
+    }
+  ]
+}

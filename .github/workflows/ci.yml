@@ -15,6 +15,10 @@ on:
       - site/src/content/docs/handbook/pilot-b.md
       - atlas/**
       - .github/workflows/**
+      # The audit gate's script and its allowlist: '.github/workflows/**' does not cover them,
+      # and a change to either changes what the audit step passes.
+      - scripts/**
+      - .github/audit-allowlist.json
   pull_request:
   workflow_dispatch:
 
@@ -66,9 +70,18 @@ jobs:
       - name: Atlas check
         run: npx --yes @dogfood-lab/atlas@1.26.0 check
 
+      # Reviewed, time-boxed exceptions live in .github/audit-allowlist.json and are enforced by
+      # scripts/check-audit-allowlist.mjs (ported from brand). Any high/critical advisory not listed there, listed
+      # but expired, or whose reported range or fix status has changed, still fails this step.
       - name: Audit the site's npm tree
         working-directory: site
-        run: npm ci && npm audit --audit-level=high
+        run: |
+          npm ci
+          set +e
+          npm audit --audit-level=high --json > audit-report.json
+          AUDIT_EXIT=$?
+          set -e
+          node ../scripts/check-audit-allowlist.mjs audit-report.json ../.github/audit-allowlist.json "$AUDIT_EXIT" package-lock.json
 
   # Python 3.13. Tests without coverage; a job of its own so the check named "test" keeps its name (it runs on 3.15).
   test-py313:
