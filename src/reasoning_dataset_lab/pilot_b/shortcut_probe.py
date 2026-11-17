@@ -413,14 +413,19 @@ class FeatureHook:
     `features` receives a deep copy of one item restricted to `PUBLIC_ITEM_FIELDS` (`id`, `triad_id`,
     `trait`, `kind`, `domain`, `closure`, `proof_basis`, `key_basis`, `material`, `claim`, `messages`,
     `split`; sealed fields are never passed, and items carrying any sealed or keys-file field are refused
-    with `PROBE_SEALED_FIELD_IN_ITEM`). Each item's returned sequence of strings is sorted (keeping
-    duplicates) for order-free fold stratification and degeneracy checking, and each hook is invoked twice
-    per item (second pass in reverse item order) and refused with `PROBE_FEATURE_HOOK_FAILED` if results
-    differ. At most `MAX_FEATURE_HOOK_TOKENS_PER_ITEM` (256) tokens per item and
-    `MAX_FEATURE_HOOK_VOCABULARY` (4,096) distinct tokens across all items are allowed (preventing
-    per-item ID / high-cardinality tokenisation from invalidating the Holm-adjusted bag-of-tokens probe);
-    exceeding either is refused with `PROBE_FEATURE_HOOK_FAILED`. A hook that returns `[]` on every item
-    is refused with `PROBE_FEATURE_HOOK_EMPTY`, whereas a constant non-empty hook stays `degenerate=True`
+    with `PROBE_SEALED_FIELD_IN_ITEM` case-insensitively). Each item's returned sequence of non-empty,
+    non-whitespace strings is sorted (keeping duplicates) for order-free fold stratification and degeneracy
+    checking; any `""` or whitespace-only token is refused per item with `PROBE_FEATURE_HOOK_FAILED` (naming
+    the hook id and item id, never item text), so a hook returning `[""]` on every item cannot pass as a
+    constant degenerate hook. Each hook is invoked twice per item (second pass in reverse item order) and
+    refused with `PROBE_FEATURE_HOOK_FAILED` if the two calls differ, catching hooks that are non-deterministic
+    per call; a stateful closure that names tokens by first sight (for example `names.setdefault(...)`) returns
+    the same cached token on pass 2 and is not caught (low impact because a part's item order is fixed by its
+    shuffle seed). At most `MAX_FEATURE_HOOK_TOKENS_PER_ITEM` (256) tokens per item and
+    `MAX_FEATURE_HOOK_VOCABULARY` (4,096) distinct tokens across all items are allowed (preventing per-item
+    ID / high-cardinality tokenisation from invalidating the Holm-adjusted bag-of-tokens probe); exceeding
+    either is refused with `PROBE_FEATURE_HOOK_FAILED`. A hook that returns `[]` on every item is refused
+    with `PROBE_FEATURE_HOOK_EMPTY`, whereas a constant non-empty, non-whitespace hook stays `degenerate=True`
     (passing and excluded from the Holm family, as before). An interaction is a token that joins several
     values (for example `"a=x|b=y"`). The probe is reported as `hook:<probe_id>`.
     """
@@ -488,12 +493,10 @@ def _check_items_have_no_sealed_fields(
     items: Sequence[Mapping[str, Any]],
     extra_key_fields: AbstractSet[str] = frozenset(),
 ) -> None:
-    """Refuse any item carrying `key`, `target_line`, a known sealed field, or a non-public keys-file field."""
-    forbidden = SEALED_KEY_FIELDS | (frozenset(extra_key_fields) - PUBLIC_ITEM_FIELDS)
+    """Refuse any item carrying `key`, `target_line`, a known sealed field, or a non-public keys-file field (case-insensitively)."""
+    forbidden_lower = SEALED_KEY_FIELDS | ({str(f).lower() for f in extra_key_fields} - PUBLIC_ITEM_FIELDS)
     for it in items:
-        leaked = sorted(
-            str(k) for k in it.keys() if str(k) in forbidden or str(k).lower() in SEALED_KEY_FIELDS
-        )
+        leaked = sorted(str(k) for k in it.keys() if str(k).lower() in forbidden_lower)
         if leaked:
             item_id = str(it.get("id", ""))
             raise refused_error(
@@ -504,7 +507,7 @@ def _check_items_have_no_sealed_fields(
 
 
 def _hook_tokens(hook: FeatureHook, item: Mapping[str, Any]) -> list[str]:
-    """Run one hook on a deep public-field copy of one item and return sorted tokens; refuse bad results."""
+    """Run one hook on a deep public-field copy of one item and return sorted non-empty tokens; refuse bad results."""
     item_id = str(item.get("id", ""))
     try:
         out = hook.features(_public_item_copy(item))
@@ -534,6 +537,12 @@ def _hook_tokens(hook: FeatureHook, item: Mapping[str, Any]) -> list[str]:
             f"Feature hook {hook.probe_id!r} returned something other than a sequence of strings for item {item_id!r}.",
             "Return a list or tuple of string tokens for every item.",
         )
+    if any(not t.strip() for t in out):
+        raise refused_error(
+            "PROBE_FEATURE_HOOK_FAILED",
+            f"Feature hook {hook.probe_id!r} returned an empty or whitespace-only token for item {item_id!r}.",
+            "Emit only non-empty, non-whitespace string tokens (return [] when an item has none).",
+        )
     return sorted(out)
 
 
@@ -541,14 +550,19 @@ def _collect_feature_hook_tokens(
     hook: FeatureHook,
     items: Sequence[Mapping[str, Any]],
 ) -> list[list[str]]:
-    """Evaluate `hook` twice per item (forward then reverse order) and check determinism, emptiness, and vocab cap."""
+    """Evaluate `hook` twice per item (forward then reverse order) to catch hooks that are non-deterministic per call, plus empty hooks and vocab caps.
+
+    A stateful closure that names tokens by first sight (for example `names.setdefault(...)`) returns the same
+    cached token on pass 2 and is not caught; the impact is low because a part's item order is fixed by its
+    shuffle seed.
+    """
     first_pass = [_hook_tokens(hook, it) for it in items]
     for idx in range(len(items) - 1, -1, -1):
         if _hook_tokens(hook, items[idx]) != first_pass[idx]:
             item_id = str(items[idx].get("id", ""))
             raise refused_error(
                 "PROBE_FEATURE_HOOK_FAILED",
-                f"Feature hook {hook.probe_id!r} produced non-deterministic or item-order-dependent tokens for item {item_id!r}.",
+                f"Feature hook {hook.probe_id!r} produced tokens that are non-deterministic per call for item {item_id!r}.",
                 "Make the hook a pure deterministic function of one item's public fields.",
             )
     vocab = {tok for toks in first_pass for tok in toks}
@@ -1617,6 +1631,30 @@ def run_bakeoff_shortcut_probe(
     `feature_hooks` adds one gated token probe per `FeatureHook` (see its docstring); passing `()`, `[]`, or
     `None` leaves the report unchanged."""
     validated_hooks = _validate_feature_hooks(feature_hooks)
+    return _run_bakeoff_shortcut_probe_validated(
+        items,
+        sealed_keys,
+        part_items_path=part_items_path,
+        keys_path=keys_path,
+        alpha=alpha,
+        share_bounds=share_bounds,
+        n_folds=n_folds,
+        validated_hooks=validated_hooks,
+    )
+
+
+def _run_bakeoff_shortcut_probe_validated(
+    items: Sequence[dict[str, Any]],
+    sealed_keys: dict[str, dict[str, str | int]],
+    *,
+    part_items_path: str = "",
+    keys_path: str = "",
+    alpha: float = DEFAULT_GATE_ALPHA,
+    share_bounds: tuple[float, float] = (SHARE_MIN, SHARE_MAX),
+    n_folds: int = 5,
+    validated_hooks: tuple[FeatureHook, ...] = (),
+) -> ShortcutProbeReport:
+    """Run shortcut probes assuming `validated_hooks` has already passed `_validate_feature_hooks`."""
     if not items:
         raise ValueError("items must not be empty")
     _check_items_have_no_sealed_fields(
@@ -2269,13 +2307,13 @@ def evaluate_bakeoff_probe_files(
     `out_path`; `feature_hooks=()`, `[]`, or `None` leaves the report unchanged."""
     validated_hooks = _validate_feature_hooks(feature_hooks)
     items_path, items, sealed_keys = load_items_and_keys(part_dir, keys_path)
-    report = run_bakeoff_shortcut_probe(
+    report = _run_bakeoff_shortcut_probe_validated(
         items,
         sealed_keys,
         part_items_path=str(items_path),
         keys_path=str(keys_path),
         alpha=alpha,
-        feature_hooks=validated_hooks,
+        validated_hooks=validated_hooks,
     )
     payload = report.to_dict()
     out_path.parent.mkdir(parents=True, exist_ok=True)
