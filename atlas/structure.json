@@ -9,7 +9,7 @@
       "externals": 0,
       "files": [
         {
-          "hash": "bc52ec7319768a5196fda8d16e7c10a371a2a6a339a6afe84a8499f73fe062f1",
+          "hash": "07bd99da49ce8b25286e1b3cadafbaade79a38296025a0f98e4bdaf18b528e1d",
           "path": ".github/workflows/ci.yml"
         },
         {
@@ -225,7 +225,7 @@
           "path": ".python-version"
         },
         {
-          "hash": "ef255f9ee2a1a30c463d11b9294b8b6b2ff888a6c8e4b4b8850e3ffb28faa541",
+          "hash": "1690e8f485a2ba2ce5ad20e4e4fff26f57bdf0390f99d1a2be7b0de5f3c25f67",
           "path": "CHANGELOG.md"
         },
         {
@@ -18145,60 +18145,60 @@
             {
               "in": "resolve_part_items_path",
               "kind": "raise",
-              "line": 1514
+              "line": 1580
             },
             {
               "in": "load_items_and_keys",
               "kind": "raise",
-              "line": 1528
-            },
-            {
-              "in": "load_items_and_keys",
-              "kind": "except",
-              "line": 1543
-            },
-            {
-              "in": "load_items_and_keys",
-              "kind": "raise",
-              "line": 1544
+              "line": 1594
             },
             {
               "in": "load_items_and_keys",
               "kind": "except",
-              "line": 1563
+              "line": 1609
             },
             {
               "in": "load_items_and_keys",
               "kind": "raise",
-              "line": 1564
+              "line": 1610
+            },
+            {
+              "in": "load_items_and_keys",
+              "kind": "except",
+              "line": 1629
             },
             {
               "in": "load_items_and_keys",
               "kind": "raise",
-              "line": 1574
+              "line": 1630
             },
             {
               "in": "load_items_and_keys",
               "kind": "raise",
-              "line": 1585
+              "line": 1640
             },
             {
               "in": "load_items_and_keys",
               "kind": "raise",
-              "line": 1593
+              "line": 1651
+            },
+            {
+              "in": "load_items_and_keys",
+              "kind": "raise",
+              "line": 1659
             },
             {
               "in": "run_bakeoff_shortcut_probe",
               "kind": "raise",
-              "line": 1621
+              "line": 1687
             },
             {
               "in": "run_bakeoff_shortcut_probe",
               "kind": "raise",
-              "line": 1641
+              "line": 1707
             }
           ],
-          "hash": "df05fd41461b3e4bc72ca8df7292530bfc9123f0f3922ca38238182e7ca9c1c2",
+          "hash": "88f9b3ad2963ef42b03650e04123173a59cccdbf8f6e5c9646bdbde9510782fb",
           "importsFiles": [
             "src/reasoning_dataset_lab/errors.py",
             "src/reasoning_dataset_lab/pilot_b/anchored_two_hop.py",
@@ -21365,7 +21365,7 @@
             "test_normalised_value_forms_do_not_hide_or_create_overlap",
             "test_old_flat_margin_behaviour_is_gone_and_header_reports_mde"
           ],
-          "hash": "5d200a26577bcdf8b10d867b0a586d34b1d0cb31afe8148168bc1014ee518e1e",
+          "hash": "f63cca2578dfd2b5b17cb7c2caaabaa22bd4ca273118426185773091054ecab0",
           "importsFiles": [
             "src/reasoning_dataset_lab/cli.py",
             "src/reasoning_dataset_lab/errors.py",
@@ -21411,7 +21411,7 @@
           "exports": [
             "compute_pins"
           ],
-          "hash": "77865bfaeb3209687f4d142e2147a59fe5fd7e78440f7e9703e7675767ed6ce8",
+          "hash": "32c5445eb9d51c0814d3a1582e9653d74b03bd1021d8b1d8b8607a1e625c163b",
           "importsFiles": [
             "src/reasoning_dataset_lab/pilot_b/shortcut_probe.py",
             "src/reasoning_dataset_lab/pilot_b/variety.py"
@@ -22171,7 +22171,7 @@
   ],
   "engine": "1.26.0",
   "generatedFrom": {
-    "commit": "8958590e1783e4cbc4227a2d8308b9d23328c57c",
+    "commit": "f756535af12a2dcd5e224364cf27644c79433f5d",
     "tracked": 198
   },
   "landings": [
