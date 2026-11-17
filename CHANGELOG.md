@@ -6,6 +6,14 @@ All notable changes to `reasoning-dataset-lab` are documented here. The format i
 
 ## Unreleased
 
+### Shortcut-probe feature-hook empty-token refusal and `#111` follow-ups (`Refs #112`)
+
+- **Empty/whitespace hook tokens (`#112` item 1):** `_hook_tokens` refuses any `""` or whitespace-only token (`not t.strip()`) per item with `PROBE_FEATURE_HOOK_FAILED` (`EXIT_REFUSED`), naming the hook id and item id (never item text), so a hook returning `[""]` on every item can no longer pass as a constant degenerate hook. `PROBE_FEATURE_HOOK_EMPTY` stays for a hook returning `[]` on every item; `FeatureHook`'s docstring documents both rules.
+- **First-sight naming wording (`#112` item 2):** `_collect_feature_hook_tokens`'s refusal message and docstring (plus `FeatureHook`'s docstring) now state that the double pass catches hooks that are `"non-deterministic per call"` rather than `"item-order-dependent"`, and document that stateful first-sight naming (`names.setdefault(...)`) is not caught with low impact because a part's item order is fixed by its shuffle seed.
+- **Sealed-field case-folding, single validation, and test comments (`#112` item 3):** `_check_items_have_no_sealed_fields` case-folds `str(k).lower()` against non-public keys-file field names as well as `SEALED_KEY_FIELDS`. `evaluate_bakeoff_probe_files` delegates directly to `_run_bakeoff_shortcut_probe_validated` so `_validate_feature_hooks` runs once on the files path with identical behaviour. Comments on the two `2 * len(items)` count-based tests in `tests/test_shortcut_probe_feature_hooks.py` state what each shows and does not show.
+- **Exact-case keys-file check kept (`#113` review B1):** `_check_items_have_no_sealed_fields` matches keys-file field names exactly as well as case-folded, so a keys field whose lowercase form is a public name (e.g. `Claim`) is still refused when carried on an item, as it was before `#112`; `test_case_folded_keys_file_field_on_item_is_refused` gains the `("Claim", "Claim")` case.
+- **Tests (`#112` item 4):** `tests/test_shortcut_probe_feature_hooks.py` adds synthetic-item tests for `[""]` on every item, `["x", ""]` on one item, whitespace-only tokens (`[" "]`, `["\t\n"]`, `["x", "   "]`), case-folded keys-file fields on both API and file entry points, `"non-deterministic per call"` wording, and single hook validation on the files path.
+
 ### Harden shortcut-probe feature hooks (`Refs #109`, `Refs #110`)
 
 - **Input validation (`#110` item 1):** `run_bakeoff_shortcut_probe` and `evaluate_bakeoff_probe_files` accept `feature_hooks: Sequence[FeatureHook] | None = ()`, treating `None` identically to `()`. Anything other than `None` or a valid `Sequence[FeatureHook]` (including `str`, `bytes`, `bytearray`, `memoryview`, `range`, a bare `FeatureHook`, `set`/`frozenset`, `dict`, or other non-`Sequence`) is refused with `PROBE_BAD_FEATURE_HOOK` (`EXIT_USAGE`) before any item check or file read runs.
