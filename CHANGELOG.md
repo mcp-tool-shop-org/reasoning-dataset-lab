@@ -6,6 +6,11 @@ All notable changes to `reasoning-dataset-lab` are documented here. The format i
 
 ## Unreleased
 
+### Golden `prompt_sha256` pins and explicit addendum path for `three_way_schedules` (`#119` follow-ups `B5`, `C4`)
+
+- **Golden assembled-prompt hashes (`tests/test_colab_d5c_schedules_arm.py`, `#119` `B5`):** added `GOLDEN_SCHEDULES_PROMPT_SHA256_46FCDB11` pinning `prompt_sha256` for `three_way_schedules` × `d3-mini` × (`gold-01`, `gold-02`) × (`AB`, `BA`) computed via `build_judge_adapter(JUDGE_SPECS["d3-mini"]).assemble_prompt(..., pass_mode="three_way_schedules")` at `46fcdb11`, and added `test_schedules_prompts_match_46fcdb11_goldens_byte_for_byte` while leaving every existing `prompt_sha256` pin untouched.
+- **Explicit live-addendum path (`tests/test_colab_d5c_schedules_arm.py`, `#119` `C4`):** `_find_external_addendum` now reads `RDLAB_D5C_ADDENDUM_V2` rather than probing `REPO_ROOT.parent` / `REPO_ROOT.parent.parent` — skipping with a clear reason when unset (keeping the committed §4 copy pinned to `80d55df2…`), failing instead of skipping when set to a missing or non-file path, and verifying `sha256 == 80d55df2ed0d4c12cb34c16075b40c721cfc9ffda4c481ba9b80b1ec759b6e3c` plus byte-for-byte §4 equality when set and present, with unit tests covering all three cases.
+
 ### Site npm audit: a reviewed, dated exception for GHSA-fc5q-39xc-vjpf (picomatch)
 
 - **Gate (`scripts/check-audit-allowlist.mjs`, `.github/audit-allowlist.json`):** ported brand's reviewed-exception gate for `npm audit` (brand `1f72fa0`; entry format as brand `afb9611`). The site audit step now runs `npm audit --audit-level=high --json` and passes the report to the script, which fails on any high or critical advisory that no non-expired exception covers. Additions in the port, all fail-closed: the report's shape is always checked; a transitive finding is judged by the advisories it resolves to; and an exception applies only while its `package` and `range` (`<=4.0.7`, whitespace ignored) match the advisory and npm reports no fix for the package (a semver-major suggestion to downgrade another package below its locked version, as npm makes today for `@astrojs/starlight` 0.42.7 -> 0.39.3, is not a fix).

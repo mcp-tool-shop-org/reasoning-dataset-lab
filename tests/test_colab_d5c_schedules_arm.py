@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -42,6 +43,7 @@ from tests.test_colab_d5c_six_arm import (  # noqa: E402
     ORDERS,
 )
 from tests.test_colab_three_way_contradicted_pass_mode import (  # noqa: E402
+    GOLDEN_THREE_WAY_PROMPT_SHA256,
     ITEMS,
     UNDERSCORE_TOKEN_RE,
 )
@@ -49,6 +51,7 @@ from tests.test_colab_three_way_pass_mode import _three_way_keys  # noqa: E402
 
 ARM = "three_way_schedules"
 
+ADDENDUM_V2_ENV_VAR = "RDLAB_D5C_ADDENDUM_V2"
 # PREREG-d5c-v2-analysis-addendum-2026-11-17-v2.md, sha256 80d55df2ed0d4c12cb34c16075b40c721cfc9ffda4c481ba9b80b1ec759b6e3c
 ADDENDUM_V2_SHA256 = "80d55df2ed0d4c12cb34c16075b40c721cfc9ffda4c481ba9b80b1ec759b6e3c"
 ADDENDUM_SECTION_4_TABLE = """| Part | Shown | Internal gold label |
@@ -57,6 +60,17 @@ ADDENDUM_SECTION_4_TABLE = """| Part | Shown | Internal gold label |
 | Option A, key `supported` | `Every schedule that fits the state makes the claim true.` | `supported` |
 | Option B, key `contradicted` | `No schedule that fits the state makes the claim true.` | `unsupported` |
 | Option C, key `can't tell` | `Some schedules that fit the state make the claim true, and some do not.` | `cannot_tell` |"""
+
+# prompt_sha256 for `three_way_schedules` × `d3-mini` × (`gold-01`, `gold-02`) × (`AB`, `BA`), computed at
+# origin/main 46fcdb11f1b1b8787fcdb504529934550a52e4af (PR #119) via
+# `build_judge_adapter(JUDGE_SPECS["d3-mini"]).assemble_prompt(item, order=order, pass_mode="three_way_schedules").prompt_sha256`
+# over `ITEMS[:2]` (`gold-01`, `gold-02` in `tests/test_colab_three_way_contradicted_pass_mode.py`).
+GOLDEN_SCHEDULES_PROMPT_SHA256_46FCDB11: dict[str, str] = {
+    "three_way_schedules:d3-mini:gold-01:AB": "2a566d0f39c9376cd735fb1d1095fd4c598b4e7d734b327553ac983b97f685f4",
+    "three_way_schedules:d3-mini:gold-01:BA": "d34e7b4cf96bdf20ae8143863544dc1aaa13092e1f54400b570db35e0f23c076",
+    "three_way_schedules:d3-mini:gold-02:AB": "2dc4cfdab810e648d3669409826923ed2cf62ae3f70cd4e102e87214fe01a89c",
+    "three_way_schedules:d3-mini:gold-02:BA": "a15aeaba4a79662b94a5291655fdb3d9298c6f3d66a8ad3f286595ea7e12861b",
+}
 
 _SECTION_4_ROW_RE = re.compile(
     r"^\|\s*(?P<part>[^|]+?)\s*\|\s*`(?P<shown>[^`]+)`\s*\|\s*(?P<gold>[^|]+?)\s*\|\s*$"
@@ -89,12 +103,13 @@ def _extract_section4_shown_strings(md_text: str) -> tuple[str, str, str, str]:
 
 
 def _find_external_addendum() -> Path | None:
-    rel = Path("rnd-local") / "projects" / "judge-bakeoff" / "PREREG-d5c-v2-analysis-addendum-2026-11-17-v2.md"
-    for base in (REPO_ROOT.parent, REPO_ROOT.parent.parent):
-        cand = base / rel
-        if cand.is_file():
-            return cand
-    return None
+    """Read the explicit addendum v2 path from `RDLAB_D5C_ADDENDUM_V2`; return `None` only when unset."""
+    raw = os.environ.get(ADDENDUM_V2_ENV_VAR)
+    if raw is None:
+        return None
+    stripped = raw.strip()
+    assert stripped, f"{ADDENDUM_V2_ENV_VAR} is set to an empty path; unset it to skip or set a valid file path"
+    return Path(stripped)
 
 
 def _prompt_parts(prompt: AssembledPrompt) -> dict[str, str]:
@@ -151,10 +166,15 @@ def test_schedules_wording_byte_pinned_to_section4_copy() -> None:
 
 
 def test_external_addendum_v2_matches_committed_copy_and_wording_byte_for_byte() -> None:
-    """Skips only when the external pre-registration addendum file is absent (e.g. CI)."""
+    """Live check against the external addendum when `RDLAB_D5C_ADDENDUM_V2` is set; skips only when unset."""
     addendum_path = _find_external_addendum()
     if addendum_path is None:
-        pytest.skip("external PREREG-d5c-v2-analysis-addendum-2026-11-17-v2.md not present outside repo")
+        pytest.skip(
+            f"{ADDENDUM_V2_ENV_VAR} is unset; committed §4 copy (addendum sha256 {ADDENDUM_V2_SHA256}) stays the pin"
+        )
+    assert addendum_path.is_file(), (
+        f"{ADDENDUM_V2_ENV_VAR}={addendum_path} does not exist or is not a regular file"
+    )
 
     raw_bytes = addendum_path.read_bytes()
     assert hashlib.sha256(raw_bytes).hexdigest() == ADDENDUM_V2_SHA256
@@ -167,6 +187,56 @@ def test_external_addendum_v2_matches_committed_copy_and_wording_byte_for_byte()
     words = three_way_wording.THREE_WAY_WORDINGS[ARM]["the_state"]
     assert words.instruction.replace("{claim}", "<claim>").encode("utf-8") == live_strings[0].encode("utf-8")
     assert [o.description.encode("utf-8") for o in words.options] == [s.encode("utf-8") for s in live_strings[1:]]
+
+
+def test_external_addendum_env_var_unset_missing_and_present_cases(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Test all three `RDLAB_D5C_ADDENDUM_V2` cases: unset (skips), set-but-missing (fails), set-and-present."""
+    # 1. Unset: skips with a clear reason and the committed §4 copy stays the pin.
+    with monkeypatch.context() as mp:
+        mp.delenv(ADDENDUM_V2_ENV_VAR, raising=False)
+        assert _find_external_addendum() is None
+        with pytest.raises(pytest.skip.Exception) as skip_exc:
+            test_external_addendum_v2_matches_committed_copy_and_wording_byte_for_byte()
+        assert ADDENDUM_V2_ENV_VAR in str(skip_exc.value)
+        assert ADDENDUM_V2_SHA256 in str(skip_exc.value)
+        test_schedules_wording_byte_pinned_to_section4_copy()
+
+    # 2. Set but missing (nonexistent file, directory, or empty string): fails loudly, never skips.
+    missing_path = tmp_path / "missing-addendum.md"
+    for bad_val in (str(missing_path), str(tmp_path), "   "):
+        with monkeypatch.context() as mp:
+            mp.setenv(ADDENDUM_V2_ENV_VAR, bad_val)
+            with pytest.raises(AssertionError):
+                test_external_addendum_v2_matches_committed_copy_and_wording_byte_for_byte()
+
+    # 3. Set and present: enforces ADDENDUM_V2_SHA256 and §4 byte equality against the committed copy.
+    synth = tmp_path / "addendum.md"
+    synth.write_text(f"# Addendum v2\n\n{ADDENDUM_SECTION_4_TABLE}\n", encoding="utf-8")
+    with monkeypatch.context() as mp:
+        mp.setenv(ADDENDUM_V2_ENV_VAR, str(synth))
+        assert _find_external_addendum() == synth
+        # With the real ADDENDUM_V2_SHA256 unpatched, a synthetic file fails the sha256 check.
+        with pytest.raises(AssertionError):
+            test_external_addendum_v2_matches_committed_copy_and_wording_byte_for_byte()
+        # With matching sha256 and matching §4 strings, the check passes.
+        mp.setitem(globals(), "ADDENDUM_V2_SHA256", hashlib.sha256(synth.read_bytes()).hexdigest())
+        test_external_addendum_v2_matches_committed_copy_and_wording_byte_for_byte()
+
+    tampered = tmp_path / "addendum-tampered.md"
+    tampered.write_text(
+        f"# Addendum v2\n\n{ADDENDUM_SECTION_4_TABLE.replace('makes the claim true.', 'makes the claim true!', 1)}\n",
+        encoding="utf-8",
+    )
+    with monkeypatch.context() as mp:
+        mp.setenv(ADDENDUM_V2_ENV_VAR, str(tampered))
+        mp.setitem(globals(), "ADDENDUM_V2_SHA256", hashlib.sha256(tampered.read_bytes()).hexdigest())
+        with pytest.raises(AssertionError):
+            test_external_addendum_v2_matches_committed_copy_and_wording_byte_for_byte()
+
+    assert ADDENDUM_V2_SHA256 == "80d55df2ed0d4c12cb34c16075b40c721cfc9ffda4c481ba9b80b1ec759b6e3c"
 
 
 def test_schedules_shown_strings_and_prompts_ban_unsupported_and_snake_case() -> None:
@@ -268,6 +338,25 @@ def test_pass_mode_wiring_syncs_wording_vm_judges_launcher_and_cli(capsys: pytes
         item = next(i for i in ITEMS if i.item_id == iid)
         got = build_judge_adapter(JUDGE_SPECS[jid]).assemble_prompt(item, order=order, pass_mode=mode).prompt_sha256
         assert got == expected_sha, key
+
+
+def test_schedules_prompts_match_46fcdb11_goldens_byte_for_byte() -> None:
+    """Pin the assembled d3-mini `three_way_schedules` prompts (`gold-01`, `gold-02` × `AB`, `BA`) to 46fcdb11."""
+    expected_keys = {f"{ARM}:d3-mini:{item.item_id}:{order}" for item in ITEMS[:2] for order in ORDERS}
+    assert set(GOLDEN_SCHEDULES_PROMPT_SHA256_46FCDB11) == expected_keys
+    assert len(set(GOLDEN_SCHEDULES_PROMPT_SHA256_46FCDB11.values())) == 4
+    for sha in GOLDEN_SCHEDULES_PROMPT_SHA256_46FCDB11.values():
+        assert len(sha) == 64 and all(c in "0123456789abcdef" for c in sha)
+        assert sha not in set(GOLDEN_PROMPT_SHA256_CD1AAF8.values())
+        assert sha not in set(GOLDEN_THREE_WAY_PROMPT_SHA256.values())
+
+    adapter = build_judge_adapter(JUDGE_SPECS["d3-mini"])
+    got: dict[str, str] = {}
+    for item in ITEMS[:2]:
+        for order in ORDERS:
+            prompt = adapter.assemble_prompt(item, order=order, pass_mode=ARM)
+            got[f"{ARM}:d3-mini:{item.item_id}:{order}"] = prompt.prompt_sha256
+    assert got == GOLDEN_SCHEDULES_PROMPT_SHA256_46FCDB11
 
 
 def test_only_d3_mini_supports_three_way_schedules() -> None:
