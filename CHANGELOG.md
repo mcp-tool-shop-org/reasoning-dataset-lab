@@ -13,6 +13,7 @@ All notable changes to `reasoning-dataset-lab` are documented here. The format i
 - **CI (`.github/workflows/ci.yml`):** only the "Audit the site's npm tree" step changes (`npm ci` is kept), and the push paths gain `scripts/**` and `.github/audit-allowlist.json`, which `.github/workflows/**` does not cover.
 - **Tests (`tests/test_check_audit_allowlist.py`):** pytest runs the script through `node` on synthetic v2 reports: clean and allowed-only pass; another advisory, another picomatch id, the allowed advisory plus any other, an unresolvable or advisory-less transitive entry, a changed range, a reported fix, an expired exception, a wrong package, a missing range, a malformed report or lockfile, and a non-zero npm exit with nothing flagged all fail.
 - **SECURITY.md:** one dated line on the exception.
+- **astro 7.4.1 -> 7.4.12 (`site/package-lock.json` only; `site/package.json` keeps `^7.3.1`):** fixes astro's own advisories 1246685 (GHSA-mh32-jxcr-mh9f, low) and 1246686 (GHSA-r3h5-4585-7x3w, moderate). picomatch made astro a high finding, so the gate counted them; `npm update astro` moved only what astro 7.4.12's dependency ranges pull in (vite 8.3.5 -> 8.3.8, rolldown 1.2.16 -> 1.2.19, shiki 4.5.0 -> 4.6.0, @astrojs/markdown-satteri 0.4.6 -> 0.4.10, among others).
 
 ### D5c schedules-wording arm (`three_way_schedules`)
 
