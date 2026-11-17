@@ -493,10 +493,19 @@ def _check_items_have_no_sealed_fields(
     items: Sequence[Mapping[str, Any]],
     extra_key_fields: AbstractSet[str] = frozenset(),
 ) -> None:
-    """Refuse any item carrying `key`, `target_line`, a known sealed field, or a non-public keys-file field (case-insensitively)."""
-    forbidden_lower = SEALED_KEY_FIELDS | ({str(f).lower() for f in extra_key_fields} - PUBLIC_ITEM_FIELDS)
+    """Refuse any item carrying `key`, `target_line`, a known sealed field, or a non-public keys-file field.
+
+    Keys-file field names are matched both exactly and case-insensitively. The exact check keeps the refusal
+    of a keys-file field whose lowercase form is a public field name (for example a keys field `Claim`
+    carried on an item): folding first and then removing public names would drop it.
+    """
+    extra = {str(f) for f in extra_key_fields}
+    forbidden_exact = SEALED_KEY_FIELDS | (extra - PUBLIC_ITEM_FIELDS)
+    forbidden_lower = SEALED_KEY_FIELDS | ({f.lower() for f in extra} - PUBLIC_ITEM_FIELDS)
     for it in items:
-        leaked = sorted(str(k) for k in it.keys() if str(k).lower() in forbidden_lower)
+        leaked = sorted(
+            str(k) for k in it.keys() if str(k) in forbidden_exact or str(k).lower() in forbidden_lower
+        )
         if leaked:
             item_id = str(it.get("id", ""))
             raise refused_error(

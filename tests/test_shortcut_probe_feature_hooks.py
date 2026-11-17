@@ -638,6 +638,8 @@ def test_whitespace_only_token_is_refused(bad_tokens: list[str]) -> None:
         ("custom_keys_only", "Custom_Keys_Only"),
         ("custom_keys_only", "CUSTOM_KEYS_ONLY"),
         ("Custom_Keys_Only", "custom_keys_only"),
+        # A keys field whose lowercase form is a public name stays refused when carried exactly (#113 review B1).
+        ("Claim", "Claim"),
     ],
 )
 def test_case_folded_keys_file_field_on_item_is_refused(
