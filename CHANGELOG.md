@@ -6,6 +6,11 @@ All notable changes to `reasoning-dataset-lab` are documented here. The format i
 
 ## Unreleased
 
+### Golden `prompt_sha256` pins and explicit addendum path for `three_way_schedules` (`#119` follow-ups `B5`, `C4`)
+
+- **Golden assembled-prompt hashes (`tests/test_colab_d5c_schedules_arm.py`, `#119` `B5`):** added `GOLDEN_SCHEDULES_PROMPT_SHA256_46FCDB11` pinning `prompt_sha256` for `three_way_schedules` × `d3-mini` × (`gold-01`, `gold-02`) × (`AB`, `BA`) computed via `build_judge_adapter(JUDGE_SPECS["d3-mini"]).assemble_prompt(..., pass_mode="three_way_schedules")` at `46fcdb11`, and added `test_schedules_prompts_match_46fcdb11_goldens_byte_for_byte` while leaving every existing `prompt_sha256` pin untouched.
+- **Explicit live-addendum path (`tests/test_colab_d5c_schedules_arm.py`, `#119` `C4`):** `_find_external_addendum` now reads `RDLAB_D5C_ADDENDUM_V2` rather than probing `REPO_ROOT.parent` / `REPO_ROOT.parent.parent` — skipping with a clear reason when unset (keeping the committed §4 copy pinned to `80d55df2…`), failing instead of skipping when set to a missing or non-file path, and verifying `sha256 == 80d55df2ed0d4c12cb34c16075b40c721cfc9ffda4c481ba9b80b1ec759b6e3c` plus byte-for-byte §4 equality when set and present, with unit tests covering all three cases.
+
 ### D5c schedules-wording arm (`three_way_schedules`)
 
 - **Wording table (`src/reasoning_dataset_lab/pilot_b/three_way_wording.py`):** added `"three_way_schedules"` to `PassMode`, `PASS_MODE_CHOICES`, `PASS_MODE_JUDGES` (`frozenset({"d3-mini"})`), and `THREE_WAY_WORDINGS` with only the `"the_state"` family, `question_id="verdict"`, and options `A`/`B`/`C` (`supported` / `contradicted` / `can't tell` mapped to `supported` / `unsupported` / `cannot_tell`) using the exact shown words from `PREREG-d5c-v2-analysis-addendum-2026-11-17-v2.md` §4 (`80d55df2`). Non-legacy `judge_done/<judge>.three_way_schedules.json` naming applies automatically.
