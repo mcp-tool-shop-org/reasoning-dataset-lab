@@ -226,7 +226,7 @@ def test_three_way_window_end_to_end_rows_mass_check_and_public_breakdown(
         assert done["rows_file"] == f"rows/{jid}.three_way.jsonl"
         assert done["pass_mode"] == "three_way"
         rows = [json.loads(ln) for ln in (rows_dir / f"{jid}.three_way.jsonl").read_text(encoding="utf-8").splitlines()]
-        assert len(rows) == done["row_count"] == 20
+        assert len(rows) == done["row_count"] == 24
         assert {r["pass_mode"] for r in rows} == {"three_way"}
         assert {r["raw_verdict"] for r in rows} <= set(CLASSES)
 
@@ -245,11 +245,11 @@ def test_three_way_window_end_to_end_rows_mass_check_and_public_breakdown(
     assert set(mass["judges"]) == set(THREE_WAY_JUDGES)
     assert mass["judges"]["d3-mini"]["check"] == "choice_probabilities"
     assert mass["judges"]["d3-mini"]["passed"] is True
-    assert mass["judges"]["d3-mini"]["calls_checked"] == 20
+    assert mass["judges"]["d3-mini"]["calls_checked"] == 24
     for jid in ("mu-judge", "nemotron-3-nano-4b"):
         rep = mass["judges"][jid]
         assert rep["check"] == "abc_option_mass"
-        assert rep["passed"] is True and rep["below_threshold_count"] == 0 and rep["calls_checked"] == 20
+        assert rep["passed"] is True and rep["below_threshold_count"] == 0 and rep["calls_checked"] == 24
         assert rep["min_option_mass"] >= 0.99 - 1e-6
     # The binary readout of the same dir has no binary rows.
     with pytest.raises(vm_judges.RefusalError) as exc:
@@ -277,23 +277,23 @@ def test_three_way_window_end_to_end_rows_mass_check_and_public_breakdown(
     assert {s["judge_id"] for s in report["three_way_pass"]} == set(THREE_WAY_JUDGES)
     for summary in report["three_way_pass"]:
         by_split = summary["breakdown_by_split"]
-        assert by_split["test"]["items_n"] == 7 and by_split["dev"]["items_n"] == 3
+        assert by_split["test"]["items_n"] == 9 and by_split["dev"]["items_n"] == 3
         pooled = by_split["pooled"]
-        assert pooled["items_n"] == 10 and pooled["calls_n"] == 20
-        assert sum(v["n"] for v in pooled["per_class_strict"].values()) == 10
+        assert pooled["items_n"] == 12 and pooled["calls_n"] == 24
+        assert sum(v["n"] for v in pooled["per_class_strict"].values()) == 12
         assert pooled["strict_correct"] == sum(v["strict_correct"] for v in pooled["per_class_strict"].values())
         assert pooled["strict_correct"] == by_split["test"]["strict_correct"] + by_split["dev"]["strict_correct"]
-        assert by_split["test"]["strict_correct"] == round(summary["three_way_accuracy"]["point"] * 7)
+        assert by_split["test"]["strict_correct"] == round(summary["three_way_accuracy"]["point"] * 9)
         assert set(pooled["strict_outcome_counts"]) == set(CLASSES)
         for cls, cols in pooled["strict_outcome_counts"].items():
             assert list(cols) == pooled["strict_outcome_columns"]
             assert sum(cols.values()) == pooled["per_class_strict"][cls]["n"]
             assert cols[f"strict_{cls}"] == pooled["per_class_strict"][cls]["strict_correct"]
-        assert 0 <= pooled["binary_collapsed_strict"]["correct"] <= 10
-        assert pooled["all_3_of_triad_strict"]["triads_n"] == 3
+        assert 0 <= pooled["binary_collapsed_strict"]["correct"] <= 12
+        assert pooled["all_3_of_triad_strict"]["triads_n"] == 4
         assert pooled["invalid_calls"]["count"] == 0
         margins = pooled["top2_margin"]
-        assert margins["calls_with_margin"] == 20
+        assert margins["calls_with_margin"] == 24
         assert margins["min"] <= margins["p10"] <= margins["median"]
     public_text = (score_dir / "public.json").read_text(encoding="utf-8")
     assert "item-00" not in public_text and "T10-D-synth" not in public_text and "claim statement" not in public_text

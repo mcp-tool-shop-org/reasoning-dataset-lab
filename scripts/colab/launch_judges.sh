@@ -3793,7 +3793,10 @@ PY
   part_check_err=""
   if ! part_check_err="$(check_part_manifest_beside_items "$ITEMS_FILE" 2>&1 >/dev/null)"; then
     printf '%s\n' "$part_check_err" >&2
-    if [[ "$part_check_err" == *"THREE_WAY_PARTIAL_UPLOAD"* ]]; then
+    if [[ "$part_check_err" == *"THREE_WAY_LIMIT_ITEMS_REFUSED"* ]]; then
+      RUN_FAILURE_CLASS="THREE_WAY_LIMIT_ITEMS_REFUSED"
+      RUN_WHY="THREE_WAY_LIMIT_ITEMS_REFUSED: three-way time-one item limit below part items_count refused before session open"
+    elif [[ "$part_check_err" == *"THREE_WAY_PARTIAL_UPLOAD"* ]]; then
       RUN_FAILURE_CLASS="THREE_WAY_PARTIAL_UPLOAD"
       RUN_WHY="THREE_WAY_PARTIAL_UPLOAD: partial or reordered three-way items upload refused before session open"
     else
