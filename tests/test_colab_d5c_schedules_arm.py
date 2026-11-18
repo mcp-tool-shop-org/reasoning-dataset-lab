@@ -204,13 +204,31 @@ def test_external_addendum_env_var_unset_missing_and_present_cases(
         assert ADDENDUM_V2_SHA256 in str(skip_exc.value)
         test_schedules_wording_byte_pinned_to_section4_copy()
 
+    def _call_live_check_no_skip(case_desc: str) -> None:
+        try:
+            test_external_addendum_v2_matches_committed_copy_and_wording_byte_for_byte()
+        except pytest.skip.Exception as exc:
+            pytest.fail(
+                f"{ADDENDUM_V2_ENV_VAR} ({case_desc}) skipped instead of running ({exc}); "
+                "when set it must never skip"
+            )
+
+    def _assert_live_check_fails_no_skip(case_desc: str) -> None:
+        try:
+            with pytest.raises(AssertionError):
+                test_external_addendum_v2_matches_committed_copy_and_wording_byte_for_byte()
+        except pytest.skip.Exception as exc:
+            pytest.fail(
+                f"{ADDENDUM_V2_ENV_VAR} ({case_desc}) skipped instead of failing ({exc}); "
+                "when set it must fail with AssertionError, never skip"
+            )
+
     # 2. Set but missing (nonexistent file, directory, or empty string): fails loudly, never skips.
     missing_path = tmp_path / "missing-addendum.md"
     for bad_val in (str(missing_path), str(tmp_path), "   "):
         with monkeypatch.context() as mp:
             mp.setenv(ADDENDUM_V2_ENV_VAR, bad_val)
-            with pytest.raises(AssertionError):
-                test_external_addendum_v2_matches_committed_copy_and_wording_byte_for_byte()
+            _assert_live_check_fails_no_skip(f"set to {bad_val!r}")
 
     # 3. Set and present: enforces ADDENDUM_V2_SHA256 and §4 byte equality against the committed copy.
     synth = tmp_path / "addendum.md"
@@ -219,11 +237,10 @@ def test_external_addendum_env_var_unset_missing_and_present_cases(
         mp.setenv(ADDENDUM_V2_ENV_VAR, str(synth))
         assert _find_external_addendum() == synth
         # With the real ADDENDUM_V2_SHA256 unpatched, a synthetic file fails the sha256 check.
-        with pytest.raises(AssertionError):
-            test_external_addendum_v2_matches_committed_copy_and_wording_byte_for_byte()
+        _assert_live_check_fails_no_skip("synthetic file with unpatched sha256")
         # With matching sha256 and matching §4 strings, the check passes.
         mp.setitem(globals(), "ADDENDUM_V2_SHA256", hashlib.sha256(synth.read_bytes()).hexdigest())
-        test_external_addendum_v2_matches_committed_copy_and_wording_byte_for_byte()
+        _call_live_check_no_skip("set and present with matching sha256")
 
     tampered = tmp_path / "addendum-tampered.md"
     tampered.write_text(
@@ -233,8 +250,7 @@ def test_external_addendum_env_var_unset_missing_and_present_cases(
     with monkeypatch.context() as mp:
         mp.setenv(ADDENDUM_V2_ENV_VAR, str(tampered))
         mp.setitem(globals(), "ADDENDUM_V2_SHA256", hashlib.sha256(tampered.read_bytes()).hexdigest())
-        with pytest.raises(AssertionError):
-            test_external_addendum_v2_matches_committed_copy_and_wording_byte_for_byte()
+        _assert_live_check_fails_no_skip("tampered §4 file")
 
     assert ADDENDUM_V2_SHA256 == "80d55df2ed0d4c12cb34c16075b40c721cfc9ffda4c481ba9b80b1ec759b6e3c"
 
@@ -357,6 +373,66 @@ def test_schedules_prompts_match_46fcdb11_goldens_byte_for_byte() -> None:
             prompt = adapter.assemble_prompt(item, order=order, pass_mode=ARM)
             got[f"{ARM}:d3-mini:{item.item_id}:{order}"] = prompt.prompt_sha256
     assert got == GOLDEN_SCHEDULES_PROMPT_SHA256_46FCDB11
+
+
+def test_schedules_stub_row_path_receipts_match_46fcdb11_goldens(tmp_path: Path) -> None:
+    """Run `bakeoff_judge`'s stub row path (`fake_transport=True`) for `three_way_schedules` on `gold-01`/`gold-02`
+    × `AB`/`BA`, tying `GOLDEN_SCHEDULES_PROMPT_SHA256_46FCDB11` to the `prompt_sha256` recorded in row and generation
+    receipts."""
+    items_path = tmp_path / "items.jsonl"
+    items_path.write_text(
+        "".join(
+            json.dumps({"id": item.item_id, "material": item.material, "claim": item.claim}) + "\n"
+            for item in ITEMS[:2]
+        ),
+        encoding="utf-8",
+    )
+    out_dir = tmp_path / "stub_row_out"
+    res = bakeoff_judge.run_bakeoff_judge(
+        part_dir=items_path,
+        output_dir=out_dir,
+        judge="d3-mini",
+        pass_mode=ARM,
+        fake_transport=True,
+        allow_remote_code_reviewed=JUDGE_SPECS["d3-mini"].revision,
+    )
+    assert res["status"] == "ok" and res["parsed_count"] == 4
+
+    rows_path = out_dir / "rows" / three_way_wording.rows_filename_for_pass("d3-mini", ARM)
+    gens_path = out_dir / bakeoff_judge.GENERATIONS_FILENAME
+    rows = [json.loads(ln) for ln in rows_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    gens = [json.loads(ln) for ln in gens_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    assert len(rows) == 4 and len(gens) == 4
+
+    got_row_shas = {
+        f"{r['pass_mode']}:{r['judge_id']}:{r['item_id']}:{r['order']}": r["prompt_sha256"]
+        for r in rows
+    }
+    got_gen_shas = {
+        f"{g['pass_mode']}:{g['arm']}:{g['item_id']}:{g['order']}": g["prompt_sha256"]
+        for g in gens
+    }
+    assert got_row_shas == GOLDEN_SCHEDULES_PROMPT_SHA256_46FCDB11
+    assert got_gen_shas == GOLDEN_SCHEDULES_PROMPT_SHA256_46FCDB11
+
+    gen_by_call = {(g["item_id"], g["order"]): g for g in gens}
+    for row in rows:
+        key = f"{ARM}:d3-mini:{row['item_id']}:{row['order']}"
+        gen = gen_by_call[(row["item_id"], row["order"])]
+        receipt_payload = {
+            "arm": gen["arm"],
+            "prompt": gen["prompt"],
+            "prompt_sha256": GOLDEN_SCHEDULES_PROMPT_SHA256_46FCDB11[key],
+            "model_digest": gen["model_digest"],
+            "tokens": gen["tokens"],
+            "top": gen["top"],
+            "done_reason": gen["done_reason"],
+        }
+        expected_receipt_sha = hashlib.sha256(
+            bakeoff_judge._canonical_json_line(receipt_payload).encode("utf-8")
+        ).hexdigest()
+        assert row["receipt_sha256"] == expected_receipt_sha
+        assert gen["receipt_sha256"] == expected_receipt_sha
 
 
 def test_only_d3_mini_supports_three_way_schedules() -> None:

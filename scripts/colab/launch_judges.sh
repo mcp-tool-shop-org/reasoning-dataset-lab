@@ -1218,7 +1218,7 @@ effective_part_dir() {
 }
 
 check_part_manifest_beside_items() {
-  "$PYTHON_BIN" - "$REPO_ROOT" "$1" "$MODE" "${VM_DRYRUN:-0}" "$(effective_part_dir "$1")" <<'PY'
+  "$PYTHON_BIN" - "$REPO_ROOT" "$1" "$MODE" "${VM_DRYRUN:-0}" "$(effective_part_dir "$1")" "$PASS_MODE" <<'PY'
 import sys
 from pathlib import Path
 
@@ -1227,6 +1227,7 @@ items_file = Path(sys.argv[2])
 mode = sys.argv[3]
 vm_dryrun = sys.argv[4] == "1"
 part_dir = Path(sys.argv[5])
+pass_mode = sys.argv[6].strip() if len(sys.argv) > 6 else ""
 sys.path.insert(0, str(repo_root / "src"))
 sys.path.insert(0, str(repo_root / "scripts" / "colab"))
 import vm_judges
@@ -1240,6 +1241,7 @@ try:
         part_dir=part_dir,
         part_items_file=part_dir / "items.jsonl",
         schema_errors=lambda doc: schema_check.validate(doc, "part"),
+        pass_mode=pass_mode or None,
     )
 except vm_judges.RefusalError as exc:
     sys.stderr.write(f"{exc}\n")
@@ -3788,9 +3790,19 @@ PY
     exit 2
   fi
   require_part_dir_for_mode
-  if ! check_part_manifest_beside_items "$ITEMS_FILE"; then
-    RUN_WHY="part files refused before session open: $(effective_part_dir "$ITEMS_FILE")/part.json"
+  part_check_err=""
+  if ! part_check_err="$(check_part_manifest_beside_items "$ITEMS_FILE" 2>&1 >/dev/null)"; then
+    printf '%s\n' "$part_check_err" >&2
+    if [[ "$part_check_err" == *"THREE_WAY_PARTIAL_UPLOAD"* ]]; then
+      RUN_FAILURE_CLASS="THREE_WAY_PARTIAL_UPLOAD"
+      RUN_WHY="THREE_WAY_PARTIAL_UPLOAD: partial or reordered three-way items upload refused before session open"
+    else
+      RUN_WHY="part files refused before session open: $(effective_part_dir "$ITEMS_FILE")/part.json"
+    fi
     exit 2
+  fi
+  if [[ -n "$part_check_err" ]]; then
+    printf '%s\n' "$part_check_err" >&2
   fi
 fi
 
@@ -3839,7 +3851,7 @@ fi
 mkdir -p "$STAGE_DIR"
 # Part files left in the stage dir by an earlier, interrupted launch must never be uploaded for this one.
 rm -f "$STAGED_PART_JSON_FILE" "$STAGED_PART_CHECKSUMS_FILE" "$STAGED_P0A_PART_JSON_FILE" "$STAGED_P0A_CHECKSUMS_FILE" "$STAGED_BINDING_FILE" "$RIG_BINDING_FILE"
-if ! "$PYTHON_BIN" - "$REPO_ROOT" "$ITEMS_FILE" "$STAGED_ITEMS_FILE" "$RECEIPTS_DIR" "$RECEIPTS_TAR" "$REPO_TAR" "$STAGED_DEVICE_PY" "$GOLDEN_ANCHOR_MANIFEST" "$ANCHOR_ITEMS_FILE" "$STAGED_ANCHOR_ITEMS_FILE" "$P0A_ITEMS_FILE" "$STAGED_P0A_ITEMS_FILE" "$COUNTED_ITEMS_FILE" "$COUNTED_MANIFEST_FILE" "$STAGED_BINDING_FILE" "$MODE" "${VM_DRYRUN:-0}" "$STAGED_PART_JSON_FILE" "$STAGED_PART_CHECKSUMS_FILE" "$(effective_part_dir "$ITEMS_FILE")" "$P0A_PART_DIR" "$STAGED_P0A_PART_JSON_FILE" "$STAGED_P0A_CHECKSUMS_FILE" "$VM_SCRIPT" <<'PY'
+if ! "$PYTHON_BIN" - "$REPO_ROOT" "$ITEMS_FILE" "$STAGED_ITEMS_FILE" "$RECEIPTS_DIR" "$RECEIPTS_TAR" "$REPO_TAR" "$STAGED_DEVICE_PY" "$GOLDEN_ANCHOR_MANIFEST" "$ANCHOR_ITEMS_FILE" "$STAGED_ANCHOR_ITEMS_FILE" "$P0A_ITEMS_FILE" "$STAGED_P0A_ITEMS_FILE" "$COUNTED_ITEMS_FILE" "$COUNTED_MANIFEST_FILE" "$STAGED_BINDING_FILE" "$MODE" "${VM_DRYRUN:-0}" "$STAGED_PART_JSON_FILE" "$STAGED_PART_CHECKSUMS_FILE" "$(effective_part_dir "$ITEMS_FILE")" "$P0A_PART_DIR" "$STAGED_P0A_PART_JSON_FILE" "$STAGED_P0A_CHECKSUMS_FILE" "$VM_SCRIPT" "$PASS_MODE" <<'PY'
 import datetime
 import json
 import shutil
@@ -3871,6 +3883,7 @@ raw_p0a_part_dir = sys.argv[21].strip() if len(sys.argv) > 21 else ""
 raw_p0a_part_json_dst = sys.argv[22].strip() if len(sys.argv) > 22 else ""
 raw_p0a_checksums_dst = sys.argv[23].strip() if len(sys.argv) > 23 else ""
 raw_sent_vm_script = sys.argv[24].strip() if len(sys.argv) > 24 else ""
+raw_pass_mode = sys.argv[25].strip() if len(sys.argv) > 25 else ""
 
 sys.path.insert(0, str(repo_root / "src"))
 sys.path.insert(0, str(repo_root / "scripts" / "colab"))
@@ -3902,6 +3915,7 @@ if stage_mode not in ("lock-check", "lock-check-stub") and raw_part_json_dst and
         part_dir=part_src_dir,
         part_items_file=part_src_dir / "items.jsonl",
         schema_errors=lambda doc: schema_check.validate(doc, "part"),
+        pass_mode=raw_pass_mode or None,
     )
     if identity is not None:
         shutil.copyfile(part_src_dir / vm_judges.PART_JSON_FILENAME, Path(raw_part_json_dst))

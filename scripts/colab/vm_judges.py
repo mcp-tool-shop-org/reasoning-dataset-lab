@@ -6434,22 +6434,36 @@ def bind_items_to_part(
     mode: str,
     part_items_file: Path | None = None,
     whole_part: bool | None = None,
+    dryrun: bool = False,
+    pass_mode: str | None = None,
+    judge_pass_modes: str | Sequence[tuple[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Bind the uploaded items file to the part identity from `read_part_identity`; refuse
     `PART_MANIFEST_ITEMS_MISMATCH` naming the field that disagrees (never printing item text).
 
     Always (launcher and VM): the uploaded ids are unique; a counted window (`FULL_PART_WINDOW_MODES`) uploads exactly
-    `items_count` rows, any other window at most `items_count`.
+    `items_count` rows, any other window at most `items_count`. A real `--time-one` window whose plan contains any
+    three-way pass (`requires_three_way_whole_part_upload`) also requires the whole part in part order, refusing
+    `THREE_WAY_PARTIAL_UPLOAD` on a partial or reordered upload before any `colab` call (explicit `--stub` and
+    `dryrun` plumbing runs stay exempt, and binary-only `--time-one` windows are unaffected).
     With `part_items_file` (the launcher, which has the part directory): the part's `items.jsonl` must hash to the
     SHA-256 in `checksums.txt` and hold `items_count` rows; every uploaded row must be the projection of the part row
     with the same id (`id`, `material` and `claim` equal, compared field by field, so the projection is checked, not
-    trusted); a counted window must upload every part item in the part's order, a time-one window any subset.
+    trusted); a counted window (and a real three-way `--time-one` window) must upload every part item in the part's
+    order, a binary-only `--time-one` window any subset.
     The VM receives only the projected file, so it checks the first rule set and the identity, not the projection.
     `whole_part` overrides the mode's rule (a lock-check window's P0a input is the whole pilot part, in order).
     The result records `checked_by` ("launcher" with `part_items_file`, else "vm") and the uploaded file's SHA-256.
     """
     norm_mode = str(mode or "").strip().lower()
     full_part = norm_mode in FULL_PART_WINDOW_MODES if whole_part is None else bool(whole_part)
+    tw_whole_part, tw_modes = (
+        (False, ())
+        if whole_part is not None
+        else requires_three_way_whole_part_upload(
+            mode, dryrun=dryrun, pass_mode=pass_mode, judge_pass_modes=judge_pass_modes
+        )
+    )
     want_count = int(identity["items_count"])
     rows = _read_item_rows_for_binding(items_file, label=f"Items file {Path(items_file).name}")
     ids = [str(r["id"]) for r in rows]
@@ -6474,12 +6488,21 @@ def bind_items_to_part(
         "checked_by": "vm" if part_items_file is None else "launcher",
         "uploaded_items": len(ids),
         "uploaded_items_sha256": sha256_file(Path(items_file)),
-        "rule": "whole_part_in_order" if full_part else "subset_of_part",
+        "rule": "whole_part_in_order" if (full_part or tw_whole_part) else "subset_of_part",
         # Never a default false: the VM, which has only the projection, did not run the projection check (null, with
         # the reason); the launcher's path below sets true only after the check passes.
         "projection_checked": None,
     }
     if part_items_file is None:
+        if tw_whole_part and len(ids) != want_count:
+            raise RefusalError(
+                THREE_WAY_PARTIAL_UPLOAD,
+                f"Items file {Path(items_file).name} uploads {len(ids)} of {want_count} item(s) from part "
+                f"{identity['part_id']!r} under three-way pass mode(s) {', '.join(tw_modes)}; a real --time-one "
+                "window with any three-way pass requires the whole part in part order before spending units (use "
+                "--stub for the 10-item probe); field: items_count",
+                "Upload the full projected part in part order, or run with --stub for a partial probe.",
+            )
         binding["projection_not_checked_reason"] = (
             "the VM has only the uploaded projection, not the part's items.jsonl; the rig's check is carried in when "
             "its binding record is uploaded (attach_launcher_binding)"
@@ -6518,12 +6541,37 @@ def bind_items_to_part(
                 "PART_MANIFEST_ITEMS_MISMATCH",
                 f"{differing} uploaded item(s) differ from the part's item with the same id; field: {fname}",
             )
-    if full_part and ids != [str(r["id"]) for r in part_rows]:
+    part_ids = [str(r["id"]) for r in part_rows]
+    if full_part and ids != part_ids:
         raise RefusalError(
             "PART_MANIFEST_ITEMS_MISMATCH",
             f"Items file {Path(items_file).name} holds the part's items in a different order (mode {mode!r} needs "
             "the whole part in the part's order); field: id order",
         )
+    if tw_whole_part:
+        modes_label = ", ".join(tw_modes)
+        if len(ids) != len(part_ids):
+            raise RefusalError(
+                THREE_WAY_PARTIAL_UPLOAD,
+                f"Items file {Path(items_file).name} uploads {len(ids)} of {len(part_ids)} item(s) from part "
+                f"{identity['part_id']!r} under three-way pass mode(s) {modes_label}; a real --time-one window "
+                "with any three-way pass requires the whole part in part order before spending units (use --stub "
+                "for the 10-item probe); field: items_count",
+                "Upload the full projected part in part order, or run with --stub for a partial probe.",
+            )
+        if ids != part_ids:
+            first_mismatch = next(
+                (idx + 1 for idx, (got_id, want_id) in enumerate(zip(ids, part_ids)) if got_id != want_id),
+                1,
+            )
+            raise RefusalError(
+                THREE_WAY_PARTIAL_UPLOAD,
+                f"Items file {Path(items_file).name} uploads all {len(part_ids)} item(s) of part "
+                f"{identity['part_id']!r} out of part order (first mismatch at 1-based row {first_mismatch}) "
+                f"under three-way pass mode(s) {modes_label}; a real --time-one window with any three-way pass "
+                "requires the whole part in part order before spending units; field: id order",
+                "Re-project the part with `rdlab bakeoff-project` so items.jsonl preserves exact part order.",
+            )
     binding["projection_checked"] = True
     binding["part_items_jsonl_sha256"] = part_items_sha
     return binding
@@ -6547,6 +6595,8 @@ def preflight_part_manifest(
     part_dir: Path | None = None,
     part_items_file: Path | None = None,
     schema_errors: Any = None,
+    pass_mode: str | None = None,
+    judge_pass_modes: str | Sequence[tuple[str, str]] | None = None,
 ) -> dict[str, Any] | None:
     """Check the part's `part.json` + `checksums.txt` and bind the items file to them, before any paid step.
 
@@ -6573,7 +6623,13 @@ def preflight_part_manifest(
         check_upload_path_allowed(eff_part_dir / name)
     identity = read_part_identity(eff_part_dir, mode=mode, dryrun=dryrun, schema_errors=schema_errors)
     identity["binding"] = bind_items_to_part(
-        eff_items_jsonl, identity, mode=mode, part_items_file=part_items_file
+        eff_items_jsonl,
+        identity,
+        mode=mode,
+        part_items_file=part_items_file,
+        dryrun=dryrun,
+        pass_mode=pass_mode,
+        judge_pass_modes=judge_pass_modes,
     )
     if part_items_file is not None:
         verify_part_files_against_checksums(eff_part_dir)
@@ -10583,6 +10639,10 @@ def _stdlib_swap_material_facts_order(material: str, order: str) -> str:
     )
 
 
+# Binary-only stdlib prompt builder. Its only two callers are `build_shard_manifest_stdlib` (the golden-anchor / shard
+# manifest `prompt_sha256_by_call`) and `run_boot_gatekeeper` (the boot-gatekeeper synthetic prompts). Three-way passes
+# never call this function: they build and hash their prompts inside `bakeoff_judge` (the child process,
+# `JUDGE_RUNNER_MODULE = "reasoning_dataset_lab.pilot_b.bakeoff_judge"`). Do not wire any three-way pass here.
 def _stdlib_assemble_prompt_text(
     judge_id: str,
     material: str,
@@ -16276,6 +16336,62 @@ def plan_judge_ids(plan: Sequence[tuple[str, str]]) -> tuple[str, ...]:
         if jid not in out:
             out.append(jid)
     return tuple(out)
+
+
+THREE_WAY_PARTIAL_UPLOAD = "THREE_WAY_PARTIAL_UPLOAD"
+
+
+def active_three_way_modes_in_plan(
+    raw_pass_mode: str | None = None,
+    raw_judge_pass_modes: str | Sequence[tuple[str, str]] | None = None,
+) -> tuple[str, ...]:
+    """Return the distinct three-way pass modes active under `(raw_pass_mode, raw_judge_pass_modes)` in first-seen
+    order, or `()` for a binary-only plan.
+
+    Reads `PASS_MODE_ENV_VAR` when `raw_pass_mode is None`, and `JUDGE_PASS_MODES_ENV_VAR` when
+    `raw_judge_pass_modes is None` and the effective pass mode is empty or `per_judge`."""
+    pm = (os.environ.get(PASS_MODE_ENV_VAR) or "" if raw_pass_mode is None else str(raw_pass_mode)).strip()
+    if raw_judge_pass_modes is not None:
+        jpm: str | Sequence[tuple[str, str]] | None = raw_judge_pass_modes
+    elif pm in ("", PER_JUDGE_PASS_MODE):
+        jpm = os.environ.get(JUDGE_PASS_MODES_ENV_VAR)
+    else:
+        jpm = None
+    found: list[str] = []
+
+    def _add(m: str) -> None:
+        if m in THREE_WAY_PASS_MODES and m not in found:
+            found.append(m)
+
+    if isinstance(jpm, str):
+        if jpm.strip():
+            for entry in jpm.split(","):
+                _jid, sep, emode = entry.strip().partition(":")
+                _add(emode.strip() if sep else entry.strip())
+    elif jpm is not None:
+        for item in jpm:
+            if isinstance(item, Sequence) and not isinstance(item, (str, bytes)) and len(item) >= 2:
+                _add(str(item[1]).strip())
+    if pm and pm != PER_JUDGE_PASS_MODE:
+        _add(pm)
+    return tuple(found)
+
+
+def requires_three_way_whole_part_upload(
+    mode: str | None,
+    *,
+    dryrun: bool = False,
+    pass_mode: str | None = None,
+    judge_pass_modes: str | Sequence[tuple[str, str]] | None = None,
+) -> tuple[bool, tuple[str, ...]]:
+    """Return `(True, active_three_way_modes)` when a `--time-one` upload must be the whole part in part order:
+    real `time-one` / `time_one` (`is_real_mode(mode, dryrun=dryrun)`, exempting explicit `--stub` and `dryrun` /
+    `VM_DRYRUN=1` plumbing runs) whose plan contains any three-way pass mode."""
+    norm_mode = str(mode or "").strip().lower()
+    if norm_mode not in ("time-one", "time_one") or not is_real_mode(mode, dryrun=dryrun):
+        return False, ()
+    tw_modes = active_three_way_modes_in_plan(pass_mode, judge_pass_modes)
+    return bool(tw_modes), tw_modes
 
 
 def validate_pass_mode(
