@@ -6061,8 +6061,10 @@ PART_STAGED_FILENAMES: tuple[str, str] = (PART_JSON_FILENAME, PART_CHECKSUMS_FIL
 LOCK_CHECK_WINDOW_MODES: frozenset[str] = frozenset(
     {"lock-check", "lock_check", "lock-check-stub", "lock_check_stub"}
 )
-# Windows whose uploaded items file must be the whole part (every item, in the part's order). Every other window that
-# carries a part (time-one) may upload a subset; the VM cuts its own window (the first `TIME_ONE_ITEMS_LIMIT` rows).
+# Mode-level windows whose uploaded items file must always be the whole part (every item, in the part's order). For
+# `--time-one`, only a binary-only window may upload a subset and have the VM cut its own window (the first
+# `TIME_ONE_ITEMS_LIMIT` rows); a real `--time-one` window whose plan contains any three-way pass also requires the
+# whole part in part order (`requires_three_way_whole_part_upload`) and scores the whole part (`limit_items = None`).
 FULL_PART_WINDOW_MODES: frozenset[str] = frozenset({"counted", "counted-stub", "counted_stub"})
 # The burned pilot part (its sealed part directory on the rig), identified by content, never by a label: the SHA-256
 # of its `part.json` (which carries its seal, `frozen_mac`) and of its `items.jsonl`, as its `checksums.txt` records
@@ -6437,6 +6439,8 @@ def bind_items_to_part(
     dryrun: bool = False,
     pass_mode: str | None = None,
     judge_pass_modes: str | Sequence[tuple[str, str]] | None = None,
+    raw_limit_items: str | int | None = None,
+    effective_limit_items: int | None = None,
 ) -> dict[str, Any]:
     """Bind the uploaded items file to the part identity from `read_part_identity`; refuse
     `PART_MANIFEST_ITEMS_MISMATCH` naming the field that disagrees (never printing item text).
@@ -6444,8 +6448,9 @@ def bind_items_to_part(
     Always (launcher and VM): the uploaded ids are unique; a counted window (`FULL_PART_WINDOW_MODES`) uploads exactly
     `items_count` rows, any other window at most `items_count`. A real `--time-one` window whose plan contains any
     three-way pass (`requires_three_way_whole_part_upload`) also requires the whole part in part order, refusing
-    `THREE_WAY_PARTIAL_UPLOAD` on a partial or reordered upload before any `colab` call (explicit `--stub` and
-    `dryrun` plumbing runs stay exempt, and binary-only `--time-one` windows are unaffected).
+    `THREE_WAY_PARTIAL_UPLOAD` on a partial or reordered upload and `THREE_WAY_LIMIT_ITEMS_REFUSED` when an effective
+    item limit (including `RDLAB_LIMIT_ITEMS`) is set below `items_count` before any `colab` call (explicit `--stub`
+    and `dryrun` plumbing runs stay exempt, and binary-only `--time-one` windows are unaffected).
     With `part_items_file` (the launcher, which has the part directory): the part's `items.jsonl` must hash to the
     SHA-256 in `checksums.txt` and hold `items_count` rows; every uploaded row must be the projection of the part row
     with the same id (`id`, `material` and `claim` equal, compared field by field, so the projection is checked, not
@@ -6502,6 +6507,13 @@ def bind_items_to_part(
                 "window with any three-way pass requires the whole part in part order before spending units (use "
                 "--stub for the 10-item probe); field: items_count",
                 "Upload the full projected part in part order, or run with --stub for a partial probe.",
+            )
+        if tw_whole_part:
+            check_three_way_whole_part_item_limit(
+                identity,
+                tw_modes=tw_modes,
+                raw_limit_items=raw_limit_items,
+                effective_limit_items=effective_limit_items,
             )
         binding["projection_not_checked_reason"] = (
             "the VM has only the uploaded projection, not the part's items.jsonl; the rig's check is carried in when "
@@ -6572,6 +6584,12 @@ def bind_items_to_part(
                 "requires the whole part in part order before spending units; field: id order",
                 "Re-project the part with `rdlab bakeoff-project` so items.jsonl preserves exact part order.",
             )
+        check_three_way_whole_part_item_limit(
+            identity,
+            tw_modes=tw_modes,
+            raw_limit_items=raw_limit_items,
+            effective_limit_items=effective_limit_items,
+        )
     binding["projection_checked"] = True
     binding["part_items_jsonl_sha256"] = part_items_sha
     return binding
@@ -6597,6 +6615,8 @@ def preflight_part_manifest(
     schema_errors: Any = None,
     pass_mode: str | None = None,
     judge_pass_modes: str | Sequence[tuple[str, str]] | None = None,
+    raw_limit_items: str | int | None = None,
+    effective_limit_items: int | None = None,
 ) -> dict[str, Any] | None:
     """Check the part's `part.json` + `checksums.txt` and bind the items file to them, before any paid step.
 
@@ -6630,6 +6650,8 @@ def preflight_part_manifest(
         dryrun=dryrun,
         pass_mode=pass_mode,
         judge_pass_modes=judge_pass_modes,
+        raw_limit_items=raw_limit_items,
+        effective_limit_items=effective_limit_items,
     )
     if part_items_file is not None:
         verify_part_files_against_checksums(eff_part_dir)
@@ -6827,6 +6849,8 @@ def _ensure_part_manifest_for_run(
     *,
     mode: str,
     dryrun: bool = False,
+    pass_mode: str | None = None,
+    effective_limit_items: int | None = None,
 ) -> tuple[dict[str, Any], bool]:
     """Read the staged part identity beside the items (`part_dir` is the items directory or the items file) or refuse
     with `PART_MANIFEST_MISSING` in real modes; the pipeline body's second line behind VM `main`'s
@@ -6836,7 +6860,14 @@ def _ensure_part_manifest_for_run(
     nothing is written. Returns `(identity, was_synthesized)`.
     """
     items_jsonl = Path(part_dir) / "items.jsonl" if Path(part_dir).is_dir() else Path(part_dir)
-    identity = preflight_part_manifest(items_jsonl, mode=mode, dryrun=dryrun, part_dir=items_jsonl.parent)
+    identity = preflight_part_manifest(
+        items_jsonl,
+        mode=mode,
+        dryrun=dryrun,
+        part_dir=items_jsonl.parent,
+        pass_mode=pass_mode,
+        effective_limit_items=effective_limit_items,
+    )
     if identity is not None:
         return identity, False
     if is_real_mode(mode, dryrun=dryrun):
@@ -7422,7 +7453,7 @@ def run_judges_pipeline(
     session_fingerprint_sha256: str | None = None,
     replacement_session: bool = False,
     lock_check_phase: str | None = None,
-    pass_mode: str = DEFAULT_PASS_MODE,
+    pass_mode: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Run all 5 judges (or `only_judge_ids`) as separate child subprocesses in their synced venvs and compute readouts."""
     anchor_stage_dir = run_dir.parent / f".{run_dir.name}_anchor_part"
@@ -7503,7 +7534,7 @@ def _run_judges_pipeline_body(
     session_fingerprint_sha256: str | None = None,
     replacement_session: bool = False,
     lock_check_phase: str | None = None,
-    pass_mode: str = DEFAULT_PASS_MODE,
+    pass_mode: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     _ensure_repo_imports(repo_root)
     eff_repo_dir = (repo_root or resolve_repo_dir()).resolve()
@@ -7581,10 +7612,13 @@ def _run_judges_pipeline_body(
         if (anchor_stage_dir / "items.jsonl").resolve() != src_anchor_jsonl.resolve():
             shutil.copyfile(src_anchor_jsonl, anchor_stage_dir / "items.jsonl")
         part_dir = anchor_stage_dir
+    tw_whole_part_pipe, _ = requires_three_way_whole_part_upload(norm_mode, pass_mode=pass_mode)
     if real_load_on_cpu:
         limit_items: int | None = 2
-    elif explicit_limit_env and explicit_limit_env.isdigit():
+    elif explicit_limit_env and explicit_limit_env.isascii() and explicit_limit_env.isdigit():
         limit_items = int(explicit_limit_env)
+    elif tw_whole_part_pipe:
+        limit_items = None
     elif norm_mode in ("time-one", "time_one"):
         limit_items = TIME_ONE_ITEMS_LIMIT
     elif norm_mode in (
@@ -7624,6 +7658,8 @@ def _run_judges_pipeline_body(
             part_dir,
             mode=mode,
             dryrun=dryrun,
+            pass_mode=pass_mode,
+            effective_limit_items=limit_items,
         )
     selected_specs = _select_judge_specs(
         only_judge_ids if only_judge_ids is not None else judge_order
@@ -14714,6 +14750,7 @@ def main(argv: list[str] | None = None) -> int:
     # Whether the VM-side script check ran (#108 fix 1): passed, refused, not_sent (no hash forwarded); None if not reached.
     kit_vm_script_check: str | None = None
     main_pass_mode: str | None = None
+    main_part_identity: dict[str, Any] | None = None
     anchor_items_sha256: str | None = None
     p0a_items_sha256: str | None = None
     counted_source_sha256: str | None = None
@@ -14878,7 +14915,9 @@ def main(argv: list[str] | None = None) -> int:
                     check_upload_path_allowed(staged_part_file)
                     if staged_part_file not in uploaded_item_files:
                         uploaded_item_files.append(staged_part_file)
-            preflight_part_manifest(args.items_file, mode=args.mode, dryrun=dryrun)
+            main_part_identity = preflight_part_manifest(
+                args.items_file, mode=args.mode, dryrun=dryrun, pass_mode=main_pass_mode
+            )
 
         cgroup_chain_at_start = read_cgroup_limit_chain()
 
@@ -14947,29 +14986,46 @@ def main(argv: list[str] | None = None) -> int:
         current_step = "ensure_shard_manifest"
         _, parsed_main_shard_n = parse_shard_spec(raw_shard_arg)
         env_main_limit = os.environ.get("RDLAB_LIMIT_ITEMS", "").strip()
+        tw_whole_part_main, _ = requires_three_way_whole_part_upload(
+            args.mode, pass_mode=main_pass_mode
+        )
         main_limit_items: int | None = (
             int(env_main_limit)
-            if env_main_limit.isdigit() and int(env_main_limit) > 0
+            if env_main_limit.isascii() and env_main_limit.isdigit() and int(env_main_limit) > 0
             else (
                 2
                 if until_step == "first_load"
                 else (
-                    TIME_ONE_ITEMS_LIMIT
-                    if args.mode == "time-one"
+                    None
+                    if tw_whole_part_main
                     else (
-                        None
-                        if args.mode
-                        in (
-                            "counted",
-                            "counted-stub",
-                            "lock-check",
-                            "lock-check-stub",
+                        TIME_ONE_ITEMS_LIMIT
+                        if args.mode == "time-one"
+                        else (
+                            None
+                            if args.mode
+                            in (
+                                "counted",
+                                "counted-stub",
+                                "lock-check",
+                                "lock-check-stub",
+                            )
+                            else (None if parsed_main_shard_n > 1 else 2)
                         )
-                        else (None if parsed_main_shard_n > 1 else 2)
                     )
                 )
             )
         )
+        if main_part_identity is not None:
+            tw_real_main, tw_real_modes_main = requires_three_way_whole_part_upload(
+                args.mode, dryrun=dryrun, pass_mode=main_pass_mode
+            )
+            if tw_real_main:
+                check_three_way_whole_part_item_limit(
+                    main_part_identity,
+                    tw_modes=tw_real_modes_main,
+                    effective_limit_items=main_limit_items,
+                )
         manifest_items_file = (
             (anchor_items_arg / "items.jsonl" if anchor_items_arg.is_dir() else anchor_items_arg)
             if (is_lock_check_main and anchor_items_arg is not None)
@@ -16339,6 +16395,55 @@ def plan_judge_ids(plan: Sequence[tuple[str, str]]) -> tuple[str, ...]:
 
 
 THREE_WAY_PARTIAL_UPLOAD = "THREE_WAY_PARTIAL_UPLOAD"
+THREE_WAY_LIMIT_ITEMS_REFUSED = "THREE_WAY_LIMIT_ITEMS_REFUSED"
+
+
+def check_three_way_whole_part_item_limit(
+    identity: Mapping[str, Any],
+    *,
+    tw_modes: Sequence[str],
+    raw_limit_items: str | int | None = None,
+    effective_limit_items: int | None = None,
+) -> None:
+    """Refuse `THREE_WAY_LIMIT_ITEMS_REFUSED` when an explicit `RDLAB_LIMIT_ITEMS` or computed `effective_limit_items`
+    is set below `identity['items_count']` under a real three-way `--time-one` plan."""
+    want_count = int(identity["items_count"])
+    modes_label = ", ".join(str(m) for m in tw_modes)
+    hint = (
+        f"Unset RDLAB_LIMIT_ITEMS (or set RDLAB_LIMIT_ITEMS={want_count}), "
+        "or run with --stub for a partial probe."
+    )
+    env_raw = os.environ.get("RDLAB_LIMIT_ITEMS") if raw_limit_items is None else str(raw_limit_items)
+    if env_raw is not None and env_raw.strip() != "":
+        cleaned = env_raw.strip()
+        if not (cleaned.isascii() and cleaned.isdigit()):
+            raise RefusalError(
+                THREE_WAY_LIMIT_ITEMS_REFUSED,
+                f"RDLAB_LIMIT_ITEMS is not a non-negative integer for part {identity['part_id']!r} "
+                f"(items_count={want_count}) under three-way pass mode(s) {modes_label}; a real --time-one "
+                "window with any three-way pass must score all part items before spending units (use --stub "
+                "for a partial probe); field: RDLAB_LIMIT_ITEMS",
+                hint,
+            )
+        parsed_limit = int(cleaned)
+        if parsed_limit < want_count:
+            raise RefusalError(
+                THREE_WAY_LIMIT_ITEMS_REFUSED,
+                f"RDLAB_LIMIT_ITEMS={parsed_limit} is below items_count={want_count} of part "
+                f"{identity['part_id']!r} under three-way pass mode(s) {modes_label}; a real --time-one "
+                f"window with any three-way pass must score all {want_count} item(s) before spending units "
+                "(use --stub for a partial probe); field: RDLAB_LIMIT_ITEMS",
+                hint,
+            )
+    if effective_limit_items is not None and int(effective_limit_items) < want_count:
+        raise RefusalError(
+            THREE_WAY_LIMIT_ITEMS_REFUSED,
+            f"Effective item limit ({int(effective_limit_items)}) is below items_count={want_count} of part "
+            f"{identity['part_id']!r} under three-way pass mode(s) {modes_label}; a real --time-one window "
+            f"with any three-way pass must score all {want_count} item(s) before spending units (use --stub "
+            "for a partial probe); field: limit_items",
+            hint,
+        )
 
 
 def active_three_way_modes_in_plan(

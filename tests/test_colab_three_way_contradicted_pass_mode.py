@@ -660,5 +660,5 @@ def test_arm_window_end_to_end_rows_mass_check_and_score(tmp_path: Path, monkeyp
     assert {s["judge_id"] for s in report["three_way_pass"]} == set(ARM_JUDGES)
     assert {s["pass_mode"] for s in report["three_way_pass"]} == {ARM}
     for summary in report["three_way_pass"]:
-        assert summary["breakdown_by_split"]["pooled"]["items_n"] == 10
+        assert summary["breakdown_by_split"]["pooled"]["items_n"] == 12
         assert summary["breakdown_by_split"]["pooled"]["invalid_calls"]["count"] == 0

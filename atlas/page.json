@@ -33,63 +33,24 @@
   ],
   "changes": {
     "fileCounts": {
-      "added": 5,
+      "added": 1,
       "changed": 8,
       "moved": 0,
-      "parts": 5,
+      "parts": 4,
       "removed": 0
     },
     "items": [
       {
-        "kind": "door",
-        "sentence": "ci's push trigger now also names `.github/audit-allowlist.json` and `scripts/**`.",
-        "subjects": [
-          ".github/workflows/ci.yml"
-        ]
-      },
-      {
-        "kind": "door",
-        "sentence": "ci now also runs scripts/check-audit-allowlist.mjs.",
-        "subjects": [
-          ".github/workflows/ci.yml",
-          "scripts/check-audit-allowlist.mjs"
-        ]
-      },
-      {
-        "kind": "landing",
-        "sentence": "site/audit-report.json is now written by .github/workflows/ci.yml.",
-        "subjects": [
-          "site/audit-report.json",
-          ".github/workflows/ci.yml"
-        ]
-      },
-      {
-        "kind": "landing",
-        "sentence": ".github/audit-allowlist.json is now read by .github/workflows/ci.yml.",
-        "subjects": [
-          ".github/audit-allowlist.json",
-          ".github/workflows/ci.yml"
-        ]
-      },
-      {
-        "kind": "landing",
-        "sentence": "site/package-lock.json is now read by .github/workflows/ci.yml.",
-        "subjects": [
-          "site/package-lock.json",
-          ".github/workflows/ci.yml"
-        ]
-      },
-      {
         "kind": "counts",
-        "sentence": "5 files added and 8 changed content, across 5 parts.",
+        "sentence": "Nothing structural changed since 2026-11-17; 1 file added and 8 changed content.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "3efb2e2e8ad89717a78d7627005ca926b3ad2820",
-      "generatedAt": "2026-11-17T04:52:59.434Z"
+      "commit": "ff213f7cff141aefd4d91d28b05c02aa66f3a065",
+      "generatedAt": "2026-11-17T18:38:43.395Z"
     },
-    "unchanged": false
+    "unchanged": true
   },
   "changesTogether": [
     {
@@ -140,7 +101,7 @@
     {
       "a": "scripts/colab/vm_judges.py",
       "b": "tests/test_colab_judge_launcher.py",
-      "either": 53,
+      "either": 54,
       "partLabels": [
         "scripts",
         "tests"
@@ -174,9 +135,9 @@
     "Window: 180 days; a pair counts from 3 shared commits, since 12 source files reach 10 revisions; the floor rises to 10 when 25 do."
   ],
   "changesTogetherWithTests": 1,
-  "commit": "ff213f7cff141aefd4d91d28b05c02aa66f3a065",
+  "commit": "b62b149539bc334b4d54b0879d2a484618cd2675",
   "defaultBranch": "main",
-  "derived": "9 parts, mostly Python (94 files), shell (3), CSS (2), JavaScript (2), TypeScript (2) and Astro (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.",
+  "derived": "9 parts, mostly Python (95 files), shell (3), CSS (2), JavaScript (2), TypeScript (2) and Astro (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.",
   "doors": [
     {
       "checks": [],
@@ -198,7 +159,7 @@
         {
           "boundary": "tests",
           "depth": 0,
-          "files": 58
+          "files": 59
         },
         {
           "boundary": "src",
@@ -333,7 +294,7 @@
       ]
     }
   ],
-  "generatedAt": "2026-11-17T18:38:43.395Z",
+  "generatedAt": "2026-11-18T10:57:33.738Z",
   "limits": [
     "8 import sites name a declared dependency that shares its name with a local module (role_set); they are read as the dependency, which is not in this repository.",
     "18 imports could not be resolved: `scripts/colab/vm_judges.py` imports a path built at run time; `scripts/colab/vm_judges.py` imports `device`, which is no module on its import path and no declared dependency, twice; `tests/test_bakeoff_judge_d3_transport.py` imports a path built at run time; and 14 more.",
@@ -376,10 +337,10 @@
   "startReason": "This path follows rdlab (a command people run) from its entry, since ci runs only tests and scripts that import no code here.",
   "summary": "reasoning-dataset-lab plans a dataset as a pre-registered map, builds items whose answer keys are constructed and proved by code, asks a local model only for the wording, and records the provenance of every item.",
   "summaryFrom": "person",
-  "testFiles": 74,
+  "testFiles": 75,
   "testedBy": {
-    "scripts": 15,
-    "src": 50
+    "scripts": 16,
+    "src": 51
   },
   "testedCodeParts": 2,
   "unnamedWrites": 14,

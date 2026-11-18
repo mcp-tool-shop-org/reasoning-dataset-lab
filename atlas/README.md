@@ -1,21 +1,16 @@
 # reasoning-dataset-lab: how it works
 
-Mapped at 2026-11-17 from commit ff213f7 by Atlas 1.26.0.
+Mapped at 2026-11-18 from commit b62b149 by Atlas 1.26.0.
 
 ## What this is
 
 reasoning-dataset-lab plans a dataset as a pre-registered map, builds items whose answer keys are constructed and proved by code, asks a local model only for the wording, and records the provenance of every item. (written by a person)
 
-9 parts, mostly Python (94 files), shell (3), CSS (2), JavaScript (2), TypeScript (2) and Astro (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.
+9 parts, mostly Python (95 files), shell (3), CSS (2), JavaScript (2), TypeScript (2) and Astro (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.
 
-## What changed since 2026-11-17 (3efb2e2)
+## What changed since 2026-11-17 (ff213f7)
 
-- ci's push trigger now also names `.github/audit-allowlist.json` and `scripts/**`.
-- ci now also runs scripts/check-audit-allowlist.mjs.
-- site/audit-report.json is now written by .github/workflows/ci.yml.
-- .github/audit-allowlist.json is now read by .github/workflows/ci.yml.
-- site/package-lock.json is now read by .github/workflows/ci.yml.
-- 5 files added and 8 changed content, across 5 parts.
+Nothing structural changed since 2026-11-17; 1 file added and 8 changed content.
 
 ## What comes in
 
@@ -54,7 +49,7 @@ reasoning-dataset-lab plans a dataset as a pre-registered map, builds items whos
 - **src/reasoning_dataset_lab/pilot_b/value_certification.py** and **tests/test_pilot_b_value_certification.py** changed together in 8 of 8 commits, and the tests part imports the src part.
 - **src/reasoning_dataset_lab/pilot_b/models_and_build.py** and **tests/test_pilot_b_ollama_adapters.py** changed together in 10 of 12 commits, and the tests part imports the src part.
 - **src/reasoning_dataset_lab/pilot_b/fact_tables.py** and **tests/test_pilot_b_variety.py** changed together in 5 of 7 commits, and the tests part imports the src part.
-- **scripts/colab/vm_judges.py** and **tests/test_colab_judge_launcher.py** changed together in 34 of 53 commits, and the tests part imports the scripts part.
+- **scripts/colab/vm_judges.py** and **tests/test_colab_judge_launcher.py** changed together in 34 of 54 commits, and the tests part imports the scripts part.
 - **src/reasoning_dataset_lab/pilot_b/rendering.py** and **tests/test_pilot_b_part_b.py** changed together in 5 of 9 commits, and the tests part imports the src part.
 
 1 file changed together with its own test, as expected.

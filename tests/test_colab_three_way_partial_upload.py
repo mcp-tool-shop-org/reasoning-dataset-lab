@@ -1,11 +1,17 @@
-"""Launcher and VM refusal (`THREE_WAY_PARTIAL_UPLOAD`) for partial or reordered `--time-one` uploads under any
-three-way pass plan (`--pass-mode <3-way>` or `RDLAB_JUDGE_PASS_MODES` with at least one three-way mode).
+"""Launcher and VM enforcement for whole-part three-way `--time-one` windows:
+- `THREE_WAY_PARTIAL_UPLOAD` on partial or reordered uploads under any three-way plan;
+- `limit_items = None` (scoring every item, not cutting to `TIME_ONE_ITEMS_LIMIT = 10`) for three-way `--time-one`;
+- `THREE_WAY_LIMIT_ITEMS_REFUSED` backstop on the launcher and VM when an effective item limit (including
+  `RDLAB_LIMIT_ITEMS`) is below `items_count`;
+- binary-only `--time-one` (10-item cut) and `--stub` / `dryrun` plumbing exemptions preserved.
 
 No model, no GPU, no download."""
 
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -19,8 +25,12 @@ if str(Path(__file__).resolve().parents[1]) not in sys.path:
 from reasoning_dataset_lab.pilot_b import schema_check, three_way_wording  # noqa: E402
 from tests.fixtures import fake_colab  # noqa: E402
 from tests.test_colab_judge_launcher import (  # noqa: E402,F401  (autouse fixtures keep every test hermetic)
+    EXPECTED_D3_LOCK_SHA256,
+    EXPECTED_JUDGE_LOCK_SHA256,
     LAUNCH_JUDGES_SH,
+    REPO_ROOT,
     _base_launcher_exports,
+    _followup_main_args,
     _hermetic_fake_colab_and_uv_env,
     _lock_check_phase_all_by_default,
     _make_builder_part,
@@ -29,6 +39,7 @@ from tests.test_colab_judge_launcher import (  # noqa: E402,F401  (autouse fixtu
     _pm_real_mode_exports,
     _pm_run_launcher,
     _project_part_items,
+    _stage_vm_items_dir,
     _to_wsl_path,
     vm_judges,
 )
@@ -398,3 +409,390 @@ def test_stub_and_dryrun_plumbing_exemptions_allow_partial_probe(tmp_path: Path)
         rows_file = out_dir / "rows" / three_way_wording.rows_filename_for_pass("d3-mini", SCHEDULES_MODE)
         written_rows = [json.loads(ln) for ln in rows_file.read_text(encoding="utf-8").splitlines() if ln.strip()]
         assert len(written_rows) == 20, (tag, len(written_rows))
+
+
+def test_three_way_whole_part_time_one_scores_every_item_on_dryrun_route(tmp_path: Path) -> None:
+    """A whole-part three-way `--time-one` window sets `limit_items = None` and scores every item (`items_scored ==
+    part_items`, 12 of 12 / 24 rows on the 12-item builder part) rather than cutting to `TIME_ONE_ITEMS_LIMIT = 10`."""
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "rec")
+    part = _make_builder_part(tmp_path / "build")
+    rows = _part_rows(part)
+    part_items = len(rows)
+    assert part_items == 12
+    full = _project_part_items(part, tmp_path / "inputs" / "full.jsonl")
+
+    for tag, extra_exports, cli_args in (
+        ("single_sched", "", f"--time-one --card A100 --shape standard --pass-mode {SCHEDULES_MODE}"),
+        (
+            "per_judge_sched",
+            f"export RDLAB_JUDGE_PASS_MODES=d3-mini:{SCHEDULES_MODE}; ",
+            "--time-one --card A100 --shape standard",
+        ),
+    ):
+        env_p = fake_colab.setup_fake_colab_environment(tmp_path / f"env_{tag}")
+        exports = (
+            _base_launcher_exports(
+                env_p,
+                open_lock=tmp_path / f"{tag}.lock",
+                receipts_dir=receipts_dir,
+                hf_home=hf_home,
+                items_file=full,
+            )
+            + "unset RDLAB_LIMIT_ITEMS; "
+            + f"export RDLAB_PART_DIR='{_to_wsl_path(part)}'; export RDLAB_ONLY_JUDGES=d3-mini; "
+            + extra_exports
+        )
+        out_dir = tmp_path / f"out_{tag}"
+        proc = _pm_run_launcher(
+            exports,
+            f"{cli_args} --out-dir '{_to_wsl_path(out_dir)}' --run-id whole-{tag}",
+        )
+        where = f"tag={tag}\nstdout={proc.stdout}\nstderr={proc.stderr}"
+        assert proc.returncode == 0, where
+        rows_file = out_dir / "rows" / three_way_wording.rows_filename_for_pass("d3-mini", SCHEDULES_MODE)
+        written_rows = [json.loads(ln) for ln in rows_file.read_text(encoding="utf-8").splitlines() if ln.strip()]
+        items_scored = len({str(r["item_id"]) for r in written_rows})
+        assert items_scored == part_items == 12, (tag, items_scored, len(written_rows))
+        assert len(written_rows) == 24, (tag, len(written_rows))
+        done_file = out_dir / "judge_done" / three_way_wording.judge_done_filename_for_pass("d3-mini", SCHEDULES_MODE)
+        done = json.loads(done_file.read_text(encoding="utf-8"))
+        assert done["items_count"] == 12 and done["calls_count"] == 24, done
+        summary = json.loads((out_dir / "time_one_summary.json").read_text(encoding="utf-8"))
+        assert summary["items_per_judge"] == 12, summary
+        shard_manifest = json.loads((out_dir / "shard_manifest.json").read_text(encoding="utf-8"))
+        assert len(shard_manifest["all_item_ids"]) == 12, shard_manifest
+
+
+def test_three_way_limit_items_below_items_count_refuses_before_colab(tmp_path: Path) -> None:
+    """`RDLAB_LIMIT_ITEMS` below `items_count` (or malformed) under a real three-way `--time-one` plan refuses
+    `THREE_WAY_LIMIT_ITEMS_REFUSED` on the launcher before any `colab` call, with `exit 2` and `RUN_FAILURE_CLASS`."""
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "rec")
+    part = _make_builder_part(tmp_path / "build")
+    rows = _part_rows(part)
+    full = _project_part_items(part, tmp_path / "inputs" / "full.jsonl")
+
+    cases = (
+        ("sched_10", "10", f"export RDLAB_ONLY_JUDGES=d3-mini; ", f"--pass-mode {SCHEDULES_MODE}"),
+        ("contra_10", "10", f"export RDLAB_ONLY_JUDGES=d3-mini; ", f"--pass-mode {CONTRA_MODE}"),
+        ("tw_10", "10", f"export RDLAB_ONLY_JUDGES=d3-mini; ", f"--pass-mode {THREE_WAY_MODE}"),
+        ("pj_10", "10", f"export RDLAB_ONLY_JUDGES=d3-mini; export RDLAB_JUDGE_PASS_MODES=d3-mini:{SCHEDULES_MODE}; ", ""),
+        ("sched_11", "11", f"export RDLAB_ONLY_JUDGES=d3-mini; ", f"--pass-mode {SCHEDULES_MODE}"),
+        ("sched_0", "0", f"export RDLAB_ONLY_JUDGES=d3-mini; ", f"--pass-mode {SCHEDULES_MODE}"),
+        ("sched_bad", "bad", f"export RDLAB_ONLY_JUDGES=d3-mini; ", f"--pass-mode {SCHEDULES_MODE}"),
+    )
+    for tag, limit_val, extra_exports, pass_arg in cases:
+        for dry in (True, False):
+            proc, out_dir, env_paths = _real_time_one_launcher(
+                tmp_path,
+                f"lim_{tag}",
+                items_file=full,
+                part_dir=part,
+                receipts_dir=receipts_dir,
+                hf_home=hf_home,
+                extra_exports=extra_exports + f"export RDLAB_LIMIT_ITEMS={limit_val}; ",
+                args=pass_arg,
+                dry=dry,
+            )
+            where = f"tag={tag} limit={limit_val} dry={dry}\nstdout={proc.stdout}\nstderr={proc.stderr}"
+            assert proc.returncode == 2, where
+            assert "THREE_WAY_LIMIT_ITEMS_REFUSED" in proc.stderr, where
+            assert "field: RDLAB_LIMIT_ITEMS" in proc.stderr and "hint:" in proc.stderr, where
+            assert "colab new" not in proc.stdout, where
+            assert not env_paths["calls_log"].exists(), where
+            assert all(r["claim"] not in proc.stderr and r["material"] not in proc.stderr for r in rows), where
+            if not dry:
+                outcome = json.loads((out_dir / "outcome.draft.json").read_text(encoding="utf-8"))
+                assert outcome["failure_class"] == "THREE_WAY_LIMIT_ITEMS_REFUSED", outcome
+
+
+def test_three_way_limit_items_below_items_count_refuses_on_vm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On the VM (`preflight_part_manifest`, `run_judges_pipeline`, and `vm_judges.main`), an effective item limit
+    below `items_count` (including `RDLAB_LIMIT_ITEMS`) under a real three-way `--time-one` plan refuses
+    `THREE_WAY_LIMIT_ITEMS_REFUSED` before any paid step or child process."""
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "rec")
+    part = _make_builder_part(tmp_path / "build")
+    full = _project_part_items(part, tmp_path / "inputs" / "full.jsonl")
+
+    monkeypatch.delenv("VM_DRYRUN", raising=False)
+    for var in (
+        "RDLAB_SHARD",
+        "RDLAB_SHARD_MANIFEST",
+        "RDLAB_SHARD_MANIFEST_SHA256",
+        "RDLAB_LIMIT_ITEMS",
+        "RDLAB_PASS_MODE",
+        "RDLAB_JUDGE_PASS_MODES",
+        "RDLAB_ONLY_JUDGES",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+    # 1. Direct VM preflight checks (env RDLAB_LIMIT_ITEMS first, then explicit raw_limit_items and effective_limit_items).
+    monkeypatch.setenv("RDLAB_LIMIT_ITEMS", "10")
+    with pytest.raises(vm_judges.RefusalError) as env_exc:
+        vm_judges.preflight_part_manifest(
+            full,
+            mode="time-one",
+            dryrun=False,
+            part_dir=part,
+            pass_mode=SCHEDULES_MODE,
+        )
+    assert env_exc.value.failure_class == "THREE_WAY_LIMIT_ITEMS_REFUSED"
+    monkeypatch.delenv("RDLAB_LIMIT_ITEMS", raising=False)
+
+    for bad_lim in ("10", "11", "0", "bad"):
+        with pytest.raises(vm_judges.RefusalError) as exc:
+            vm_judges.preflight_part_manifest(
+                full,
+                mode="time-one",
+                dryrun=False,
+                part_dir=part,
+                pass_mode=SCHEDULES_MODE,
+                raw_limit_items=bad_lim,
+            )
+        assert exc.value.failure_class == "THREE_WAY_LIMIT_ITEMS_REFUSED", bad_lim
+        assert "field: RDLAB_LIMIT_ITEMS" in str(exc.value) and exc.value.hint, str(exc.value)
+
+    with pytest.raises(vm_judges.RefusalError) as pj_exc:
+        vm_judges.preflight_part_manifest(
+            full,
+            mode="time-one",
+            dryrun=False,
+            part_dir=part,
+            pass_mode="per_judge",
+            judge_pass_modes=f"d3-mini:{SCHEDULES_MODE}",
+            raw_limit_items="10",
+        )
+    assert pj_exc.value.failure_class == "THREE_WAY_LIMIT_ITEMS_REFUSED"
+
+    with pytest.raises(vm_judges.RefusalError) as eff_exc:
+        vm_judges.preflight_part_manifest(
+            full,
+            mode="time-one",
+            dryrun=False,
+            part_dir=part,
+            pass_mode=SCHEDULES_MODE,
+            effective_limit_items=10,
+        )
+    assert eff_exc.value.failure_class == "THREE_WAY_LIMIT_ITEMS_REFUSED"
+    assert "field: limit_items" in str(eff_exc.value) and eff_exc.value.hint
+
+    # 2. run_judges_pipeline refuses with RDLAB_LIMIT_ITEMS=10 before any child runs.
+    staged_pipe = _stage_vm_items_dir(tmp_path / "vm_pipe_items", full, part)
+    monkeypatch.setenv("RDLAB_LIMIT_ITEMS", "10")
+    monkeypatch.setattr(
+        vm_judges,
+        "_run_child_with_group_timeout",
+        lambda *a, **kw: (_ for _ in ()).throw(AssertionError("no child may run")),
+    )
+    with pytest.raises(vm_judges.RefusalError) as pipe_exc:
+        vm_judges.run_judges_pipeline(
+            mode="time-one",
+            part_dir=staged_pipe,
+            run_dir=tmp_path / "pipe_run",
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+            dryrun=False,
+            repo_root=REPO_ROOT,
+            work_dir=tmp_path / "pipe_work",
+            only_judge_ids=("d3-mini",),
+            pass_mode=SCHEDULES_MODE,
+        )
+    assert pipe_exc.value.failure_class == "THREE_WAY_LIMIT_ITEMS_REFUSED"
+
+    # 3. VM main refuses before any paid step and writes status/receipt with exit 2.
+    monkeypatch.setenv("RDLAB_JUDGE_LOCK_SHA256", EXPECTED_JUDGE_LOCK_SHA256)
+    monkeypatch.setenv("RDLAB_D3_LOCK_SHA256", EXPECTED_D3_LOCK_SHA256)
+    monkeypatch.setenv("RDLAB_CARD_TYPE", "A100")
+    monkeypatch.setattr(vm_judges, "read_vm_gpu_name", lambda: ("NVIDIA A100-SXM4-40GB", "test"))
+    for var in list(os.environ):
+        if vm_judges.is_forbidden_counted_test_hook(var):
+            monkeypatch.delenv(var, raising=False)
+
+    paid_calls: list[str] = []
+    for name in (
+        "ensure_shard_manifest_for_run",
+        "sync_judge_venvs",
+        "run_device_check",
+        "run_gpu_gate",
+        "download_and_verify_all_judge_weights",
+        "run_boot_gatekeeper",
+        "collect_and_write_session_env",
+        "_run_child_with_group_timeout",
+    ):
+        monkeypatch.setattr(
+            vm_judges,
+            name,
+            lambda *a, _n=name, **kw: (paid_calls.append(_n), (_ for _ in ()).throw(AssertionError(f"{_n} ran"))),
+        )
+
+    for tag, env_overrides in (
+        ("single", {"RDLAB_PASS_MODE": SCHEDULES_MODE, "RDLAB_ONLY_JUDGES": "d3-mini", "RDLAB_LIMIT_ITEMS": "10"}),
+        (
+            "per_judge",
+            {
+                "RDLAB_JUDGE_PASS_MODES": f"d3-mini:{SCHEDULES_MODE}",
+                "RDLAB_ONLY_JUDGES": "d3-mini",
+                "RDLAB_LIMIT_ITEMS": "10",
+            },
+        ),
+    ):
+        for k in ("RDLAB_PASS_MODE", "RDLAB_JUDGE_PASS_MODES", "RDLAB_ONLY_JUDGES", "RDLAB_LIMIT_ITEMS"):
+            monkeypatch.delenv(k, raising=False)
+        for k, v in env_overrides.items():
+            monkeypatch.setenv(k, v)
+        staged_main = _stage_vm_items_dir(tmp_path / f"vm_main_{tag}", full, part)
+        argv, run_dir, status_path = _followup_main_args(
+            tmp_path,
+            f"vm_main_{tag}",
+            mode_args=["--mode", "time-one"],
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+            extra=["--items-file", str(staged_main)],
+        )
+        rc = vm_judges.main(argv)
+        assert rc == 2, (tag, status_path.read_text(encoding="utf-8"))
+        assert paid_calls == [], (tag, paid_calls)
+        st = json.loads(status_path.read_text(encoding="utf-8"))
+        receipt = json.loads((run_dir / "vm_receipt.json").read_text(encoding="utf-8"))
+        assert st["status"] == "refused" and st["failure_class"] == "THREE_WAY_LIMIT_ITEMS_REFUSED", (tag, st)
+        assert st["step"] == "verify_part_manifest", (tag, st)
+        assert receipt["status"] == "refused" and receipt["failure_class"] == "THREE_WAY_LIMIT_ITEMS_REFUSED", (
+            tag,
+            receipt,
+        )
+
+
+def test_three_way_limit_items_equal_to_items_count_passes(tmp_path: Path) -> None:
+    """`RDLAB_LIMIT_ITEMS` equal to `items_count` (12) passes on launcher preflight, VM preflight, `--dry`, and
+    the fake-CLI `VM_DRYRUN=1` route, scoring all 12 items (24 rows)."""
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "rec")
+    part = _make_builder_part(tmp_path / "build")
+    rows = _part_rows(part)
+    assert len(rows) == 12
+    full = _project_part_items(part, tmp_path / "inputs" / "full.jsonl")
+
+    # 1. Direct preflight on launcher and VM passes for single three-way and per_judge plans.
+    for pass_mode, jpm in ((SCHEDULES_MODE, None), ("per_judge", f"d3-mini:{SCHEDULES_MODE}")):
+        l_ident = vm_judges.preflight_part_manifest(
+            full,
+            mode="time-one",
+            dryrun=False,
+            part_dir=part,
+            part_items_file=part / "items.jsonl",
+            schema_errors=_schema_errors,
+            pass_mode=pass_mode,
+            judge_pass_modes=jpm,
+            raw_limit_items="12",
+            effective_limit_items=12,
+        )
+        assert l_ident is not None and l_ident["binding"]["rule"] == "whole_part_in_order"
+
+        v_ident = vm_judges.preflight_part_manifest(
+            full,
+            mode="time-one",
+            dryrun=False,
+            part_dir=part,
+            pass_mode=pass_mode,
+            judge_pass_modes=jpm,
+            raw_limit_items="12",
+            effective_limit_items=12,
+        )
+        assert v_ident is not None and v_ident["binding"]["rule"] == "whole_part_in_order"
+
+    # 2. Real launcher `--time-one --dry` (VM_DRYRUN unset) passes with RDLAB_LIMIT_ITEMS=12.
+    proc_dry, _out_dry, env_dry = _real_time_one_launcher(
+        tmp_path,
+        "eq12",
+        items_file=full,
+        part_dir=part,
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        extra_exports="export RDLAB_ONLY_JUDGES=d3-mini; export RDLAB_LIMIT_ITEMS=12; ",
+        args=f"--pass-mode {SCHEDULES_MODE}",
+        dry=True,
+    )
+    where_dry = f"stdout={proc_dry.stdout}\nstderr={proc_dry.stderr}"
+    assert proc_dry.returncode == 0, where_dry
+    assert "RDLAB_LIMIT_ITEMS=12" in proc_dry.stdout, where_dry
+    assert not env_dry["calls_log"].exists(), where_dry
+
+    # 3. Live fake-CLI `VM_DRYRUN=1` with RDLAB_LIMIT_ITEMS=12 scores all 12 items (24 rows).
+    env_live = fake_colab.setup_fake_colab_environment(tmp_path / "env_eq12_live")
+    exports_live = (
+        _base_launcher_exports(
+            env_live,
+            open_lock=tmp_path / "eq12_live.lock",
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+            items_file=full,
+        )
+        + f"export RDLAB_PART_DIR='{_to_wsl_path(part)}'; export RDLAB_ONLY_JUDGES=d3-mini; export RDLAB_LIMIT_ITEMS=12; "
+    )
+    out_live = tmp_path / "out_eq12_live"
+    proc_live = _pm_run_launcher(
+        exports_live,
+        f"--time-one --card A100 --shape standard --pass-mode {SCHEDULES_MODE} --out-dir '{_to_wsl_path(out_live)}' --run-id eq12-live",
+    )
+    where_live = f"stdout={proc_live.stdout}\nstderr={proc_live.stderr}"
+    assert proc_live.returncode == 0, where_live
+    rows_file = out_live / "rows" / three_way_wording.rows_filename_for_pass("d3-mini", SCHEDULES_MODE)
+    written_rows = [json.loads(ln) for ln in rows_file.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    assert len(written_rows) == 24
+    assert len({str(r["item_id"]) for r in written_rows}) == 12
+
+
+def test_binary_only_time_one_whole_part_still_cuts_to_10(tmp_path: Path) -> None:
+    """Binary-only `--time-one` windows still cut to `TIME_ONE_ITEMS_LIMIT = 10` even when uploading all 12 items,
+    and still allow an explicit `RDLAB_LIMIT_ITEMS` below `items_count`."""
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "rec")
+    part = _make_builder_part(tmp_path / "build")
+    rows = _part_rows(part)
+    assert len(rows) == 12
+    full = _project_part_items(part, tmp_path / "inputs" / "full.jsonl")
+
+    for tag, extra_args in (("default", ""), ("explicit_binary", "--pass-mode binary")):
+        env_p = fake_colab.setup_fake_colab_environment(tmp_path / f"env_bin_{tag}")
+        exports = (
+            _base_launcher_exports(
+                env_p,
+                open_lock=tmp_path / f"bin_{tag}.lock",
+                receipts_dir=receipts_dir,
+                hf_home=hf_home,
+                items_file=full,
+            )
+            + "unset RDLAB_LIMIT_ITEMS; "
+            + f"export RDLAB_PART_DIR='{_to_wsl_path(part)}'; export RDLAB_ONLY_JUDGES=d3-mini; "
+        )
+        out_dir = tmp_path / f"out_bin_{tag}"
+        proc = _pm_run_launcher(
+            exports,
+            f"--time-one --card A100 --shape standard {extra_args} --out-dir '{_to_wsl_path(out_dir)}' --run-id bin10-{tag}",
+        )
+        where = f"tag={tag}\nstdout={proc.stdout}\nstderr={proc.stderr}"
+        assert proc.returncode == 0, where
+        written_rows = [
+            json.loads(ln)
+            for ln in (out_dir / "rows" / "d3-mini.jsonl").read_text(encoding="utf-8").splitlines()
+            if ln.strip()
+        ]
+        items_scored = len({str(r["item_id"]) for r in written_rows})
+        assert items_scored == vm_judges.TIME_ONE_ITEMS_LIMIT == 10, (tag, items_scored)
+        assert len(written_rows) == 20, (tag, len(written_rows))
+        summary = json.loads((out_dir / "time_one_summary.json").read_text(encoding="utf-8"))
+        assert summary["items_per_judge"] == 10, summary
+
+    # Real binary-only `--time-one --dry` with RDLAB_LIMIT_ITEMS=4 is still accepted.
+    proc_lim, _out_lim, env_lim = _real_time_one_launcher(
+        tmp_path,
+        "bin_lim4",
+        items_file=full,
+        part_dir=part,
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        extra_exports="export RDLAB_ONLY_JUDGES=d3-mini; export RDLAB_LIMIT_ITEMS=4; ",
+        args="--pass-mode binary",
+        dry=True,
+    )
+    assert proc_lim.returncode == 0, f"stdout={proc_lim.stdout}\nstderr={proc_lim.stderr}"
+    assert not env_lim["calls_log"].exists()
