@@ -29517,6 +29517,26 @@ def test_launcher_failure_context_carries_the_cli_log_tail(tmp_path: Path) -> No
     assert "not readable: FileNotFoundError" in _launcher_failure_context(proc, tmp_path / "absent")
 
 
+def test_fake_colab_functions_do_not_reimport_module_level_names() -> None:
+    """A function-local `import X` makes `X` local to the WHOLE function, so every use of `X` before that line raises
+    UnboundLocalError. `run_fake_uv` had `import shutil` late in one branch: its earlier `shutil.which` / `shutil.rmtree`
+    calls crashed whenever a run reached them, which showed up as rare `find=UnboundLocalError` launcher refusals."""
+    import ast
+
+    src = (Path(__file__).resolve().parent / "fixtures" / "fake_colab.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    top = {(a.asname or a.name).split(".")[0] for n in tree.body if isinstance(n, ast.Import) for a in n.names}
+    assert "shutil" in top
+    bad = []
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for node in ast.walk(fn):
+            if isinstance(node, ast.Import):
+                bad += [f"{fn.name}:{node.lineno}:{a.name}" for a in node.names if a.asname is None and a.name in top]
+    assert bad == [], bad
+
+
 def test_one_line_failure_names_the_exception_of_a_traceback() -> None:
     """`_one_line_failure` keeps a single line, and reduces a traceback to its exception line (never its first line)."""
     assert vm_judges._one_line_failure("error: No interpreter found") == "error: No interpreter found"
