@@ -17908,16 +17908,17 @@ def _one_line_failure(text: str | None, *, default: str = "no output") -> str:
     """One line for a refusal message built from a subprocess's output.
 
     A single line is kept as it is. Multi-line output (a Python traceback) is reduced to its exception line, or to its
-    last non-empty line when no line reads like one, and says how many lines there were. The first line of a traceback
+    last non-empty line when no line reads like one, and says how many lines the output had. The first line of a traceback
     is "Traceback (most recent call last):", which names nothing; a launcher that keeps one line of the refusal must
     get the line that names the failure.
     """
     lines = [ln.strip() for ln in scrub_log_text(str(text or "")).splitlines() if ln.strip()]
     if not lines:
-        return default
+        return scrub_log_text(default)
     if len(lines) == 1:
         return lines[0]
-    return f"{_exception_line(chr(10).join(lines)) or lines[-1]} (last of {len(lines)} lines)"
+    # "from", not "last of": the exception line need not be the output's last line.
+    return f"{_exception_line(chr(10).join(lines)) or lines[-1]} (from {len(lines)} lines of output)"
 
 
 if __name__ == "__main__":

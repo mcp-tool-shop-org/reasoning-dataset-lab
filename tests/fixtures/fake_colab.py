@@ -1484,8 +1484,6 @@ def run_fake_uv(argv: list[str]) -> int:
             return 2
 
         if not req_file:
-            import shutil
-
             for c_file in constraint_files:
                 c_path = Path(c_file)
                 if not c_path.is_file():
@@ -1883,8 +1881,6 @@ def _kernel_paths(state_dir: Path, sid: str) -> tuple[Path, Path]:
 
 def _fake_kernel_restart(state_dir: Path, sid: str) -> int | None:
     """Kill the process group of the cell running on `sid`'s kernel, if any; return its pid."""
-    import signal
-
     _, pid_path = _kernel_paths(state_dir, sid)
     try:
         pid = int(pid_path.read_text(encoding="utf-8").strip())

@@ -6,6 +6,15 @@ All notable changes to `reasoning-dataset-lab` are documented here. The format i
 
 ## Unreleased
 
+### The rare `find=UnboundLocalError` test failure: cause found and fixed (tests only)
+
+- **`tests/fixtures/fake_colab.py`:** `run_fake_uv` had a second `import shutil` late in one branch. A function-local import makes the name local to the whole function, so its earlier `shutil.which` and `shutil.rmtree` calls raised `UnboundLocalError` whenever a run reached them (an install directory or venv that already existed, or the pinned-uv fallback). That was the rare failure of the launcher end-to-end tests in CI (seen on `test_part2_item4_cli_alive_probe_and_distinct_failure_class` and `test_e2e_fake_real_mode_lock_check_passes_opened_window_id_to_boot_gatekeeper`); the refusal line added in #125 named it. The redundant import is removed; a new test refuses any function-local re-import of a module-level name in the fake.
+
+### PR #125 review follow-ups
+
+- **`scripts/colab/vm_judges.py`:** `_one_line_failure` ends a reduced multi-line output with `(from N lines of output)`; the old `(last of N lines)` was wrong when the exception line was not the last line. Its `default` text is scrubbed like every other path.
+- **`tests/test_colab_judge_launcher.py`:** the reduction is tested with a line after the exception line and with a token on each of its four paths; the log-tail helper is tested with `max_lines=1`.
+
 ### A refusal line that names the exception, and a test failure that shows the VM side
 
 - **`scripts/colab/vm_judges.py`:** when `uv python find` fails with multi-line output (a Python traceback), the `find=` part of the `VM_PYTHON_INSTALL_FAILED` refusal now carries the exception line, or the last non-empty line, with the line count (`_one_line_failure`). It used to carry the first line, `Traceback (most recent call last):`, and the launcher keeps one line of the refusal.
