@@ -6,6 +6,12 @@ All notable changes to `reasoning-dataset-lab` are documented here. The format i
 
 ## Unreleased
 
+### A refusal line that names the exception, and a test failure that shows the VM side
+
+- **`scripts/colab/vm_judges.py`:** when `uv python find` fails with multi-line output (a Python traceback), the `find=` part of the `VM_PYTHON_INSTALL_FAILED` refusal now carries the exception line, or the last non-empty line, with the line count (`_one_line_failure`). It used to carry the first line, `Traceback (most recent call last):`, and the launcher keeps one line of the refusal.
+- **`tests/test_colab_judge_launcher.py`:** `test_part2_item4_cli_alive_probe_and_distinct_failure_class` reports the launcher's stderr and the last 60 lines of `colab-cli.log` when its recovery run fails (`_launcher_failure_context`). Two new tests cover the helper and the one-line rule.
+- **Why:** that test failed once on the Python 3.14 CI leg (run `44536228540`, first attempt) with only `find=Traceback (most recent call last):` in the log, and passed on re-run. The cause is not known and did not reproduce in 29 local runs. This change does not fix it; it makes the next failure name its exception.
+
 ## [0.7.0] - 2026-11-19
 
 The D5c judge windows, a kit that keeps its results on every VM failure path, and feature hooks for the shortcut probe. `README.md`, the seven translations (version and test count only) and the handbook status say 0.7.0.

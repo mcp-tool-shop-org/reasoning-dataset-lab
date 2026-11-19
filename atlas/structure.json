@@ -229,7 +229,7 @@
           "path": ".python-version"
         },
         {
-          "hash": "2d4978c2a6eaa05ec5983714c5a04f0472e859fff2d5610cdc2d3619d11329f0",
+          "hash": "1332113b84bc193a7e0c00f4dc62911f084b0a6cf0061b52e3faf4510379630a",
           "path": "CHANGELOG.md"
         },
         {
@@ -241,7 +241,7 @@
           "path": "README.es.md"
         },
         {
-          "hash": "79364fa4cca2cf44ccbd2dca1a48356d0dc9d00812076472f81d10f3acaf0093",
+          "hash": "c464a8ba018e89b01e6ac6147de8b386b8225bbe025f26637f47211cc0b56030",
           "path": "README.fr.md"
         },
         {
@@ -4443,7 +4443,7 @@
               "line": 17892
             }
           ],
-          "hash": "be5595707653466394deef3b1a5eb42771201f5c469d29e51be27a90e6a8bc10",
+          "hash": "0d5974f97faba8ad0d9fcc3f683dbdd6e2ef1c932258077693de3e9c4738bf8d",
           "importOrder": [
             "src/reasoning_dataset_lab/pilot_b/device.py",
             "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py",
@@ -4547,7 +4547,7 @@
           "path": "site/src/content/docs/handbook/getting-started.md"
         },
         {
-          "hash": "90e5ccb0ccd3b570085bee24d24a22ba63ecc94ba0b963785d30931140baa7eb",
+          "hash": "5420e7d1079e1cec2349c87f6158193f404deb6152f8e0b456c0c0041fa38bb4",
           "path": "site/src/content/docs/handbook/index.md"
         },
         {
@@ -20308,6 +20308,7 @@
             "test_kernel_exec_without_dunder_file_fails_when_dunder_file_used",
             "test_key_path_upload_refuses_and_deleted_items_receipt_recorded",
             "test_launcher_binding_is_carried_into_the_vm_receipt_labelled_by_where_it_was_checked",
+            "test_launcher_failure_context_carries_the_cli_log_tail",
             "test_launcher_lock_check_phase_required_and_dry_prints_phase_wall_and_price",
             "test_launcher_refuses_empty_or_stub_window_id_before_colab_new",
             "test_launcher_window_id_check_spares_stub_modes_and_real_ids",
@@ -20333,6 +20334,7 @@
             "test_no_code_path_builds_child_argv_with_bare_cuda_across_all_modes",
             "test_no_test_reads_tty_launcher_calls_with_stdin_closed",
             "test_non_stub_child_argv_uses_cuda_0_and_runner_normalizes_cuda_for_d3_transport",
+            "test_one_line_failure_names_the_exception_of_a_traceback",
             "test_only_judges_d3_mini_under_time_one_downloads_verifies_and_runs_only_d3_mini",
             "test_only_judges_refused_with_stub_with_judge_order_unknown_id_and_duplicate",
             "test_outcome_format_verified_flag_is_false_under_fake",
@@ -20402,7 +20404,7 @@
             "test_upload_enforces_parent_dir_overwrite_large_file_path_length_and_missing_local",
             "test_vm_subprocess_failure_captures_scrubbed_stdout_and_stderr_tail_in_status_receipt_and_log"
           ],
-          "hash": "1244e0d8e2e8b1a3e45de8f5ff8338027132f90719bb0e35bc5e95236cd2001f",
+          "hash": "d0b3d7cb43625d0fc9144dd0fbb26982c6d8d0b24561d839163a8a10e2d875d5",
           "importOrder": [
             "scripts/colab/vm_judges.py",
             "src/reasoning_dataset_lab/errors.py",
@@ -22348,7 +22350,7 @@
   ],
   "engine": "1.26.0",
   "generatedFrom": {
-    "commit": "50f2e58cb661c05c643b40e7170d934aea781ffa",
+    "commit": "e0a86234c131737232c6ad73a74e56e6474d6663",
     "tracked": 203
   },
   "landings": [
