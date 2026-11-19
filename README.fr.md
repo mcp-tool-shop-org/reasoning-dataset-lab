@@ -76,7 +76,7 @@ Signalez une vulnérabilité en privé ; voir [SECURITY.md](SECURITY.md).
 
 ## État
 
-Version 0.6.0. Il s’agit d’une version alpha : les interfaces et les formats de données peuvent changer sans préavis. 1 316 tests réussissent (3 sont ignorés) ; l’intégration continue maintient une couverture de 90 % ou plus.
+Version 0.7.0. Il s’agit d’une version alpha : les interfaces et les formats de données peuvent changer sans préavis. 1 890 tests réussissent (5 sont ignorés) ; l’intégration continue maintient une couverture de 90 % ou plus.
 
 ## Licence
 

@@ -6,6 +6,10 @@ All notable changes to `reasoning-dataset-lab` are documented here. The format i
 
 ## Unreleased
 
+## [0.7.0] - 2026-11-19
+
+The D5c judge windows, a kit that keeps its results on every VM failure path, and feature hooks for the shortcut probe. `README.md`, the seven translations (version and test count only) and the handbook status say 0.7.0.
+
 ### Three-way `--time-one` whole-part scoring and item-limit backstop (`#122` review `B1`, `C1`, `C2`)
 
 - **Score the whole part on three-way `--time-one` windows (`scripts/colab/vm_judges.py`):** both `_run_judges_pipeline_body` and `main` now set `limit_items` to `None` whenever `requires_three_way_whole_part_upload` is true (a `--time-one` window whose plan contains any three-way pass mode) rather than cutting to `TIME_ONE_ITEMS_LIMIT` (`10`), so uploading a whole part in order scores every item (`items_scored == items_count`). Binary-only `--time-one` windows keep the 10-item cut, and `--stub` / `dryrun` plumbing runs stay exempt.
@@ -62,6 +66,12 @@ All notable changes to `reasoning-dataset-lab` are documented here. The format i
 - **Empty hook refusal and caps (`#110` item 3):** a hook returning `[]` on every item is refused with `PROBE_FEATURE_HOOK_EMPTY` (`EXIT_REFUSED`) rather than passing as degenerate; constant non-empty hooks remain degenerate (`passed=True`, excluded from Holm `family_size`). Tokens per item are capped at `MAX_FEATURE_HOOK_TOKENS_PER_ITEM = 256` and hook vocabulary across all items at `MAX_FEATURE_HOOK_VOCABULARY = 4096`, refusing above either with `PROBE_FEATURE_HOOK_FAILED`.
 - **Sealed-field isolation (`#110` item 4):** `_public_item_copy` passes each hook a deep copy restricted to `PUBLIC_ITEM_FIELDS` (`id`, `triad_id`, `trait`, `kind`, `domain`, `closure`, `proof_basis`, `key_basis`, `material`, `claim`, `messages`, `split`). Both `load_items_and_keys` and `run_bakeoff_shortcut_probe` refuse any item carrying `key`, `target_line`, a known sealed field (`SEALED_KEY_FIELDS`), or any non-public field present in the keys file with `PROBE_SEALED_FIELD_IN_ITEM` before any probe or hook runs.
 - **Tests (`#110` item 5):** `tests/test_shortcut_probe_feature_hooks.py` covers `None`/non-sequence/early-validation checks, canonical sort and reverse-pass determinism, empty/constant/sparse/capped hooks, public allow-list stripping, sealed/keys-file field refusal, two-hook mutation isolation, JSON text byte-identity across omitted/`()`/`[]`/`None`, and a binary-only leaking hook.
+
+### Caller-supplied feature hooks for the shortcut probe (`#109`)
+
+- **`FeatureHook` (`src/reasoning_dataset_lab/pilot_b/shortcut_probe.py`):** a part whose item form needs a parser the probe does not have can pass feature hooks to `run_bakeoff_shortcut_probe` and `evaluate_bakeoff_probe_files`. Each hook maps one item's public fields (a deep copy; sealed keys are never passed) to tokens and becomes a gated token probe, three-class and binary, named `hook:<probe_id>`, in the same Holm family. With no hooks the report is unchanged.
+- **Refusals:** a malformed hook is refused before any work (`PROBE_BAD_FEATURE_HOOK`); a hook that fails or returns something other than a list of strings is a named refusal (`PROBE_FEATURE_HOOK_FAILED`) that does not echo the hook's message.
+- **Tests:** `tests/test_shortcut_probe_feature_hooks.py`.
 
 ### Kit Part C: an atomic result tar, the kit's identity in every run record (`Refs #94`, `Refs #106`, `Refs #107`)
 

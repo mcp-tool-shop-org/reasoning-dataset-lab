@@ -76,7 +76,7 @@ Informe de una vulnerabilidad de forma privada; consulte [SECURITY.md](SECURITY.
 
 ## Estado
 
-Versión 0.6.0. Es una versión alfa: las interfaces y las estructuras de datos pueden cambiar sin previo aviso. 1316 pruebas superan la prueba (3 omitidas); CI mantiene la cobertura en el 90% o más.
+Versión 0.7.0. Es una versión alfa: las interfaces y las estructuras de datos pueden cambiar sin previo aviso. 1890 pruebas superan la prueba (5 omitidas); CI mantiene la cobertura en el 90% o más.
 
 ## Licencia
 
