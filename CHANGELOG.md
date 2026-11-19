@@ -6,6 +6,10 @@ All notable changes to `reasoning-dataset-lab` are documented here. The format i
 
 ## Unreleased
 
+## [0.7.0] - 2026-11-19
+
+The D5c judge windows, a kit that keeps its results on every failure path, and feature hooks for the shortcut probe. `README.md`, the seven translations (version and test count only) and the handbook status say 0.7.0.
+
 ### Three-way `--time-one` whole-part scoring and item-limit backstop (`#122` review `B1`, `C1`, `C2`)
 
 - **Score the whole part on three-way `--time-one` windows (`scripts/colab/vm_judges.py`):** both `_run_judges_pipeline_body` and `main` now set `limit_items` to `None` whenever `requires_three_way_whole_part_upload` is true (a `--time-one` window whose plan contains any three-way pass mode) rather than cutting to `TIME_ONE_ITEMS_LIMIT` (`10`), so uploading a whole part in order scores every item (`items_scored == items_count`). Binary-only `--time-one` windows keep the 10-item cut, and `--stub` / `dryrun` plumbing runs stay exempt.

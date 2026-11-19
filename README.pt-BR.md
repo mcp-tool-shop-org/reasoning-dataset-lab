@@ -96,7 +96,7 @@ Relate uma vulnerabilidade em particular; consulte [SECURITY.md](SECURITY.md).
 
 ## Status
 
-Versão 0.6.0. É uma versão alfa: as interfaces e os formatos de dados podem mudar sem aviso prévio. 1.316 testes foram aprovados (3 ignorados); o CI mantém
+Versão 0.7.0. É uma versão alfa: as interfaces e os formatos de dados podem mudar sem aviso prévio. 1.890 testes foram aprovados (5 ignorados); o CI mantém
 a cobertura em 90% ou mais.
 
 ## Licença
