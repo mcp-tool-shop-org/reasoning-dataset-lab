@@ -29511,6 +29511,9 @@ def test_launcher_failure_context_carries_the_cli_log_tail(tmp_path: Path) -> No
     (tmp_path / "colab-cli.log").write_text("line 1\nKeyError: 'boom'\n", encoding="utf-8")
     msg = _launcher_failure_context(proc, tmp_path)
     assert "rc=2" in msg and "stderr=VM gate refused" in msg and "KeyError: 'boom'" in msg
+    # It is a tail: with max_lines=1 only the log's last line is carried.
+    last = _launcher_failure_context(proc, tmp_path, max_lines=1)
+    assert "KeyError: 'boom'" in last and "line 1" not in last and "last 1 lines of colab-cli.log" in last
     assert "not readable: FileNotFoundError" in _launcher_failure_context(proc, tmp_path / "absent")
 
 
@@ -29529,6 +29532,18 @@ def test_one_line_failure_names_the_exception_of_a_traceback() -> None:
     assert "\n" not in one
     assert one.startswith("FileNotFoundError: [Errno 2] No such file or directory: 'x'")
     assert "Traceback (most recent call last)" not in one
-    assert one.endswith("(last of 4 lines)")
+    assert one.endswith("(from 4 lines of output)")
+    # The exception line is not the output's last line: it is still the line kept, and the count is of all lines.
+    trailing = vm_judges._one_line_failure(tb + "hint: run uv self update\n")
+    assert trailing == "FileNotFoundError: [Errno 2] No such file or directory: 'x' (from 5 lines of output)"
     # No line reads like an exception: the last non-empty line is kept.
-    assert vm_judges._one_line_failure("first\nsecond\n\n") == "second (last of 2 lines)"
+    assert vm_judges._one_line_failure("first\nsecond\n\n") == "second (from 2 lines of output)"
+    # Tokens are scrubbed on every path: one line, the exception line, the last line, and the default.
+    tok = "hf_" + "A" * 34
+    for got in (
+        vm_judges._one_line_failure(f"error: bad token {tok}"),
+        vm_judges._one_line_failure(f"Traceback (most recent call last):\nValueError: bad token {tok}\n"),
+        vm_judges._one_line_failure(f"first\nsecond {tok}\n"),
+        vm_judges._one_line_failure("", default=f"no interpreter found {tok}"),
+    ):
+        assert tok not in got and "hf_[REDACTED]" in got
