@@ -9923,9 +9923,9 @@ def find_or_install_vm_python_315(
             "route": "found",
         }
 
-    find_err_msg = (
-        find_res.stderr_tail or find_res.stdout_tail or "no interpreter found"
-    ).strip()
+    find_err_msg = _one_line_failure(
+        find_res.stderr_tail or find_res.stdout_tail, default="no interpreter found"
+    )
 
     curl_which = shutil.which("curl")
     if not curl_which:
@@ -17902,6 +17902,22 @@ def _dispatch_offline_rig_subcommand(full_argv: list[str]) -> int:
     if sub == "reverify-unverified":
         return _cli_reverify_unverified(rest)
     return _cli_exclude_incomplete(rest)
+
+
+def _one_line_failure(text: str | None, *, default: str = "no output") -> str:
+    """One line for a refusal message built from a subprocess's output.
+
+    A single line is kept as it is. Multi-line output (a Python traceback) is reduced to its exception line, or to its
+    last non-empty line when no line reads like one, and says how many lines there were. The first line of a traceback
+    is "Traceback (most recent call last):", which names nothing; a launcher that keeps one line of the refusal must
+    get the line that names the failure.
+    """
+    lines = [ln.strip() for ln in scrub_log_text(str(text or "")).splitlines() if ln.strip()]
+    if not lines:
+        return default
+    if len(lines) == 1:
+        return lines[0]
+    return f"{_exception_line(chr(10).join(lines)) or lines[-1]} (last of {len(lines)} lines)"
 
 
 if __name__ == "__main__":

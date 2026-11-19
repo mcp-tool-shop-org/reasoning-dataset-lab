@@ -13604,7 +13604,7 @@ def test_part2_item4_cli_alive_probe_and_distinct_failure_class(
         timeout=60,
         check=False,
     )
-    assert proc_rec.returncode == 0, f"stderr={proc_rec.stderr}"
+    assert proc_rec.returncode == 0, _launcher_failure_context(proc_rec, out_rec)
     alive_attempts_rec = [
         json.loads(ln)
         for ln in (env_rec["state_dir"] / "alive_attempts.jsonl")
@@ -29493,3 +29493,42 @@ def test_issue90_merge_shards_derives_rows_and_anchor_rows_from_pass_mode_and_va
             merge_shards._rows_filename_for_pass(sub_jid, unregistered)
         assert exc_unreg.value.failure_class == "MERGE_INVALID_PASS_MODE"
 
+
+def _launcher_failure_context(proc: subprocess.CompletedProcess[str], out_dir: Path, *, max_lines: int = 60) -> str:
+    """For an assertion message: the launcher's stderr and the tail of its `colab-cli.log`, which holds the VM side's
+    whole output. The launcher's own refusal line is one line; the VM-side traceback is only in the log."""
+    cli_log = out_dir / "colab-cli.log"
+    try:
+        tail = "\n".join(cli_log.read_text(encoding="utf-8", errors="replace").splitlines()[-max_lines:])
+    except OSError as exc:
+        tail = f"<{cli_log.name} not readable: {type(exc).__name__}>"
+    return f"rc={proc.returncode}\nstderr={proc.stderr}\n--- last {max_lines} lines of {cli_log.name} ---\n{tail}"
+
+
+def test_launcher_failure_context_carries_the_cli_log_tail(tmp_path: Path) -> None:
+    """The assertion message of a failed launcher run names the VM-side lines, and survives a missing log."""
+    proc = subprocess.CompletedProcess(args=["x"], returncode=2, stdout="", stderr="VM gate refused")
+    (tmp_path / "colab-cli.log").write_text("line 1\nKeyError: 'boom'\n", encoding="utf-8")
+    msg = _launcher_failure_context(proc, tmp_path)
+    assert "rc=2" in msg and "stderr=VM gate refused" in msg and "KeyError: 'boom'" in msg
+    assert "not readable: FileNotFoundError" in _launcher_failure_context(proc, tmp_path / "absent")
+
+
+def test_one_line_failure_names_the_exception_of_a_traceback() -> None:
+    """`_one_line_failure` keeps a single line, and reduces a traceback to its exception line (never its first line)."""
+    assert vm_judges._one_line_failure("error: No interpreter found") == "error: No interpreter found"
+    assert vm_judges._one_line_failure("", default="no interpreter found") == "no interpreter found"
+    assert vm_judges._one_line_failure(None) == "no output"
+    tb = (
+        "Traceback (most recent call last):\n"
+        '  File "/usr/local/bin/uv", line 3, in <module>\n'
+        "    main()\n"
+        "FileNotFoundError: [Errno 2] No such file or directory: 'x'\n"
+    )
+    one = vm_judges._one_line_failure(tb)
+    assert "\n" not in one
+    assert one.startswith("FileNotFoundError: [Errno 2] No such file or directory: 'x'")
+    assert "Traceback (most recent call last)" not in one
+    assert one.endswith("(last of 4 lines)")
+    # No line reads like an exception: the last non-empty line is kept.
+    assert vm_judges._one_line_failure("first\nsecond\n\n") == "second (last of 2 lines)"
