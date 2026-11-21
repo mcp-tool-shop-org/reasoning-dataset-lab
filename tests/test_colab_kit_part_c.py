@@ -1175,3 +1175,48 @@ def test_launcher_stub_refuse_after_passes_completes_passes_and_refuses_real_win
     calls_log = real_res["env_paths"]["state_dir"] / "calls.jsonl"
     calls = calls_log.read_text(encoding="utf-8") if calls_log.is_file() else ""
     assert '"new"' not in calls and "upload" not in calls, calls[-2000:]
+
+
+def test_launcher_refuses_missing_or_dangling_vm_script_at_staging(tmp_path: Path) -> None:
+    """`stage_vm_script` refuses both a missing path and a dangling symlink before opening any Colab session."""
+    missing = tmp_path / "missing_vm_judges.py"
+    dangling = tmp_path / "dangling_vm_judges.py"
+    dangling.symlink_to(tmp_path / "nowhere_vm_judges.py")
+
+    for tag, vm_path in (("missing", missing), ("dangling", dangling)):
+        res = _launch(
+            tmp_path,
+            f"bad_vm_{tag}",
+            extra=f"export RDLAB_VM_SCRIPT='{_to_wsl_path(vm_path)}'; ",
+        )
+        assert res["proc"].returncode == 2, res["where"]
+        assert "VM_SCRIPT_NOT_FOUND" in res["proc"].stderr, res["where"]
+        assert not (res["out_dir"] / "stage").exists()
+        calls_log = res["env_paths"]["state_dir"] / "calls.jsonl"
+        calls = calls_log.read_text(encoding="utf-8") if calls_log.is_file() else ""
+        assert calls.strip() == "", calls[-2000:]
+
+
+def test_forbidden_counted_test_hook_names_copies_equal() -> None:
+    """`merge_shards`, `vm_judges`, and `bakeoff_judge` define identical forbidden counted test-hook sets,
+    and `launch_judges.sh` delegates directly to `vm_judges.guard_no_test_hooks_in_counted_mode`."""
+    colab_dir = str(REPO_ROOT / "scripts" / "colab")
+    if colab_dir not in sys.path:
+        sys.path.insert(0, colab_dir)
+    import merge_shards
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge
+
+    for attr in (
+        "FORBIDDEN_COUNTED_TEST_HOOK_NAMES",
+        "FORBIDDEN_COUNTED_TEST_HOOK_PREFIXES",
+        "FORBIDDEN_COUNTED_TEST_HOOK_SUFFIXES",
+    ):
+        vm_set = frozenset(getattr(vm_judges, attr))
+        merge_set = frozenset(getattr(merge_shards, attr))
+        bakeoff_set = frozenset(getattr(bakeoff_judge, attr))
+        assert merge_set == vm_set, (attr, merge_set ^ vm_set)
+        assert bakeoff_set == vm_set, (attr, bakeoff_set ^ vm_set)
+
+    assert len(frozenset(vm_judges.FORBIDDEN_COUNTED_TEST_HOOK_NAMES)) >= 40
+    launch_src = LAUNCH_JUDGES_SH.read_text(encoding="utf-8")
+    assert "vm_judges.guard_no_test_hooks_in_counted_mode(" in launch_src
