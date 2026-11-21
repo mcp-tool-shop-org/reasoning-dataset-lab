@@ -1134,7 +1134,8 @@ def build_anchored_probe_items(
     id_prefix: str = "anchored",
 ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]], list[AnchoredTriadSpec]]:
     """Public-shaped items and sealed-shaped keys for ``n_triads`` anchored triads, for the probe and the tests.
-    The class order inside each triad is seed-shuffled, as the sealed part's shuffle does for the real part."""
+    The class order inside each triad is seed-shuffled and each ``triad_id`` is an opaque deterministic handle, as
+    sealing produces for the real part, so sequential build indices do not alias periodic option schedules onto CV folds."""
     items: list[dict[str, Any]] = []
     keys: dict[str, dict[str, Any]] = {}
     specs: list[AnchoredTriadSpec] = []
@@ -1154,7 +1155,8 @@ def build_anchored_probe_items(
             anchors=slot.anchors,
         )
         specs.append(spec)
-        triad_id = f"{id_prefix}-triad-{t:03d}"
+        triad_handle = hashlib.sha256(f"{id_prefix}:{seed}:{table_secret}:{t}".encode("utf-8")).hexdigest()[:16]
+        triad_id = f"{id_prefix}-triad-{triad_handle}"
         order = list(VERDICT_CLASSES)
         random.Random(f"{id_prefix}-order:{seed}:{t}").shuffle(order)
         for pos, key in enumerate(order):
