@@ -99,6 +99,9 @@ def _build_clean_fixture(
     # Build a full Latin-square style schedule so for each role_config, all 3 label_perms
     # and template/target_line assignments are uncorrelated.
     for t_idx in range(num_triads):
+        # These fixture IDs are deliberately sequential (`triad-{t_idx:016x}`), so the 177/200
+        # null-test pins hold; the opacity guard checks format only, while the real data path
+        # uses hashed handles (as `tests/anchored_fixtures.py` and the synthetic builder do).
         tid = f"triad-{t_idx:016x}"
         role_idx = (t_idx // 6) % len(role_configs)
         within_role = t_idx % 6
@@ -1275,7 +1278,9 @@ def test_assign_triad_folds_takes_only_triad_ids_and_n_folds() -> None:
 
 
 def test_shortcut_probe_requires_opaque_triad_handles(tmp_path: Path) -> None:
-    """Opaque `triad-<16 hex>` handles pass; sequential, plain, or malformed triad IDs are refused with `PROBE_INVALID_TRIAD_ID`."""
+    """Wrong-format triad IDs (such as `triad-0001` and `triad_0000`) are refused with
+    `PROBE_INVALID_TRIAD_ID`; sequential 16-hex `triad-<16 hex>` IDs pass the format check by
+    design."""
     from reasoning_dataset_lab.pilot_b.anchored_two_hop import build_anchored_probe_items
     from reasoning_dataset_lab.pilot_b.shortcut_probe import evaluate_bakeoff_probe_files
     from reasoning_dataset_lab.pilot_b.waves_and_sealing import _triad_handle

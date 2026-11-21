@@ -67,6 +67,9 @@ def _build_clean_fixture(
     sealed_keys: dict[str, dict[str, str | int]] = {}
 
     for t_idx in range(num_triads):
+        # These fixture IDs are deliberately sequential (`triad-{t_idx:016x}`), so the 177/200
+        # null-test pins hold; the opacity guard checks format only, while the real data path
+        # uses hashed handles (as `tests/anchored_fixtures.py` and the synthetic builder do).
         tid = f"triad-{t_idx:016x}"
         role_idx = (t_idx // 6) % len(role_configs)
         within_role = t_idx % 6

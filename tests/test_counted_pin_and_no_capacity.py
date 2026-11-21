@@ -2310,7 +2310,8 @@ def test_ask6_card_and_shape_validated_before_any_paid_session_opens(tmp_path: P
 
 
 def test_low_margin_canary_shared_rule_parity() -> None:
-    """Part A item 1: `vm_judges` and `bakeoff_judge` share one `low_margin`/`canary` implementation in `src/`."""
+    """`vm_judges` and `bakeoff_judge` share the `low_margin`/`canary` precedence and conflict
+    rule in `low_margin_fields`."""
     from reasoning_dataset_lab.errors import RdlabError
     from reasoning_dataset_lab.pilot_b import bakeoff_judge, low_margin_fields
 
@@ -2412,7 +2413,8 @@ def test_low_margin_canary_shared_rule_parity() -> None:
 
 
 def test_goldens_stub_marks_shared_rule_parity(tmp_path: Path) -> None:
-    """Part A item 2: `promote_goldens` and `vm_judges` share one `boot_gatekeeper_goldens_stub_marks` rule."""
+    """`promote_goldens` and `vm_judges` share the `boot_gatekeeper_goldens_stub_marks` rule
+    for stub-marked goldens."""
     import importlib
 
     promote_goldens = importlib.import_module("promote_goldens")
