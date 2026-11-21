@@ -1199,7 +1199,10 @@ def test_launcher_refuses_missing_or_dangling_vm_script_at_staging(tmp_path: Pat
 
 def test_forbidden_counted_test_hook_names_copies_equal() -> None:
     """`merge_shards`, `vm_judges`, and `bakeoff_judge` define identical forbidden counted test-hook sets,
-    and `launch_judges.sh` delegates directly to `vm_judges.guard_no_test_hooks_in_counted_mode`."""
+    and `launch_judges.sh` delegates as active code to `vm_judges.guard_no_test_hooks_in_counted_mode`."""
+    import ast
+    import re
+
     colab_dir = str(REPO_ROOT / "scripts" / "colab")
     if colab_dir not in sys.path:
         sys.path.insert(0, colab_dir)
@@ -1219,4 +1222,31 @@ def test_forbidden_counted_test_hook_names_copies_equal() -> None:
 
     assert len(frozenset(vm_judges.FORBIDDEN_COUNTED_TEST_HOOK_NAMES)) >= 40
     launch_src = LAUNCH_JUDGES_SH.read_text(encoding="utf-8")
-    assert "vm_judges.guard_no_test_hooks_in_counted_mode(" in launch_src
+    fn_match = re.search(
+        r"(?ms)^guard_forwarded_test_hooks\(\)\s*\{\n(.*?)\n^\}",
+        launch_src,
+    )
+    assert fn_match is not None, "guard_forwarded_test_hooks() missing in launch_judges.sh"
+    py_match = re.search(r"(?ms)<<'PY'\n(.*?)\nPY(?:\n|$)", fn_match.group(1))
+    assert py_match is not None, "Python heredoc missing in guard_forwarded_test_hooks()"
+    tree = ast.parse(py_match.group(1))
+    guard_calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "vm_judges"
+        and node.func.attr == "guard_no_test_hooks_in_counted_mode"
+    ]
+    assert guard_calls, (
+        "guard_forwarded_test_hooks() has no active vm_judges.guard_no_test_hooks_in_counted_mode(...) call"
+    )
+    shell_invocations = [
+        ln
+        for ln in launch_src.splitlines()
+        if (code_part := ln.split("#", 1)[0])
+        and "guard_forwarded_test_hooks()" not in code_part
+        and re.search(r"\bguard_forwarded_test_hooks\b", code_part)
+    ]
+    assert len(shell_invocations) >= 2, shell_invocations

@@ -34,21 +34,21 @@
   "changes": {
     "fileCounts": {
       "added": 0,
-      "changed": 10,
+      "changed": 7,
       "moved": 0,
-      "parts": 4,
+      "parts": 3,
       "removed": 0
     },
     "items": [
       {
         "kind": "counts",
-        "sentence": "Nothing structural changed since 2026-11-21; 10 files changed content.",
+        "sentence": "Nothing structural changed since 2026-11-21; 7 files changed content.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "3f227c140dda5962c94c9c8abf6d5074977c0efb",
-      "generatedAt": "2026-11-21T13:29:25.180Z"
+      "commit": "2c3326f32a11c350e57ceb3358c40da05e6300b0",
+      "generatedAt": "2026-11-21T18:49:11.396Z"
     },
     "unchanged": true
   },
@@ -101,7 +101,7 @@
     {
       "a": "scripts/colab/vm_judges.py",
       "b": "tests/test_colab_judge_launcher.py",
-      "either": 58,
+      "either": 59,
       "partLabels": [
         "scripts",
         "tests"
@@ -111,7 +111,7 @@
         "tests"
       ],
       "relation": "b-imports-a",
-      "shared": 37
+      "shared": 38
     },
     {
       "a": "src/reasoning_dataset_lab/pilot_b/rendering.py",
@@ -135,7 +135,7 @@
     "Window: 180 days; a pair counts from 3 shared commits, since 14 source files reach 10 revisions; the floor rises to 10 when 25 do."
   ],
   "changesTogetherWithTests": 1,
-  "commit": "2c3326f32a11c350e57ceb3358c40da05e6300b0",
+  "commit": "424ad83126ba2e4ee34e698651014f4f9c722f66",
   "defaultBranch": "main",
   "derived": "9 parts, mostly Python (97 files), shell (3), CSS (2), JavaScript (2), TypeScript (2) and Astro (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.",
   "doors": [
@@ -294,10 +294,10 @@
       ]
     }
   ],
-  "generatedAt": "2026-11-21T18:49:11.396Z",
+  "generatedAt": "2026-11-21T20:17:47.287Z",
   "limits": [
     "8 import sites name a declared dependency that shares its name with a local module (role_set); they are read as the dependency, which is not in this repository.",
-    "19 imports could not be resolved: `scripts/colab/vm_judges.py` imports a path built at run time; `scripts/colab/vm_judges.py` imports `device`, which is no module on its import path and no declared dependency, twice; `tests/test_bakeoff_judge_d3_transport.py` imports a path built at run time; and 15 more.",
+    "20 imports could not be resolved: `scripts/colab/vm_judges.py` imports a path built at run time; `scripts/colab/vm_judges.py` imports `device`, which is no module on its import path and no declared dependency, twice; `tests/test_bakeoff_judge_d3_transport.py` imports a path built at run time; and 16 more.",
     "14 writes and 34 reads use paths built at run time and are not named here.",
     "1 write goes to places this repository does not track, so it is not listed as generated.",
     "90 writes and 209 reads go to a path their caller passes, not to this repository.",

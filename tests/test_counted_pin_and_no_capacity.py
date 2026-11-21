@@ -2453,6 +2453,90 @@ def test_low_margin_canary_shared_rule_parity(
     assert not hasattr(unbound_mod, "LOW_MARGIN_CANARY_FIELD_PAIRS")
 
 
+def test_low_margin_loader_refuses_stand_in_package_outside_repo_src(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`_load_low_margin_fields_module` refuses with `LOW_MARGIN_MODULE_OUTSIDE_REPO` when `reasoning_dataset_lab`
+    was already imported from a stand-in folder or when repo `src` sits lower on `sys.path` behind a stand-in."""
+    import importlib
+
+    standin = tmp_path / "standin"
+    standin_pilot_b = standin / "reasoning_dataset_lab" / "pilot_b"
+    standin_pilot_b.mkdir(parents=True)
+    (standin / "reasoning_dataset_lab" / "__init__.py").write_text("", encoding="utf-8")
+    (standin_pilot_b / "__init__.py").write_text("", encoding="utf-8")
+    (standin_pilot_b / "low_margin_fields.py").write_text(
+        "LOW_MARGIN_CANARY_FIELD_PAIRS = ()\n"
+        "class ConflictingLowMarginCanaryFieldError(Exception):\n"
+        "    refusal_code = 'CONFLICT'\n"
+        "    message = 'conflict'\n"
+        "def resolve_low_margin_or_canary_field(*args, **kwargs):\n"
+        "    return None\n"
+        "def check_low_margin_canary_conflicts(*args, **kwargs):\n"
+        "    return None\n",
+        encoding="utf-8",
+    )
+
+    orig_mods = {
+        k: v
+        for k, v in sys.modules.items()
+        if k == "reasoning_dataset_lab" or k.startswith("reasoning_dataset_lab.")
+    }
+    had_pairs = hasattr(vm_judges, "LOW_MARGIN_CANARY_FIELD_PAIRS")
+    orig_pairs = getattr(vm_judges, "LOW_MARGIN_CANARY_FIELD_PAIRS", None)
+
+    def _purge_pkg() -> None:
+        for k in [
+            name
+            for name in list(sys.modules)
+            if name == "reasoning_dataset_lab" or name.startswith("reasoning_dataset_lab.")
+        ]:
+            del sys.modules[k]
+        importlib.invalidate_caches()
+
+    try:
+        # (a) Stand-in package already imported first; later load must refuse even if repo src is prepended.
+        with monkeypatch.context() as mp:
+            mp.setenv("RDLAB_REPO_DIR", str(REPO_ROOT))
+            _purge_pkg()
+            mp.setattr(sys, "path", [str(standin), *[p for p in sys.path if p != str(REPO_ROOT / "src")]])
+            importlib.import_module("reasoning_dataset_lab")
+
+            with pytest.raises(vm_judges.RefusalError) as exc_load:
+                vm_judges._load_low_margin_fields_module()
+            assert exc_load.value.failure_class == "LOW_MARGIN_MODULE_OUTSIDE_REPO"
+
+            with pytest.raises(vm_judges.RefusalError) as exc_res:
+                vm_judges.resolve_low_margin_or_canary_field(
+                    {}, "low_margin_item_ids", "canary_item_ids"
+                )
+            assert exc_res.value.failure_class == "LOW_MARGIN_MODULE_OUTSIDE_REPO"
+
+            with pytest.raises(vm_judges.RefusalError) as exc_chk:
+                vm_judges.check_low_margin_canary_conflicts({})
+            assert exc_chk.value.failure_class == "LOW_MARGIN_MODULE_OUTSIDE_REPO"
+
+        # (b) Repo src already present lower on sys.path behind stand-in; _ensure_repo_imports leaves order intact,
+        # so stand-in imports first and the origin check must refuse it.
+        with monkeypatch.context() as mp:
+            mp.setenv("RDLAB_REPO_DIR", str(REPO_ROOT))
+            _purge_pkg()
+            repo_src = str((REPO_ROOT / "src").resolve())
+            mp.setattr(
+                sys,
+                "path",
+                [str(standin), repo_src, *[p for p in sys.path if p not in (str(standin), repo_src)]],
+            )
+            with pytest.raises(vm_judges.RefusalError) as exc_low:
+                vm_judges._load_low_margin_fields_module()
+            assert exc_low.value.failure_class == "LOW_MARGIN_MODULE_OUTSIDE_REPO"
+    finally:
+        _purge_pkg()
+        sys.modules.update(orig_mods)
+        if had_pairs:
+            vm_judges.LOW_MARGIN_CANARY_FIELD_PAIRS = orig_pairs
+
+
 def test_goldens_stub_marks_shared_rule_parity(tmp_path: Path) -> None:
     """`promote_goldens` and `vm_judges` share the `boot_gatekeeper_goldens_stub_marks` rule
     for stub-marked goldens."""

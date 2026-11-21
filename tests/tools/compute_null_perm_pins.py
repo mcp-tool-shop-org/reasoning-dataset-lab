@@ -1,6 +1,6 @@
 """Compute the pinned unsplit and per-chunk null-permutation failure counts for Gate 1.
 
-Runs the original unsplit 200-permutation loop from 987d954c:tests/test_shortcut_probe.py
+Runs the unsplit 200-permutation loop matching tests/test_shortcut_probe.py with SHA-256-hashed triad-<16 hex> clean-fixture handles
 (seed=20261030, _build_clean_fixture(34), sorted triad order) in one pass and prints:
 - the unsplit new-gate and old-gate fail counts;
 - the per-chunk counts for the 20 chunks [10*k:10*(k+1)) (k = 0..19).
@@ -26,7 +26,7 @@ CHUNK_RANGES: tuple[tuple[int, int], ...] = tuple(
 def _build_clean_fixture(
     num_triads: int = 36,
 ) -> tuple[list[dict[str, Any]], dict[str, dict[str, str | int]]]:
-    """Original _build_clean_fixture from 987d954c:tests/test_shortcut_probe.py."""
+    """Clean synthetic triad fixture matching tests/test_shortcut_probe.py (with SHA-256-hashed triad-<16 hex> handles)."""
     dom_spec = DOMAIN_CATALOGUE[0]  # power_grid
     domain_name = str(dom_spec["domain"])
     entities = [str(e) for e in dom_spec["entities"][:3]]
