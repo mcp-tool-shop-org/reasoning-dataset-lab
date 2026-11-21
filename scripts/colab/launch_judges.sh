@@ -1535,8 +1535,6 @@ PY
     if [[ -n "${STAGE_DIR:-}" ]] && [[ -d "$STAGE_DIR" ]]; then
       rm -rf "$STAGE_DIR" 2>/dev/null || true
     fi
-    RUN_FAILURE_CLASS="VM_SCRIPT_NOT_FOUND"
-    RUN_WHY="VM script not found or unreadable at staging: $VM_SCRIPT"
     exit 2
   fi
 }

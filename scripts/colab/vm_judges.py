@@ -10544,30 +10544,85 @@ def verify_shard_manifest_file(
     )
 
 
+def _expected_repo_src_dir() -> Path:
+    """Return the resolved repository `src` directory for shared rule imports."""
+    import inspect
+
+    env_repo = os.environ.get("RDLAB_REPO_DIR", "").strip()
+    if env_repo:
+        return (Path(env_repo) / "src").resolve()
+    default_src = DEFAULT_REPO_DIR / "src"
+    if default_src.is_dir():
+        return default_src.resolve()
+    self_mod = sys.modules.get(__name__)
+    if self_mod is not None:
+        try:
+            self_origin = inspect.getfile(self_mod)
+        except TypeError:
+            self_origin = ""
+        if self_origin:
+            self_path = Path(self_origin).resolve()
+            if len(self_path.parents) >= 3 and self_path.name == "vm_judges.py":
+                cand_src = self_path.parents[2] / "src"
+                if cand_src.is_dir():
+                    return cand_src.resolve()
+    return default_src.resolve()
+
+
+def _verify_module_under_repo_src(
+    mod: Any, *, module_name: str, expected_src: Path
+) -> None:
+    """Refuse (`LOW_MARGIN_MODULE_OUTSIDE_REPO`) unless `mod` loaded from under `expected_src`."""
+    import inspect
+
+    try:
+        mod_origin: str | None = inspect.getfile(mod)
+    except TypeError:
+        spec = getattr(mod, "__spec__", None)
+        mod_origin = getattr(spec, "origin", None)
+    if not mod_origin:
+        raise RefusalError(
+            "LOW_MARGIN_MODULE_OUTSIDE_REPO",
+            f"Loaded {module_name} has no source path (expected under {expected_src}).",
+        )
+    try:
+        mod_path = Path(mod_origin).resolve()
+    except OSError as exc:
+        raise RefusalError(
+            "LOW_MARGIN_MODULE_OUTSIDE_REPO",
+            f"Cannot resolve source path {mod_origin!r} for {module_name}: {exc}",
+        ) from exc
+    if not mod_path.is_relative_to(expected_src) or not mod_path.is_file():
+        raise RefusalError(
+            "LOW_MARGIN_MODULE_OUTSIDE_REPO",
+            f"Loaded {module_name} from {mod_path}, outside expected repo src {expected_src}.",
+        )
+
+
 def _load_low_margin_fields_module() -> Any:
-    """Import shared `reasoning_dataset_lab.pilot_b.low_margin_fields` and bind `LOW_MARGIN_CANARY_FIELD_PAIRS`."""
+    """Import shared `reasoning_dataset_lab.pilot_b.low_margin_fields`, verify its source path, and bind `LOW_MARGIN_CANARY_FIELD_PAIRS`."""
     import importlib
 
-    cached = sys.modules.get("reasoning_dataset_lab.pilot_b.low_margin_fields")
+    module_name = "reasoning_dataset_lab.pilot_b.low_margin_fields"
+    expected_src = _expected_repo_src_dir()
+    cached = sys.modules.get(module_name)
     if cached is not None:
         mod = cached
     else:
+        if not expected_src.is_dir() and "reasoning_dataset_lab" not in sys.modules:
+            raise ModuleNotFoundError(f"No module named {module_name!r}")
         _ensure_repo_imports()
-        mod = importlib.import_module("reasoning_dataset_lab.pilot_b.low_margin_fields")
+        mod = importlib.import_module(module_name)
+    _verify_module_under_repo_src(mod, module_name=module_name, expected_src=expected_src)
     global LOW_MARGIN_CANARY_FIELD_PAIRS
     LOW_MARGIN_CANARY_FIELD_PAIRS = mod.LOW_MARGIN_CANARY_FIELD_PAIRS
     return mod
 
 
 try:
-    from reasoning_dataset_lab.pilot_b.low_margin_fields import (
-        LOW_MARGIN_CANARY_FIELD_PAIRS,
-    )
-except ModuleNotFoundError:
-    try:
-        LOW_MARGIN_CANARY_FIELD_PAIRS = _load_low_margin_fields_module().LOW_MARGIN_CANARY_FIELD_PAIRS
-    except ModuleNotFoundError:
-        pass
+    LOW_MARGIN_CANARY_FIELD_PAIRS = _load_low_margin_fields_module().LOW_MARGIN_CANARY_FIELD_PAIRS
+except (ModuleNotFoundError, RefusalError):
+    pass
 
 
 def resolve_low_margin_or_canary_field(
