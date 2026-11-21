@@ -1514,16 +1514,31 @@ PY
 # forwarded to the VM for window.json. An empty value is one that could not be read (recorded as null).
 stage_vm_script() {
   rm -f "$STAGED_VM_SCRIPT"
-  "$PYTHON_BIN" - "$VM_SCRIPT" "$STAGED_VM_SCRIPT" <<'PY'
+  local rc=0
+  "$PYTHON_BIN" - "$VM_SCRIPT" "$STAGED_VM_SCRIPT" <<'PY' || rc=$?
 import shutil
 import sys
 from pathlib import Path
 
 src, dst = Path(sys.argv[1]), Path(sys.argv[2])
-if src.is_file():
+if not src.is_file():
+    print(f"VM_SCRIPT_NOT_FOUND: {src}", file=sys.stderr)
+    raise SystemExit(2)
+try:
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(src, dst)
+except OSError as exc:
+    print(f"VM_SCRIPT_NOT_FOUND: {src}: {exc}", file=sys.stderr)
+    raise SystemExit(2)
 PY
+  if (( rc != 0 )); then
+    if [[ -n "${STAGE_DIR:-}" ]] && [[ -d "$STAGE_DIR" ]]; then
+      rm -rf "$STAGE_DIR" 2>/dev/null || true
+    fi
+    RUN_FAILURE_CLASS="VM_SCRIPT_NOT_FOUND"
+    RUN_WHY="VM script not found or unreadable at staging: $VM_SCRIPT"
+    exit 2
+  fi
 }
 
 compute_kit_identity() {
@@ -1758,7 +1773,7 @@ PY
     {
       printf 'colab sessions\n'
       printf 'colab new -s %s\n' "$SESSION_NAME"
-      printf 'colab exec -s %s %s -f %s --timeout=%s\n' "$SESSION_NAME" "$DRY_PROBE_ENV_STR" "$VM_SCRIPT" "$EXEC_TIMEOUT_SECONDS"
+      printf 'colab exec -s %s %s -f %s --timeout=%s\n' "$SESSION_NAME" "$DRY_PROBE_ENV_STR" "$STAGED_VM_SCRIPT" "$EXEC_TIMEOUT_SECONDS"
       printf 'colab download -s %s /content/probe.json %s/probe.json\n' "$SESSION_NAME" "$OUT_DIR"
       printf 'colab stop -s %s\n' "$SESSION_NAME"
       printf 'colab sessions\n'

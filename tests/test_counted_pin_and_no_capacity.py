@@ -2309,7 +2309,9 @@ def test_ask6_card_and_shape_validated_before_any_paid_session_opens(tmp_path: P
     assert sc_unknown["shape_check"]["match"] is False
 
 
-def test_low_margin_canary_shared_rule_parity() -> None:
+def test_low_margin_canary_shared_rule_parity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """`vm_judges` and `bakeoff_judge` share the `low_margin`/`canary` precedence and conflict
     rule in `low_margin_fields`."""
     from reasoning_dataset_lab.errors import RdlabError
@@ -2410,6 +2412,45 @@ def test_low_margin_canary_shared_rule_parity() -> None:
             )
         assert exc_bj_chk.value.code == exc_vm_chk.value.failure_class == "MERGE_CONFIG_INVALID"
         assert exc_bj_chk.value.message == exc_vm_chk.value.detail
+
+    # Stray cwd/src must never be added to sys.path or imported instead of RDLAB_REPO_DIR/src.
+    stray = tmp_path / "stray_cwd"
+    stray_pilot_b = stray / "src" / "reasoning_dataset_lab" / "pilot_b"
+    stray_pilot_b.mkdir(parents=True)
+    (stray / "src" / "reasoning_dataset_lab" / "__init__.py").write_text("", encoding="utf-8")
+    (stray_pilot_b / "__init__.py").write_text("", encoding="utf-8")
+    (stray_pilot_b / "low_margin_fields.py").write_text(
+        'raise RuntimeError("stray cwd/src low_margin_fields loaded")\n',
+        encoding="utf-8",
+    )
+    with monkeypatch.context() as mp:
+        mp.chdir(stray)
+        mp.setenv("RDLAB_REPO_DIR", str(REPO_ROOT))
+        mp.setattr(sys, "path", list(sys.path))
+        for mod_name in [
+            k for k in list(sys.modules) if k == "reasoning_dataset_lab" or k.startswith("reasoning_dataset_lab.")
+        ]:
+            mp.delitem(sys.modules, mod_name)
+        loaded = vm_judges._load_low_margin_fields_module()
+        assert str(stray / "src") not in sys.path
+        assert loaded.LOW_MARGIN_CANARY_FIELD_PAIRS == low_margin_fields.LOW_MARGIN_CANARY_FIELD_PAIRS
+    vm_judges.LOW_MARGIN_CANARY_FIELD_PAIRS = low_margin_fields.LOW_MARGIN_CANARY_FIELD_PAIRS
+
+    # Before repo unpack, when reasoning_dataset_lab.pilot_b.low_margin_fields cannot be imported,
+    # LOW_MARGIN_CANARY_FIELD_PAIRS stays unbound rather than silently falling back to ().
+    import types
+
+    vm_src_path = SCRIPTS_COLAB_DIR / "vm_judges.py"
+    vm_src = vm_src_path.read_text(encoding="utf-8")
+    assert "__file__" not in vm_src
+    unbound_name = "vm_judges_unbound_fallback_check"
+    unbound_mod = types.ModuleType(unbound_name)
+    with monkeypatch.context() as mp:
+        mp.setenv("RDLAB_REPO_DIR", str(tmp_path / "missing_repo"))
+        mp.setitem(sys.modules, "reasoning_dataset_lab.pilot_b.low_margin_fields", None)
+        mp.setitem(sys.modules, unbound_name, unbound_mod)
+        exec(compile(vm_src, str(vm_src_path), "exec"), unbound_mod.__dict__)
+    assert not hasattr(unbound_mod, "LOW_MARGIN_CANARY_FIELD_PAIRS")
 
 
 def test_goldens_stub_marks_shared_rule_parity(tmp_path: Path) -> None:

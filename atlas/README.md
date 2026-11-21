@@ -1,6 +1,6 @@
 # reasoning-dataset-lab: how it works
 
-Mapped at 2026-11-21 from commit 3f227c1 by Atlas 1.26.0.
+Mapped at 2026-11-21 from commit 2c3326f by Atlas 1.26.0.
 
 ## What this is
 
@@ -8,11 +8,9 @@ reasoning-dataset-lab plans a dataset as a pre-registered map, builds items whos
 
 9 parts, mostly Python (97 files), shell (3), CSS (2), JavaScript (2), TypeScript (2) and Astro (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.
 
-## What changed since 2026-11-19 (e0a8623)
+## What changed since 2026-11-21 (3f227c1)
 
-- src/reasoning_dataset_lab/ is now also read by scripts/colab/vm_judges.py.
-- tests/fixtures/fake_colab.py is now also read by tests/test_colab_judge_launcher.py.
-- 2 files added and 19 changed content, across 4 parts.
+Nothing structural changed since 2026-11-21; 10 files changed content.
 
 ## What comes in
 
@@ -51,14 +49,14 @@ reasoning-dataset-lab plans a dataset as a pre-registered map, builds items whos
 - **src/reasoning_dataset_lab/pilot_b/value_certification.py** and **tests/test_pilot_b_value_certification.py** changed together in 8 of 8 commits, and the tests part imports the src part.
 - **src/reasoning_dataset_lab/pilot_b/models_and_build.py** and **tests/test_pilot_b_ollama_adapters.py** changed together in 10 of 12 commits, and the tests part imports the src part.
 - **src/reasoning_dataset_lab/pilot_b/fact_tables.py** and **tests/test_pilot_b_variety.py** changed together in 5 of 7 commits, and the tests part imports the src part.
-- **scripts/colab/vm_judges.py** and **tests/test_colab_judge_launcher.py** changed together in 36 of 60 commits, and the tests part imports the scripts part.
+- **scripts/colab/vm_judges.py** and **tests/test_colab_judge_launcher.py** changed together in 37 of 58 commits, and the tests part imports the scripts part.
 - **src/reasoning_dataset_lab/pilot_b/rendering.py** and **tests/test_pilot_b_part_b.py** changed together in 5 of 9 commits, and the tests part imports the src part.
 
 1 file changed together with its own test, as expected.
 
 Confidence is low: fewer than 25 source files reach 10 revisions in the window.
 
-Window: 180 days; a pair counts from 3 shared commits, since 13 source files reach 10 revisions; the floor rises to 10 when 25 do.
+Window: 180 days; a pair counts from 3 shared commits, since 14 source files reach 10 revisions; the floor rises to 10 when 25 do.
 
 ## What no test touches
 
@@ -82,14 +80,14 @@ People write .github/, certification/, docs/, examples/, the repository root and
 
 ## Where to start
 
-src/reasoning_dataset_lab/cli.py → src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py → src/reasoning_dataset_lab/pilot_b/canary_config.json → scripts/colab/vm_judges.py
+src/reasoning_dataset_lab/cli.py → src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py → src/reasoning_dataset_lab/pilot_b/canary_config.json → src/reasoning_dataset_lab/pilot_b/lockcheck_anchors.py
 
 Read those in order to follow one run of rdlab end to end. This path follows rdlab (a command people run) from its entry, since ci runs only tests and scripts that import no code here.
 
 ## What this map cannot see
 
 - 8 import sites name a declared dependency that shares its name with a local module (role_set); they are read as the dependency, which is not in this repository.
-- 20 imports could not be resolved: `scripts/colab/vm_judges.py` imports a path built at run time; `scripts/colab/vm_judges.py` imports `device`, which is no module on its import path and no declared dependency, twice; `tests/test_bakeoff_judge_d3_transport.py` imports a path built at run time; and 16 more.
+- 19 imports could not be resolved: `scripts/colab/vm_judges.py` imports a path built at run time; `scripts/colab/vm_judges.py` imports `device`, which is no module on its import path and no declared dependency, twice; `tests/test_bakeoff_judge_d3_transport.py` imports a path built at run time; and 15 more.
 - 14 writes and 34 reads use paths built at run time and are not named here.
 - 1 write goes to places this repository does not track, so it is not listed as generated.
 - 90 writes and 209 reads go to a path their caller passes, not to this repository.
