@@ -1006,7 +1006,8 @@ os.execv(real_colab, [real_colab, *args])
         )
         + _git_shim(tmp_path, mode="dirty")
         + f"export PATH='{_to_wsl_path(tbin)}':\"$PATH\"; "
-        + f"export RDLAB_VM_SCRIPT='{_to_wsl_path(link_py)}'; "
+        # Pass the symlink path itself (`os.path.abspath`), not `.resolve()`, so launch_judges.sh receives a symlink.
+        + f"export RDLAB_VM_SCRIPT='{Path(os.path.abspath(link_py)).as_posix()}'; "
     )
     proc = subprocess.run(
         [
