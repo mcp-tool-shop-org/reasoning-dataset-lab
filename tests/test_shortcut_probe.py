@@ -682,7 +682,9 @@ def test_all_12_sh_leak_fixtures_fail_new_gate_and_print_margin_and_z(
 #   unsplit (n_perms=200, n_triads=34): new_gate_fails=0/200 (0.00%), old_flat_0.05_fails=177/200 (88.50%)
 #   50-perm subtotals: [0:50)=41, [50:100)=44, [100:150)=45, [150:200)=47
 #   _NULL_PERM_EXPECTED_OLD_FAILS_BY_CHUNK = (7, 9, 8, 8, 9, 8, 10, 8, 10, 8, 7, 9, 10, 9, 10, 9, 9, 10, 10, 9)
-# After (SHA-256 hashed `clean_fixture:<idx>` handles; fixture ids no longer sort in build order when dealing CV folds):
+# After (SHA-256 hashed `clean_fixture:<idx>` handles; two effects move old_flat_0.05_fails 177 -> 164:
+#   177 -> 174 from whole-triad CV fold dealing no longer sorting fixture ids in build order, and
+#   174 -> 164 from the null loop shuffling each triad's labels in sorted triad-id order so each triad draws a different shuffle):
 #   unsplit (n_perms=200, n_triads=34): new_gate_fails=0/200 (0.00%), old_flat_0.05_fails=164/200 (82.00%)
 #   50-perm subtotals: [0:50)=43, [50:100)=37, [100:150)=41, [150:200)=43
 #   20 chunks of 10 ([10*k:10*(k+1)) for k=0..19):
