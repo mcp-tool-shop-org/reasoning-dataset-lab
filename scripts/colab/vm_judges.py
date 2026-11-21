@@ -9276,6 +9276,7 @@ FORBIDDEN_COUNTED_TEST_HOOK_NAMES: frozenset[str] = frozenset(
         "RDLAB_TEST_PLANT_LOG_LEAK",
         "RDLAB_FORCE_PINNED_UV",
         "RDLAB_STUB_EXERCISE_ELEPHANT_INSTALL",
+        "RDLAB_STUB_REFUSE_AFTER_PASSES",
         "RDLAB_VM_CONTENT_DIR",
         "RDLAB_CGROUP_DIR",
         "RDLAB_CGROUP_MEMORY_EVENTS_PATH",
@@ -9395,6 +9396,27 @@ def guard_no_test_hooks_in_counted_mode(
             "COUNTED_LIMIT_ITEMS_REFUSED",
             "RDLAB_LIMIT_ITEMS is forbidden in a real counted window (it would cut the shard manifest); unset it.",
         )
+
+
+def maybe_refuse_stub_after_passes(mode: str | None, *, dryrun: bool = False) -> None:
+    """In stub/dryrun mode when `RDLAB_STUB_REFUSE_AFTER_PASSES=1`, take the refusal path after judge passes."""
+    stub_refuse_raw = os.environ.get("RDLAB_STUB_REFUSE_AFTER_PASSES", "").strip()
+    if not stub_refuse_raw or stub_refuse_raw == "0":
+        return
+    if is_real_mode(mode, dryrun=dryrun):
+        raise RefusalError(
+            TEST_HOOK_IN_COUNTED_MODE,
+            "RDLAB_STUB_REFUSE_AFTER_PASSES is only allowed in stub or dryrun mode.",
+        )
+    if stub_refuse_raw != "1":
+        raise RefusalError(
+            "BAD_STUB_REFUSE_AFTER_PASSES",
+            f"Invalid RDLAB_STUB_REFUSE_AFTER_PASSES={stub_refuse_raw!r}; expected '1' or '0'.",
+        )
+    raise RefusalError(
+        "STUB_REFUSED_AFTER_PASSES",
+        "Refused after judge passes per RDLAB_STUB_REFUSE_AFTER_PASSES=1.",
+    )
 
 
 def _parse_nonneg_int_hook(
@@ -15284,6 +15306,7 @@ def main(argv: list[str] | None = None) -> int:
                         step_timings=step_timings,
                         step_order=step_order,
                     )
+                    maybe_refuse_stub_after_passes(args.mode, dryrun=dryrun)
                     stopped_after = "first_load"
                 elif until_step == "weights":
                     current_step = "download_and_verify_all_judge_weights"
@@ -15457,6 +15480,7 @@ def main(argv: list[str] | None = None) -> int:
                         step_timings=step_timings,
                         step_order=step_order,
                     )
+                    maybe_refuse_stub_after_passes(args.mode, dryrun=dryrun)
 
         current_step = "delete_uploaded_items"
         deleted_items_receipt = delete_uploaded_items_and_record_receipt(

@@ -1187,6 +1187,7 @@ scrub_stream() {
 
 STAGE_DIR="$OUT_DIR/stage"
 STAGED_DEVICE_PY="$STAGE_DIR/device.py"
+STAGED_VM_SCRIPT="$STAGE_DIR/vm_judges.py"
 REPO_TAR="$STAGE_DIR/repo_bundle.tar.gz"
 RECEIPTS_TAR="$STAGE_DIR/receipts_bundle.tar.gz"
 STAGED_ITEMS_FILE="$STAGE_DIR/items.jsonl"
@@ -1418,6 +1419,9 @@ build_exec_env_args() {
   if [[ -n "${RDLAB_TEST_PLANT_LOG_LEAK:-}" ]]; then
     EXEC_ENV_ARGS+=(--env "RDLAB_TEST_PLANT_LOG_LEAK=$RDLAB_TEST_PLANT_LOG_LEAK")
   fi
+  if [[ -n "${RDLAB_STUB_REFUSE_AFTER_PASSES:-}" ]]; then
+    EXEC_ENV_ARGS+=(--env "RDLAB_STUB_REFUSE_AFTER_PASSES=$RDLAB_STUB_REFUSE_AFTER_PASSES")
+  fi
   if [[ -n "${RDLAB_SHARD+x}" ]] && [[ -n "${RDLAB_SHARD}" ]]; then
     EXEC_ENV_ARGS+=(--env "RDLAB_SHARD=$RDLAB_SHARD")
   fi
@@ -1508,10 +1512,25 @@ PY
 # The kit's identity (#107): which commit of this repo and which bytes of the two scripts this window runs, computed on
 # the rig before any session opens (vm_judges.compute_kit_identity). Recorded in outcome.draft.json for every outcome and
 # forwarded to the VM for window.json. An empty value is one that could not be read (recorded as null).
+stage_vm_script() {
+  rm -f "$STAGED_VM_SCRIPT"
+  "$PYTHON_BIN" - "$VM_SCRIPT" "$STAGED_VM_SCRIPT" <<'PY'
+import shutil
+import sys
+from pathlib import Path
+
+src, dst = Path(sys.argv[1]), Path(sys.argv[2])
+if src.is_file():
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(src, dst)
+PY
+}
+
 compute_kit_identity() {
+  local vm_script_path="${1:-$VM_SCRIPT}"
   local kit_out=""
   local -a kit_lines=()
-  kit_out="$("$PYTHON_BIN" - "$REPO_ROOT" "$VM_SCRIPT" "$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")" <<'PY'
+  kit_out="$("$PYTHON_BIN" - "$REPO_ROOT" "$vm_script_path" "$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")" <<'PY'
 import sys
 from pathlib import Path
 
@@ -1575,7 +1594,9 @@ except vm_judges.RefusalError as exc:
 PY
 }
 
-compute_kit_identity
+if [[ "$DRY_FLAG" == "1" ]]; then
+  compute_kit_identity "$VM_SCRIPT"
+fi
 
 if [[ "$DRY_FLAG" == "1" ]]; then
   if [[ "$MODE" == "lock-check" ]] || [[ "$MODE" == "lock-check-stub" ]]; then
@@ -1779,8 +1800,8 @@ PY
     printf 'colab sessions\n'
     printf 'colab usage\n'
     printf 'colab usage\n'
-    printf 'colab exec -s %s --env RDLAB_STEP=alive -f %s --timeout=%s\n' "$SESSION_NAME" "$VM_SCRIPT" "$ALIVE_PROBE_TIMEOUT_SECONDS"
-    printf 'colab exec -s %s %s -f %s --timeout=%s\n' "$SESSION_NAME" "$DRY_GATE_ENV_STR" "$VM_SCRIPT" "$GATE_TIMEOUT_SECONDS"
+    printf 'colab exec -s %s --env RDLAB_STEP=alive -f %s --timeout=%s\n' "$SESSION_NAME" "$STAGED_VM_SCRIPT" "$ALIVE_PROBE_TIMEOUT_SECONDS"
+    printf 'colab exec -s %s %s -f %s --timeout=%s\n' "$SESSION_NAME" "$DRY_GATE_ENV_STR" "$STAGED_VM_SCRIPT" "$GATE_TIMEOUT_SECONDS"
     printf 'colab upload -s %s %s /content/device.py\n' "$SESSION_NAME" "$STAGED_DEVICE_PY"
     printf 'colab upload -s %s %s /content/repo_bundle.tar.gz\n' "$SESSION_NAME" "$REPO_TAR"
     printf 'colab upload -s %s %s /content/receipts_bundle.tar.gz\n' "$SESSION_NAME" "$RECEIPTS_TAR"
@@ -1803,7 +1824,7 @@ PY
     if [[ "$EFFECTIVE_RESUME" -eq 1 ]] && [[ -f "$OUT_DIR/schedule.json" ]]; then
       printf 'colab upload -s %s %s /content/resume_state.tar.gz\n' "$SESSION_NAME" "$RESUME_TAR"
     fi
-    printf 'colab exec -s %s %s -f %s --timeout=%s\n' "$SESSION_NAME" "$DRY_ENV_STR" "$VM_SCRIPT" "$EXEC_TIMEOUT_SECONDS"
+    printf 'colab exec -s %s %s -f %s --timeout=%s\n' "$SESSION_NAME" "$DRY_ENV_STR" "$STAGED_VM_SCRIPT" "$EXEC_TIMEOUT_SECONDS"
     printf 'colab download -s %s /content/result.tar.gz %s/result.tar.gz\n' "$SESSION_NAME" "$OUT_DIR"
     printf 'colab download -s %s /content/status.json %s/status.json\n' "$SESSION_NAME" "$OUT_DIR"
     printf 'colab download -s %s /content/gate_status.json %s/gate_status.json\n' "$SESSION_NAME" "$OUT_DIR"
@@ -1816,6 +1837,9 @@ PY
 fi
 
 mkdir -p "$OUT_DIR"
+mkdir -p "$STAGE_DIR"
+stage_vm_script
+compute_kit_identity "$STAGED_VM_SCRIPT"
 CLI_LOG="$OUT_DIR/colab-cli.log"
 OUTCOME_FILE="$OUT_DIR/outcome.draft.json"
 FETCH_CLAIM_DIR="$OUT_DIR/.rig_fetch_claim"
@@ -2573,11 +2597,14 @@ payload["kit_launch_judges_sh_sha256"] = os.environ.get("RDLAB_OUTCOME_KIT_LAUNC
 # not_sent; null when the VM never reached that step (a refusal on the rig, a cap stop before it, no status fetched).
 payload["kit_vm_script_check"] = None
 _kit_status_p = out_path.parent / "status.json"
+_kit_status_failure_class = ""
 if _kit_status_p.is_file():
     try:
         _kit_status_doc = json.loads(_kit_status_p.read_text(encoding="utf-8"))
-        if isinstance(_kit_status_doc, dict) and _kit_status_doc.get("kit_vm_script_check") in ("passed", "refused", "not_sent"):
-            payload["kit_vm_script_check"] = _kit_status_doc["kit_vm_script_check"]
+        if isinstance(_kit_status_doc, dict):
+            if _kit_status_doc.get("kit_vm_script_check") in ("passed", "refused", "not_sent"):
+                payload["kit_vm_script_check"] = _kit_status_doc["kit_vm_script_check"]
+            _kit_status_failure_class = str(_kit_status_doc.get("failure_class") or "").strip()
     except Exception:
         pass
 jdone_dir = out_path.parent / "judge_done"
@@ -2638,6 +2665,8 @@ if until_step_val:
     if outcome == "ok":
         payload["stopped_after"] = until_step_val
 failure_class_val = os.environ.get("RDLAB_FAILURE_CLASS", "").strip()
+if not failure_class_val and _kit_status_failure_class == "KIT_VM_SCRIPT_MISMATCH":
+    failure_class_val = "KIT_VM_SCRIPT_MISMATCH"
 if failure_class_val:
     payload["failure_class"] = failure_class_val
 live_usage_rate_raw = os.environ.get("RDLAB_LIVE_USAGE_RATE", "").strip()
@@ -3316,7 +3345,6 @@ stop_all() {
   local exit_code=$? ep_from_file="" stop_rc=0 verify_rc=0 wait_w=0 max_wait_w=0
   set +e
   enter_cleanup_trap
-  cleanup_stage
   if [[ -n "$COST_CAP_PID" ]]; then
     pkill -P "$COST_CAP_PID" 2>/dev/null || true
     kill "$COST_CAP_PID" 2>/dev/null || true
@@ -3341,6 +3369,7 @@ stop_all() {
     terminate_exec_tree "$ep_from_file" "$EXEC_KILL_GRACE_SECONDS"
   fi
   rm -f "$EXEC_PID_FILE" 2>/dev/null || true
+  cleanup_stage
   if [[ -n "${EXEC_OUT_TMP:-}" ]] && [[ -f "$EXEC_OUT_TMP" ]]; then
     scrub_stream < "$EXEC_OUT_TMP" >> "$CLI_LOG" 2>/dev/null || true
     rm -f "$EXEC_OUT_TMP" 2>/dev/null || true
@@ -3549,12 +3578,13 @@ if [[ "$MODE" == "probe" ]]; then
   EXEC_RC=0
   : > "$PROBE_EXEC_OUT_TMP"
   timeout --signal=TERM --kill-after="$COLAB_KILL_GRACE_SECONDS" "${RIG_TIMEOUT}s" \
-    colab exec -s "$S" "${PROBE_ENV_ARGS[@]}" -f "$VM_SCRIPT" --timeout="$EXEC_TIMEOUT_SECONDS" </dev/null >"$PROBE_EXEC_OUT_TMP" 2>&1 9>&- &
+    colab exec -s "$S" "${PROBE_ENV_ARGS[@]}" -f "$STAGED_VM_SCRIPT" --timeout="$EXEC_TIMEOUT_SECONDS" </dev/null >"$PROBE_EXEC_OUT_TMP" 2>&1 9>&- &
   EXEC_PID="$!"
   printf '%s\n' "$EXEC_PID" > "$EXEC_PID_FILE"
   wait "$EXEC_PID" 2>/dev/null || EXEC_RC=$?
   EXEC_PID=""
   rm -f "$EXEC_PID_FILE"
+  cleanup_stage
   if [[ -f "$PROBE_EXEC_OUT_TMP" ]]; then
     scrub_stream < "$PROBE_EXEC_OUT_TMP" >> "$CLI_LOG" 2>/dev/null || true
     rm -f "$PROBE_EXEC_OUT_TMP" 2>/dev/null || true
@@ -3854,7 +3884,7 @@ fi
 mkdir -p "$STAGE_DIR"
 # Part files left in the stage dir by an earlier, interrupted launch must never be uploaded for this one.
 rm -f "$STAGED_PART_JSON_FILE" "$STAGED_PART_CHECKSUMS_FILE" "$STAGED_P0A_PART_JSON_FILE" "$STAGED_P0A_CHECKSUMS_FILE" "$STAGED_BINDING_FILE" "$RIG_BINDING_FILE"
-if ! "$PYTHON_BIN" - "$REPO_ROOT" "$ITEMS_FILE" "$STAGED_ITEMS_FILE" "$RECEIPTS_DIR" "$RECEIPTS_TAR" "$REPO_TAR" "$STAGED_DEVICE_PY" "$GOLDEN_ANCHOR_MANIFEST" "$ANCHOR_ITEMS_FILE" "$STAGED_ANCHOR_ITEMS_FILE" "$P0A_ITEMS_FILE" "$STAGED_P0A_ITEMS_FILE" "$COUNTED_ITEMS_FILE" "$COUNTED_MANIFEST_FILE" "$STAGED_BINDING_FILE" "$MODE" "${VM_DRYRUN:-0}" "$STAGED_PART_JSON_FILE" "$STAGED_PART_CHECKSUMS_FILE" "$(effective_part_dir "$ITEMS_FILE")" "$P0A_PART_DIR" "$STAGED_P0A_PART_JSON_FILE" "$STAGED_P0A_CHECKSUMS_FILE" "$VM_SCRIPT" "$PASS_MODE" <<'PY'
+if ! "$PYTHON_BIN" - "$REPO_ROOT" "$ITEMS_FILE" "$STAGED_ITEMS_FILE" "$RECEIPTS_DIR" "$RECEIPTS_TAR" "$REPO_TAR" "$STAGED_DEVICE_PY" "$GOLDEN_ANCHOR_MANIFEST" "$ANCHOR_ITEMS_FILE" "$STAGED_ANCHOR_ITEMS_FILE" "$P0A_ITEMS_FILE" "$STAGED_P0A_ITEMS_FILE" "$COUNTED_ITEMS_FILE" "$COUNTED_MANIFEST_FILE" "$STAGED_BINDING_FILE" "$MODE" "${VM_DRYRUN:-0}" "$STAGED_PART_JSON_FILE" "$STAGED_PART_CHECKSUMS_FILE" "$(effective_part_dir "$ITEMS_FILE")" "$P0A_PART_DIR" "$STAGED_P0A_PART_JSON_FILE" "$STAGED_P0A_CHECKSUMS_FILE" "$STAGED_VM_SCRIPT" "$PASS_MODE" <<'PY'
 import datetime
 import json
 import shutil
@@ -3975,8 +4005,8 @@ tracked_files = vm_judges.tracked_repo_bundle_files(repo_root)
 raw_shard_manifest = (_os.environ.get("RDLAB_SHARD_MANIFEST") or "").strip()
 with tarfile.open(repo_tar, "w:gz") as tf:
     for rel in tracked_files:
-        # The bundle's vm_judges.py is the file `colab exec -f` sends (#108 fix 1), so the VM's re-hash compares what ran
-        # with what was recorded. A counted window has already been refused unless that file is HEAD's.
+        # The bundle's vm_judges.py is the staged copy `colab exec -f` sends, so the VM's re-hash compares what ran
+        # with what was recorded; kit_identity_gate runs next and refuses a counted window unless it is HEAD's.
         if rel == vm_judges.KIT_VM_SCRIPT_RELPATH and raw_sent_vm_script:
             tf.add(Path(raw_sent_vm_script), arcname=rel, recursive=False)
             continue
@@ -4352,7 +4382,7 @@ ALIVE_ATTEMPT=0
 while (( ALIVE_ATTEMPT < ALIVE_PROBE_MAX_TRIES )); do
   ALIVE_ATTEMPT=$(( ALIVE_ATTEMPT + 1 ))
   ALIVE_RC=0
-  ALIVE_OUT="$(timeout -k "$COLAB_KILL_GRACE_SECONDS" "$ALIVE_PROBE_TIMEOUT_SECONDS" colab exec -s "$S" --env RDLAB_STEP=alive -f "$VM_SCRIPT" --timeout="$ALIVE_PROBE_TIMEOUT_SECONDS" </dev/null 2>&1 | scrub_stream | tee -a "$CLI_LOG")" || ALIVE_RC=$?
+  ALIVE_OUT="$(timeout -k "$COLAB_KILL_GRACE_SECONDS" "$ALIVE_PROBE_TIMEOUT_SECONDS" colab exec -s "$S" --env RDLAB_STEP=alive -f "$STAGED_VM_SCRIPT" --timeout="$ALIVE_PROBE_TIMEOUT_SECONDS" </dev/null 2>&1 | scrub_stream | tee -a "$CLI_LOG")" || ALIVE_RC=$?
   if [[ "$ALIVE_RC" -eq 0 ]] && printf '%s\n' "$ALIVE_OUT" | grep -q '^VM_ALIVE_OK'; then
     ALIVE_OK=1
     log_msg "ALIVE_PROBE_OK session=$S attempt=${ALIVE_ATTEMPT}/${ALIVE_PROBE_MAX_TRIES}"
@@ -4388,7 +4418,7 @@ fi
 
 build_gate_env_args
 GATE_RC=0
-GATE_OUT="$(timeout -k "$COLAB_KILL_GRACE_SECONDS" "$GATE_TIMEOUT_SECONDS" colab exec -s "$S" "${GATE_ENV_ARGS[@]}" -f "$VM_SCRIPT" --timeout="$GATE_TIMEOUT_SECONDS" </dev/null 2>&1 | scrub_stream | tee -a "$CLI_LOG")" || GATE_RC=$?
+GATE_OUT="$(timeout -k "$COLAB_KILL_GRACE_SECONDS" "$GATE_TIMEOUT_SECONDS" colab exec -s "$S" "${GATE_ENV_ARGS[@]}" -f "$STAGED_VM_SCRIPT" --timeout="$GATE_TIMEOUT_SECONDS" </dev/null 2>&1 | scrub_stream | tee -a "$CLI_LOG")" || GATE_RC=$?
 if [[ "$GATE_RC" -ne 0 ]] || ! printf '%s\n' "$GATE_OUT" | grep -q '^VM_GATE_OK'; then
   flock -u 9 || true
   if printf '%s\n' "$GATE_OUT" | grep -Eq 'VM_DISK_INSUFFICIENT|VM_PYTHON_UNAVAILABLE|VM_PYTHON_INSTALL_FAILED|PYTHON_ARCHIVE_TOO_LARGE|PYTHON_INSTALL_TIMEOUT|PYTHON_ARCHIVE_SHA256_MISMATCH|PYTHON_BUILD_CHANGED|UV_VERSION_CHANGED|PINNED_UV_DOWNLOAD_FAILED|PINNED_UV_SIZE_MISMATCH|PINNED_UV_SHA256_MISMATCH|PINNED_UV_BAD_MEMBER|PINNED_UV_VERSION_MISMATCH|FORCE_PINNED_UV_INVALID|VM_ITEMS_DIR_UNAVAILABLE|FORBIDDEN_STORAGE_PATH|DEVICE_INDEX_CHECK_FAILED|BAKEOFF_JUDGE_DEVICE_INVALID'; then
@@ -4492,13 +4522,11 @@ if [[ "$EFFECTIVE_RESUME" -eq 1 ]] && [[ -f "$RESUME_TAR" ]]; then
     handle_upload_failure "$UPLOAD_RC" "/content/resume_state.tar.gz"
   fi
 fi
-cleanup_stage
-
 build_exec_env_args
 EXEC_RC=0
 : > "$EXEC_OUT_TMP"
 timeout --signal=TERM --kill-after="$COLAB_KILL_GRACE_SECONDS" "${RIG_TIMEOUT}s" \
-  colab exec -s "$S" "${EXEC_ENV_ARGS[@]}" -f "$VM_SCRIPT" --timeout="$EXEC_TIMEOUT_SECONDS" </dev/null >"$EXEC_OUT_TMP" 2>&1 9>&- &
+  colab exec -s "$S" "${EXEC_ENV_ARGS[@]}" -f "$STAGED_VM_SCRIPT" --timeout="$EXEC_TIMEOUT_SECONDS" </dev/null >"$EXEC_OUT_TMP" 2>&1 9>&- &
 EXEC_PID="$!"
 printf '%s\n' "$EXEC_PID" > "$EXEC_PID_FILE"
 
@@ -4621,6 +4649,7 @@ PERIODIC_FETCH_PID="$!"
 wait "$EXEC_PID" 2>/dev/null || EXEC_RC=$?
 EXEC_PID=""
 rm -f "$EXEC_PID_FILE"
+cleanup_stage
 
 if [[ -n "$COST_CAP_PID" ]]; then
   if [[ -f "$COST_CAP_MARKER" ]] || [[ -f "$RATE_TRIP_MARKER" ]]; then
