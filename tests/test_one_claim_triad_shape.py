@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 import secrets
 import time
 from pathlib import Path
@@ -34,7 +35,11 @@ BASELINE_V1_PILOT_B_SHA256: dict[str, str] = {
     "part_pilot_b_sealed/provenance.jsonl": "7396f2e8ada4863fa48cb584c7e41d26db2d846c0f222be5a4a01e3e11683a7d",
     "reports/pilot_b_report.json": "92f15b3a2b0a9554de462a9e9b041b08bf6e69d1651513f239df0b94d10ca5cd",
     "sealed_store/call_metrics.sealed.jsonl": "a0689b6f6f9fdaaec3d678673258904d9f1c7dbf29ea376e7af9f69b9eb4aad1",
-    "sealed_store/human_sample.sealed.json": "85079be32ac91421070181c2ac2f08717f9b0c707ca2fc1c38562428b80ea839",
+    "sealed_store/human_sample.sealed.json": (
+        "85079be32ac91421070181c2ac2f08717f9b0c707ca2fc1c38562428b80ea839"
+        if os.linesep == "\r\n"
+        else "8d81c2daad2683e0bc5d82e2301f39f37548965bbe3ae56225c339307b6f2888"
+    ),
     "sealed_store/keys.sealed.jsonl": "868e5fb0f1745daa4fc046a71270aaea5913c314148d3c5576215ecd6ce08cc3",
     "sealed_store/render_inputs.sealed.json": "207d1401a27f364b41173ed7b1b8224c30d8cd65b579d7a46ec64787123fae68",
     "sealed_store/report.sealed.json": "e3d2670ea74f2ba55566dba9f6ff2a590537e7a729a9963d5b12c46aaaaca8bd",
