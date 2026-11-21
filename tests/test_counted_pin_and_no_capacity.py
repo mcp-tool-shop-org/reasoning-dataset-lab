@@ -2308,3 +2308,216 @@ def test_ask6_card_and_shape_validated_before_any_paid_session_opens(tmp_path: P
     assert sc_unknown["shape_check"]["observed"] is None
     assert sc_unknown["shape_check"]["match"] is False
 
+
+def test_low_margin_canary_shared_rule_parity() -> None:
+    """Part A item 1: `vm_judges` and `bakeoff_judge` share one `low_margin`/`canary` implementation in `src/`."""
+    from reasoning_dataset_lab.errors import RdlabError
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge, low_margin_fields
+
+    assert vm_judges.LOW_MARGIN_CANARY_FIELD_PAIRS is bakeoff_judge.LOW_MARGIN_CANARY_FIELD_PAIRS
+    assert bakeoff_judge.LOW_MARGIN_CANARY_FIELD_PAIRS is low_margin_fields.LOW_MARGIN_CANARY_FIELD_PAIRS
+
+    resolve_cases: list[tuple[dict[str, Any], str, str, Any, Any]] = [
+        ({"low_margin_item_ids": ["a"]}, "low_margin_item_ids", "canary_item_ids", None, ["a"]),
+        ({"canary_item_ids": ["b"]}, "low_margin_item_ids", "canary_item_ids", None, ["b"]),
+        (
+            {"low_margin_item_ids": ["a"], "canary_item_ids": ["a"]},
+            "low_margin_item_ids",
+            "canary_item_ids",
+            None,
+            ["a"],
+        ),
+        ({"low_margin_item_ids": []}, "low_margin_item_ids", "canary_item_ids", ["fallback"], []),
+        ({"low_margin_anchor_count": 0}, "low_margin_anchor_count", "canary_anchor_count", 25, 0),
+        ({"reversed_low_margin_rerun": False}, "reversed_low_margin_rerun", "reversed_canary_rerun", True, False),
+        (
+            {"low_margin_anchor_count": None, "canary_anchor_count": 12},
+            "low_margin_anchor_count",
+            "canary_anchor_count",
+            25,
+            12,
+        ),
+        ({}, "low_margin_selection_rule", "canary_selection_rule", "default-rule", "default-rule"),
+    ]
+    for doc, lm_key, can_key, default_val, expected in resolve_cases:
+        assert (
+            bakeoff_judge.resolve_low_margin_or_canary_field(
+                doc, lm_key, can_key, default=default_val
+            )
+            == expected
+        )
+        assert (
+            vm_judges.resolve_low_margin_or_canary_field(
+                doc, lm_key, can_key, default=default_val
+            )
+            == expected
+        )
+        bakeoff_judge.check_low_margin_canary_conflicts(doc)
+        vm_judges.check_low_margin_canary_conflicts(doc)
+
+    conflict_docs: list[tuple[dict[str, Any], str, str]] = [
+        (
+            {"low_margin_item_ids": [], "canary_item_ids": ["a"]},
+            "low_margin_item_ids",
+            "canary_item_ids",
+        ),
+        (
+            {"low_margin_anchor_count": 25, "canary_anchor_count": 10},
+            "low_margin_anchor_count",
+            "canary_anchor_count",
+        ),
+        (
+            {"low_margin_selection_rule": "r1", "canary_selection_rule": "r2"},
+            "low_margin_selection_rule",
+            "canary_selection_rule",
+        ),
+        (
+            {"low_margin_inputs_sha256": "a" * 64, "canary_inputs_sha256": "b" * 64},
+            "low_margin_inputs_sha256",
+            "canary_inputs_sha256",
+        ),
+        (
+            {"low_margin_telemetry_sha256": "", "canary_telemetry_sha256": "c" * 64},
+            "low_margin_telemetry_sha256",
+            "canary_telemetry_sha256",
+        ),
+        (
+            {"reversed_low_margin_rerun": False, "reversed_canary_rerun": True},
+            "reversed_low_margin_rerun",
+            "reversed_canary_rerun",
+        ),
+    ]
+    for doc, lm_key, can_key in conflict_docs:
+        with pytest.raises(RdlabError) as exc_bj_res:
+            bakeoff_judge.resolve_low_margin_or_canary_field(
+                doc, lm_key, can_key, refusal_code="MERGE_CONFIG_INVALID", doc_label="cfg.json"
+            )
+        with pytest.raises(vm_judges.RefusalError) as exc_vm_res:
+            vm_judges.resolve_low_margin_or_canary_field(
+                doc, lm_key, can_key, refusal_code="MERGE_CONFIG_INVALID", doc_label="cfg.json"
+            )
+        assert exc_bj_res.value.code == exc_vm_res.value.failure_class == "MERGE_CONFIG_INVALID"
+        assert exc_bj_res.value.message == exc_vm_res.value.detail
+
+        with pytest.raises(RdlabError) as exc_bj_chk:
+            bakeoff_judge.check_low_margin_canary_conflicts(
+                doc, refusal_code="MERGE_CONFIG_INVALID", doc_label="cfg.json"
+            )
+        with pytest.raises(vm_judges.RefusalError) as exc_vm_chk:
+            vm_judges.check_low_margin_canary_conflicts(
+                doc, refusal_code="MERGE_CONFIG_INVALID", doc_label="cfg.json"
+            )
+        assert exc_bj_chk.value.code == exc_vm_chk.value.failure_class == "MERGE_CONFIG_INVALID"
+        assert exc_bj_chk.value.message == exc_vm_chk.value.detail
+
+
+def test_goldens_stub_marks_shared_rule_parity(tmp_path: Path) -> None:
+    """Part A item 2: `promote_goldens` and `vm_judges` share one `boot_gatekeeper_goldens_stub_marks` rule."""
+    import importlib
+
+    promote_goldens = importlib.import_module("promote_goldens")
+    assert promote_goldens.boot_gatekeeper_goldens_stub_marks is vm_judges.boot_gatekeeper_goldens_stub_marks
+
+    repo_doc = json.loads((SCRIPTS_COLAB_DIR / "boot_gatekeeper_goldens.json").read_text(encoding="utf-8"))
+    real_prom = json.loads(_filled_goldens(tmp_path / "real_prom" / "g.json").read_text(encoding="utf-8"))
+    stub_syn = json.loads(
+        _stub_marked_goldens(tmp_path / "stub_syn" / "g.json", "synthetic").read_text(encoding="utf-8")
+    )
+    stub_prov = json.loads(
+        _stub_marked_goldens(tmp_path / "stub_prov" / "g.json", "provenance").read_text(encoding="utf-8")
+    )
+    stub_filled = json.loads(
+        _stub_filled_goldens_from_lock_check_stub(tmp_path / "stub_filled").read_text(encoding="utf-8")
+    )
+    rf_path, _, _ = _real_filled_goldens_and_receipt(tmp_path, tag="rf_clean")
+    real_filled = json.loads(rf_path.read_text(encoding="utf-8"))
+
+    # Mutate additional edge documents into one shared table.
+    prom_with_bad_prov = json.loads(json.dumps(real_prom))
+    prom_with_bad_prov["provenance"] = {
+        "window_id": "window-lock-check",
+        "mode": "lock_check_stub",
+        "hash_source": "",
+        "stub_transport": False,
+    }
+    filled_stub_wid = json.loads(json.dumps(real_filled))
+    filled_stub_wid["provenance"]["window_id"] = "win-stub-01"
+    filled_bad_hs = json.loads(json.dumps(real_filled))
+    filled_bad_hs["provenance"]["hash_source"] = "synthetic"
+
+    docs_table: list[tuple[str, dict[str, Any], list[str]]] = [
+        ("repo_unfilled", repo_doc, []),
+        ("real_promoted", real_prom, []),
+        ("real_filled", real_filled, []),
+        ("stub_marked_synthetic", stub_syn, ["card_types.A100.synthetic_fake_hash"]),
+        ("stub_marked_provenance", stub_prov, ["promoted_provenance.stub_transport"]),
+        (
+            "stub_filled",
+            stub_filled,
+            [
+                "provenance.stub_transport",
+                "provenance.mode=lock-check-stub",
+                "provenance.hash_source=synthetic",
+                "provenance.window_id=w-stub",
+                "card_types.A100.synthetic_fake_hash",
+            ],
+        ),
+        (
+            "prom_with_bad_prov",
+            prom_with_bad_prov,
+            [
+                "provenance.mode=lock_check_stub",
+                "provenance.hash_source=missing",
+                "provenance.window_id=window-lock-check",
+            ],
+        ),
+        ("filled_stub_wid", filled_stub_wid, ["provenance.window_id=win-stub-01"]),
+        ("filled_bad_hs", filled_bad_hs, ["provenance.hash_source=synthetic"]),
+    ]
+
+    for tag, doc, expected_marks in docs_table:
+        assert promote_goldens.boot_gatekeeper_goldens_stub_marks(doc) == expected_marks, tag
+        assert vm_judges.boot_gatekeeper_goldens_stub_marks(doc) == expected_marks, tag
+        # Both agree per-card when inspecting card_entry directly as well.
+        card_entry = (doc.get("card_types") or {}).get("A100")
+        if card_entry is not None:
+            per_card = vm_judges.boot_gatekeeper_goldens_stub_marks(doc, card_entry)
+            assert bool(per_card) == bool(expected_marks), tag
+
+    # End-to-end verification callers agree: real filled/promoted passes, stub-marked refuses in both callers.
+    rf_ok_p, rf_ok_rec, rf_ok_sha = _real_filled_goldens_and_receipt(tmp_path, tag="e2e_ok")
+    verified_pg, _ = promote_goldens.verify_filled_goldens(
+        rf_ok_p, expected_sha256=rf_ok_sha, receipt_path=rf_ok_rec
+    )
+    assert verified_pg["provenance"]["window_id"] == "win-lc-real-01"
+    prom_ok_p = tmp_path / "e2e_ok" / "promoted.json"
+    promote_goldens.promote_goldens_file(
+        rf_ok_p, output_path=prom_ok_p, expected_sha256=rf_ok_sha, receipt_path=rf_ok_rec
+    )
+    assert vm_judges.preflight_boot_gatekeeper_goldens(
+        mode="counted", repo_root=REPO_ROOT, goldens_path=prom_ok_p, card_type="A100"
+    ) == {"card_type": "A100", "goldens_complete": True}
+
+    rf_stub_p, rf_stub_rec, rf_stub_sha = _real_filled_goldens_and_receipt(
+        tmp_path, tag="e2e_stub", window_id="win-stub-99"
+    )
+    with pytest.raises(promote_goldens.PromoteGoldensRefusalError) as exc_pg_stub:
+        promote_goldens.verify_filled_goldens(
+            rf_stub_p, expected_sha256=rf_stub_sha, receipt_path=rf_stub_rec
+        )
+    assert exc_pg_stub.value.failure_class == "PROMOTE_GOLDENS_STUB_REFUSED"
+    stub_prom_p = tmp_path / "e2e_stub" / "promoted_stub.json"
+    promote_goldens.promote_goldens_file(
+        rf_stub_p,
+        output_path=stub_prom_p,
+        expected_sha256=rf_stub_sha,
+        receipt_path=rf_stub_rec,
+        allow_stub_transport=True,
+    )
+    with pytest.raises(vm_judges.RefusalError) as exc_vm_stub:
+        vm_judges.preflight_boot_gatekeeper_goldens(
+            mode="counted", repo_root=REPO_ROOT, goldens_path=stub_prom_p, card_type="A100"
+        )
+    assert exc_vm_stub.value.failure_class == "BOOT_GATEKEEPER_STUB_TRANSPORT_REFUSED"
+
+

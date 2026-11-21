@@ -68,6 +68,12 @@ from reasoning_dataset_lab.pilot_b.device import (
     DeviceRefusalError,
     normalize_judge_device,
 )
+from reasoning_dataset_lab.pilot_b.low_margin_fields import (
+    LOW_MARGIN_CANARY_FIELD_PAIRS,
+    ConflictingLowMarginCanaryFieldError,
+    check_low_margin_canary_conflicts as _shared_check_low_margin_canary_conflicts,
+    resolve_low_margin_or_canary_field as _shared_resolve_low_margin_or_canary_field,
+)
 
 OrderMode = Literal["AB", "BA"]
 from reasoning_dataset_lab.pilot_b.run_records import OUTCOME_DRAFT_FILENAME, REVERIFY_HINT_TEMPLATE, UNVERIFIED_JUDGE_DONE_FILENAME, collect_run_unverified_passes, format_unverified_or_incomplete_refusal  # noqa: E501
@@ -2305,17 +2311,7 @@ def _compute_shard_manifest_body_sha256(manifest_doc: Mapping[str, Any]) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-LOW_MARGIN_CANARY_FIELD_PAIRS: tuple[tuple[str, str], ...] = (
-    ("low_margin_item_ids", "canary_item_ids"),
-    ("low_margin_anchor_count", "canary_anchor_count"),
-    ("low_margin_selection_rule", "canary_selection_rule"),
-    ("low_margin_inputs_sha256", "canary_inputs_sha256"),
-    ("low_margin_telemetry_sha256", "canary_telemetry_sha256"),
-    ("reversed_low_margin_rerun", "reversed_canary_rerun"),
-)
-
-
-def _resolve_low_margin_or_canary_field(
+def resolve_low_margin_or_canary_field(
     doc: Mapping[str, Any],
     low_margin_key: str,
     canary_key: str,
@@ -2324,37 +2320,39 @@ def _resolve_low_margin_or_canary_field(
     refusal_code: str = "SHARD_MANIFEST_INVALID",
     doc_label: str = "manifest",
 ) -> Any:
-    """Resolve `low_margin_*` vs `canary_*` from `doc`: `low_margin_*` wins when not None; conflicting dual keys refuse."""
-    has_lm = low_margin_key in doc and doc[low_margin_key] is not None
-    has_can = canary_key in doc and doc[canary_key] is not None
-    if has_lm and has_can and doc[low_margin_key] != doc[canary_key]:
-        raise refused_error(
-            refusal_code,
-            f"Conflicting dual keys in {doc_label}: {low_margin_key}={doc[low_margin_key]!r} != {canary_key}={doc[canary_key]!r}.",
-            f"Use canonical {low_margin_key} (or ensure {canary_key} matches {low_margin_key}).",
+    """Resolve `low_margin_*` vs `canary_*` from `doc` using the shared rule, raising `RdlabError` on conflicts."""
+    try:
+        return _shared_resolve_low_margin_or_canary_field(
+            doc,
+            low_margin_key,
+            canary_key,
+            default=default,
+            refusal_code=refusal_code,
+            doc_label=doc_label,
         )
-    if has_lm:
-        return doc[low_margin_key]
-    if has_can:
-        return doc[canary_key]
-    return default
+    except ConflictingLowMarginCanaryFieldError as exc:
+        raise refused_error(exc.refusal_code, exc.message, exc.hint) from exc
 
 
-def _check_low_margin_canary_conflicts(
+def check_low_margin_canary_conflicts(
     doc: Mapping[str, Any],
     *,
     refusal_code: str = "SHARD_MANIFEST_INVALID",
     doc_label: str = "manifest",
 ) -> None:
-    """Refuse when any `(low_margin_*, canary_*)` pair is present in `doc` with conflicting non-None values."""
-    for lm_key, can_key in LOW_MARGIN_CANARY_FIELD_PAIRS:
-        _resolve_low_margin_or_canary_field(
+    """Refuse (`RdlabError`) when any `(low_margin_*, canary_*)` pair conflicts, using the shared rule."""
+    try:
+        _shared_check_low_margin_canary_conflicts(
             doc,
-            lm_key,
-            can_key,
             refusal_code=refusal_code,
             doc_label=doc_label,
         )
+    except ConflictingLowMarginCanaryFieldError as exc:
+        raise refused_error(exc.refusal_code, exc.message, exc.hint) from exc
+
+
+_resolve_low_margin_or_canary_field = resolve_low_margin_or_canary_field
+_check_low_margin_canary_conflicts = check_low_margin_canary_conflicts
 
 
 def select_lock_check_low_margin_anchors(
