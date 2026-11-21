@@ -990,16 +990,30 @@ def test_launcher_symlinked_vm_script_staged_as_regular_file_and_immune_to_mutat
     items_file = _make_synthetic_public_items(tmp_path / "sym_data", count=2)
     env_paths = fake_colab.setup_fake_colab_environment(tmp_path / "sym_env", neighbour_sessions=[])
     saved_bundle = tmp_path / "captured_repo_bundle.tar.gz"
+    exec_hashes_file = tmp_path / "captured_exec_f_hashes.jsonl"
     helper_src = f"""
-import os, shutil, sys
+import hashlib, json, os, shutil, sys
 from pathlib import Path
 
 real_colab, *args = sys.argv[1:]
 if args and args[0] == "new":
     target = Path({str(target_py)!r})
-    target.write_bytes(target.read_bytes() + b"# mutated after launch\\n")
+    target.write_bytes(target.read_bytes() + b"\\nraise SystemExit(99)\\n")
 if len(args) >= 5 and args[0] == "upload" and args[4] == "/content/repo_bundle.tar.gz":
     shutil.copy2(args[3], {str(saved_bundle)!r})
+if args and args[0] == "exec" and "-f" in args:
+    f_idx = args.index("-f")
+    if f_idx + 1 < len(args):
+        sent_path = Path(args[f_idx + 1])
+        digest = hashlib.sha256(sent_path.read_bytes()).hexdigest() if sent_path.is_file() else None
+        step = None
+        for idx, tok in enumerate(args):
+            if tok == "--env" and idx + 1 < len(args) and args[idx + 1].startswith("RDLAB_STEP="):
+                step = args[idx + 1].split("=", 1)[1]
+            elif tok.startswith("--env=RDLAB_STEP="):
+                step = tok.split("=", 2)[2]
+        with open({str(exec_hashes_file)!r}, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps({{"step": step, "path": str(sent_path), "sha256": digest}}) + "\\n")
 os.execv(real_colab, [real_colab, *args])
 """
     tbin = _tampering_colab_wrapper(
@@ -1033,10 +1047,19 @@ os.execv(real_colab, [real_colab, *args])
         timeout=180,
         check=False,
     )
+    want_sha = hashlib.sha256(orig_bytes).hexdigest()
+    assert exec_hashes_file.is_file()
+    exec_records = [
+        json.loads(ln)
+        for ln in exec_hashes_file.read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    assert [r["step"] for r in exec_records] == ["alive", "gate", "run"]
+    assert [r["sha256"] for r in exec_records] == [want_sha, want_sha, want_sha], exec_records
     assert proc.returncode == 0, proc.stdout[-3000:] + proc.stderr[-3000:]
     outcome = json.loads((out_dir / "outcome.draft.json").read_text(encoding="utf-8"))
     assert outcome["kit_vm_script_check"] == "passed"
-    assert outcome["kit_vm_judges_py_sha256"] == hashlib.sha256(orig_bytes).hexdigest()
+    assert outcome["kit_vm_judges_py_sha256"] == want_sha
     assert not (out_dir / "stage").exists()
     assert saved_bundle.is_file()
     with tarfile.open(saved_bundle, "r:gz") as tf:
