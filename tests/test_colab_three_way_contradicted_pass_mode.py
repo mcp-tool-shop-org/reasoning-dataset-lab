@@ -364,23 +364,139 @@ def test_arm_d3_readout_maps_shown_keys_to_internal_classes() -> None:
     assert r_old.raw_verdict == "unsupported"
 
 
-def test_d3_transport_reads_the_answer_under_the_payload_question_id() -> None:
-    """D3MiniTransport reads the answers under the question ids it sent: "verdict" in the arm, "supported" in three_way, ("q1", "q2") in two-question."""
-    import inspect
+def test_d3_transport_generate_reads_answers_under_each_pass_mode_question_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#96 C5: behavioural proof that `D3MiniTransport.generate` reads answers under each mode's question ids and fails closed on missing or error answers."""
+    from tests.test_bakeoff_judge_d3_transport import _install_stub_modules, _offline, _write_fake_snapshot
 
-    src = inspect.getsource(bakeoff_judge.D3MiniTransport.generate)
-    assert 'q_keys = tuple(questions) or ("supported",)' in src
-    assert "answers.get(k)" in src
-    assert 'answers.get("supported")' not in src
-    for mode, qids in (
-        (ARM, ("verdict",)),
-        ("three_way", ("supported",)),
-        ("binary", ("supported",)),
-        ("three_way_two_question", ("q1", "q2")),
-    ):
-        payload = _prompt("d3-mini", ITEMS[0], "AB", mode).structured_payload or {}
-        _state, questions = bakeoff_judge.check_d3_text_only_inputs(payload)
-        assert tuple(questions) == qids
+    class _StubD3ByQuestionId:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+            self.next_answers: dict[str, Any] = {}
+
+        def system_one(self, **kwargs: Any) -> dict[str, Any]:
+            self.calls.append(dict(kwargs))
+            return {"model": "d3-mini", "answers": self.next_answers}
+
+    _offline(monkeypatch)
+    hf_home, receipts_dir, _ = _write_fake_snapshot(tmp_path)
+    stub = _StubD3ByQuestionId()
+    _install_stub_modules(monkeypatch, model=stub)
+    spec = BAKEOFF_JUDGE_SPECS["d3-mini"]
+    transport = bakeoff_judge.D3MiniTransport(receipts_dir=receipts_dir, hf_home=hf_home, device="cpu")
+    transport.verify_ready(spec, allow_remote_code_reviewed=bakeoff_judge.D3_MINI_REVIEWED_REVISION)
+    adapter = build_judge_adapter(spec)
+
+    valid_cases: tuple[tuple[str, tuple[str, ...], dict[str, Any], str, str], ...] = (
+        (
+            ARM,
+            ("verdict",),
+            {"verdict": {"choice": "contradicted", "probabilities": {"supported": 0.1, "contradicted": 0.8, "can't tell": 0.1}}},
+            "contradicted",
+            "unsupported",
+        ),
+        (
+            "three_way",
+            ("supported",),
+            {"supported": {"choice": "supported", "probabilities": {"supported": 0.75, "unsupported": 0.15, "cannot_tell": 0.1}}},
+            "supported",
+            "supported",
+        ),
+        (
+            "binary",
+            ("supported",),
+            {"supported": {"type": "noul", "noul": 0.85}},
+            "yes",
+            "yes",
+        ),
+        (
+            "three_way_two_question",
+            ("q1", "q2"),
+            {"q1": {"noul": 0.82}, "q2": {"noul": 0.11}},
+            "yes",
+            "supported",
+        ),
+        (
+            "three_way_symmetric",
+            ("verdict",),
+            {"verdict": {"choice": "proved false", "probabilities": {"proved true": 0.1, "proved false": 0.75, "undetermined": 0.15}}},
+            "proved false",
+            "unsupported",
+        ),
+        (
+            "three_way_schedules",
+            ("verdict",),
+            {"verdict": {"choice": "can't tell", "probabilities": {"supported": 0.1, "contradicted": 0.2, "can't tell": 0.7}}},
+            "can't tell",
+            "cannot_tell",
+        ),
+    )
+    for mode, expected_qids, answers, expected_token, expected_verdict in valid_cases:
+        stub.next_answers = answers
+        resp = transport.generate(spec, _prompt("d3-mini", ITEMS[0], "AB", mode), seed=1)
+        assert tuple(stub.calls[-1]["questions"]) == expected_qids
+        assert resp.done_reason == "stop" and resp.stop_reason == "eos"
+        assert resp.tokens == (expected_token,) and len(resp.verdict_top_logprobs) > 0
+        readout = adapter.parse_response(resp, pass_mode=mode)  # type: ignore[arg-type]
+        assert readout.state == "parsed" and readout.raw_verdict == expected_verdict
+
+    # Answer stored under the wrong question id (`supported` instead of `verdict`) must fail closed.
+    stub.next_answers = {
+        "supported": {"choice": "contradicted", "probabilities": {"supported": 0.1, "contradicted": 0.8, "can't tell": 0.1}}
+    }
+    resp_wrong_id = transport.generate(spec, _prompt("d3-mini", ITEMS[0], "AB", ARM), seed=1)
+    assert resp_wrong_id.done_reason == "error" and resp_wrong_id.stop_reason == "error" and resp_wrong_id.tokens == ()
+    readout_wrong_id = adapter.parse_response(resp_wrong_id, pass_mode=ARM)
+    assert (
+        readout_wrong_id.state == "unparseable"
+        and readout_wrong_id.done_reason == "error"
+        and readout_wrong_id.raw_verdict is None
+        and readout_wrong_id.parse_note == bakeoff_judge.D3_ERROR_PARSE_NOTE
+    )
+
+    # Multi-question missing q2 must fail closed.
+    stub.next_answers = {"q1": {"noul": 0.82}}
+    resp_missing_q2 = transport.generate(spec, _prompt("d3-mini", ITEMS[0], "AB", "three_way_two_question"), seed=1)
+    assert resp_missing_q2.done_reason == "error"
+    assert adapter.parse_response(resp_missing_q2, pass_mode="three_way_two_question").state == "unparseable"
+
+    # Multi-question q2 carrying `error` alongside `noul` must stay unparseable (#96 B1).
+    stub.next_answers = {"q1": {"noul": 0.82}, "q2": {"error": "backend_failure", "noul": 0.11}}
+    resp_err_q2 = transport.generate(spec, _prompt("d3-mini", ITEMS[0], "AB", "three_way_two_question"), seed=1)
+    assert resp_err_q2.done_reason == "error"
+    readout_err_q2 = adapter.parse_response(resp_err_q2, pass_mode="three_way_two_question")
+    assert (
+        readout_err_q2.state == "unparseable"
+        and readout_err_q2.done_reason == "error"
+        and readout_err_q2.raw_verdict is None
+        and readout_err_q2.parse_note == bakeoff_judge.D3_ERROR_PARSE_NOTE
+    )
+
+    # Multi-question q2 carrying `max_length_exceeded` records length stop.
+    stub.next_answers = {"q1": {"noul": 0.82}, "q2": {"error": "max_length_exceeded"}}
+    resp_len_q2 = transport.generate(spec, _prompt("d3-mini", ITEMS[0], "AB", "three_way_two_question"), seed=1)
+    assert resp_len_q2.done_reason == "length" and resp_len_q2.stop_reason == "max_new_tokens"
+    assert adapter.parse_response(resp_len_q2, pass_mode="three_way_two_question").state == "length_stop"
+
+    # `three_way_schedules` answer carrying `error` alongside valid probabilities stays unparseable (#96 B1).
+    stub.next_answers = {
+        "verdict": {
+            "error": "backend_failure",
+            "choice": "can't tell",
+            "probabilities": {"supported": 0.1, "contradicted": 0.2, "can't tell": 0.7},
+        }
+    }
+    resp_sched_err = transport.generate(spec, _prompt("d3-mini", ITEMS[0], "AB", "three_way_schedules"), seed=1)
+    assert resp_sched_err.done_reason == "error"
+    readout_sched_err = adapter.parse_response(resp_sched_err, pass_mode="three_way_schedules")
+    assert (
+        readout_sched_err.state == "unparseable"
+        and readout_sched_err.done_reason == "error"
+        and readout_sched_err.raw_verdict is None
+        and readout_sched_err.parse_note == bakeoff_judge.D3_ERROR_PARSE_NOTE
+    )
 
 
 def _strip_arm(doc: Any) -> Any:
