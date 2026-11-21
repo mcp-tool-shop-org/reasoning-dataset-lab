@@ -1078,7 +1078,10 @@ def _validate_triad_shape(triad_shape: Any) -> TriadShape:
 
 
 def _check_render_inputs(inputs: Mapping[str, Any], *, triad_shape: TriadShape = "three_claims") -> None:
-    """Hold the render inputs to an honest build's shape and value domains."""
+    """Hold the render inputs to an honest build's shape and value domains.
+
+    ``triad_shape`` selects ``"three_claims"`` (default) or ``"one_claim"`` and is never inferred from the inputs.
+    """
 
     _validate_triad_shape(triad_shape)
 
@@ -1185,6 +1188,7 @@ def _check_render_inputs(inputs: Mapping[str, Any], *, triad_shape: TriadShape =
             raise _invalid_inputs("an entry's fields")
         if [e["key"] for e in group] != list(VERDICT_CLASSES):
             raise _invalid_inputs("a triad does not hold one entry per class in class order")
+        material: Any
         if triad_shape == "three_claims":
             common = {(e["triad_id"], e["table_id"], e["domain"], e["closure"], e["material"]) for e in group}
             if len(common) != 1:
@@ -1195,7 +1199,7 @@ def _check_render_inputs(inputs: Mapping[str, Any], *, triad_shape: TriadShape =
             if len(common_one_claim) != 1:
                 raise _invalid_inputs("the entries of a triad differ in their shared fields")
             triad_id, table_id, domain, closure = next(iter(common_one_claim))
-            material = ""
+            material = None
         if domain not in catalogue:
             raise _invalid_inputs("a triad's domain is not in the domain catalogue")
         if table_id in seen_tables:
@@ -2279,6 +2283,7 @@ def _verify_render(
 ) -> None:
     """The authority: re-render every public file from the sealed store and require a byte-for-byte match."""
 
+    _validate_triad_shape(triad_shape)
     store = _validated_store(keys_sealed_path)
     store_dir = keys_sealed_path.parent
     inputs_path = store_dir / RENDER_INPUTS_NAME
@@ -2367,7 +2372,8 @@ def verify_sealed_part(
 ) -> None:
     """Verify a sealed part against the sealed store: every public file must be a byte-exact honest rendering.
 
-    ``triad_shape`` must be selected explicitly by the caller and is never inferred from the data:
+    ``triad_shape`` is never inferred from the data; ``"three_claims"`` is the default and ``"one_claim"``
+    must be passed explicitly:
     - ``"three_claims"`` (default): each triad shares one material and holds three distinct claims.
     - ``"one_claim"``: each triad shares one claim and holds three distinct per-entry materials.
     Any other ``triad_shape`` value is refused with ``PILOT_B_UNKNOWN_TRIAD_SHAPE``.
@@ -2397,13 +2403,25 @@ def verify_sealed_part(
 
 
 def freeze_sealed_part(
-    part_dir: Path, keys_sealed_path: Path, extra_public_files: Sequence[Path] = ()
+    part_dir: Path,
+    keys_sealed_path: Path,
+    extra_public_files: Sequence[Path] = (),
+    *,
+    triad_shape: TriadShape = "three_claims",
 ) -> dict[str, Any]:
-    """Verify the part, then mark it frozen by rendering it again with its seal.
+    """Verify the part under ``triad_shape``, then mark it frozen by rendering it again with its seal.
 
+    ``triad_shape`` (``"three_claims"`` default or ``"one_claim"``) is passed through to
+    ``verify_sealed_part`` and is never inferred from the data.
     A part written with a test-only seed is verified but never marked frozen: it is not releasable.
     """
-    verify_sealed_part(part_dir=part_dir, keys_sealed_path=keys_sealed_path, extra_public_files=extra_public_files)
+    _validate_triad_shape(triad_shape)
+    verify_sealed_part(
+        part_dir=part_dir,
+        keys_sealed_path=keys_sealed_path,
+        extra_public_files=extra_public_files,
+        triad_shape=triad_shape,
+    )
     store = _validated_store(keys_sealed_path)
     inputs = json.loads((keys_sealed_path.parent / RENDER_INPUTS_NAME).read_text(encoding="utf-8"))
     rendered = _render_part(
@@ -2418,15 +2436,26 @@ def freeze_sealed_part(
     return json.loads(rendered["part.json"])
 
 
-def part_status(part_dir: Path, keys_sealed_path: Path | None = None) -> str:
+def part_status(
+    part_dir: Path,
+    keys_sealed_path: Path | None = None,
+    *,
+    triad_shape: TriadShape = "three_claims",
+) -> str:
     """``"frozen"``, ``"not_frozen"``, or ``"unverifiable"``.
 
-    Without the sealed store nothing a public file says about itself can be trusted, so the answer is
+    ``triad_shape`` (``"three_claims"`` default or ``"one_claim"``) is validated first and
+    passed through to ``verify_sealed_part`` whenever the sealed store is present. Without the
+    sealed store nothing a public file says about itself can be trusted, so the answer is
     ``"unverifiable"``, never ``"frozen"``. With it, the part is verified and its seal recomputed.
     """
-
+    _validate_triad_shape(triad_shape)
     if keys_sealed_path is None or not (Path(keys_sealed_path).parent / SEALING_STORE_NAME).is_file():
         return "unverifiable"
-    verify_sealed_part(part_dir=part_dir, keys_sealed_path=Path(keys_sealed_path))
+    verify_sealed_part(
+        part_dir=part_dir,
+        keys_sealed_path=Path(keys_sealed_path),
+        triad_shape=triad_shape,
+    )
     meta = json.loads((part_dir / "part.json").read_text(encoding="utf-8"))
     return "frozen" if meta.get("frozen") is True else "not_frozen"

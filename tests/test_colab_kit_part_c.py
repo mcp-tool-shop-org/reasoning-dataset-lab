@@ -884,3 +884,271 @@ def test_a_spec_ceiling_of_zero_or_below_never_switches_the_guard_off() -> None:
     d3 = bakeoff_judge.JUDGE_SPECS["d3"]
     assert bakeoff_judge.resolve_judge_vram_halt_mib(d3, 20_000) == 68_000  # a window value cannot lower d3's own
     assert bakeoff_judge.resolve_judge_vram_halt_mib(d3, 90_000) == 68_000  # nor raise it
+
+
+# --- #107 follow-ups: staged regular VM script, refused kit outcome, and stub refuse-after-passes hook ---------------
+
+
+def _tampering_colab_wrapper(base: Path, *, real_colab: str, helper_py_body: str) -> Path:
+    """Create a `colab` shell wrapper in `base/tamper_bin` delegating to `real_colab` through `sys.executable`."""
+    tbin = base / "tamper_bin"
+    tbin.mkdir(parents=True, exist_ok=True)
+    helper = tbin / "_colab_tamper_helper.py"
+    helper.write_text(helper_py_body, encoding="utf-8", newline="\n")
+    wrapper = tbin / "colab"
+    wrapper.write_text(
+        f"#!/bin/sh\nexec '{sys.executable}' '{_to_wsl_path(helper)}' '{_to_wsl_path(Path(real_colab))}' \"$@\"\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    wrapper.chmod(0o755)
+    return tbin
+
+
+def test_stub_refuse_after_passes_guard_and_helper(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`RDLAB_STUB_REFUSE_AFTER_PASSES` is listed in `FORBIDDEN_COUNTED_TEST_HOOK_NAMES`
+    (`vm_judges`, `merge_shards`, & `bakeoff_judge`),
+    refused in real modes, validates `'1'` vs `'0'`, and raises `STUB_REFUSED_AFTER_PASSES` in stub/dryrun mode."""
+    import merge_shards
+    from reasoning_dataset_lab.errors import RdlabError
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge
+
+    assert "RDLAB_STUB_REFUSE_AFTER_PASSES" in vm_judges.FORBIDDEN_COUNTED_TEST_HOOK_NAMES
+    assert "RDLAB_STUB_REFUSE_AFTER_PASSES" in merge_shards.FORBIDDEN_COUNTED_TEST_HOOK_NAMES
+    assert "RDLAB_STUB_REFUSE_AFTER_PASSES" in bakeoff_judge.FORBIDDEN_COUNTED_TEST_HOOK_NAMES
+    with pytest.raises(RdlabError) as exc_bj:
+        bakeoff_judge.guard_no_test_hooks_in_counted_mode(
+            "counted",
+            shard_spec="1/2",
+            fake_transport=False,
+            environ={"RDLAB_STUB_REFUSE_AFTER_PASSES": "1"},
+        )
+    assert exc_bj.value.code == "TEST_HOOK_IN_COUNTED_MODE"
+    for unset_val in ("", "0", "   "):
+        monkeypatch.setenv("RDLAB_STUB_REFUSE_AFTER_PASSES", unset_val)
+        vm_judges.maybe_refuse_stub_after_passes("stub", dryrun=False)
+        vm_judges.maybe_refuse_stub_after_passes("counted", dryrun=False)
+
+    monkeypatch.setenv("RDLAB_STUB_REFUSE_AFTER_PASSES", "1")
+    for real_mode in ("counted", "time-one", "lock-check"):
+        with pytest.raises(vm_judges.RefusalError) as exc_info:
+            vm_judges.guard_no_test_hooks_in_counted_mode(
+                real_mode,
+                dryrun=False,
+                environ={"RDLAB_STUB_REFUSE_AFTER_PASSES": "1"},
+            )
+        assert exc_info.value.failure_class == "TEST_HOOK_IN_COUNTED_MODE"
+        with pytest.raises(vm_judges.RefusalError) as exc_helper:
+            vm_judges.maybe_refuse_stub_after_passes(real_mode, dryrun=False)
+        assert exc_helper.value.failure_class == "TEST_HOOK_IN_COUNTED_MODE"
+    vm_judges.guard_no_test_hooks_in_counted_mode(
+        "stub", dryrun=False, environ={"RDLAB_STUB_REFUSE_AFTER_PASSES": "1"}
+    )
+    with pytest.raises(vm_judges.RefusalError) as exc_stub:
+        vm_judges.maybe_refuse_stub_after_passes("stub", dryrun=False)
+    assert exc_stub.value.failure_class == "STUB_REFUSED_AFTER_PASSES"
+
+    monkeypatch.setenv("RDLAB_STUB_REFUSE_AFTER_PASSES", "invalid")
+    with pytest.raises(vm_judges.RefusalError) as exc_bad:
+        vm_judges.maybe_refuse_stub_after_passes("stub", dryrun=True)
+    assert exc_bad.value.failure_class == "BAD_STUB_REFUSE_AFTER_PASSES"
+
+
+def test_stub_refuse_after_passes_vm_window(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """In stub dryrun, `RDLAB_STUB_REFUSE_AFTER_PASSES=1` completes every judge pass before refusing
+    `STUB_REFUSED_AFTER_PASSES` and packing `result.tar.gz` with refused receipts."""
+    monkeypatch.setenv("RDLAB_STUB_REFUSE_AFTER_PASSES", "1")
+    run = _run_window(tmp_path, monkeypatch, "stub_refuse_after")
+    assert run["rc"] == 2
+    st = json.loads(run["status_file"].read_text(encoding="utf-8"))
+    assert st["status"] == "refused"
+    assert st["failure_class"] == "STUB_REFUSED_AFTER_PASSES"
+    members = _tar_members(run["result_tar"])
+    doc = json.loads(members["vm_receipt.json"])
+    assert doc["status"] == "refused"
+    assert doc["failure_class"] == "STUB_REFUSED_AFTER_PASSES"
+    assert json.loads(members["window.json"])["mode"] == "stub"
+    done_members = [m for m in members if m.startswith("judge_done/") and m.endswith(".json")]
+    row_members = [m for m in members if m.startswith("rows/") and m.endswith(".jsonl")]
+    assert len(done_members) == len(vm_judges.BAKEOFF_JUDGE_SPECS)
+    assert len(row_members) == len(vm_judges.BAKEOFF_JUDGE_SPECS)
+
+
+def test_launcher_symlinked_vm_script_staged_as_regular_file_and_immune_to_mutation(
+    tmp_path: Path,
+) -> None:
+    """A symlinked `RDLAB_VM_SCRIPT` is staged once as a regular file, bundled without a symlink, and sent cleanly
+    even when the symlink target is modified after launch startup."""
+    target_py = tmp_path / "target_dir" / "real_vm_judges.py"
+    target_py.parent.mkdir(parents=True)
+    orig_bytes = VM_JUDGES_PY.read_bytes() + b"# symlink stub copy\n"
+    target_py.write_bytes(orig_bytes)
+    link_py = tmp_path / "linked_vm_judges.py"
+    link_py.symlink_to(target_py)
+
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "sym_data")
+    items_file = _make_synthetic_public_items(tmp_path / "sym_data", count=2)
+    env_paths = fake_colab.setup_fake_colab_environment(tmp_path / "sym_env", neighbour_sessions=[])
+    saved_bundle = tmp_path / "captured_repo_bundle.tar.gz"
+    helper_src = f"""
+import os, shutil, sys
+from pathlib import Path
+
+real_colab, *args = sys.argv[1:]
+if args and args[0] == "new":
+    target = Path({str(target_py)!r})
+    target.write_bytes(target.read_bytes() + b"# mutated after launch\\n")
+if len(args) >= 5 and args[0] == "upload" and args[4] == "/content/repo_bundle.tar.gz":
+    shutil.copy2(args[3], {str(saved_bundle)!r})
+os.execv(real_colab, [real_colab, *args])
+"""
+    tbin = _tampering_colab_wrapper(
+        tmp_path,
+        real_colab=str(env_paths["fake_bin"] / "colab"),
+        helper_py_body=helper_src,
+    )
+    out_dir = tmp_path / "sym_out"
+    exports = (
+        _base_launcher_exports(
+            env_paths,
+            open_lock=tmp_path / "sym.lock",
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+            items_file=items_file,
+        )
+        + _git_shim(tmp_path, mode="dirty")
+        + f"export PATH='{_to_wsl_path(tbin)}':\"$PATH\"; "
+        # Pass the symlink path itself (`os.path.abspath`), not `.resolve()`, so launch_judges.sh receives a symlink.
+        + f"export RDLAB_VM_SCRIPT='{Path(os.path.abspath(link_py)).as_posix()}'; "
+    )
+    proc = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --stub --out-dir '{_to_wsl_path(out_dir)}' --run-id kit-sym-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stdout[-3000:] + proc.stderr[-3000:]
+    outcome = json.loads((out_dir / "outcome.draft.json").read_text(encoding="utf-8"))
+    assert outcome["kit_vm_script_check"] == "passed"
+    assert outcome["kit_vm_judges_py_sha256"] == hashlib.sha256(orig_bytes).hexdigest()
+    assert not (out_dir / "stage").exists()
+    assert saved_bundle.is_file()
+    with tarfile.open(saved_bundle, "r:gz") as tf:
+        member = tf.getmember(vm_judges.KIT_VM_SCRIPT_RELPATH)
+        assert member.isreg() and not member.issym()
+        bundled_f = tf.extractfile(member)
+        assert bundled_f is not None and bundled_f.read() == orig_bytes
+
+
+def test_launcher_tampered_vm_script_records_refused_and_mismatch(tmp_path: Path) -> None:
+    """When the uploaded VM copy of `vm_judges.py` differs from `RDLAB_KIT_VM_JUDGES_PY_SHA256`, the VM refuses
+    `KIT_VM_SCRIPT_MISMATCH` and `outcome.draft.json` carries both `kit_vm_script_check='refused'` and
+    `failure_class='KIT_VM_SCRIPT_MISMATCH'`."""
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "tamp_data")
+    items_file = _make_synthetic_public_items(tmp_path / "tamp_data", count=2)
+    env_paths = fake_colab.setup_fake_colab_environment(tmp_path / "tamp_env", neighbour_sessions=[])
+    helper_src = f"""
+import io, os, sys, tarfile
+from pathlib import Path
+
+real_colab, *args = sys.argv[1:]
+if len(args) >= 5 and args[0] == "upload" and args[4] == "/content/repo_bundle.tar.gz":
+    src_tar = Path(args[3])
+    tampered_tar = src_tar.parent / "tampered_repo_bundle.tar.gz"
+    with tarfile.open(src_tar, "r:gz") as rf, tarfile.open(tampered_tar, "w:gz") as wf:
+        for m in rf.getmembers():
+            data = rf.extractfile(m).read() if m.isfile() else None
+            if m.name == {vm_judges.KIT_VM_SCRIPT_RELPATH!r} and data is not None:
+                data += b"\\n# tampered in transport\\n"
+                m.size = len(data)
+            if data is not None:
+                wf.addfile(m, io.BytesIO(data))
+            else:
+                wf.addfile(m)
+    args[3] = str(tampered_tar)
+os.execv(real_colab, [real_colab, *args])
+"""
+    tbin = _tampering_colab_wrapper(
+        tmp_path,
+        real_colab=str(env_paths["fake_bin"] / "colab"),
+        helper_py_body=helper_src,
+    )
+    out_dir = tmp_path / "tamp_out"
+    exports = (
+        _base_launcher_exports(
+            env_paths,
+            open_lock=tmp_path / "tamp.lock",
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+            items_file=items_file,
+        )
+        + f"export PATH='{_to_wsl_path(tbin)}':\"$PATH\"; "
+    )
+    proc = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --stub --out-dir '{_to_wsl_path(out_dir)}' --run-id kit-tamp-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+    assert proc.returncode == 2, proc.stdout[-3000:] + proc.stderr[-3000:]
+    status = json.loads((out_dir / "status.json").read_text(encoding="utf-8"))
+    assert status["status"] == "refused"
+    assert status["failure_class"] == "KIT_VM_SCRIPT_MISMATCH"
+    assert status["kit_vm_script_check"] == "refused"
+    outcome = json.loads((out_dir / "outcome.draft.json").read_text(encoding="utf-8"))
+    assert outcome["kit_vm_script_check"] == "refused"
+    assert outcome["failure_class"] == "KIT_VM_SCRIPT_MISMATCH"
+
+
+def test_launcher_stub_refuse_after_passes_completes_passes_and_refuses_real_window(tmp_path: Path) -> None:
+    """`RDLAB_STUB_REFUSE_AFTER_PASSES=1` runs all stub passes then takes the refusal path (`STUB_REFUSED_AFTER_PASSES`),
+    while a real `--time-one` window refuses it before any `colab` call (`TEST_HOOK_IN_COUNTED_MODE`)."""
+    res = _launch(
+        tmp_path,
+        "stub_refuse_hook",
+        extra="export RDLAB_STUB_REFUSE_AFTER_PASSES=1; ",
+    )
+    assert res["proc"].returncode == 2, res["where"]
+    status = json.loads((res["out_dir"] / "status.json").read_text(encoding="utf-8"))
+    assert status["status"] == "refused"
+    assert status["failure_class"] == "STUB_REFUSED_AFTER_PASSES"
+    vm_rec = json.loads((res["out_dir"] / "vm_receipt.json").read_text(encoding="utf-8"))
+    assert vm_rec["status"] == "refused" and vm_rec["failure_class"] == "STUB_REFUSED_AFTER_PASSES"
+    done_files = sorted((res["out_dir"] / "judge_done").glob("*.json"))
+    row_files = sorted((res["out_dir"] / "rows").glob("*.jsonl"))
+    assert len(done_files) == len(vm_judges.BAKEOFF_JUDGE_SPECS)
+    assert len(row_files) == len(vm_judges.BAKEOFF_JUDGE_SPECS)
+
+    receipts_dir, hf_home, part, items = _e2e_time_one_inputs(tmp_path)
+    real_res = _e2e_fake_real_mode_window(
+        tmp_path,
+        mode="time-one",
+        items_file=items,
+        part_dir=part,
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        extra_exports="export RDLAB_STUB_REFUSE_AFTER_PASSES=1; ",
+        expect_fail=True,
+        tag="real_refuse_hook",
+    )
+    assert real_res["proc"].returncode == 2, (
+        real_res["proc"].stdout[-3000:] + real_res["proc"].stderr[-3000:]
+    )
+    assert "TEST_HOOK_IN_COUNTED_MODE" in real_res["proc"].stderr
+    real_outcome = json.loads((real_res["out_dir"] / "outcome.draft.json").read_text(encoding="utf-8"))
+    assert real_outcome["failure_class"] == "TEST_HOOK_IN_COUNTED_MODE"
+    calls_log = real_res["env_paths"]["state_dir"] / "calls.jsonl"
+    calls = calls_log.read_text(encoding="utf-8") if calls_log.is_file() else ""
+    assert '"new"' not in calls and "upload" not in calls, calls[-2000:]

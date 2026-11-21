@@ -35,6 +35,7 @@ from vm_judges import (  # noqa: E402
     STUB_WINDOW_IDS,
     STUB_WINDOW_ID_TOKENS,
     RefusalError,
+    boot_gatekeeper_goldens_stub_marks,
     compute_filled_goldens_body_sha256,
     compute_goldens_body_sha256,
     is_stub_window_id,
@@ -523,17 +524,7 @@ def verify_filled_goldens(
                 f"Receipt card_type ({rec_card!r}) does not match provenance.card_type ({prov_card!r}).",
             )
 
-    stub_marks = [
-        *(["stub_transport"] if bool(prov.get("stub_transport")) else []),
-        *([f"mode={prov_mode}"] if prov_mode != "lock-check" else []),
-        *([f"hash_source={prov_hash_source or 'missing'}"] if prov_hash_source != "real_transport" else []),
-        *([f"window_id={prov_window_id}"] if is_stub_window_id(prov_window_id) else []),
-        *(
-            f"card_types.{ck}.synthetic_fake_hash"
-            for ck, cv in card_types.items()
-            if isinstance(cv, Mapping) and bool(cv.get("synthetic_fake_hash"))
-        ),
-    ]
+    stub_marks = boot_gatekeeper_goldens_stub_marks(doc)
     if stub_marks and not allow_stub_transport:
         raise PromoteGoldensRefusalError(
             PROMOTE_GOLDENS_STUB_REFUSED,

@@ -3357,6 +3357,13 @@ def test_real_service_assumptions_doc_table_and_line_citations(
         r"`((?:scripts|tests|src)/[A-Za-z0-9_./-]+):(\d+)(?:-(\d+))?`", text
     )
     assert len(citations) >= 25
+    assert not re.search(r"launch_judges\.sh:\d+|vm_judges\.py:\d+", text), (
+        "REAL_SERVICE_ASSUMPTIONS.md must cite launch_judges.sh and vm_judges.py by symbol name, not line number"
+    )
+    assert (
+        "deletes a `judge_done` / `rows` pair that is consistent with itself when the VM's latest `progress.jsonl` record for that pass differs"
+        in text
+    )
     for rel_path, start_s, end_s in citations:
         full_p = REPO_ROOT / rel_path
         assert full_p.is_file(), f"Cited path does not exist: {rel_path}"

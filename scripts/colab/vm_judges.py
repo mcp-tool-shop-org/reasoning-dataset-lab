@@ -9276,6 +9276,7 @@ FORBIDDEN_COUNTED_TEST_HOOK_NAMES: frozenset[str] = frozenset(
         "RDLAB_TEST_PLANT_LOG_LEAK",
         "RDLAB_FORCE_PINNED_UV",
         "RDLAB_STUB_EXERCISE_ELEPHANT_INSTALL",
+        "RDLAB_STUB_REFUSE_AFTER_PASSES",
         "RDLAB_VM_CONTENT_DIR",
         "RDLAB_CGROUP_DIR",
         "RDLAB_CGROUP_MEMORY_EVENTS_PATH",
@@ -9395,6 +9396,27 @@ def guard_no_test_hooks_in_counted_mode(
             "COUNTED_LIMIT_ITEMS_REFUSED",
             "RDLAB_LIMIT_ITEMS is forbidden in a real counted window (it would cut the shard manifest); unset it.",
         )
+
+
+def maybe_refuse_stub_after_passes(mode: str | None, *, dryrun: bool = False) -> None:
+    """In stub/dryrun mode when `RDLAB_STUB_REFUSE_AFTER_PASSES=1`, take the refusal path after judge passes."""
+    stub_refuse_raw = os.environ.get("RDLAB_STUB_REFUSE_AFTER_PASSES", "").strip()
+    if not stub_refuse_raw or stub_refuse_raw == "0":
+        return
+    if is_real_mode(mode, dryrun=dryrun):
+        raise RefusalError(
+            TEST_HOOK_IN_COUNTED_MODE,
+            "RDLAB_STUB_REFUSE_AFTER_PASSES is only allowed in stub or dryrun mode.",
+        )
+    if stub_refuse_raw != "1":
+        raise RefusalError(
+            "BAD_STUB_REFUSE_AFTER_PASSES",
+            f"Invalid RDLAB_STUB_REFUSE_AFTER_PASSES={stub_refuse_raw!r}; expected '1' or '0'.",
+        )
+    raise RefusalError(
+        "STUB_REFUSED_AFTER_PASSES",
+        "Refused after judge passes per RDLAB_STUB_REFUSE_AFTER_PASSES=1.",
+    )
 
 
 def _parse_nonneg_int_hook(
@@ -10522,14 +10544,43 @@ def verify_shard_manifest_file(
     )
 
 
-LOW_MARGIN_CANARY_FIELD_PAIRS: tuple[tuple[str, str], ...] = (
-    ("low_margin_item_ids", "canary_item_ids"),
-    ("low_margin_anchor_count", "canary_anchor_count"),
-    ("low_margin_selection_rule", "canary_selection_rule"),
-    ("low_margin_inputs_sha256", "canary_inputs_sha256"),
-    ("low_margin_telemetry_sha256", "canary_telemetry_sha256"),
-    ("reversed_low_margin_rerun", "reversed_canary_rerun"),
-)
+def _load_low_margin_fields_module() -> Any:
+    """Import shared `reasoning_dataset_lab.pilot_b.low_margin_fields` and bind `LOW_MARGIN_CANARY_FIELD_PAIRS`."""
+    import importlib
+
+    cached = sys.modules.get("reasoning_dataset_lab.pilot_b.low_margin_fields")
+    if cached is not None:
+        mod = cached
+    else:
+        _ensure_repo_imports()
+        argv0 = Path(sys.argv[0]).resolve() if sys.argv and sys.argv[0] else Path.cwd()
+        argv_src = argv0.parents[2] / "src" if len(argv0.parents) > 2 else Path.cwd() / "src"
+        candidates = [argv_src, Path.cwd() / "src", DEFAULT_REPO_DIR / "src"]
+        for sp in list(sys.path):
+            if not sp:
+                continue
+            sp_path = Path(sp).resolve()
+            candidates.append(sp_path / "src")
+            if len(sp_path.parents) > 1:
+                candidates.append(sp_path.parents[1] / "src")
+        for cand in reversed(candidates):
+            if (cand / "reasoning_dataset_lab").is_dir() and str(cand) not in sys.path:
+                sys.path.insert(0, str(cand))
+        mod = importlib.import_module("reasoning_dataset_lab.pilot_b.low_margin_fields")
+    global LOW_MARGIN_CANARY_FIELD_PAIRS
+    LOW_MARGIN_CANARY_FIELD_PAIRS = mod.LOW_MARGIN_CANARY_FIELD_PAIRS
+    return mod
+
+
+try:
+    from reasoning_dataset_lab.pilot_b.low_margin_fields import (
+        LOW_MARGIN_CANARY_FIELD_PAIRS,
+    )
+except ModuleNotFoundError:  # pragma: no cover - VM --step alive/gate before repo unpack
+    try:
+        LOW_MARGIN_CANARY_FIELD_PAIRS = _load_low_margin_fields_module().LOW_MARGIN_CANARY_FIELD_PAIRS
+    except ModuleNotFoundError:
+        LOW_MARGIN_CANARY_FIELD_PAIRS = ()  # type: ignore[assignment]
 
 
 def resolve_low_margin_or_canary_field(
@@ -10541,19 +10592,19 @@ def resolve_low_margin_or_canary_field(
     refusal_code: str = "SHARD_MANIFEST_INVALID",
     doc_label: str = "manifest",
 ) -> Any:
-    """Resolve `low_margin_*` vs `canary_*` from `doc` (`low_margin_*` wins when not None; conflicting dual keys refuse)."""
-    has_lm = low_margin_key in doc and doc[low_margin_key] is not None
-    has_can = canary_key in doc and doc[canary_key] is not None
-    if has_lm and has_can and doc[low_margin_key] != doc[canary_key]:
-        raise RefusalError(
-            refusal_code,
-            f"Conflicting dual keys in {doc_label}: {low_margin_key}={doc[low_margin_key]!r} != {canary_key}={doc[canary_key]!r}.",
+    """Resolve `low_margin_*` vs `canary_*` from `doc` using the shared `src/` rule, raising `RefusalError`."""
+    mod = _load_low_margin_fields_module()
+    try:
+        return mod.resolve_low_margin_or_canary_field(
+            doc,
+            low_margin_key,
+            canary_key,
+            default=default,
+            refusal_code=refusal_code,
+            doc_label=doc_label,
         )
-    if has_lm:
-        return doc[low_margin_key]
-    if has_can:
-        return doc[canary_key]
-    return default
+    except mod.ConflictingLowMarginCanaryFieldError as exc:
+        raise RefusalError(exc.refusal_code, exc.message) from exc
 
 
 def check_low_margin_canary_conflicts(
@@ -10562,15 +10613,16 @@ def check_low_margin_canary_conflicts(
     refusal_code: str = "SHARD_MANIFEST_INVALID",
     doc_label: str = "manifest",
 ) -> None:
-    """Refuse when any `(low_margin_*, canary_*)` pair is present in `doc` with conflicting non-None values."""
-    for lm_key, can_key in LOW_MARGIN_CANARY_FIELD_PAIRS:
-        resolve_low_margin_or_canary_field(
+    """Refuse (`RefusalError`) when any `(low_margin_*, canary_*)` pair conflicts, using the shared `src/` rule."""
+    mod = _load_low_margin_fields_module()
+    try:
+        mod.check_low_margin_canary_conflicts(
             doc,
-            lm_key,
-            can_key,
             refusal_code=refusal_code,
             doc_label=doc_label,
         )
+    except mod.ConflictingLowMarginCanaryFieldError as exc:
+        raise RefusalError(exc.refusal_code, exc.message) from exc
 
 
 def _verify_shard_manifest_bytes(
@@ -12862,7 +12914,8 @@ def verify_goldens_self_hash_and_provenance(
 def boot_gatekeeper_goldens_stub_marks(doc: Mapping[str, Any], card_entry: Any = None) -> list[str]:
     """The marks that say goldens were recorded on a stub or synthetic transport (never valid for a real counted
     comparison): `promoted_provenance.stub_transport` / `provenance.stub_transport`, a stub provenance mode, a stub
-    `window_id`, a missing or non-real `hash_source`, and the card's `synthetic_fake_hash`. Empty when none."""
+    `window_id`, a missing or non-real `hash_source`, and `synthetic_fake_hash` (on `card_entry` when given, else across
+    all `card_types` entries). Empty when none."""
     marks: list[str] = []
     for key in ("promoted_provenance", "provenance"):
         prov = doc.get(key)
@@ -12878,8 +12931,15 @@ def boot_gatekeeper_goldens_stub_marks(doc: Mapping[str, Any], card_entry: Any =
             win_id = str(prov.get("window_id") or "").strip()
             if win_id and is_stub_window_id(win_id):
                 marks.append(f"{key}.window_id={win_id}")
-    if isinstance(card_entry, Mapping) and bool(card_entry.get("synthetic_fake_hash")):
-        marks.append("card.synthetic_fake_hash")
+    if card_entry is not None:
+        if isinstance(card_entry, Mapping) and bool(card_entry.get("synthetic_fake_hash")):
+            marks.append("card.synthetic_fake_hash")
+    else:
+        card_types = doc.get("card_types")
+        if isinstance(card_types, Mapping):
+            for ck, cv in card_types.items():
+                if isinstance(cv, Mapping) and bool(cv.get("synthetic_fake_hash")):
+                    marks.append(f"card_types.{ck}.synthetic_fake_hash")
     return marks
 
 
@@ -13438,7 +13498,7 @@ def run_boot_gatekeeper(
                     f"Real record mode ({mode!r}) requires a non-stub window_id (got {raw_win_id!r}).",
                 )
         else:
-            marks = boot_gatekeeper_goldens_stub_marks(goldens_doc, card_entry)
+            marks = boot_gatekeeper_goldens_stub_marks(goldens_doc, card_entry if card_entry is not None else {})
             if marks:
                 raise RefusalError(
                     "BOOT_GATEKEEPER_STUB_TRANSPORT_REFUSED",
@@ -15255,6 +15315,7 @@ def main(argv: list[str] | None = None) -> int:
                         step_timings=step_timings,
                         step_order=step_order,
                     )
+                    maybe_refuse_stub_after_passes(args.mode, dryrun=dryrun)
                     stopped_after = "first_load"
                 elif until_step == "weights":
                     current_step = "download_and_verify_all_judge_weights"
@@ -15428,6 +15489,7 @@ def main(argv: list[str] | None = None) -> int:
                         step_timings=step_timings,
                         step_order=step_order,
                     )
+                    maybe_refuse_stub_after_passes(args.mode, dryrun=dryrun)
 
         current_step = "delete_uploaded_items"
         deleted_items_receipt = delete_uploaded_items_and_record_receipt(
