@@ -10553,10 +10553,19 @@ def _load_low_margin_fields_module() -> Any:
         mod = cached
     else:
         _ensure_repo_imports()
-        if "__file__" in globals():
-            src_dir = Path(__file__).resolve().parents[2] / "src"
-            if (src_dir / "reasoning_dataset_lab").is_dir() and str(src_dir) not in sys.path:
-                sys.path.insert(0, str(src_dir))
+        argv0 = Path(sys.argv[0]).resolve() if sys.argv and sys.argv[0] else Path.cwd()
+        argv_src = argv0.parents[2] / "src" if len(argv0.parents) > 2 else Path.cwd() / "src"
+        candidates = [argv_src, Path.cwd() / "src", DEFAULT_REPO_DIR / "src"]
+        for sp in list(sys.path):
+            if not sp:
+                continue
+            sp_path = Path(sp).resolve()
+            candidates.append(sp_path / "src")
+            if len(sp_path.parents) > 1:
+                candidates.append(sp_path.parents[1] / "src")
+        for cand in reversed(candidates):
+            if (cand / "reasoning_dataset_lab").is_dir() and str(cand) not in sys.path:
+                sys.path.insert(0, str(cand))
         mod = importlib.import_module("reasoning_dataset_lab.pilot_b.low_margin_fields")
     global LOW_MARGIN_CANARY_FIELD_PAIRS
     LOW_MARGIN_CANARY_FIELD_PAIRS = mod.LOW_MARGIN_CANARY_FIELD_PAIRS

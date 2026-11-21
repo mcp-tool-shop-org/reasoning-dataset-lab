@@ -906,12 +906,24 @@ def _tampering_colab_wrapper(base: Path, *, real_colab: str, helper_py_body: str
 
 
 def test_stub_refuse_after_passes_guard_and_helper(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`RDLAB_STUB_REFUSE_AFTER_PASSES` is listed in `FORBIDDEN_COUNTED_TEST_HOOK_NAMES` (`vm_judges` & `merge_shards`),
+    """`RDLAB_STUB_REFUSE_AFTER_PASSES` is listed in `FORBIDDEN_COUNTED_TEST_HOOK_NAMES`
+    (`vm_judges`, `merge_shards`, & `bakeoff_judge`),
     refused in real modes, validates `'1'` vs `'0'`, and raises `STUB_REFUSED_AFTER_PASSES` in stub/dryrun mode."""
     import merge_shards
+    from reasoning_dataset_lab.errors import RdlabError
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge
 
     assert "RDLAB_STUB_REFUSE_AFTER_PASSES" in vm_judges.FORBIDDEN_COUNTED_TEST_HOOK_NAMES
     assert "RDLAB_STUB_REFUSE_AFTER_PASSES" in merge_shards.FORBIDDEN_COUNTED_TEST_HOOK_NAMES
+    assert "RDLAB_STUB_REFUSE_AFTER_PASSES" in bakeoff_judge.FORBIDDEN_COUNTED_TEST_HOOK_NAMES
+    with pytest.raises(RdlabError) as exc_bj:
+        bakeoff_judge.guard_no_test_hooks_in_counted_mode(
+            "counted",
+            shard_spec="1/2",
+            fake_transport=False,
+            environ={"RDLAB_STUB_REFUSE_AFTER_PASSES": "1"},
+        )
+    assert exc_bj.value.code == "TEST_HOOK_IN_COUNTED_MODE"
     for unset_val in ("", "0", "   "):
         monkeypatch.setenv("RDLAB_STUB_REFUSE_AFTER_PASSES", unset_val)
         vm_judges.maybe_refuse_stub_after_passes("stub", dryrun=False)
