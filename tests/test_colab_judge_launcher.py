@@ -4020,7 +4020,7 @@ def test_probe_mode_dry_and_live_sequence_no_upload_no_hf_token_scrubs_and_isola
     assert dry_lines == [
         "colab sessions",
         "colab new -s rdlab-probe-dry-01",
-        "colab exec -s rdlab-probe-dry-01 --env RDLAB_STEP=probe --env RDLAB_WALL_SECONDS=240 -f scripts/colab/vm_judges.py --timeout=270",
+        f"colab exec -s rdlab-probe-dry-01 --env RDLAB_STEP=probe --env RDLAB_WALL_SECONDS=240 -f {wsl_out_dry}/stage/vm_judges.py --timeout=270",
         f"colab download -s rdlab-probe-dry-01 /content/probe.json {wsl_out_dry}/probe.json",
         "colab stop -s rdlab-probe-dry-01",
         "colab sessions",
@@ -4069,6 +4069,7 @@ def test_probe_mode_dry_and_live_sequence_no_upload_no_hf_token_scrubs_and_isola
     assert "--timeout=270" in exec_argv
     assert "RDLAB_STEP=probe" in exec_argv
     assert "RDLAB_WALL_SECONDS=240" in exec_argv
+    assert exec_argv[exec_argv.index("-f") + 1] == f"{_to_wsl_path(out_live)}/stage/vm_judges.py"
     for arg in exec_argv:
         assert "HF_TOKEN" not in arg
         assert "HUGGING_FACE" not in arg

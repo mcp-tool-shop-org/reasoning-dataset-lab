@@ -1773,7 +1773,7 @@ PY
     {
       printf 'colab sessions\n'
       printf 'colab new -s %s\n' "$SESSION_NAME"
-      printf 'colab exec -s %s %s -f %s --timeout=%s\n' "$SESSION_NAME" "$DRY_PROBE_ENV_STR" "$VM_SCRIPT" "$EXEC_TIMEOUT_SECONDS"
+      printf 'colab exec -s %s %s -f %s --timeout=%s\n' "$SESSION_NAME" "$DRY_PROBE_ENV_STR" "$STAGED_VM_SCRIPT" "$EXEC_TIMEOUT_SECONDS"
       printf 'colab download -s %s /content/probe.json %s/probe.json\n' "$SESSION_NAME" "$OUT_DIR"
       printf 'colab stop -s %s\n' "$SESSION_NAME"
       printf 'colab sessions\n'

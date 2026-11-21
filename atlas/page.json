@@ -33,40 +33,24 @@
   ],
   "changes": {
     "fileCounts": {
-      "added": 2,
-      "changed": 19,
+      "added": 0,
+      "changed": 10,
       "moved": 0,
       "parts": 4,
       "removed": 0
     },
     "items": [
       {
-        "kind": "landing",
-        "sentence": "src/reasoning_dataset_lab/ is now also read by scripts/colab/vm_judges.py.",
-        "subjects": [
-          "src/reasoning_dataset_lab/",
-          "scripts/colab/vm_judges.py"
-        ]
-      },
-      {
-        "kind": "landing",
-        "sentence": "tests/fixtures/fake_colab.py is now also read by tests/test_colab_judge_launcher.py.",
-        "subjects": [
-          "tests/fixtures/fake_colab.py",
-          "tests/test_colab_judge_launcher.py"
-        ]
-      },
-      {
         "kind": "counts",
-        "sentence": "2 files added and 19 changed content, across 4 parts.",
+        "sentence": "Nothing structural changed since 2026-11-21; 10 files changed content.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "e0a86234c131737232c6ad73a74e56e6474d6663",
-      "generatedAt": "2026-11-19T14:29:49.365Z"
+      "commit": "3f227c140dda5962c94c9c8abf6d5074977c0efb",
+      "generatedAt": "2026-11-21T13:29:25.180Z"
     },
-    "unchanged": false
+    "unchanged": true
   },
   "changesTogether": [
     {
@@ -117,7 +101,7 @@
     {
       "a": "scripts/colab/vm_judges.py",
       "b": "tests/test_colab_judge_launcher.py",
-      "either": 60,
+      "either": 58,
       "partLabels": [
         "scripts",
         "tests"
@@ -127,7 +111,7 @@
         "tests"
       ],
       "relation": "b-imports-a",
-      "shared": 36
+      "shared": 37
     },
     {
       "a": "src/reasoning_dataset_lab/pilot_b/rendering.py",
@@ -148,10 +132,10 @@
   "changesTogetherNote": [
     "1 file changed together with its own test, as expected.",
     "Confidence is low: fewer than 25 source files reach 10 revisions in the window.",
-    "Window: 180 days; a pair counts from 3 shared commits, since 13 source files reach 10 revisions; the floor rises to 10 when 25 do."
+    "Window: 180 days; a pair counts from 3 shared commits, since 14 source files reach 10 revisions; the floor rises to 10 when 25 do."
   ],
   "changesTogetherWithTests": 1,
-  "commit": "3f227c140dda5962c94c9c8abf6d5074977c0efb",
+  "commit": "2c3326f32a11c350e57ceb3358c40da05e6300b0",
   "defaultBranch": "main",
   "derived": "9 parts, mostly Python (97 files), shell (3), CSS (2), JavaScript (2), TypeScript (2) and Astro (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.",
   "doors": [
@@ -310,10 +294,10 @@
       ]
     }
   ],
-  "generatedAt": "2026-11-21T13:29:25.180Z",
+  "generatedAt": "2026-11-21T18:49:11.396Z",
   "limits": [
     "8 import sites name a declared dependency that shares its name with a local module (role_set); they are read as the dependency, which is not in this repository.",
-    "20 imports could not be resolved: `scripts/colab/vm_judges.py` imports a path built at run time; `scripts/colab/vm_judges.py` imports `device`, which is no module on its import path and no declared dependency, twice; `tests/test_bakeoff_judge_d3_transport.py` imports a path built at run time; and 16 more.",
+    "19 imports could not be resolved: `scripts/colab/vm_judges.py` imports a path built at run time; `scripts/colab/vm_judges.py` imports `device`, which is no module on its import path and no declared dependency, twice; `tests/test_bakeoff_judge_d3_transport.py` imports a path built at run time; and 15 more.",
     "14 writes and 34 reads use paths built at run time and are not named here.",
     "1 write goes to places this repository does not track, so it is not listed as generated.",
     "90 writes and 209 reads go to a path their caller passes, not to this repository.",
@@ -348,7 +332,7 @@
     "src/reasoning_dataset_lab/cli.py",
     "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py",
     "src/reasoning_dataset_lab/pilot_b/canary_config.json",
-    "scripts/colab/vm_judges.py"
+    "src/reasoning_dataset_lab/pilot_b/lockcheck_anchors.py"
   ],
   "startReason": "This path follows rdlab (a command people run) from its entry, since ci runs only tests and scripts that import no code here.",
   "summary": "reasoning-dataset-lab plans a dataset as a pre-registered map, builds items whose answer keys are constructed and proved by code, asks a local model only for the wording, and records the provenance of every item.",
