@@ -740,7 +740,7 @@ def _pre_draw_null_permutation_keys(
 
 
 @functools.lru_cache(maxsize=1)
-def _cached_null_permutation_inputs() -> tuple[
+def _cached_null_permutation_inputs_template() -> tuple[
     list[dict[str, Any]],
     dict[str, dict[str, str | int]],
     list[dict[str, dict[str, Any]]],
@@ -757,6 +757,19 @@ def _cached_null_permutation_inputs() -> tuple[
         seed=_NULL_PERM_SEED,
     )
     return items, sealed_keys, all_perm_keys
+
+
+def _cached_null_permutation_inputs() -> tuple[
+    list[dict[str, Any]],
+    dict[str, dict[str, str | int]],
+    list[dict[str, dict[str, Any]]],
+]:
+    """Return a fresh deep copy of the worker-cached null-permutation inputs so chunks cannot mutate shared state.
+
+    Uses `copy.deepcopy` rather than `tuple`/`MappingProxyType` because `shortcut_probe.py` checks
+    `isinstance(messages, list)` when extracting probe (d) features and callers compare `all_perm_keys` as a list.
+    """
+    return copy.deepcopy(_cached_null_permutation_inputs_template())
 
 
 def _combine_null_permutation_chunk_stats(
@@ -1297,3 +1310,27 @@ def test_assign_triad_folds_ignores_labels_features_and_meta() -> None:
     assert json.dumps(samples_only_folds) == json.dumps(expected)
     assert json.dumps(with_meta_folds) == json.dumps(expected)
     assert json.dumps(meta_shuffled_folds) == json.dumps(with_meta_folds)
+
+
+def test_cached_null_permutation_inputs_isolates_mutations_between_calls() -> None:
+    """#117: mutating one chunk's null-permutation inputs must not leak into subsequent calls on the same worker."""
+    items_1, sealed_1, perms_1 = _cached_null_permutation_inputs()
+    expected_items = copy.deepcopy(items_1)
+    expected_sealed = copy.deepcopy(sealed_1)
+    expected_perms = copy.deepcopy(perms_1)
+
+    items_1[0]["claim"] = "MUTATED CLAIM"
+    items_1[0]["messages"].append({"role": "user", "content": "MUTATED"})
+    items_1.pop()
+    first_id = next(iter(sealed_1))
+    sealed_1[first_id]["key"] = "MUTATED"
+    perms_1[0][first_id]["key"] = "MUTATED"
+    perms_1.pop()
+
+    items_2, sealed_2, perms_2 = _cached_null_permutation_inputs()
+    assert items_2 == expected_items
+    assert sealed_2 == expected_sealed
+    assert perms_2 == expected_perms
+    assert items_2 is not items_1 and items_2[0] is not items_1[0]
+    assert sealed_2 is not sealed_1
+    assert perms_2 is not perms_1 and perms_2[0] is not perms_1[0]
