@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 import copy
 import functools
+import inspect
 import json
 import math
 from pathlib import Path
@@ -98,7 +99,7 @@ def _build_clean_fixture(
     # Build a full Latin-square style schedule so for each role_config, all 3 label_perms
     # and template/target_line assignments are uncorrelated.
     for t_idx in range(num_triads):
-        tid = f"triad_{t_idx:04d}"
+        tid = f"triad-{t_idx:016x}"
         role_idx = (t_idx // 6) % len(role_configs)
         within_role = t_idx % 6
         role_kind, attr_name, val_str, unit_str = role_configs[role_idx]
@@ -928,8 +929,9 @@ def test_old_flat_margin_behaviour_is_gone_and_header_reports_mde() -> None:
     hdr = doc_34["header"]
     assert hdr["n_triads"] == 34
     assert hdr["n_items"] == 102
+    assert GATE_1_VERSION == "1.1"
     assert hdr["gate_name"] == "triad_clustered_wilson_holm"
-    assert hdr["gate_version"] == "1.0"
+    assert hdr["gate_version"] == "1.1"
     assert hdr["alpha"] == 0.05
     # The family is 25 on this fixture (19 plus the non-degenerate anchored two-hop probe tasks).
     assert hdr["family_size"] == 25
@@ -1251,65 +1253,106 @@ def test_leak_fixture_proximity_solvable_within_not_supported_fails_gate() -> No
     assert report.passed is False
 
 
-def test_assign_triad_folds_ignores_labels_features_and_meta() -> None:
-    """#118: `_assign_triad_folds` assigns whole-triad folds from sorted `triad_id` only, never reading labels, features, or `triad_meta`."""
-    rng = random.Random(20261121)
-    triad_list = [f"t{t:04d}" for t in range(20)]
+def test_assign_triad_folds_takes_only_triad_ids_and_n_folds() -> None:
+    """#118 / #127 follow-up: `_assign_triad_folds` deals sorted `triad_id` values without `samples` or `triad_meta`."""
+    assert list(inspect.signature(_assign_triad_folds).parameters) == ["triad_ids", "n_folds"]
+    assert "triad_meta" not in inspect.signature(_oof_token_classifier_detailed).parameters
+    assert "triad_meta" not in inspect.signature(_oof_numeric_classifier_detailed).parameters
+
+    triad_list = [f"triad-{t:016x}" for t in range(20)]
     triad_ids = [tid for tid in triad_list for _ in range(3)]
-    label_orders = (
-        ("supported", "unsupported", "cannot_tell"),
-        ("unsupported", "cannot_tell", "supported"),
-        ("cannot_tell", "supported", "unsupported"),
-    )
-    roles = ("number", "state", "date", "interval")
-    closures = ("closed", "open")
-
-    base_samples: list[tuple[str, list[str], str]] = [
-        (tid, [f"feat_{pos}"], label_orders[t_idx % len(label_orders)][pos])
-        for t_idx, tid in enumerate(triad_list)
-        for pos in range(3)
-    ]
-    base_meta: dict[str, tuple[str, ...]] = {
-        tid: (roles[t_idx % len(roles)], f"attr_{t_idx:02d}", closures[t_idx % 2])
-        for t_idx, tid in enumerate(triad_list)
-    }
-
-    label_shuffled_samples: list[tuple[str, list[str], str]] = []
-    for t_idx in range(len(triad_list)):
-        triad_slice = base_samples[3 * t_idx : 3 * (t_idx + 1)]
-        triad_lbls = [lbl for _, _, lbl in triad_slice]
-        rng.shuffle(triad_lbls)
-        for (tid, feats, _), new_lbl in zip(triad_slice, triad_lbls, strict=True):
-            label_shuffled_samples.append((tid, feats, new_lbl))
-    assert label_shuffled_samples != base_samples
-
-    shuffled_feats = [feats for _, feats, _ in base_samples]
-    rng.shuffle(shuffled_feats)
-    feature_shuffled_samples = [
-        (tid, new_feats, lbl)
-        for (tid, _, lbl), new_feats in zip(base_samples, shuffled_feats, strict=True)
-    ]
-    assert feature_shuffled_samples != base_samples
-
-    meta_vals = list(base_meta.values())
-    rng.shuffle(meta_vals)
-    meta_shuffled = dict(zip(triad_list, meta_vals, strict=True))
-    assert meta_shuffled != base_meta
-
-    no_args_folds = _assign_triad_folds(triad_ids, n_folds=5)
-    samples_only_folds = _assign_triad_folds(triad_ids, n_folds=5, samples=base_samples)
-    label_shuffled_folds = _assign_triad_folds(triad_ids, n_folds=5, samples=label_shuffled_samples)
-    feature_shuffled_folds = _assign_triad_folds(triad_ids, n_folds=5, samples=feature_shuffled_samples)
-    with_meta_folds = _assign_triad_folds(triad_ids, n_folds=5, samples=base_samples, triad_meta=base_meta)
-    meta_shuffled_folds = _assign_triad_folds(triad_ids, n_folds=5, samples=base_samples, triad_meta=meta_shuffled)
-
     expected = {tid: idx % 5 for idx, tid in enumerate(sorted(set(triad_ids)))}
-    assert json.dumps(no_args_folds) == json.dumps(expected)
-    assert json.dumps(label_shuffled_folds) == json.dumps(samples_only_folds)
-    assert json.dumps(feature_shuffled_folds) == json.dumps(samples_only_folds)
-    assert json.dumps(samples_only_folds) == json.dumps(expected)
-    assert json.dumps(with_meta_folds) == json.dumps(expected)
-    assert json.dumps(meta_shuffled_folds) == json.dumps(with_meta_folds)
+
+    assert _assign_triad_folds(triad_ids, n_folds=5) == expected
+    shuffled = list(triad_ids)
+    random.Random(20261121).shuffle(shuffled)
+    assert json.dumps(_assign_triad_folds(shuffled, n_folds=5)) == json.dumps(expected)
+
+    with pytest.raises(TypeError):
+        _assign_triad_folds(triad_ids, samples=[])  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        _assign_triad_folds(triad_ids, triad_meta={})  # type: ignore[call-arg]
+
+
+def test_shortcut_probe_requires_opaque_triad_handles(tmp_path: Path) -> None:
+    """Opaque `triad-<16 hex>` handles pass; sequential, plain, or malformed triad IDs are refused with `PROBE_INVALID_TRIAD_ID`."""
+    from reasoning_dataset_lab.pilot_b.anchored_two_hop import build_anchored_probe_items
+    from reasoning_dataset_lab.pilot_b.shortcut_probe import evaluate_bakeoff_probe_files
+    from reasoning_dataset_lab.pilot_b.waves_and_sealing import _triad_handle
+
+    items, sealed_keys = _build_clean_fixture(18)
+
+    bad_ids = (
+        "triad_0000",
+        "triad-0001",
+        "plain-id",
+        "",
+        "anchored-triad-0000000000000000",
+        "T10-D-power_grid-001-triad",
+        "triad-000000000000000G",
+        "TRIAD-0000000000000000",
+        "triad-000000000000000",
+        "triad-00000000000000000",
+    )
+    keys_file = tmp_path / "keys.sealed.jsonl"
+    keys_file.write_text(
+        "\n".join(json.dumps({"id": iid, **info}) for iid, info in sealed_keys.items()) + "\n",
+        encoding="utf-8",
+    )
+    for bad_idx, bad_tid in enumerate(bad_ids):
+        bad_items = copy.deepcopy(items)
+        for j in range(3):
+            bad_items[j]["triad_id"] = bad_tid
+
+        with pytest.raises(RdlabError) as exc_mem:
+            run_bakeoff_shortcut_probe(bad_items, sealed_keys)
+        assert exc_mem.value.code == "PROBE_INVALID_TRIAD_ID"
+        assert exc_mem.value.exit_code == EXIT_REFUSED
+        assert str(bad_items[0]["claim"]) not in str(exc_mem.value)
+        assert str(bad_items[0]["material"]) not in str(exc_mem.value)
+
+        bad_items_file = tmp_path / f"bad_items_{bad_idx}.jsonl"
+        bad_items_file.write_text(
+            "\n".join(json.dumps(it) for it in bad_items) + "\n",
+            encoding="utf-8",
+        )
+        with pytest.raises(RdlabError) as exc_load:
+            load_items_and_keys(bad_items_file, keys_file)
+        assert exc_load.value.code == "PROBE_INVALID_TRIAD_ID"
+        assert exc_load.value.exit_code == EXIT_REFUSED
+
+        out_bad = tmp_path / f"bad_out_{bad_idx}.json"
+        with pytest.raises(RdlabError) as exc_files:
+            evaluate_bakeoff_probe_files(bad_items_file, keys_file, out_bad)
+        assert exc_files.value.code == "PROBE_INVALID_TRIAD_ID"
+        assert not out_bad.exists()
+
+    # Sealing handles (`_triad_handle`) pass both in-memory and files paths.
+    commitment_key = bytes(range(32))
+    handle_items = copy.deepcopy(items)
+    for t_idx in range(18):
+        handle = _triad_handle(commitment_key, f"T10-D-power_grid-{t_idx + 1:03d}-triad")
+        for j in range(3):
+            handle_items[3 * t_idx + j]["triad_id"] = handle
+
+    rep = run_bakeoff_shortcut_probe(handle_items, sealed_keys)
+    assert rep.passed is True
+    assert rep.gate_version == "1.1"
+    assert rep.header["gate_version"] == "1.1"
+
+    ok_items_file = tmp_path / "ok_items.jsonl"
+    ok_items_file.write_text("\n".join(json.dumps(it) for it in handle_items) + "\n", encoding="utf-8")
+    out_ok = tmp_path / "ok_out.json"
+    payload = evaluate_bakeoff_probe_files(ok_items_file, keys_file, out_ok)
+    assert payload["passed"] is True
+    assert payload["header"]["gate_version"] == "1.1"
+
+    # Synthetic anchored builder also emits `^triad-[0-9a-f]{16}$` handles accepted by the probe.
+    anc_items, anc_keys, _ = build_anchored_probe_items(18, seed=1, table_secret=12345)
+    assert all(it["triad_id"].startswith("triad-") and len(it["triad_id"]) == 22 for it in anc_items)
+    anc_rep = run_bakeoff_shortcut_probe(anc_items, anc_keys)
+    assert anc_rep.passed is True
+    assert anc_rep.header["gate_version"] == "1.1"
 
 
 def test_cached_null_permutation_inputs_isolates_mutations_between_calls() -> None:

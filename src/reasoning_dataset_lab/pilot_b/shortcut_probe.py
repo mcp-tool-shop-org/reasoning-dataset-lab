@@ -73,6 +73,7 @@ from reasoning_dataset_lab.pilot_b.variety import (
 )
 
 WORD_RE = re.compile(r"[a-z0-9']+", re.IGNORECASE)
+_OPAQUE_TRIAD_ID_RE = re.compile(r"^triad-[0-9a-f]{16}$")
 THREE_CLASS_LABELS: tuple[str, str, str] = ("supported", "unsupported", "cannot_tell")
 BINARY_LABELS: tuple[str, str] = ("supported", "not_supported")
 NOT_SUPPORTED_LABELS: tuple[str, str] = ("unsupported", "cannot_tell")
@@ -80,7 +81,7 @@ BASE_3CLASS: float = 1.0 / 3.0
 BASE_BINARY: float = 2.0 / 3.0
 BASE_NOT_SUPPORTED: float = 0.50
 GATE_1_NAME: str = "triad_clustered_wilson_holm"
-GATE_1_VERSION: str = "1.0"
+GATE_1_VERSION: str = "1.1"
 DEFAULT_GATE_ALPHA: float = 0.05
 SHARE_MIN: float = 0.25
 SHARE_MAX: float = 0.42
@@ -414,8 +415,8 @@ class FeatureHook:
     `trait`, `kind`, `domain`, `closure`, `proof_basis`, `key_basis`, `material`, `claim`, `messages`,
     `split`; sealed fields are never passed, and items carrying any sealed or keys-file field are refused
     with `PROBE_SEALED_FIELD_IN_ITEM` case-insensitively). Each item's returned sequence of non-empty,
-    non-whitespace strings is sorted (keeping duplicates) for order-free fold stratification and degeneracy
-    checking; any `""` or whitespace-only token is refused per item with `PROBE_FEATURE_HOOK_FAILED` (naming
+    non-whitespace strings is sorted (keeping duplicates) for order-free degeneracy checking; any `""` or
+    whitespace-only token is refused per item with `PROBE_FEATURE_HOOK_FAILED` (naming
     the hook id and item id, never item text), so a hook returning `[""]` on every item cannot pass as a
     constant degenerate hook. Each hook is invoked twice per item (second pass in reverse item order) and
     refused with `PROBE_FEATURE_HOOK_FAILED` if the two calls differ, catching hooks that are non-deterministic
@@ -719,17 +720,13 @@ def compute_triads_needed_for_margin(
 def _assign_triad_folds(
     triad_ids: Sequence[str],
     n_folds: int = 5,
-    samples: Sequence[tuple[str, Sequence[Any], Any]] | None = None,
-    triad_meta: dict[str, tuple[str, ...]] | None = None,
 ) -> dict[str, int]:
     """Deterministically assign each `triad_id` to one of `n_folds` folds without reading labels or features.
 
     Deals unique `triad_id` values in sorted order (`idx % eff_folds`), keeping all
     three items of each triad in the same fold. Because each triad holds one item per
     class, whole-triad folds stay class-balanced without label stratification.
-    `samples` and `triad_meta` are accepted for call-site compatibility and ignored.
     """
-    del samples, triad_meta
     unique_tids = sorted(set(triad_ids))
     eff_folds = max(1, min(n_folds, len(unique_tids)))
     return {tid: idx % eff_folds for idx, tid in enumerate(unique_tids)}
@@ -819,7 +816,6 @@ def _oof_token_classifier_detailed(
     samples: Sequence[tuple[str, list[str], str]],
     n_folds: int = 5,
     alpha: float = 1.0,
-    triad_meta: dict[str, tuple[str, ...]] | None = None,
 ) -> tuple[float, float, float, bool]:
     """Run triad-grouped OOF L2 logistic regression (`gd`) and length-scaled Multinomial NB (`centroid`).
 
@@ -827,7 +823,6 @@ def _oof_token_classifier_detailed(
     """
     if not samples:
         return 0.0, 0.0, 0.0, True
-    del triad_meta
     is_deg = _has_zero_variance_tokens(samples)
     fold_map = _assign_triad_folds(
         [s[0] for s in samples],
@@ -991,7 +986,6 @@ def _oof_token_classifier_detailed(
 def _oof_numeric_classifier_detailed(
     samples: Sequence[tuple[str, tuple[float, ...], str]],
     n_folds: int = 5,
-    triad_meta: dict[str, tuple[str, ...]] | None = None,
 ) -> tuple[float, float, float, bool]:
     """Run triad-grouped OOF L2 logistic regression (`gd`) and Bayes Gaussian centroid (`centroid`).
 
@@ -999,7 +993,6 @@ def _oof_numeric_classifier_detailed(
     """
     if not samples:
         return 0.0, 0.0, 0.0, True
-    del triad_meta
     is_deg = _has_zero_variance_numeric(samples)
     fold_map = _assign_triad_folds(
         [s[0] for s in samples],
@@ -1672,8 +1665,21 @@ def load_items_and_keys(
         )
 
     _check_items_have_no_sealed_fields(items, extra_key_fields=keys_file_fields)
+    _check_opaque_triad_ids(items)
 
     return items_path, items, sealed_lookup
+
+
+def _check_opaque_triad_ids(items: Sequence[Mapping[str, Any]]) -> None:
+    """Refuse items whose `triad_id` is not an opaque 16-hex-digit handle (`^triad-[0-9a-f]{16}$`)."""
+    for it in items:
+        tid = it.get("triad_id")
+        if not isinstance(tid, str) or not _OPAQUE_TRIAD_ID_RE.fullmatch(tid):
+            raise refused_error(
+                "PROBE_INVALID_TRIAD_ID",
+                f"Item {it.get('id')!r} has non-opaque triad_id {tid!r}; expected 'triad-<16 lowercase hex>'.",
+                "Pass opaque triad handles matching ^triad-[0-9a-f]{16}$ (as sealing produces).",
+            )
 
 
 def run_bakeoff_shortcut_probe(
@@ -1722,6 +1728,7 @@ def _run_bakeoff_shortcut_probe_validated(
         items,
         extra_key_fields={str(k) for entry in sealed_keys.values() for k in entry},
     )
+    _check_opaque_triad_ids(items)
 
     triad_ids = sorted({str(it["triad_id"]) for it in items})
     num_triads = len(triad_ids)

@@ -17,6 +17,7 @@ triads and requires the fixture to FAIL for the reason its design was rejected:
 
 from __future__ import annotations
 
+import hashlib
 import math
 import random
 from typing import Any
@@ -62,7 +63,8 @@ def _emit(
     material = "\n".join(f"{i}. {s}" for i, s in enumerate(lines, start=1))
     order = list(VERDICT_CLASSES)
     rng.shuffle(order)
-    triad_id = f"{scheme}-triad-{t:03d}"
+    triad_handle = hashlib.sha256(f"{scheme}:{t}".encode("utf-8")).hexdigest()[:16]
+    triad_id = f"triad-{triad_handle}"
     for pos, key in enumerate(order):
         entity, value = claims[key]
         claim = CLAIM_TEMPLATE.format(attr=ATTR, ent=entity, val=value, unit=UNIT)

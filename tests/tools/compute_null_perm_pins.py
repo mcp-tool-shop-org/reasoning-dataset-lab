@@ -67,7 +67,7 @@ def _build_clean_fixture(
     sealed_keys: dict[str, dict[str, str | int]] = {}
 
     for t_idx in range(num_triads):
-        tid = f"triad_{t_idx:04d}"
+        tid = f"triad-{t_idx:016x}"
         role_idx = (t_idx // 6) % len(role_configs)
         within_role = t_idx % 6
         _role_kind, attr_name, val_str, unit_str = role_configs[role_idx]

@@ -123,7 +123,7 @@ def test_a_label_leaking_hook_fails_gate_1_and_joins_the_holm_family() -> None:
 def test_an_uninformative_hook_passes() -> None:
     items, keys = _build_clean_fixture(60)
     # A triad-level tag: every triad holds all three labels, so it cannot predict one.
-    triad_hook = FeatureHook("triad_parity", "triad parity", lambda it: [f"p={int(it['triad_id'][-1]) % 2}"])
+    triad_hook = FeatureHook("triad_parity", "triad parity", lambda it: [f"p={int(it['triad_id'][-1], 16) % 2}"])
     constant_hook = FeatureHook("constant", "one token for every item", lambda it: ["same"])
     report = run_bakeoff_shortcut_probe(items, keys, feature_hooks=[triad_hook, constant_hook])
     by_id = {p.probe_id: p for p in report.probes}
@@ -303,7 +303,7 @@ def test_hook_token_order_is_canonicalised_for_folds_and_degeneracy() -> None:
     dups_matter = FeatureHook(
         "dups_matter",
         "multiplicity distinguishes triads",
-        lambda it: ["x", "x"] if int(it["triad_id"][-1]) % 2 == 0 else ["x"],
+        lambda it: ["x", "x"] if int(it["triad_id"][-1], 16) % 2 == 0 else ["x"],
     )
     rep = run_bakeoff_shortcut_probe(items, keys, feature_hooks=[order_invariant, dups_matter])
     by_id = {p.probe_id: p for p in rep.probes}
@@ -366,7 +366,7 @@ def test_all_empty_hook_is_refused_while_constant_nonempty_stays_degenerate() ->
     sparse = FeatureHook(
         "sparse",
         "present on half the triads",
-        lambda it: ["present"] if int(it["triad_id"][-1]) % 2 == 0 else [],
+        lambda it: ["present"] if int(it["triad_id"][-1], 16) % 2 == 0 else [],
     )
     constant = FeatureHook("const", "constant non-empty", lambda _it: ["same"])
     report = run_bakeoff_shortcut_probe(items, keys, feature_hooks=[sparse, constant])
