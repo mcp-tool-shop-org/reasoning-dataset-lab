@@ -558,8 +558,8 @@ def test_v1_default_byte_for_byte_unchanged(tmp_path: Path, monkeypatch: pytest.
     for r in p_rows:
         if k_rows[r["id"]] == "supported":
             r["leak"] = 1
-    p_path.write_text(
-        "\n".join(json.dumps(r, sort_keys=True, separators=(",", ":")) for r in p_rows) + "\n", encoding="utf-8"
+    p_path.write_bytes(
+        ("\n".join(json.dumps(r, sort_keys=True, separators=(",", ":")) for r in p_rows) + "\n").encode("utf-8")
     )
     cases.append(("content_leak", lambda kw: verify_sealed_part(c_leak / "part_pilot_b_sealed", c_leak / "sealed_store" / "keys.sealed.jsonl", **kw)))
 
@@ -568,7 +568,7 @@ def test_v1_default_byte_for_byte_unchanged(tmp_path: Path, monkeypatch: pytest.
     ri_mat = c_mat / "sealed_store" / "render_inputs.sealed.json"
     doc_mat = json.loads(ri_mat.read_text(encoding="utf-8"))
     doc_mat["entries"][0]["material"] += " extra"
-    ri_mat.write_text(json.dumps(doc_mat, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    ri_mat.write_bytes((json.dumps(doc_mat, indent=2, sort_keys=True) + "\n").encode("utf-8"))
     cases.append(("differing_material", lambda kw: verify_sealed_part(c_mat / "part_pilot_b_sealed", c_mat / "sealed_store" / "keys.sealed.jsonl", **kw)))
 
     c_dig = tmp_path / "c_dig"
@@ -576,7 +576,7 @@ def test_v1_default_byte_for_byte_unchanged(tmp_path: Path, monkeypatch: pytest.
     i_dig = c_dig / "part_pilot_b_sealed" / "items.jsonl"
     i_lines = i_dig.read_text(encoding="utf-8").splitlines()
     i_lines[0], i_lines[1] = i_lines[1], i_lines[0]
-    i_dig.write_text("\n".join(i_lines) + "\n", encoding="utf-8")
+    i_dig.write_bytes(("\n".join(i_lines) + "\n").encode("utf-8"))
     cases.append(("digest_mismatch", lambda kw: verify_sealed_part(c_dig / "part_pilot_b_sealed", c_dig / "sealed_store" / "keys.sealed.jsonl", **kw)))
 
     c_mac = tmp_path / "c_mac"
@@ -589,7 +589,9 @@ def test_v1_default_byte_for_byte_unchanged(tmp_path: Path, monkeypatch: pytest.
         f"{hashlib.sha256((c_mac / 'part_pilot_b_sealed' / fn).read_bytes()).hexdigest()}  {fn}"
         for fn in ("items.jsonl", "part.json", "provenance.jsonl")
     ]
-    (c_mac / "part_pilot_b_sealed" / "checksums.txt").write_text("\n".join(sorted(csum_mac, key=lambda x: x[66:])) + "\n", encoding="utf-8")
+    (c_mac / "part_pilot_b_sealed" / "checksums.txt").write_bytes(
+        ("\n".join(sorted(csum_mac, key=lambda x: x[66:])) + "\n").encode("utf-8")
+    )
     cases.append(("frozen_mac_mismatch", lambda kw: verify_sealed_part(c_mac / "part_pilot_b_sealed", c_mac / "sealed_store" / "keys.sealed.jsonl", **kw)))
 
     c_clm = tmp_path / "c_clm"
@@ -597,7 +599,7 @@ def test_v1_default_byte_for_byte_unchanged(tmp_path: Path, monkeypatch: pytest.
     ri_clm = c_clm / "sealed_store" / "render_inputs.sealed.json"
     doc_clm = json.loads(ri_clm.read_text(encoding="utf-8"))
     doc_clm["entries"][1]["claim_text"] = doc_clm["entries"][0]["claim_text"]
-    ri_clm.write_text(json.dumps(doc_clm, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    ri_clm.write_bytes((json.dumps(doc_clm, indent=2, sort_keys=True) + "\n").encode("utf-8"))
     cases.append(("non_distinct_claims", lambda kw: verify_sealed_part(c_clm / "part_pilot_b_sealed", c_clm / "sealed_store" / "keys.sealed.jsonl", **kw)))
 
     c_ren = tmp_path / "c_ren"
@@ -611,12 +613,14 @@ def test_v1_default_byte_for_byte_unchanged(tmp_path: Path, monkeypatch: pytest.
         f"{hashlib.sha256((c_ren / 'part_pilot_b_sealed' / fn).read_bytes()).hexdigest()}  {fn}"
         for fn in ("items.jsonl", "part.json", "provenance.jsonl")
     ]
-    (c_ren / "part_pilot_b_sealed" / "checksums.txt").write_text("\n".join(sorted(csum_ren, key=lambda x: x[66:])) + "\n", encoding="utf-8")
+    (c_ren / "part_pilot_b_sealed" / "checksums.txt").write_bytes(
+        ("\r\n".join(sorted(csum_ren, key=lambda x: x[66:])) + "\r\n").encode("utf-8")
+    )
     cases.append(("render_mismatch", lambda kw: verify_sealed_part(c_ren / "part_pilot_b_sealed", c_ren / "sealed_store" / "keys.sealed.jsonl", **kw)))
 
     c_sch = tmp_path / "c_sch"
     shutil.copytree(pb_out, c_sch)
-    (c_sch / "part_pilot_b_sealed" / "checksums.txt").write_text("0" * 64 + "  items.jsonl\n", encoding="utf-8")
+    (c_sch / "part_pilot_b_sealed" / "checksums.txt").write_bytes(("0" * 64 + "  items.jsonl\n").encode("utf-8"))
     cases.append(("schema_mismatch", lambda kw: verify_sealed_part(c_sch / "part_pilot_b_sealed", c_sch / "sealed_store" / "keys.sealed.jsonl", **kw)))
 
     for name, fn in cases:
