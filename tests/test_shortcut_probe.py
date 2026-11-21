@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 import copy
 import functools
+import hashlib
 import inspect
 import json
 import math
@@ -99,10 +100,8 @@ def _build_clean_fixture(
     # Build a full Latin-square style schedule so for each role_config, all 3 label_perms
     # and template/target_line assignments are uncorrelated.
     for t_idx in range(num_triads):
-        # These fixture IDs are deliberately sequential (`triad-{t_idx:016x}`), so the 177/200
-        # null-test pins hold; the opacity guard checks format only, while the real data path
-        # uses hashed handles (as `tests/anchored_fixtures.py` and the synthetic builder do).
-        tid = f"triad-{t_idx:016x}"
+        triad_handle = hashlib.sha256(f"clean_fixture:{t_idx}".encode("utf-8")).hexdigest()[:16]
+        tid = f"triad-{triad_handle}"
         role_idx = (t_idx // 6) % len(role_configs)
         within_role = t_idx % 6
         role_kind, attr_name, val_str, unit_str = role_configs[role_idx]
@@ -679,14 +678,18 @@ def test_all_12_sh_leak_fixtures_fail_new_gate_and_print_margin_and_z(
 # Provenance of the pinned null-permutation failure counts below:
 # Command:
 #   uv run python tests/tools/compute_null_perm_pins.py
-# Output (#118 label- and feature-blind `_assign_triad_folds`):
-#   unsplit (n_perms=200, seed=20261030, n_triads=34): new_gate_fails=0/200 (0.00%), old_flat_0.05_fails=177/200 (88.50%)
+# Before (sequential `triad-{t_idx:016x}` handles):
+#   unsplit (n_perms=200, n_triads=34): new_gate_fails=0/200 (0.00%), old_flat_0.05_fails=177/200 (88.50%)
 #   50-perm subtotals: [0:50)=41, [50:100)=44, [100:150)=45, [150:200)=47
+#   _NULL_PERM_EXPECTED_OLD_FAILS_BY_CHUNK = (7, 9, 8, 8, 9, 8, 10, 8, 10, 8, 7, 9, 10, 9, 10, 9, 9, 10, 10, 9)
+# After (SHA-256 hashed `clean_fixture:<idx>` handles; fixture ids no longer sort in build order when dealing CV folds):
+#   unsplit (n_perms=200, n_triads=34): new_gate_fails=0/200 (0.00%), old_flat_0.05_fails=164/200 (82.00%)
+#   50-perm subtotals: [0:50)=43, [50:100)=37, [100:150)=41, [150:200)=43
 #   20 chunks of 10 ([10*k:10*(k+1)) for k=0..19):
 #     _NULL_PERM_EXPECTED_NEW_FAILS_BY_CHUNK = (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
-#     _NULL_PERM_EXPECTED_OLD_FAILS_BY_CHUNK = (7, 9, 8, 8, 9, 8, 10, 8, 10, 8, 7, 9, 10, 9, 10, 9, 9, 10, 10, 9)
+#     _NULL_PERM_EXPECTED_OLD_FAILS_BY_CHUNK = (9, 8, 8, 9, 9, 7, 8, 8, 7, 7, 8, 9, 9, 9, 6, 9, 9, 10, 7, 8)
 #     _NULL_PERM_UNSPLIT_NEW_FAILS = 0
-#     _NULL_PERM_UNSPLIT_OLD_FAILS = 177
+#     _NULL_PERM_UNSPLIT_OLD_FAILS = 164
 # If the shortcut probe changes on purpose, re-run this script and update the pins in the same PR; the ≤2% bound is asserted on the combined count.
 _NULL_PERM_TOTAL = 200
 _NULL_PERM_CHUNK_SIZE = 10
@@ -694,31 +697,31 @@ _NULL_PERM_NUM_CHUNKS = 20
 _NULL_PERM_SEED = 20261030
 _NULL_PERM_EXPECTED_NEW_FAILS_BY_CHUNK: tuple[int, ...] = (0,) * _NULL_PERM_NUM_CHUNKS
 _NULL_PERM_EXPECTED_OLD_FAILS_BY_CHUNK: tuple[int, ...] = (
+    9,
+    8,
+    8,
+    9,
+    9,
     7,
-    9,
     8,
-    8,
-    9,
-    8,
-    10,
-    8,
-    10,
     8,
     7,
+    7,
+    8,
+    9,
+    9,
+    9,
+    6,
+    9,
     9,
     10,
-    9,
-    10,
-    9,
-    9,
-    10,
-    10,
-    9,
+    7,
+    8,
 )
 _NULL_PERM_UNSPLIT_NEW_FAILS = 0
-_NULL_PERM_UNSPLIT_OLD_FAILS = 177
+_NULL_PERM_UNSPLIT_OLD_FAILS = 164
 _NULL_PERM_UNSPLIT_FALSE_FAIL_RATE = 0.0
-_NULL_PERM_UNSPLIT_OLD_FALSE_FAIL_RATE = 0.885
+_NULL_PERM_UNSPLIT_OLD_FALSE_FAIL_RATE = 0.82
 
 
 def _pre_draw_null_permutation_keys(
@@ -804,7 +807,7 @@ def test_gate_1_null_permutation_pins_sum_to_unsplit_and_combined_rate_le_2pct()
     assert tuple(
         sum(_NULL_PERM_EXPECTED_OLD_FAILS_BY_CHUNK[5 * g : 5 * (g + 1)])
         for g in range(4)
-    ) == (41, 44, 45, 47)
+    ) == (43, 37, 41, 43)
 
     comb_new, comb_rate, comb_old, comb_old_rate = _combine_null_permutation_chunk_stats(
         _NULL_PERM_EXPECTED_NEW_FAILS_BY_CHUNK,
