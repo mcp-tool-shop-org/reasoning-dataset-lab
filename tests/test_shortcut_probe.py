@@ -675,14 +675,14 @@ def test_all_12_sh_leak_fixtures_fail_new_gate_and_print_margin_and_z(
 # Provenance of the pinned null-permutation failure counts below:
 # Command:
 #   uv run python tests/tools/compute_null_perm_pins.py
-# Output (identical per-permutation results to 987d954c / 29a5ba91 / cced6dac / 691b0a19):
-#   unsplit (n_perms=200, seed=20261030, n_triads=34): new_gate_fails=0/200 (0.00%), old_flat_0.05_fails=174/200 (87.00%)
-#   50-perm subtotals: [0:50)=42, [50:100)=43, [100:150)=42, [150:200)=47 (unchanged)
+# Output (#118 label- and feature-blind `_assign_triad_folds`):
+#   unsplit (n_perms=200, seed=20261030, n_triads=34): new_gate_fails=0/200 (0.00%), old_flat_0.05_fails=177/200 (88.50%)
+#   50-perm subtotals: [0:50)=41, [50:100)=44, [100:150)=45, [150:200)=47
 #   20 chunks of 10 ([10*k:10*(k+1)) for k=0..19):
 #     _NULL_PERM_EXPECTED_NEW_FAILS_BY_CHUNK = (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
-#     _NULL_PERM_EXPECTED_OLD_FAILS_BY_CHUNK = (7, 7, 9, 9, 10, 9, 10, 7, 8, 9, 7, 10, 7, 9, 9, 10, 8, 9, 10, 10)
+#     _NULL_PERM_EXPECTED_OLD_FAILS_BY_CHUNK = (7, 9, 8, 8, 9, 8, 10, 8, 10, 8, 7, 9, 10, 9, 10, 9, 9, 10, 10, 9)
 #     _NULL_PERM_UNSPLIT_NEW_FAILS = 0
-#     _NULL_PERM_UNSPLIT_OLD_FAILS = 174
+#     _NULL_PERM_UNSPLIT_OLD_FAILS = 177
 # If the shortcut probe changes on purpose, re-run this script and update the pins in the same PR; the ≤2% bound is asserted on the combined count.
 _NULL_PERM_TOTAL = 200
 _NULL_PERM_CHUNK_SIZE = 10
@@ -691,30 +691,30 @@ _NULL_PERM_SEED = 20261030
 _NULL_PERM_EXPECTED_NEW_FAILS_BY_CHUNK: tuple[int, ...] = (0,) * _NULL_PERM_NUM_CHUNKS
 _NULL_PERM_EXPECTED_OLD_FAILS_BY_CHUNK: tuple[int, ...] = (
     7,
-    7,
     9,
-    9,
-    10,
-    9,
-    10,
-    7,
+    8,
     8,
     9,
-    7,
-    10,
-    7,
-    9,
-    9,
+    8,
     10,
     8,
+    10,
+    8,
+    7,
+    9,
+    10,
+    9,
+    10,
+    9,
     9,
     10,
     10,
+    9,
 )
 _NULL_PERM_UNSPLIT_NEW_FAILS = 0
-_NULL_PERM_UNSPLIT_OLD_FAILS = 174
+_NULL_PERM_UNSPLIT_OLD_FAILS = 177
 _NULL_PERM_UNSPLIT_FALSE_FAIL_RATE = 0.0
-_NULL_PERM_UNSPLIT_OLD_FALSE_FAIL_RATE = 0.87
+_NULL_PERM_UNSPLIT_OLD_FALSE_FAIL_RATE = 0.885
 
 
 def _pre_draw_null_permutation_keys(
@@ -740,7 +740,7 @@ def _pre_draw_null_permutation_keys(
 
 
 @functools.lru_cache(maxsize=1)
-def _cached_null_permutation_inputs() -> tuple[
+def _cached_null_permutation_inputs_template() -> tuple[
     list[dict[str, Any]],
     dict[str, dict[str, str | int]],
     list[dict[str, dict[str, Any]]],
@@ -757,6 +757,19 @@ def _cached_null_permutation_inputs() -> tuple[
         seed=_NULL_PERM_SEED,
     )
     return items, sealed_keys, all_perm_keys
+
+
+def _cached_null_permutation_inputs() -> tuple[
+    list[dict[str, Any]],
+    dict[str, dict[str, str | int]],
+    list[dict[str, dict[str, Any]]],
+]:
+    """Return a fresh deep copy of the worker-cached null-permutation inputs so chunks cannot mutate shared state.
+
+    Uses `copy.deepcopy` rather than `tuple`/`MappingProxyType` because `shortcut_probe.py` checks
+    `isinstance(messages, list)` when extracting probe (d) features and callers compare `all_perm_keys` as a list.
+    """
+    return copy.deepcopy(_cached_null_permutation_inputs_template())
 
 
 def _combine_null_permutation_chunk_stats(
@@ -787,7 +800,7 @@ def test_gate_1_null_permutation_pins_sum_to_unsplit_and_combined_rate_le_2pct()
     assert tuple(
         sum(_NULL_PERM_EXPECTED_OLD_FAILS_BY_CHUNK[5 * g : 5 * (g + 1)])
         for g in range(4)
-    ) == (42, 43, 42, 47)
+    ) == (41, 44, 45, 47)
 
     comb_new, comb_rate, comb_old, comb_old_rate = _combine_null_permutation_chunk_stats(
         _NULL_PERM_EXPECTED_NEW_FAILS_BY_CHUNK,
@@ -1236,3 +1249,88 @@ def test_leak_fixture_proximity_solvable_within_not_supported_fails_gate() -> No
 
     assert report.gate_1_oof_passed is False
     assert report.passed is False
+
+
+def test_assign_triad_folds_ignores_labels_features_and_meta() -> None:
+    """#118: `_assign_triad_folds` assigns whole-triad folds from sorted `triad_id` only, never reading labels, features, or `triad_meta`."""
+    rng = random.Random(20261121)
+    triad_list = [f"t{t:04d}" for t in range(20)]
+    triad_ids = [tid for tid in triad_list for _ in range(3)]
+    label_orders = (
+        ("supported", "unsupported", "cannot_tell"),
+        ("unsupported", "cannot_tell", "supported"),
+        ("cannot_tell", "supported", "unsupported"),
+    )
+    roles = ("number", "state", "date", "interval")
+    closures = ("closed", "open")
+
+    base_samples: list[tuple[str, list[str], str]] = [
+        (tid, [f"feat_{pos}"], label_orders[t_idx % len(label_orders)][pos])
+        for t_idx, tid in enumerate(triad_list)
+        for pos in range(3)
+    ]
+    base_meta: dict[str, tuple[str, ...]] = {
+        tid: (roles[t_idx % len(roles)], f"attr_{t_idx:02d}", closures[t_idx % 2])
+        for t_idx, tid in enumerate(triad_list)
+    }
+
+    label_shuffled_samples: list[tuple[str, list[str], str]] = []
+    for t_idx in range(len(triad_list)):
+        triad_slice = base_samples[3 * t_idx : 3 * (t_idx + 1)]
+        triad_lbls = [lbl for _, _, lbl in triad_slice]
+        rng.shuffle(triad_lbls)
+        for (tid, feats, _), new_lbl in zip(triad_slice, triad_lbls, strict=True):
+            label_shuffled_samples.append((tid, feats, new_lbl))
+    assert label_shuffled_samples != base_samples
+
+    shuffled_feats = [feats for _, feats, _ in base_samples]
+    rng.shuffle(shuffled_feats)
+    feature_shuffled_samples = [
+        (tid, new_feats, lbl)
+        for (tid, _, lbl), new_feats in zip(base_samples, shuffled_feats, strict=True)
+    ]
+    assert feature_shuffled_samples != base_samples
+
+    meta_vals = list(base_meta.values())
+    rng.shuffle(meta_vals)
+    meta_shuffled = dict(zip(triad_list, meta_vals, strict=True))
+    assert meta_shuffled != base_meta
+
+    no_args_folds = _assign_triad_folds(triad_ids, n_folds=5)
+    samples_only_folds = _assign_triad_folds(triad_ids, n_folds=5, samples=base_samples)
+    label_shuffled_folds = _assign_triad_folds(triad_ids, n_folds=5, samples=label_shuffled_samples)
+    feature_shuffled_folds = _assign_triad_folds(triad_ids, n_folds=5, samples=feature_shuffled_samples)
+    with_meta_folds = _assign_triad_folds(triad_ids, n_folds=5, samples=base_samples, triad_meta=base_meta)
+    meta_shuffled_folds = _assign_triad_folds(triad_ids, n_folds=5, samples=base_samples, triad_meta=meta_shuffled)
+
+    expected = {tid: idx % 5 for idx, tid in enumerate(sorted(set(triad_ids)))}
+    assert json.dumps(no_args_folds) == json.dumps(expected)
+    assert json.dumps(label_shuffled_folds) == json.dumps(samples_only_folds)
+    assert json.dumps(feature_shuffled_folds) == json.dumps(samples_only_folds)
+    assert json.dumps(samples_only_folds) == json.dumps(expected)
+    assert json.dumps(with_meta_folds) == json.dumps(expected)
+    assert json.dumps(meta_shuffled_folds) == json.dumps(with_meta_folds)
+
+
+def test_cached_null_permutation_inputs_isolates_mutations_between_calls() -> None:
+    """#117: mutating one chunk's null-permutation inputs must not leak into subsequent calls on the same worker."""
+    items_1, sealed_1, perms_1 = _cached_null_permutation_inputs()
+    expected_items = copy.deepcopy(items_1)
+    expected_sealed = copy.deepcopy(sealed_1)
+    expected_perms = copy.deepcopy(perms_1)
+
+    items_1[0]["claim"] = "MUTATED CLAIM"
+    items_1[0]["messages"].append({"role": "user", "content": "MUTATED"})
+    items_1.pop()
+    first_id = next(iter(sealed_1))
+    sealed_1[first_id]["key"] = "MUTATED"
+    perms_1[0][first_id]["key"] = "MUTATED"
+    perms_1.pop()
+
+    items_2, sealed_2, perms_2 = _cached_null_permutation_inputs()
+    assert items_2 == expected_items
+    assert sealed_2 == expected_sealed
+    assert perms_2 == expected_perms
+    assert items_2 is not items_1 and items_2[0] is not items_1[0]
+    assert sealed_2 is not sealed_1
+    assert perms_2 is not perms_1 and perms_2[0] is not perms_1[0]

@@ -722,29 +722,17 @@ def _assign_triad_folds(
     samples: Sequence[tuple[str, Sequence[Any], Any]] | None = None,
     triad_meta: dict[str, tuple[str, ...]] | None = None,
 ) -> dict[str, int]:
-    """Deterministically assign each `triad_id` to one of `n_folds` folds.
+    """Deterministically assign each `triad_id` to one of `n_folds` folds without reading labels or features.
 
-    Stratifies triads across `(attribute_role, attribute_name, closure, (label, feature))`
-    groups while keeping all three items of each triad in the same fold so balanced
-    within-triad data does not induce out-of-fold anti-learning.
+    Deals unique `triad_id` values in sorted order (`idx % eff_folds`), keeping all
+    three items of each triad in the same fold. Because each triad holds one item per
+    class, whole-triad folds stay class-balanced without label stratification.
+    `samples` and `triad_meta` are accepted for call-site compatibility and ignored.
     """
+    del samples, triad_meta
     unique_tids = sorted(set(triad_ids))
     eff_folds = max(1, min(n_folds, len(unique_tids)))
-    if not samples and not triad_meta:
-        return {tid: idx % eff_folds for idx, tid in enumerate(unique_tids)}
-
-    feat_labels_by_tid: dict[str, list[tuple[str, tuple[Any, ...]]]] = defaultdict(list)
-    if samples:
-        for tid, feats, lbl in samples:
-            feat_labels_by_tid[tid].append((str(lbl), tuple(feats)))
-
-    def _sort_key(tid: str) -> tuple[Any, ...]:
-        meta = triad_meta.get(tid, ()) if triad_meta else ()
-        fl_sig = tuple(sorted(feat_labels_by_tid[tid]))
-        return (meta, fl_sig, tid)
-
-    ordered_tids = sorted(unique_tids, key=_sort_key)
-    return {tid: idx % eff_folds for idx, tid in enumerate(ordered_tids)}
+    return {tid: idx % eff_folds for idx, tid in enumerate(unique_tids)}
 
 
 def _has_zero_variance_numeric(
@@ -839,12 +827,11 @@ def _oof_token_classifier_detailed(
     """
     if not samples:
         return 0.0, 0.0, 0.0, True
+    del triad_meta
     is_deg = _has_zero_variance_tokens(samples)
     fold_map = _assign_triad_folds(
         [s[0] for s in samples],
         n_folds=n_folds,
-        samples=None if is_deg else samples,
-        triad_meta=triad_meta,
     )
     classes = sorted({s[2] for s in samples})
     c_to_idx = {c: i for i, c in enumerate(classes)}
@@ -1012,12 +999,11 @@ def _oof_numeric_classifier_detailed(
     """
     if not samples:
         return 0.0, 0.0, 0.0, True
+    del triad_meta
     is_deg = _has_zero_variance_numeric(samples)
     fold_map = _assign_triad_folds(
         [s[0] for s in samples],
         n_folds=n_folds,
-        samples=None if is_deg else samples,
-        triad_meta=triad_meta,
     )
     dim = len(samples[0][1])
     classes = sorted({s[2] for s in samples})
@@ -1743,7 +1729,6 @@ def _run_bakeoff_shortcut_probe_validated(
 
     # Parse domain metadata and within-triad claim-length ranks using only public item fields.
     parsed_meta: list[tuple[str, str, str, Any, str | None, str]] = []
-    triad_meta: dict[str, tuple[str, ...]] = {}
     items_by_tid: dict[str, list[tuple[int, dict[str, Any]]]] = defaultdict(list)
 
     for idx, it in enumerate(items):
@@ -1758,8 +1743,6 @@ def _run_bakeoff_shortcut_probe_validated(
             )
         meta = _parse_claim_metadata(str(it["claim"]), dom_spec)
         parsed_meta.append(meta)
-        _, attr_name, _, _, _, role = meta
-        triad_meta[tid] = (role, attr_name.lower(), str(it.get("closure", "")))
         items_by_tid[tid].append((idx, it))
 
     claim_len_rank_by_idx: dict[int, float] = {}
@@ -1926,10 +1909,10 @@ def _run_bakeoff_shortcut_probe_validated(
             for i in range(num_items)
         ]
         gd3, nb3, perm3, deg3 = _oof_token_classifier_detailed(
-            s3, n_folds=n_folds, triad_meta=triad_meta
+            s3, n_folds=n_folds
         )
         gd2, nb2, perm2, deg2 = _oof_token_classifier_detailed(
-            s2, n_folds=n_folds, triad_meta=triad_meta
+            s2, n_folds=n_folds
         )
         m3 = _build_task_metrics(
             "three_class",
@@ -1977,10 +1960,10 @@ def _run_bakeoff_shortcut_probe_validated(
             for i in range(num_items)
         ]
         gd3, cent3, perm3, deg3 = _oof_numeric_classifier_detailed(
-            s3, n_folds=n_folds, triad_meta=triad_meta
+            s3, n_folds=n_folds
         )
         gd2, cent2, perm2, deg2 = _oof_numeric_classifier_detailed(
-            s2, n_folds=n_folds, triad_meta=triad_meta
+            s2, n_folds=n_folds
         )
         m3 = _build_task_metrics(
             "three_class",
@@ -2034,13 +2017,13 @@ def _run_bakeoff_shortcut_probe_validated(
             if labels_3[i] in NOT_SUPPORTED_LABELS
         ]
         gd3, cent3, perm3, deg3 = _oof_numeric_classifier_detailed(
-            s3, n_folds=n_folds, triad_meta=triad_meta
+            s3, n_folds=n_folds
         )
         gd2, cent2, perm2, deg2 = _oof_numeric_classifier_detailed(
-            s2, n_folds=n_folds, triad_meta=triad_meta
+            s2, n_folds=n_folds
         )
         gd_ns, cent_ns, perm_ns, deg_ns = _oof_numeric_classifier_detailed(
-            s_ns, n_folds=n_folds, triad_meta=triad_meta
+            s_ns, n_folds=n_folds
         )
         m3 = _build_task_metrics(
             "three_class",
@@ -2179,10 +2162,10 @@ def _run_bakeoff_shortcut_probe_validated(
             for i in range(num_items)
             if labels_3[i] in NOT_SUPPORTED_LABELS
         ]
-        gd3, cent3, perm3, deg3 = _oof_numeric_classifier_detailed(s3, n_folds=n_folds, triad_meta=triad_meta)
-        gd2, cent2, perm2, deg2 = _oof_numeric_classifier_detailed(s2, n_folds=n_folds, triad_meta=triad_meta)
+        gd3, cent3, perm3, deg3 = _oof_numeric_classifier_detailed(s3, n_folds=n_folds)
+        gd2, cent2, perm2, deg2 = _oof_numeric_classifier_detailed(s2, n_folds=n_folds)
         gd_ns, cent_ns, perm_ns, deg_ns = _oof_numeric_classifier_detailed(
-            s_ns, n_folds=n_folds, triad_meta=triad_meta
+            s_ns, n_folds=n_folds
         )
         m3 = _build_task_metrics("three_class", num_items, num_triads, BASE_3CLASS, gd3, cent3, perm3, deg3, alpha=alpha)
         m2 = _build_task_metrics("binary", num_items, num_triads, BASE_BINARY, gd2, cent2, perm2, deg2, alpha=alpha)
