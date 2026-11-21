@@ -775,7 +775,7 @@ def check_output_dir_outside_repo(output_dir: Path, *, repo_root: Path | None = 
         raise refused_error(
             "BAKEOFF_OUTPUT_INSIDE_REPO",
             f"Output directory '{resolved_out}' is inside repository root '{root}'.",
-            "Write the bake-off part to an external directory outside the repo (e.g. E:/AI/rnd-local/projects/judge-bakeoff/part/).",
+            "Write the bake-off part to an external directory outside the repo (e.g. <external-dir>/part/).",
         )
     return resolved_out
 
