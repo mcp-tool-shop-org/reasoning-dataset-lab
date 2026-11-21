@@ -13807,7 +13807,7 @@
               "line": 3296
             }
           ],
-          "hash": "00a2a0d020c488cd80a6b7762c72d91b9371020dd118ad25464eb3c4bce53218",
+          "hash": "8c5cc0f2e9584f8ad5c36b98c023abeb5cac05b87cd94f5eb3f2a5d653b0c09b",
           "importsFiles": [
             "src/reasoning_dataset_lab/errors.py",
             "src/reasoning_dataset_lab/map.py",
@@ -19388,7 +19388,7 @@
       "testRunners": [
         "pytest"
       ],
-      "testedBy": 52,
+      "testedBy": 53,
       "unresolvedSites": 0
     },
     {
@@ -21764,6 +21764,19 @@
         },
         {
           "exports": [
+            "test_output_dir_inside_repo_hint_uses_neutral_placeholder",
+            "test_path_hygiene_scanner_catches_all_three_patterns_skips_binaries_and_hides_text",
+            "test_tracked_files_contain_no_user_or_internal_paths"
+          ],
+          "hash": "a35662c8cf86b2ec3625355a7a5e50d6a0394923565380987745b1e7b1f57b92",
+          "importsFiles": [
+            "src/reasoning_dataset_lab/errors.py",
+            "src/reasoning_dataset_lab/pilot_b/bakeoff_part.py"
+          ],
+          "path": "tests/test_tracked_path_hygiene.py"
+        },
+        {
+          "exports": [
             "compute_pins"
           ],
           "hash": "93c72ea1e9671190d036ed463327da91336fde1ba8c82d0c44064f237502e8b9",
@@ -22004,7 +22017,7 @@
         {
           "boundary": "tests",
           "depth": 0,
-          "files": 60
+          "files": 61
         },
         {
           "boundary": "src",
@@ -22078,7 +22091,7 @@
         {
           "config": "pyproject.toml",
           "coverage": true,
-          "files": 60,
+          "files": 61,
           "job": "test",
           "runner": "pytest",
           "step": "Run pytest with coverage (floor 90%)"
@@ -22086,7 +22099,7 @@
         {
           "config": "pyproject.toml",
           "coverage": true,
-          "files": 60,
+          "files": 61,
           "job": "test-py313",
           "runner": "pytest",
           "step": "Run pytest (no coverage on this leg)"
@@ -22094,7 +22107,7 @@
         {
           "config": "pyproject.toml",
           "coverage": true,
-          "files": 60,
+          "files": 61,
           "job": "test-py314",
           "runner": "pytest",
           "step": "Run pytest (no coverage on this leg)"
@@ -22541,8 +22554,8 @@
   ],
   "engine": "1.26.0",
   "generatedFrom": {
-    "commit": "424ad83126ba2e4ee34e698651014f4f9c722f66",
-    "tracked": 205
+    "commit": "7308e95a753c62aec3dddef1f4d8badaf80ec2f1",
+    "tracked": 206
   },
   "landings": [
     {
@@ -23521,6 +23534,18 @@
     {
       "readers": [
         {
+          "by": "tests/test_tracked_path_hygiene.py",
+          "call": "literal",
+          "confidence": "ast",
+          "fromTests": true
+        }
+      ],
+      "target": "tests/test_tracked_path_hygiene.py",
+      "writers": []
+    },
+    {
+      "readers": [
+        {
           "by": "scripts/colab/vm_judges.py",
           "call": "literal",
           "confidence": "ast"
@@ -23539,6 +23564,6 @@
   "overlaps": [],
   "submodules": [],
   "symlinks": [],
-  "testFiles": 76,
+  "testFiles": 77,
   "unassigned": []
 }
