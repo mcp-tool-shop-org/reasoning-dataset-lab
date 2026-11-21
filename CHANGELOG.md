@@ -6,6 +6,11 @@ All notable changes to `reasoning-dataset-lab` are documented here. The format i
 
 ## Unreleased
 
+### Explicit one-claim triad shape in `verify_sealed_part`
+
+- **`src/reasoning_dataset_lab/pilot_b/waves_and_sealing.py`:** `verify_sealed_part`, `_verify_render`, and `_check_render_inputs` now accept a keyword-only `triad_shape` parameter (`"three_claims"` default, or `"one_claim"`), selected explicitly by the caller and never inferred from data. Under the `"three_claims"` default, behaviour is unchanged and existing three-claim parts and errors remain byte-for-byte identical. Under `"one_claim"`, each triad shares `triad_id`, `table_id`, `domain`, `closure`, and one `claim_text`, requires three pairwise distinct non-empty single-spaced per-entry `material` strings, and checks per-entry `target_line` bounds (bakeoff) and blind-read prompt hashes (reader-gated) against each entry's own `material`. Any other `triad_shape` value is refused with `PILOT_B_UNKNOWN_TRIAD_SHAPE`.
+- **`tests/test_one_claim_triad_shape.py`:** added synthetic-triad tests covering cross-refusal between `"three_claims"` and `"one_claim"`, every changed/added `"one_claim"` check (`P3`, `P6`, `P6b`, `P7`, `P11`, `E9`, `E10`), `PILOT_B_UNKNOWN_TRIAD_SHAPE` on invalid `triad_shape` values, and deterministic three-claim byte-for-byte identity against baseline SHA-256 digests.
+
 ### The rare `find=UnboundLocalError` test failure: cause found and fixed (tests only)
 
 - **`tests/fixtures/fake_colab.py`:** `run_fake_uv` had a second `import shutil` late in one branch. A function-local import makes the name local to the whole function, so its earlier `shutil.which` and `shutil.rmtree` calls raised `UnboundLocalError` whenever a run reached them (an install directory or venv that already existed, or the pinned-uv fallback). That was the rare failure of the launcher end-to-end tests in CI (seen on `test_part2_item4_cli_alive_probe_and_distinct_failure_class` and `test_e2e_fake_real_mode_lock_check_passes_opened_window_id_to_boot_gatekeeper`); the refusal line added in #125 named it. The redundant import is removed; a new test refuses any function-local re-import of a module-level name in the fake.

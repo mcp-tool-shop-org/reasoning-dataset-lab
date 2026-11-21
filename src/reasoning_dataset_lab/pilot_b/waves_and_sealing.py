@@ -68,6 +68,8 @@ from reasoning_dataset_lab.pilot_b.unanimity import (
 )
 
 WaveName = Literal["render", "word", "reader_1", "reader_2"]
+TriadShape = Literal["three_claims", "one_claim"]
+TRIAD_SHAPES: tuple[TriadShape, ...] = ("three_claims", "one_claim")
 EXPECTED_WAVE_ORDER: tuple[WaveName, ...] = ("render", "word", "reader_1", "reader_2")
 # Documented default only (Card gs: total num_predict per operation is configuration, never a constant source of truth)
 DEFAULT_NUM_PREDICT: int = DOCUMENTED_DEFAULT_NUM_PREDICT
@@ -1063,8 +1065,22 @@ def _is_rate(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool) and 0 <= value <= 1
 
 
-def _check_render_inputs(inputs: Mapping[str, Any]) -> None:
+def _validate_triad_shape(triad_shape: Any) -> TriadShape:
+    """Validate that ``triad_shape`` is one of the supported explicit triad shapes."""
+
+    if not isinstance(triad_shape, str) or triad_shape not in TRIAD_SHAPES:
+        raise refused_error(
+            "PILOT_B_UNKNOWN_TRIAD_SHAPE",
+            f"Unknown triad_shape {triad_shape!r}; expected one of {list(TRIAD_SHAPES)}.",
+            "Pass triad_shape='three_claims' (the default) or triad_shape='one_claim'.",
+        )
+    return triad_shape  # type: ignore[return-value]
+
+
+def _check_render_inputs(inputs: Mapping[str, Any], *, triad_shape: TriadShape = "three_claims") -> None:
     """Hold the render inputs to an honest build's shape and value domains."""
+
+    _validate_triad_shape(triad_shape)
 
     from reasoning_dataset_lab.pilot_b.fact_tables import (
         DOMAIN_CATALOGUE,
@@ -1169,19 +1185,38 @@ def _check_render_inputs(inputs: Mapping[str, Any]) -> None:
             raise _invalid_inputs("an entry's fields")
         if [e["key"] for e in group] != list(VERDICT_CLASSES):
             raise _invalid_inputs("a triad does not hold one entry per class in class order")
-        common = {(e["triad_id"], e["table_id"], e["domain"], e["closure"], e["material"]) for e in group}
-        if len(common) != 1:
-            raise _invalid_inputs("the entries of a triad differ in their shared fields")
-        triad_id, table_id, domain, closure, material = next(iter(common))
+        if triad_shape == "three_claims":
+            common = {(e["triad_id"], e["table_id"], e["domain"], e["closure"], e["material"]) for e in group}
+            if len(common) != 1:
+                raise _invalid_inputs("the entries of a triad differ in their shared fields")
+            triad_id, table_id, domain, closure, material = next(iter(common))
+        else:
+            common_one_claim = {(e["triad_id"], e["table_id"], e["domain"], e["closure"]) for e in group}
+            if len(common_one_claim) != 1:
+                raise _invalid_inputs("the entries of a triad differ in their shared fields")
+            triad_id, table_id, domain, closure = next(iter(common_one_claim))
+            material = ""
         if domain not in catalogue:
             raise _invalid_inputs("a triad's domain is not in the domain catalogue")
         if table_id in seen_tables:
             raise _invalid_inputs("two triads share a table")
         seen_tables.add(table_id)
-        if len({e["claim_text"] for e in group}) != 3:
-            raise _invalid_inputs("the three claims of a triad are not distinct")
-        if "\n".join(" ".join(line.split()) for line in material.splitlines()) != material:
-            raise _invalid_inputs("a triad's material has irregular whitespace")
+        if triad_shape == "three_claims":
+            if len({e["claim_text"] for e in group}) != 3:
+                raise _invalid_inputs("the three claims of a triad are not distinct")
+            if "\n".join(" ".join(line.split()) for line in material.splitlines()) != material:
+                raise _invalid_inputs("a triad's material has irregular whitespace")
+        else:
+            if len({e["claim_text"] for e in group}) != 1:
+                raise _invalid_inputs("the three entries of a triad do not share one claim")
+            materials = [e["material"] for e in group]
+            if all(isinstance(m, str) for m in materials) and len(set(materials)) != 3:
+                raise _invalid_inputs("the three materials of a triad are not distinct")
+            if any(
+                isinstance(m, str) and "\n".join(" ".join(line.split()) for line in m.splitlines()) != m
+                for m in materials
+            ):
+                raise _invalid_inputs("a triad's material has irregular whitespace")
         triad_render = {e["writer_call_records"][0].get("prompt_sha256") for e in group}
         if len(triad_render) != 1:
             raise _invalid_inputs("the table render prompt is not shared by the triad")
@@ -1192,9 +1227,13 @@ def _check_render_inputs(inputs: Mapping[str, Any]) -> None:
         if triad_id in seen_triads:
             raise _invalid_inputs("a triad appears twice")
         seen_triads.add(triad_id)
-        if closure not in ("open", "closed") or not all(isinstance(x, str) and x for x in (triad_id, domain, material)):
+        checked_materials = (material,) if triad_shape == "three_claims" else tuple(e["material"] for e in group)
+        if closure not in ("open", "closed") or not all(
+            isinstance(x, str) and x for x in (triad_id, domain, *checked_materials)
+        ):
             raise _invalid_inputs("a triad's closure, domain or material")
         for entry in group:
+            entry_material = material if triad_shape == "three_claims" else entry["material"]
             claim = entry["claim_text"]
             if not isinstance(claim, str) or not claim or " ".join(claim.split()) != claim:
                 raise _invalid_inputs("a claim is empty or has irregular whitespace")
@@ -1231,7 +1270,7 @@ def _check_render_inputs(inputs: Mapping[str, Any]) -> None:
                     or not _is_int(entry.get("target_line"))
                     # the writer construction renders one fact per line (five lines); a template construction's
                     # target is the material line that binds the entity, anywhere in its material
-                    or not (1 <= entry["target_line"] <= max(5, len(material.splitlines())))
+                    or not (1 <= entry["target_line"] <= max(5, len(entry_material.splitlines())))
                 ):
                     raise _invalid_inputs("a writer-only bakeoff entry has invalid fields")
             else:
@@ -1240,7 +1279,7 @@ def _check_render_inputs(inputs: Mapping[str, Any]) -> None:
                 expected = _canonical_prompt_sha256(
                     build_reader_read_messages(
                         build_blind_read_prompt(
-                            triad_id=triad_id, claim_id="", closure=closure, material=material, claim_text=claim
+                            triad_id=triad_id, claim_id="", closure=closure, material=entry_material, claim_text=claim
                         )
                     )
                 )
@@ -2231,7 +2270,13 @@ def _render_mismatch(label: str, detail: str) -> Any:
     )
 
 
-def _verify_render(part_dir: Path, keys_sealed_path: Path, extra_public_files: Sequence[Path]) -> None:
+def _verify_render(
+    part_dir: Path,
+    keys_sealed_path: Path,
+    extra_public_files: Sequence[Path],
+    *,
+    triad_shape: TriadShape = "three_claims",
+) -> None:
     """The authority: re-render every public file from the sealed store and require a byte-for-byte match."""
 
     store = _validated_store(keys_sealed_path)
@@ -2244,7 +2289,7 @@ def _verify_render(part_dir: Path, keys_sealed_path: Path, extra_public_files: S
             "Write the part with write_sealed_part, which creates it, before verifying or freezing.",
         )
     inputs = json.loads(inputs_path.read_text(encoding="utf-8"))
-    _check_render_inputs(inputs)
+    _check_render_inputs(inputs, triad_shape=triad_shape)
     _check_sealed_rows(inputs, _jsonl_rows(keys_sealed_path), _jsonl_rows(store_dir / CALL_METRICS_NAME))
     commitment_key = bytes.fromhex(store["commitment_key"])
     seed = int(store["shuffle_seed"])
@@ -2314,9 +2359,18 @@ def _verify_render(part_dir: Path, keys_sealed_path: Path, extra_public_files: S
 
 
 def verify_sealed_part(
-    part_dir: Path, keys_sealed_path: Path, extra_public_files: Sequence[Path] = ()
+    part_dir: Path,
+    keys_sealed_path: Path,
+    extra_public_files: Sequence[Path] = (),
+    *,
+    triad_shape: TriadShape = "three_claims",
 ) -> None:
     """Verify a sealed part against the sealed store: every public file must be a byte-exact honest rendering.
+
+    ``triad_shape`` must be selected explicitly by the caller and is never inferred from the data:
+    - ``"three_claims"`` (default): each triad shares one material and holds three distinct claims.
+    - ``"one_claim"``: each triad shares one claim and holds three distinct per-entry materials.
+    Any other ``triad_shape`` value is refused with ``PILOT_B_UNKNOWN_TRIAD_SHAPE``.
 
     Threat model. Honest builds leak nothing about keys or positions (this is checked by probes in the tests).
     verify's job is to refuse any public file that is not a byte-exact honest rendering from the sealed store, so a
@@ -2327,6 +2381,7 @@ def verify_sealed_part(
     items.jsonl, provenance.jsonl, checksums.txt, and each extra file such as the report) from the sealed store and
     compares the bytes. Any signal an honest render does not produce fails there, including ones nobody listed.
     """
+    _validate_triad_shape(triad_shape)
     try:
         _verify_known_leaks(part_dir, keys_sealed_path, extra_public_files)
     except RdlabError:
@@ -2334,7 +2389,7 @@ def verify_sealed_part(
     except Exception as exc:
         raise _render_mismatch("a public file", f"it could not be read as the writer's output ({exc!r})") from exc
     try:
-        _verify_render(part_dir, keys_sealed_path, extra_public_files)
+        _verify_render(part_dir, keys_sealed_path, extra_public_files, triad_shape=triad_shape)
     except RdlabError:
         raise
     except Exception as exc:
