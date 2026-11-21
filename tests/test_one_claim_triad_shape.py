@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import ast
 import copy
 import hashlib
 import json
 import os
 import secrets
+import shutil
 import time
 from pathlib import Path
 from typing import Any
@@ -20,7 +22,11 @@ from reasoning_dataset_lab.pilot_b.bakeoff_part import run_bakeoff_part_build
 from reasoning_dataset_lab.pilot_b.models_and_build import run_pilot_b_build
 from reasoning_dataset_lab.pilot_b.ollama import _canonical_prompt_sha256, build_reader_read_messages
 from reasoning_dataset_lab.pilot_b.unanimity import build_blind_read_prompt
-from reasoning_dataset_lab.pilot_b.waves_and_sealing import verify_sealed_part
+from reasoning_dataset_lab.pilot_b.waves_and_sealing import (
+    freeze_sealed_part,
+    part_status,
+    verify_sealed_part,
+)
 from test_pilot_b_ollama_adapters import build_mock_ollama_http_transport
 
 STRONG_SEED = (1 << 127) | 17
@@ -98,6 +104,232 @@ BASELINE_V1_REFUSALS: dict[str, tuple[str, str, str]] = {
         "PILOT_B_SEALED_SCHEMA_MISMATCH",
         "checksums.txt does not list exactly the digests of items.jsonl, part.json and provenance.jsonl.",
         "Rewrite the checksums from the files.",
+    ),
+    # Every remaining `_check_render_inputs` refusal on the three-claims path, captured verbatim on f1b9dad1.
+    "top_level_not_mapping": (
+        "PILOT_B_SEALED_INPUT_INVALID",
+        "The render inputs are not an honest build's: the top-level fields are not the expected ones",
+        "Rebuild the part; the inputs must have the shape and value domains write_sealed_part produces.",
+    ),
+    "top_level_keys": (
+        "PILOT_B_SEALED_INPUT_INVALID",
+        "The render inputs are not an honest build's: the top-level fields are not the expected ones",
+        "Rebuild the part; the inputs must have the shape and value domains write_sealed_part produces.",
+    ),
+    "empty_part_id": (
+        "PILOT_B_SEALED_INPUT_INVALID",
+        "The render inputs are not an honest build's: part_id",
+        "Rebuild the part; the inputs must have the shape and value domains write_sealed_part produces.",
+    ),
+    "bad_map_version": (
+        "PILOT_B_SEALED_INPUT_INVALID",
+        "The render inputs are not an honest build's: the map version or digest",
+        "Rebuild the part; the inputs must have the shape and value domains write_sealed_part produces.",
+    ),
+    "bad_registry_fields": (
+        "PILOT_B_SEALED_INPUT_INVALID",
+        "The render inputs are not an honest build's: the licence registry fields",
+        "Rebuild the part; the inputs must have the shape and value domains write_sealed_part produces.",
+    ),
+    "bad_licence_dates": (
+        "PILOT_B_SEALED_INPUT_INVALID",
+        "The render inputs are not an honest build's: the licence read dates are not dates",
+        "Rebuild the part; the inputs must have the shape and value domains write_sealed_part produces.",
+    ),
+    "readers_not_list": (
+        "PILOT_B_SEALED_INPUT_INVALID",
+        "The render inputs are not an honest build's: readers is not a list",
+        "Rebuild the part; the inputs must have the shape and value domains write_sealed_part produces.",
+    ),
+    "unknown_licence_date_key": (
+        "PILOT_B_SEALED_INPUT_INVALID",
+        "The render inputs are not an honest build's: the licence read dates name something other than the models' licences",
+        "Rebuild the part; the inputs must have the shape and value domains write_sealed_part produces.",
+    ),
+    "bad_role_fields": (
+        "PILOT_B_SEALED_INPUT_INVALID",
+        "The render inputs are not an honest build's: a model role's fields",
+        "Rebuild the part; the inputs must have the shape and value domains write_sealed_part produces.",
+    ),
+    "bad_model_fields": (
+        "PILOT_B_SEALED_INPUT_INVALID",
+        "The render inputs are not an honest build's: a model's fields",
+        "Rebuild the part; the inputs must have the shape and value domains write_sealed_part produces.",
+    ),
+    "non_text_model_field": (
+        "PILOT_B_SEALED_INPUT_INVALID",
+        "The render inputs are not an honest build's: a model field is not text",
+        "Rebuild the part; the inputs must have the shape and value domains write_sealed_part produces.",
+    ),
+    "wrong_reader_count": (
+        "PILOT_B_SEALED_INPUT_INVALID",
+        "The render inputs are not an honest build's: there are not exactly two readers",
+        "Rebuild the part; the inputs must have the shape and value domains write_sealed_part produces.",
+    ),
+    "bad_num_predict": (
+        "PILOT_B_SEALED_INPUT_INVALID",
+        "The render inputs are not an honest build's: num_predict",
+        "Rebuild the part; the inputs must have the shape and value domains write_sealed_part produces.",
+    ),
+    "bad_num_predict_ops": (
+        "PILOT_B_SEALED_INPUT_INVALID",
+        "The render inputs are not an honest build's: num_predict_config operations",
+        "Rebuild the part; the inputs must have the shape and value domains write_sealed_part produces.",
+    ),
+    "bad_waves_order": (
+        "PILOT_B_SEALED_INPUT_INVALID",
+        "The render inputs are not an honest build's: the waves are not the expected waves in order",
+        "Rebuild the part; the inputs must have the shape and value domains write_sealed_part produces.",
+    ),
+    "bad_pass_rates": (
+        "PILOT_B_SEALED_INPUT_INVALID",
+        "The render inputs are not an honest build's: the pass rates",
+        "Rebuild the part; the inputs must have the shape and value domains write_sealed_part produces.",
+    ),
+    "bad_triad_pass_rate": (
+        "PILOT_B_SEALED_INPUT_INVALID",
+        "The render inputs are not an honest build's: the triad pass rate",
+        "Rebuild the part; the inputs must have the shape and value domains write_sealed_part produces.",
+    ),
+    "entries_not_whole_triads": (
+        "PILOT_B_SEALED_INPUT_INVALID",
+        "The render inputs are not an honest build's: the entries are not whole triads",
+        "Rebuild the part; the inputs must have the shape and value domains write_sealed_part produces.",
+    ),
+    "bad_triad_counts": (
+        "PILOT_B_SEALED_INPUT_INVALID",
+        "The render inputs are not an honest build's: the triad counts",
+        "Rebuild the part; the inputs must have the shape and value domains write_sealed_part produces.",
+    ),
+    "bad_dist_roles": (
+        "PILOT_B_SEALED_INPUT_INVALID",
+        "The render inputs are not an honest build's: the call distributions' roles",
+        "Rebuild the part; the inputs must have the shape and value domains write_sealed_part produces.",
+    ),
+    "bad_dist_ops": (
+        "PILOT_B_SEALED_INPUT_INVALID",
+        "The render inputs are not an honest build's: the call distributions' operations",
+        "Rebuild the part; the inputs must have the shape and value domains write_sealed_part produces.",
+    ),
+    "bad_dist_metrics": (
+        "PILOT_B_SEALED_INPUT_INVALID",
+        "The render inputs are not an honest build's: the call distributions' metrics",
+        "Rebuild the part; the inputs must have the shape and value domains write_sealed_part produces.",
+    ),
+    "bad_dist_entry": (
+        "PILOT_B_SEALED_INPUT_INVALID",
+        "The render inputs are not an honest build's: a call distribution",
+        "Rebuild the part; the inputs must have the shape and value domains write_sealed_part produces.",
+    ),
+    "bad_entry_fields": (
+        "PILOT_B_SEALED_INPUT_INVALID",
+        "The render inputs are not an honest build's: an entry's fields",
+        "Rebuild the part; the inputs must have the shape and value domains write_sealed_part produces.",
+    ),
+    "wrong_class_order": (
+        "PILOT_B_SEALED_INPUT_INVALID",
+        "The render inputs are not an honest build's: a triad does not hold one entry per class in class order",
+        "Rebuild the part; the inputs must have the shape and value domains write_sealed_part produces.",
+    ),
+    "unknown_domain": (
+        "PILOT_B_SEALED_INPUT_INVALID",
+        "The render inputs are not an honest build's: a triad's domain is not in the domain catalogue",
+        "Rebuild the part; the inputs must have the shape and value domains write_sealed_part produces.",
+    ),
+    "shared_table_across_triads": (
+        "PILOT_B_SEALED_INPUT_INVALID",
+        "The render inputs are not an honest build's: two triads share a table",
+        "Rebuild the part; the inputs must have the shape and value domains write_sealed_part produces.",
+    ),
+    "irregular_material_whitespace": (
+        "PILOT_B_SEALED_INPUT_INVALID",
+        "The render inputs are not an honest build's: a triad's material has irregular whitespace",
+        "Rebuild the part; the inputs must have the shape and value domains write_sealed_part produces.",
+    ),
+    "render_prompt_not_shared": (
+        "PILOT_B_SEALED_INPUT_INVALID",
+        "The render inputs are not an honest build's: the table render prompt is not shared by the triad",
+        "Rebuild the part; the inputs must have the shape and value domains write_sealed_part produces.",
+    ),
+    "render_prompt_not_unique": (
+        "PILOT_B_SEALED_INPUT_INVALID",
+        "The render inputs are not an honest build's: the table render prompt is not a digest that is unique to the triad",
+        "Rebuild the part; the inputs must have the shape and value domains write_sealed_part produces.",
+    ),
+    "duplicate_triad_id": (
+        "PILOT_B_SEALED_INPUT_INVALID",
+        "The render inputs are not an honest build's: a triad appears twice",
+        "Rebuild the part; the inputs must have the shape and value domains write_sealed_part produces.",
+    ),
+    "invalid_closure": (
+        "PILOT_B_SEALED_INPUT_INVALID",
+        "The render inputs are not an honest build's: a triad's closure, domain or material",
+        "Rebuild the part; the inputs must have the shape and value domains write_sealed_part produces.",
+    ),
+    "bad_claim_whitespace": (
+        "PILOT_B_SEALED_INPUT_INVALID",
+        "The render inputs are not an honest build's: a claim is empty or has irregular whitespace",
+        "Rebuild the part; the inputs must have the shape and value domains write_sealed_part produces.",
+    ),
+    "proof_wrong_key": (
+        "PILOT_B_SEALED_INPUT_INVALID",
+        "The render inputs are not an honest build's: a proof does not belong to its entry's class",
+        "Rebuild the part; the inputs must have the shape and value domains write_sealed_part produces.",
+    ),
+    "bad_proof_trace_digest": (
+        "PILOT_B_SEALED_INPUT_INVALID",
+        "The render inputs are not an honest build's: a proof trace digest",
+        "Rebuild the part; the inputs must have the shape and value domains write_sealed_part produces.",
+    ),
+    "shared_proof_trace_digest": (
+        "PILOT_B_SEALED_INPUT_INVALID",
+        "The render inputs are not an honest build's: two proofs share a trace digest",
+        "Rebuild the part; the inputs must have the shape and value domains write_sealed_part produces.",
+    ),
+    "word_prompt_not_unique": (
+        "PILOT_B_SEALED_INPUT_INVALID",
+        "The render inputs are not an honest build's: a claim-wording prompt is not a digest that is unique to the entry",
+        "Rebuild the part; the inputs must have the shape and value domains write_sealed_part produces.",
+    ),
+    "call_fields_vary": (
+        "PILOT_B_SEALED_INPUT_INVALID",
+        "The render inputs are not an honest build's: a call's model, digest or limits vary between entries",
+        "Rebuild the part; the inputs must have the shape and value domains write_sealed_part produces.",
+    ),
+    "wrong_writer_operations": (
+        "PILOT_B_SEALED_INPUT_INVALID",
+        "The render inputs are not an honest build's: a claim's writer calls are not the table render and the claim wording",
+        "Rebuild the part; the inputs must have the shape and value domains write_sealed_part produces.",
+    ),
+    "bad_bakeoff_entry": (
+        "PILOT_B_SEALED_INPUT_INVALID",
+        "The render inputs are not an honest build's: a writer-only bakeoff entry has invalid fields",
+        "Rebuild the part; the inputs must have the shape and value domains write_sealed_part produces.",
+    ),
+    "wrong_reader_operations": (
+        "PILOT_B_SEALED_INPUT_INVALID",
+        "The render inputs are not an honest build's: a claim's reader calls are not two reads",
+        "Rebuild the part; the inputs must have the shape and value domains write_sealed_part produces.",
+    ),
+    "wrong_reader_prompt": (
+        "PILOT_B_SEALED_INPUT_INVALID",
+        "The render inputs are not an honest build's: a reader's prompt is not the blind prompt for the claim and material shown",
+        "Rebuild the part; the inputs must have the shape and value domains write_sealed_part produces.",
+    ),
+    "wrong_prover_version": (
+        "PILOT_B_SEALED_INPUT_INVALID",
+        "The render inputs are not an honest build's: the prover or its version is not the one this code pins",
+        "Rebuild the part; the inputs must have the shape and value domains write_sealed_part produces.",
+    ),
+    "reader_mismatch": (
+        "PILOT_B_SEALED_INPUT_INVALID",
+        "The render inputs are not an honest build's: a reader's calls do not match the reader recorded",
+        "Rebuild the part; the inputs must have the shape and value domains write_sealed_part produces.",
+    ),
+    "writer_mismatch": (
+        "PILOT_B_SEALED_INPUT_INVALID",
+        "The render inputs are not an honest build's: the writer's calls do not match the writer recorded",
+        "Rebuild the part; the inputs must have the shape and value domains write_sealed_part produces.",
     ),
 }
 
@@ -313,14 +545,16 @@ def test_cross_refusal_between_three_claims_and_one_claim(
         )
 
 
-# ── 2. Changed and added rows in one_claim (P3, P6, P6b, P7, P11, E9, E10) ───────────────────────────────
+# ── 2. Changed and added one-claim input rules ───────────────────────────────────────────────────────────
 
 
-def test_one_claim_p3_shared_fields_without_material(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    part_dir, keys_path, report_path, base_inputs = _build_one_claim_part(tmp_path / "p3", monkeypatch, bakeoff=True)
+def test_one_claim_shared_fields_without_material(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    part_dir, keys_path, report_path, base_inputs = _build_one_claim_part(
+        tmp_path / "shared-fields", monkeypatch, bakeoff=True
+    )
     verify_sealed_part(part_dir, keys_path, extra_public_files=[report_path], triad_shape="one_claim")
 
-    # Mutating a shared field (table_id) on one entry breaks P3.
+    # Mutating a shared field (table_id) on one entry breaks the shared-fields check without requiring equal material.
     broken = copy.deepcopy(base_inputs)
     broken["entries"][1]["table_id"] = "T10-D-other-999"
     _rerender_from_inputs(part_dir, keys_path, broken)
@@ -329,7 +563,7 @@ def test_one_claim_p3_shared_fields_without_material(tmp_path: Path, monkeypatch
         "the entries of a triad differ in their shared fields",
     )
 
-    # Mutating triad_id, domain, or closure on one entry also breaks P3.
+    # Mutating triad_id, domain, or closure on one entry also breaks the shared-fields check.
     for field, alt in (("triad_id", "other-triad-id"), ("domain", base_inputs["entries"][3]["domain"]), ("closure", "invalid")):
         mutated = copy.deepcopy(base_inputs)
         mutated["entries"][2][field] = alt
@@ -339,11 +573,13 @@ def test_one_claim_p3_shared_fields_without_material(tmp_path: Path, monkeypatch
         )
 
 
-def test_one_claim_p6_single_shared_claim(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    part_dir, keys_path, report_path, base_inputs = _build_one_claim_part(tmp_path / "p6", monkeypatch, bakeoff=False)
+def test_one_claim_single_shared_claim(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    part_dir, keys_path, report_path, base_inputs = _build_one_claim_part(
+        tmp_path / "shared-claim", monkeypatch, bakeoff=False
+    )
     verify_sealed_part(part_dir, keys_path, extra_public_files=[report_path], triad_shape="one_claim")
 
-    # Two distinct claims (entry 2 differs) and three distinct claims must both fail P6.
+    # Two distinct claims (entry 2 differs) and three distinct claims must both fail the single shared-claim check.
     for edits in (
         {2: "A different second claim for this triad."},
         {1: "A second distinct claim.", 2: "A third distinct claim."},
@@ -359,11 +595,13 @@ def test_one_claim_p6_single_shared_claim(tmp_path: Path, monkeypatch: pytest.Mo
         )
 
 
-def test_one_claim_p6b_pairwise_distinct_materials(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    part_dir, keys_path, report_path, base_inputs = _build_one_claim_part(tmp_path / "p6b", monkeypatch, bakeoff=True)
+def test_one_claim_pairwise_distinct_materials(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    part_dir, keys_path, report_path, base_inputs = _build_one_claim_part(
+        tmp_path / "distinct-materials", monkeypatch, bakeoff=True
+    )
     verify_sealed_part(part_dir, keys_path, extra_public_files=[report_path], triad_shape="one_claim")
 
-    # Equal materials across two entries or all three entries of a triad must fail P6b.
+    # Equal materials across two entries or all three entries of a triad must fail the distinct-materials check.
     for dup_targets in ((1,), (1, 2)):
         broken = copy.deepcopy(base_inputs)
         for idx in dup_targets:
@@ -377,11 +615,11 @@ def test_one_claim_p6b_pairwise_distinct_materials(tmp_path: Path, monkeypatch: 
 
 
 @pytest.mark.parametrize("slot_idx", [0, 1, 2])
-def test_one_claim_p7_per_entry_material_whitespace(
+def test_one_claim_per_entry_material_whitespace(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, slot_idx: int
 ) -> None:
     part_dir, keys_path, report_path, base_inputs = _build_one_claim_part(
-        tmp_path / f"p7-{slot_idx}", monkeypatch, bakeoff=True
+        tmp_path / f"material-ws-{slot_idx}", monkeypatch, bakeoff=True
     )
     verify_sealed_part(part_dir, keys_path, extra_public_files=[report_path], triad_shape="one_claim")
 
@@ -395,15 +633,15 @@ def test_one_claim_p7_per_entry_material_whitespace(
 
 
 @pytest.mark.parametrize("slot_idx", [0, 1, 2])
-def test_one_claim_p11_per_entry_non_empty_text_material_and_closure(
+def test_one_claim_per_entry_non_empty_text_material_and_closure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, slot_idx: int
 ) -> None:
     part_dir, keys_path, report_path, base_inputs = _build_one_claim_part(
-        tmp_path / f"p11-{slot_idx}", monkeypatch, bakeoff=True
+        tmp_path / f"entry-text-{slot_idx}", monkeypatch, bakeoff=True
     )
     verify_sealed_part(part_dir, keys_path, extra_public_files=[report_path], triad_shape="one_claim")
 
-    # Empty material on any single entry passes P6b and P7 and must be refused at P11.
+    # Empty material on any single entry passes distinctness and whitespace and must be refused as empty material text.
     broken = copy.deepcopy(base_inputs)
     broken["entries"][slot_idx]["material"] = ""
     broken["entries"][slot_idx]["target_line"] = 1
@@ -413,7 +651,7 @@ def test_one_claim_p11_per_entry_non_empty_text_material_and_closure(
         "a triad's closure, domain or material",
     )
 
-    # Non-string material, invalid closure, and empty triad_id must also be refused at P11.
+    # Non-string material, invalid closure, and empty triad_id must also be refused by the non-empty text / closure check.
     non_str = copy.deepcopy(base_inputs)
     non_str["entries"][slot_idx]["material"] = None
     _assert_invalid_input(lambda: ws._check_render_inputs(non_str, triad_shape="one_claim"), "a triad's closure, domain or material")
@@ -429,16 +667,16 @@ def test_one_claim_p11_per_entry_non_empty_text_material_and_closure(
     _assert_invalid_input(lambda: ws._check_render_inputs(empty_tid, triad_shape="one_claim"), "a triad's closure, domain or material")
 
 
-def test_one_claim_e9_bakeoff_target_line_uses_entry_own_material(
+def test_one_claim_bakeoff_target_line_uses_entry_own_material(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # Line counts are (6, 8, 10) and target_lines are (6, 8, 10); entry 1 & 2 exceed entry 0's 6 lines.
     part_dir, keys_path, report_path, base_inputs = _build_one_claim_part(
-        tmp_path / "e9", monkeypatch, bakeoff=True, line_counts=(6, 8, 10), target_lines=(6, 8, 10)
+        tmp_path / "bakeoff-target-line", monkeypatch, bakeoff=True, line_counts=(6, 8, 10), target_lines=(6, 8, 10)
     )
     verify_sealed_part(part_dir, keys_path, extra_public_files=[report_path], triad_shape="one_claim")
 
-    # Entry 0 has 6 lines (even though entries 1 & 2 have 8 & 10): target_line=7 must fail E9.
+    # Entry 0 has 6 lines (even though entries 1 & 2 have 8 & 10): target_line=7 must fail the entry's line bound.
     for slot_idx, bad_line in ((0, 7), (2, 11), (1, 0)):
         broken = copy.deepcopy(base_inputs)
         broken["entries"][slot_idx]["target_line"] = bad_line
@@ -449,24 +687,24 @@ def test_one_claim_e9_bakeoff_target_line_uses_entry_own_material(
         )
 
     # max(5, len(entry_material.splitlines())) still allows 5 for a 3-line entry, and refuses 6.
-    p3_dir, p3_keys, p3_report, p3_inputs = _build_one_claim_part(
-        tmp_path / "e9-short", monkeypatch, bakeoff=True, line_counts=(3, 7, 9), target_lines=(5, 7, 9)
+    short_dir, short_keys, short_report, short_inputs = _build_one_claim_part(
+        tmp_path / "bakeoff-target-line-short", monkeypatch, bakeoff=True, line_counts=(3, 7, 9), target_lines=(5, 7, 9)
     )
-    verify_sealed_part(p3_dir, p3_keys, extra_public_files=[p3_report], triad_shape="one_claim")
-    p3_bad = copy.deepcopy(p3_inputs)
-    p3_bad["entries"][0]["target_line"] = 6
-    _rerender_from_inputs(p3_dir, p3_keys, p3_bad)
+    verify_sealed_part(short_dir, short_keys, extra_public_files=[short_report], triad_shape="one_claim")
+    short_bad = copy.deepcopy(short_inputs)
+    short_bad["entries"][0]["target_line"] = 6
+    _rerender_from_inputs(short_dir, short_keys, short_bad)
     _assert_invalid_input(
-        lambda: verify_sealed_part(p3_dir, p3_keys, extra_public_files=[p3_report], triad_shape="one_claim"),
+        lambda: verify_sealed_part(short_dir, short_keys, extra_public_files=[short_report], triad_shape="one_claim"),
         "a writer-only bakeoff entry has invalid fields",
     )
 
 
-def test_one_claim_e10_reader_blind_prompt_uses_entry_own_material(
+def test_one_claim_reader_blind_prompt_uses_entry_own_material(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     part_dir, keys_path, report_path, base_inputs = _build_one_claim_part(
-        tmp_path / "e10", monkeypatch, bakeoff=False
+        tmp_path / "reader-prompt", monkeypatch, bakeoff=False
     )
     verify_sealed_part(part_dir, keys_path, extra_public_files=[report_path], triad_shape="one_claim")
 
@@ -511,11 +749,64 @@ def test_unknown_triad_shape_refused(
     assert caught_check.value.code == "PILOT_B_UNKNOWN_TRIAD_SHAPE"
 
 
+@pytest.mark.parametrize("bakeoff", [False, True], ids=["reader-gated", "bakeoff"])
+def test_freeze_sealed_part_and_part_status_triad_shape(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bakeoff: bool
+) -> None:
+    # Build an unfrozen one-claim part.
+    oc_dir, oc_keys, oc_report, _ = _build_one_claim_part(
+        tmp_path / "freeze-status", monkeypatch, bakeoff=bakeoff, frozen=False
+    )
+
+    # Before any file is read, an unknown triad_shape must raise PILOT_B_UNKNOWN_TRIAD_SHAPE on both entrypoints.
+    missing_dir = tmp_path / "does_not_exist"
+    missing_keys = tmp_path / "missing_keys.jsonl"
+    for bad_shape in ("two_claims", "", None):
+        with pytest.raises(RdlabError) as caught_freeze_unk:
+            freeze_sealed_part(missing_dir, missing_keys, triad_shape=bad_shape)  # type: ignore[arg-type]
+        assert caught_freeze_unk.value.code == "PILOT_B_UNKNOWN_TRIAD_SHAPE"
+
+        with pytest.raises(RdlabError) as caught_status_unk:
+            part_status(missing_dir, None, triad_shape=bad_shape)  # type: ignore[arg-type]
+        assert caught_status_unk.value.code == "PILOT_B_UNKNOWN_TRIAD_SHAPE"
+
+    # Without keys, part_status returns "unverifiable" even on a one-claim part.
+    assert part_status(oc_dir, None, triad_shape="one_claim") == "unverifiable"
+
+    # Under the default ("three_claims"), both part_status and freeze_sealed_part refuse the one-claim part.
+    _assert_invalid_input(
+        lambda: part_status(oc_dir, oc_keys),
+        "the entries of a triad differ in their shared fields",
+    )
+    _assert_invalid_input(
+        lambda: freeze_sealed_part(oc_dir, oc_keys, extra_public_files=[oc_report]),
+        "the entries of a triad differ in their shared fields",
+    )
+
+    # Under triad_shape="one_claim", part_status reports "not_frozen", freeze_sealed_part freezes it,
+    # and both part_status and verify_sealed_part confirm it is cleanly frozen afterward.
+    assert part_status(oc_dir, oc_keys, triad_shape="one_claim") == "not_frozen"
+    frozen_meta = freeze_sealed_part(oc_dir, oc_keys, extra_public_files=[oc_report], triad_shape="one_claim")
+    assert frozen_meta["frozen"] is True
+    assert part_status(oc_dir, oc_keys, triad_shape="one_claim") == "frozen"
+    verify_sealed_part(oc_dir, oc_keys, extra_public_files=[oc_report], triad_shape="one_claim")
+
+
+def test_verify_render_checks_triad_shape_before_sealed_store(tmp_path: Path) -> None:
+    with pytest.raises(RdlabError) as caught:
+        ws._verify_render(
+            tmp_path / "missing_part",
+            tmp_path / "missing_store" / "keys.sealed.jsonl",
+            (),
+            triad_shape="unknown_shape",  # type: ignore[arg-type]
+        )
+    assert caught.value.code == "PILOT_B_UNKNOWN_TRIAD_SHAPE"
+
+
 # ── 4. v1 default byte-for-byte unchanged ────────────────────────────────────────────────────────────────
 
 
 def test_v1_default_byte_for_byte_unchanged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    import shutil
 
     # Pilot B deterministic build + verify
     _apply_deterministic_clock_and_secrets(monkeypatch)
@@ -613,6 +904,11 @@ def test_v1_default_byte_for_byte_unchanged(tmp_path: Path, monkeypatch: pytest.
         f"{hashlib.sha256((c_ren / 'part_pilot_b_sealed' / fn).read_bytes()).hexdigest()}  {fn}"
         for fn in ("items.jsonl", "part.json", "provenance.jsonl")
     ]
+    # c_ren has valid unfrozen hashes in checksums.txt: written with LF it is an honest unfrozen rendering
+    # that verify_sealed_part accepts; written with CRLF below, the checksum bytes differ and trigger render_mismatch.
+    csum_lf = ("\n".join(sorted(csum_ren, key=lambda x: x[66:])) + "\n").encode("utf-8")
+    (c_ren / "part_pilot_b_sealed" / "checksums.txt").write_bytes(csum_lf)
+    assert verify_sealed_part(c_ren / "part_pilot_b_sealed", c_ren / "sealed_store" / "keys.sealed.jsonl") is None
     (c_ren / "part_pilot_b_sealed" / "checksums.txt").write_bytes(
         ("\r\n".join(sorted(csum_ren, key=lambda x: x[66:])) + "\r\n").encode("utf-8")
     )
@@ -622,6 +918,200 @@ def test_v1_default_byte_for_byte_unchanged(tmp_path: Path, monkeypatch: pytest.
     shutil.copytree(pb_out, c_sch)
     (c_sch / "part_pilot_b_sealed" / "checksums.txt").write_bytes(("0" * 64 + "  items.jsonl\n").encode("utf-8"))
     cases.append(("schema_mismatch", lambda kw: verify_sealed_part(c_sch / "part_pilot_b_sealed", c_sch / "sealed_store" / "keys.sealed.jsonl", **kw)))
+
+    # Pin every remaining `_check_render_inputs` refusal message reachable on the three-claims path.
+    c_in_pb = tmp_path / "c_in_pb"
+    shutil.copytree(pb_out, c_in_pb)
+    pb_ri_path = c_in_pb / "sealed_store" / "render_inputs.sealed.json"
+    base_pb_inputs = json.loads(pb_ri_path.read_text(encoding="utf-8"))
+
+    c_in_bo = tmp_path / "c_in_bo"
+    shutil.copytree(bo_out, c_in_bo)
+    bo_ri_path = c_in_bo / "sealed_store" / "render_inputs.sealed.json"
+    base_bo_inputs = json.loads(bo_ri_path.read_text(encoding="utf-8"))
+
+    def pb_input_case(mutator, *, replace_doc: Any = None):
+        def _run(kw: dict[str, Any]) -> None:
+            if replace_doc is not None:
+                payload = replace_doc
+            else:
+                payload = copy.deepcopy(base_pb_inputs)
+                mutator(payload)
+            pb_ri_path.write_bytes((json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8"))
+            verify_sealed_part(c_in_pb / "part_pilot_b_sealed", c_in_pb / "sealed_store" / "keys.sealed.jsonl", **kw)
+
+        return _run
+
+    def bo_input_case(mutator):
+        def _run(kw: dict[str, Any]) -> None:
+            payload = copy.deepcopy(base_bo_inputs)
+            mutator(payload)
+            bo_ri_path.write_bytes((json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8"))
+            verify_sealed_part(c_in_bo / "part_bakeoff_sealed", c_in_bo / "sealed_store" / "keys.sealed.jsonl", **kw)
+
+        return _run
+
+    def _mut_wrong_class_order(d: dict[str, Any]) -> None:
+        d["entries"][0]["key"] = "unsupported"
+        d["entries"][1]["key"] = "supported"
+
+    def _mut_triad0(field: str, value: Any):
+        def _fn(d: dict[str, Any]) -> None:
+            for i in range(3):
+                d["entries"][i][field] = value
+
+        return _fn
+
+    def _mut_shared_table(d: dict[str, Any]) -> None:
+        for i in range(3):
+            d["entries"][3 + i]["table_id"] = d["entries"][0]["table_id"]
+
+    def _mut_irregular_mat(d: dict[str, Any]) -> None:
+        for i in range(3):
+            d["entries"][i]["material"] = d["entries"][i]["material"].replace(" ", "  ", 1)
+
+    def _mut_render_prompt_not_unique(d: dict[str, Any]) -> None:
+        for i in range(3):
+            d["entries"][3 + i]["writer_call_records"][0]["prompt_sha256"] = d["entries"][0][
+                "writer_call_records"
+            ][0]["prompt_sha256"]
+
+    def _mut_duplicate_triad_id(d: dict[str, Any]) -> None:
+        for i in range(3):
+            d["entries"][3 + i]["triad_id"] = d["entries"][0]["triad_id"]
+
+    input_cases: list[tuple[str, Any]] = [
+        ("top_level_not_mapping", pb_input_case(lambda d: None, replace_doc=[])),
+        ("top_level_keys", pb_input_case(lambda d: d.pop("map_sha256"))),
+        ("empty_part_id", pb_input_case(lambda d: d.__setitem__("part_id", ""))),
+        ("bad_map_version", pb_input_case(lambda d: d.__setitem__("map_version", 0))),
+        ("bad_registry_fields", pb_input_case(lambda d: d["registry"].pop("sha256"))),
+        (
+            "bad_licence_dates",
+            pb_input_case(
+                lambda d: d["registry"]["read_dates"].__setitem__(
+                    next(iter(d["registry"]["read_dates"])), "not-a-date"
+                )
+            ),
+        ),
+        ("readers_not_list", pb_input_case(lambda d: d.__setitem__("readers", "bad"))),
+        (
+            "unknown_licence_date_key",
+            pb_input_case(lambda d: d["registry"]["read_dates"].__setitem__("other-lic", "2026-01-01")),
+        ),
+        ("bad_role_fields", pb_input_case(lambda d: d["writer"].pop("max_num_ctx"))),
+        ("bad_model_fields", pb_input_case(lambda d: d["writer"]["model"].pop("digest"))),
+        ("non_text_model_field", pb_input_case(lambda d: d["writer"]["model"].__setitem__("name", 123))),
+        ("wrong_reader_count", pb_input_case(lambda d: d["readers"].append(copy.deepcopy(d["readers"][0])))),
+        ("bad_num_predict", pb_input_case(lambda d: d.__setitem__("num_predict", 0))),
+        (
+            "bad_num_predict_ops",
+            pb_input_case(lambda d: d["num_predict_config"]["by_operation"].__setitem__("unknown_op", 10)),
+        ),
+        ("bad_waves_order", pb_input_case(lambda d: d["waves"].reverse())),
+        ("bad_pass_rates", pb_input_case(lambda d: d["pass_rate_per_class"].__setitem__("supported", 2.0))),
+        ("bad_triad_pass_rate", pb_input_case(lambda d: d.__setitem__("triad_pass_rate", -0.1))),
+        ("entries_not_whole_triads", pb_input_case(lambda d: d["entries"].pop())),
+        ("bad_triad_counts", pb_input_case(lambda d: d.__setitem__("triads_kept", 99))),
+        ("bad_dist_roles", pb_input_case(lambda d: d["call_distributions"].pop("reader_1"))),
+        ("bad_dist_ops", pb_input_case(lambda d: d["call_distributions"]["writer"].__setitem__("bogus", {}))),
+        (
+            "bad_dist_metrics",
+            pb_input_case(
+                lambda d: d["call_distributions"]["writer"]["render_material"].__setitem__("bogus_m", {})
+            ),
+        ),
+        (
+            "bad_dist_entry",
+            pb_input_case(
+                lambda d: d["call_distributions"]["writer"]["render_material"].__setitem__(
+                    next(iter(d["call_distributions"]["writer"]["render_material"])), {"bad_key": 1}
+                )
+            ),
+        ),
+        ("bad_entry_fields", pb_input_case(lambda d: d["entries"][0].pop("claim_text"))),
+        ("wrong_class_order", pb_input_case(_mut_wrong_class_order)),
+        ("unknown_domain", pb_input_case(_mut_triad0("domain", "mars"))),
+        ("shared_table_across_triads", pb_input_case(_mut_shared_table)),
+        ("irregular_material_whitespace", pb_input_case(_mut_irregular_mat)),
+        (
+            "render_prompt_not_shared",
+            pb_input_case(lambda d: d["entries"][0]["writer_call_records"][0].__setitem__("prompt_sha256", "a" * 64)),
+        ),
+        ("render_prompt_not_unique", pb_input_case(_mut_render_prompt_not_unique)),
+        ("duplicate_triad_id", pb_input_case(_mut_duplicate_triad_id)),
+        ("invalid_closure", pb_input_case(_mut_triad0("closure", "neither"))),
+        ("bad_claim_whitespace", pb_input_case(lambda d: d["entries"][0].__setitem__("claim_text", ""))),
+        ("proof_wrong_key", pb_input_case(lambda d: d["entries"][0]["proof"].__setitem__("key", "cannot_tell"))),
+        (
+            "bad_proof_trace_digest",
+            pb_input_case(lambda d: d["entries"][0]["proof"].__setitem__("trace_sha256", "xyz")),
+        ),
+        (
+            "shared_proof_trace_digest",
+            pb_input_case(
+                lambda d: d["entries"][1]["proof"].__setitem__(
+                    "trace_sha256", d["entries"][0]["proof"]["trace_sha256"]
+                )
+            ),
+        ),
+        (
+            "word_prompt_not_unique",
+            pb_input_case(
+                lambda d: d["entries"][1]["writer_call_records"][1].__setitem__(
+                    "prompt_sha256", d["entries"][0]["writer_call_records"][1]["prompt_sha256"]
+                )
+            ),
+        ),
+        (
+            "call_fields_vary",
+            pb_input_case(lambda d: d["entries"][1]["writer_call_records"][0].__setitem__("max_num_ctx", 999)),
+        ),
+        (
+            "wrong_writer_operations",
+            pb_input_case(lambda d: d["entries"][0]["writer_call_records"][0].__setitem__("operation", "wrong_op")),
+        ),
+        ("bad_bakeoff_entry", bo_input_case(lambda d: d["entries"][0].__setitem__("split", "invalid"))),
+        (
+            "wrong_reader_operations",
+            pb_input_case(lambda d: d["entries"][0]["reader_call_records"][0].__setitem__("operation", "wrong_op")),
+        ),
+        (
+            "wrong_reader_prompt",
+            pb_input_case(lambda d: d["entries"][0]["reader_call_records"][0].__setitem__("prompt_sha256", "b" * 64)),
+        ),
+        ("wrong_prover_version", pb_input_case(lambda d: d["entries"][0]["proof"].__setitem__("version", "0.0.0"))),
+        ("reader_mismatch", pb_input_case(lambda d: d["readers"][0]["model"].__setitem__("name", "other-reader"))),
+        ("writer_mismatch", pb_input_case(lambda d: d["writer"]["model"].__setitem__("name", "other-writer"))),
+    ]
+    cases.extend(input_cases)
+
+    # Confirm via AST that every `_invalid_inputs(...)` message on `_check_render_inputs`'s three_claims path is pinned.
+    ws_tree = ast.parse(Path(ws.__file__).read_text(encoding="utf-8"))
+    check_fn = next(
+        n for n in ws_tree.body if isinstance(n, ast.FunctionDef) and n.name == "_check_render_inputs"
+    )
+    all_input_msgs = {
+        node.args[0].value
+        for node in ast.walk(check_fn)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_invalid_inputs"
+        and len(node.args) == 1
+        and isinstance(node.args[0], ast.Constant)
+        and isinstance(node.args[0].value, str)
+    }
+    three_claims_msgs = all_input_msgs - {
+        "the three entries of a triad do not share one claim",
+        "the three materials of a triad are not distinct",
+    }
+    prefix = "The render inputs are not an honest build's: "
+    pinned_input_msgs = {
+        msg.removeprefix(prefix)
+        for case_name, (code, msg, _) in BASELINE_V1_REFUSALS.items()
+        if code == "PILOT_B_SEALED_INPUT_INVALID" and any(n == case_name for n, _ in cases)
+    }
+    assert three_claims_msgs == pinned_input_msgs
 
     for name, fn in cases:
         default_res = capture(lambda f=fn: f({}))
