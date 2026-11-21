@@ -76,7 +76,7 @@ def test_path_hygiene_scanner_catches_all_three_patterns_skips_binaries_and_hide
         "\n".join(
             [
                 "clean header",
-                ":".join(("D", "\\Users\\acct_01\\work")),
+                ":".join(("D", "\\" + "Users" + "\\acct_01\\work")),
                 ":".join(("c", "/" + "Users" + "/acct_02/work")),
             ]
         )
