@@ -546,6 +546,7 @@ class JudgeTransportResponse:
     verdict_token_margin: float | None = None
     thinking_token_count: int | None = None
     call_seed: int | None = None
+    seed_variant: str | None = None
     max_new_tokens_used: int | None = None
 
 
@@ -3024,6 +3025,7 @@ class DeterministicFakeJudgeTransport:
             system_one_result: dict[str, Any] | None = None,
             thinking_token_count: int | None = None,
             call_seed: int | None = None,
+            seed_variant: str | None = None,
             max_new_tokens_used: int | None = None,
             library_pins_extra: Mapping[str, Any] | None = None,
         ) -> JudgeTransportResponse:
@@ -3054,6 +3056,7 @@ class DeterministicFakeJudgeTransport:
                 verdict_token_margin=margin,
                 thinking_token_count=thinking_token_count,
                 call_seed=call_seed,
+                seed_variant=seed_variant,
                 max_new_tokens_used=max_new_tokens_used,
             )
 
@@ -5010,6 +5013,16 @@ def run_bakeoff_judge(
         eff_window_mode,
         fake_transport=bool(fake_transport or isinstance(transport, DeterministicFakeJudgeTransport)),
     )
+    eff_qwen36_seed_variant = resolve_qwen36_seed_variant()
+    if eff_qwen36_seed_variant is not None and spec.judge_id != QWEN36_JUDGE_ID:
+        raise refused_error(
+            "QWEN36_SEED_VARIANT_UNSUPPORTED_JUDGE",
+            f"{QWEN36_SEED_VARIANT_ENV_VAR}={eff_qwen36_seed_variant!r} is only supported for {QWEN36_JUDGE_ID!r}, not {spec.judge_id!r}.",
+            f"Unset {QWEN36_SEED_VARIANT_ENV_VAR} when running any judge other than {QWEN36_JUDGE_ID!r}.",
+        )
+    eff_qwen36_seed_variant_recorded = (
+        eff_qwen36_seed_variant if eff_qwen36_seed_variant is not None else QWEN36_SEED_VARIANT_UNSET
+    )
     if spec.judge_id == QWEN36_JUDGE_ID:
         resolve_qwen36_max_new_tokens(require_explicit=is_real_qwen36)
     det_status = configure_torch_determinism(window_mode=eff_window_mode, shard_spec=eff_shard_spec)
@@ -5339,6 +5352,10 @@ def run_bakeoff_judge(
         except Exception:
             prev_load_history = []
 
+    row_filename = f"{spec.judge_id}.jsonl" if pass_mode == "binary" else f"{spec.judge_id}.{pass_mode}.jsonl"
+    if spec.judge_id == QWEN36_JUDGE_ID:
+        _check_qwen36_resume_seed_variant_file(resolved_out / ROWS_DIRNAME / row_filename, eff_qwen36_seed_variant_recorded)
+
     # Resolve canary items present in this item set
     canary_cfg = load_canary_config(canary_config_path) if (run_canary or canary_config_path is not None) else {}
     canary_wanted_ids = [str(iid) for iid in canary_cfg.get("canary_item_ids", []) if str(iid) in items_by_id]
@@ -5357,7 +5374,6 @@ def run_bakeoff_judge(
 
     rows_dir = resolved_out / ROWS_DIRNAME
     rows_dir.mkdir(parents=True, exist_ok=True)
-    row_filename = f"{spec.judge_id}.jsonl" if pass_mode == "binary" else f"{spec.judge_id}.{pass_mode}.jsonl"
     row_path = rows_dir / row_filename
     gen_path = resolved_out / GENERATIONS_FILENAME
 
@@ -6027,6 +6043,7 @@ def run_bakeoff_judge(
     qwen36_summary_extra: dict[str, Any] = {}
     if spec.judge_id == QWEN36_JUDGE_ID:
         qwen36_summary_extra["max_new_tokens"] = resolve_qwen36_max_new_tokens(require_explicit=is_real_qwen36)
+        qwen36_summary_extra["seed_variant"] = eff_qwen36_seed_variant_recorded
         qwen36_summary_extra["thinking_length_quantiles"] = thinking_length_quantiles
         qwen36_summary_extra["call_seconds_quantiles"] = call_seconds_quantiles
 
@@ -8525,6 +8542,9 @@ QWEN36_REPO_ID = "Qwen/Qwen3.6-35B-A3B"
 QWEN36_REVISION = "345d467b117d1fd5eda9b879a5988de9ae5f47a7"
 QWEN36_DEFAULT_MAX_NEW_TOKENS = 4096
 QWEN36_MAX_NEW_TOKENS_ENV_VAR = "RDLAB_QWEN36_MAX_NEW_TOKENS"
+QWEN36_SEED_VARIANT_ENV_VAR = "RDLAB_QWEN36_SEED_VARIANT"
+QWEN36_SEED_VARIANT_UNSET = "none"
+QWEN36_SEED_VARIANT_PATTERN = re.compile(r"\A[a-z0-9][a-z0-9_-]{0,31}\Z")
 # Unmeasured estimate (8x NLI_MAX_INPUT_TOKENS = 512 tokens, bounding KV cache below 262k):
 # to be replaced by a measured value after running over real prompts.
 QWEN36_PROMPT_TOKEN_CAP = 4096
@@ -9470,9 +9490,69 @@ def resolve_qwen36_max_new_tokens(
     return val
 
 
-def derive_qwen36_call_seed(item_id: str, order: OrderMode) -> int:
-    """Derive a deterministic per-call sampling seed solely from `item_id` and `order` ('AB' or 'BA')."""
-    digest = hashlib.sha256(f"{item_id}\x00{order}".encode("utf-8")).digest()
+def normalize_qwen36_seed_variant(raw_value: str | None) -> str | None:
+    """Validate an optional `RDLAB_QWEN36_SEED_VARIANT` string, returning `None` when unset or empty."""
+    if raw_value is None or raw_value == "":
+        return None
+    if raw_value.lower() == QWEN36_SEED_VARIANT_UNSET or not QWEN36_SEED_VARIANT_PATTERN.fullmatch(raw_value):
+        raise refused_error(
+            "QWEN36_SEED_VARIANT_INVALID",
+            f"{QWEN36_SEED_VARIANT_ENV_VAR} must match {QWEN36_SEED_VARIANT_PATTERN.pattern} (excluding 'none'), got {raw_value!r}.",
+            f"Use 1-32 lowercase ASCII letters, digits, '-' or '_' starting with [a-z0-9] (not 'none'), or unset {QWEN36_SEED_VARIANT_ENV_VAR}.",
+        )
+    return raw_value
+
+
+def resolve_qwen36_seed_variant(
+    raw_value: str | None = None,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> str | None:
+    """Resolve optional `RDLAB_QWEN36_SEED_VARIANT`, returning `None` when unset/empty or the validated variant."""
+    if raw_value is not None:
+        return normalize_qwen36_seed_variant(raw_value)
+    source = os.environ if env is None else env
+    return normalize_qwen36_seed_variant(source.get(QWEN36_SEED_VARIANT_ENV_VAR))
+
+
+def _row_qwen36_seed_variant(row: Mapping[str, Any]) -> str:
+    raw = row.get("seed_variant")
+    text = str(raw).strip() if raw is not None else ""
+    return text or QWEN36_SEED_VARIANT_UNSET
+
+
+def _check_qwen36_resume_seed_variant_file(path: Path, expected_seed_variant: str) -> None:
+    if not path.is_file():
+        return
+    for raw_ln in path.read_text(encoding="utf-8").splitlines():
+        if not raw_ln.strip():
+            continue
+        parsed = json.loads(raw_ln)
+        if not isinstance(parsed, Mapping):
+            continue
+        row_variant = _row_qwen36_seed_variant(parsed)
+        if row_variant != expected_seed_variant:
+            hint_val = row_variant if row_variant != QWEN36_SEED_VARIANT_UNSET else "<unset>"
+            raise refused_error(
+                "QWEN36_RESUME_SEED_VARIANT_MISMATCH",
+                f"Cannot resume '{path.name}': existing row has seed_variant={row_variant!r}, current run has {expected_seed_variant!r}.",
+                f"Set {QWEN36_SEED_VARIANT_ENV_VAR}={hint_val} or use a fresh output directory.",
+            )
+
+
+def derive_qwen36_call_seed(
+    item_id: str,
+    order: OrderMode,
+    seed_variant: str | None = None,
+) -> int:
+    """Derive a deterministic per-call sampling seed from `item_id`, `order` ('AB' or 'BA'), and optional `seed_variant`."""
+    validated_variant = normalize_qwen36_seed_variant(seed_variant)
+    payload = (
+        f"{item_id}\x00{order}\x00{validated_variant}"
+        if validated_variant is not None
+        else f"{item_id}\x00{order}"
+    )
+    digest = hashlib.sha256(payload.encode("utf-8")).digest()
     return int.from_bytes(digest[:4], "big") & 0x7FFFFFFF
 
 
@@ -9564,6 +9644,14 @@ def qwen36_row_fields(
     if spec.judge_id != QWEN36_JUDGE_ID and resp.thinking_token_count is None:
         return {}
     prompt_tok_cnt = int(in_tok_cnt if in_tok_cnt is not None else resp.input_token_count)
+    eff_seed_variant = resolve_qwen36_seed_variant()
+    recorded_seed_variant = (
+        resp.seed_variant
+        if resp.seed_variant is not None
+        else (eff_seed_variant if eff_seed_variant is not None else QWEN36_SEED_VARIANT_UNSET)
+    )
+    pins_out = dict(library_pins)
+    pins_out.setdefault("seed_variant", recorded_seed_variant)
     return {
         "argmax_verdict": readout.argmax_verdict,
         "unparseable_answer_text": readout.unparseable_answer_text,
@@ -9571,9 +9659,14 @@ def qwen36_row_fields(
         "generated_token_count": int(out_tok_cnt),
         "thinking_token_count": resp.thinking_token_count,
         "finish_reason": stop_rsn,
-        "call_seed": resp.call_seed if resp.call_seed is not None else derive_qwen36_call_seed(item_id, order),
+        "call_seed": (
+            resp.call_seed
+            if resp.call_seed is not None
+            else derive_qwen36_call_seed(item_id, order, seed_variant=eff_seed_variant)
+        ),
+        "seed_variant": recorded_seed_variant,
         "max_new_tokens": resp.max_new_tokens_used if resp.max_new_tokens_used is not None else resolve_qwen36_max_new_tokens(),
-        "library_pins": dict(library_pins),
+        "library_pins": pins_out,
     }
 
 
@@ -9606,6 +9699,8 @@ class Qwen36ChoiceAdapter(BaseJudgeAdapter):
         )
         msgs = ({"role": "user", "content": user_content},)
         rendered = f"<|im_start|>user\n{user_content}<|im_end|>\n<|im_start|>assistant\n<think>\n"
+        seed_variant = resolve_qwen36_seed_variant()
+        recorded_seed_variant = seed_variant if seed_variant is not None else QWEN36_SEED_VARIANT_UNSET
         return AssembledPrompt(
             judge_id=self.spec.judge_id,
             item_id=item.item_id,
@@ -9617,7 +9712,8 @@ class Qwen36ChoiceAdapter(BaseJudgeAdapter):
                 "enable_thinking": True,
                 "sampling": dict(QWEN36_THINKING_SAMPLING),
                 "max_new_tokens": resolve_qwen36_max_new_tokens(),
-                "call_seed": derive_qwen36_call_seed(item.item_id, order),
+                "call_seed": derive_qwen36_call_seed(item.item_id, order, seed_variant=seed_variant),
+                "seed_variant": recorded_seed_variant,
             },
         )
 
@@ -9837,7 +9933,9 @@ class VllmJudgeTransport:
         from vllm import SamplingParams
 
         max_new_tokens = resolve_qwen36_max_new_tokens(require_explicit=is_real_mode(self.window_mode))
-        call_seed = derive_qwen36_call_seed(prompt.item_id, prompt.order)
+        seed_variant = resolve_qwen36_seed_variant()
+        recorded_seed_variant = seed_variant if seed_variant is not None else QWEN36_SEED_VARIANT_UNSET
+        call_seed = derive_qwen36_call_seed(prompt.item_id, prompt.order, seed_variant=seed_variant)
         sampling_params = SamplingParams(
             temperature=float(QWEN36_THINKING_SAMPLING["temperature"]),
             top_p=float(QWEN36_THINKING_SAMPLING["top_p"]),
@@ -9913,6 +10011,7 @@ class VllmJudgeTransport:
             "sampling": dict(QWEN36_THINKING_SAMPLING),
             "max_new_tokens": max_new_tokens,
             "call_seed": call_seed,
+            "seed_variant": recorded_seed_variant,
         }
         return JudgeTransportResponse(
             raw_text=raw_text,
@@ -9932,6 +10031,7 @@ class VllmJudgeTransport:
             verdict_token_margin=compute_min_top2_logit_margin_from_logprobs(verdict_top_logprobs),
             thinking_token_count=thinking_token_count,
             call_seed=call_seed,
+            seed_variant=recorded_seed_variant,
             max_new_tokens_used=max_new_tokens,
         )
 
@@ -9945,7 +10045,9 @@ def qwen36_fake_response(
     stub_role: str = "normal",
 ) -> JudgeTransportResponse:
     """`DeterministicFakeJudgeTransport` answer for `qwen3.6-35b-a3b` (thinking block, label, and telemetry)."""
-    call_seed = derive_qwen36_call_seed(prompt.item_id, prompt.order)
+    seed_variant = resolve_qwen36_seed_variant()
+    recorded_seed_variant = seed_variant if seed_variant is not None else QWEN36_SEED_VARIANT_UNSET
+    call_seed = derive_qwen36_call_seed(prompt.item_id, prompt.order, seed_variant=seed_variant)
     max_new_tokens = resolve_qwen36_max_new_tokens()
     pins_extra: dict[str, Any] = {
         "backend": "vllm",
@@ -9963,6 +10065,7 @@ def qwen36_fake_response(
         "sampling": dict(QWEN36_THINKING_SAMPLING),
         "max_new_tokens": max_new_tokens,
         "call_seed": call_seed,
+        "seed_variant": recorded_seed_variant,
     }
     seconds = round(0.001 + 0.0005 * (h_bytes[6] % 11), 6)
     if stub_role == "length_stop":
@@ -9975,6 +10078,7 @@ def qwen36_fake_response(
             seconds=seconds,
             thinking_token_count=len(think_toks),
             call_seed=call_seed,
+            seed_variant=recorded_seed_variant,
             max_new_tokens_used=max_new_tokens,
             library_pins_extra=pins_extra,
         )
@@ -9999,6 +10103,7 @@ def qwen36_fake_response(
             seconds=seconds,
             thinking_token_count=1,
             call_seed=call_seed,
+            seed_variant=recorded_seed_variant,
             max_new_tokens_used=max_new_tokens,
             library_pins_extra=pins_extra,
         )
@@ -10014,6 +10119,7 @@ def qwen36_fake_response(
         seconds=seconds,
         thinking_token_count=len(think_tokens),
         call_seed=call_seed,
+        seed_variant=recorded_seed_variant,
         max_new_tokens_used=max_new_tokens,
         library_pins_extra=pins_extra,
     )

@@ -7681,6 +7681,9 @@ def _run_judges_pipeline_body(
         judge_ids=[jid for jid, _ in selected_specs],
         dryrun=dryrun,
     )
+    validate_qwen36_seed_variant(
+        judge_ids=[jid for jid, _ in selected_specs],
+    )
     stub_exercise_elephant = validate_stub_exercise_elephant_install(
         norm_mode,
         judge_ids=[jid for jid, _ in selected_specs],
@@ -8413,6 +8416,8 @@ def _run_judges_pipeline_body(
         }
         if "max_new_tokens" in done_doc:
             per_judge_metrics[pass_key_j]["max_new_tokens"] = done_doc["max_new_tokens"]
+        if "seed_variant" in done_doc:
+            per_judge_metrics[pass_key_j]["seed_variant"] = done_doc["seed_variant"]
         if done_doc.get("thinking_length_quantiles") is not None:
             per_judge_metrics[pass_key_j]["thinking_length_quantiles"] = done_doc["thinking_length_quantiles"]
         if done_doc.get("call_seconds_quantiles") is not None:
@@ -14983,6 +14988,11 @@ def main(argv: list[str] | None = None) -> int:
             dryrun=dryrun,
         )
 
+        current_step = "validate_qwen36_seed_variant"
+        validate_qwen36_seed_variant(
+            judge_ids=judge_order,
+        )
+
         current_step = "validate_stub_exercise_elephant_install_plan"
         validate_stub_exercise_elephant_install(
             args.mode,
@@ -16318,6 +16328,9 @@ QWEN36_REPO_ID = "Qwen/Qwen3.6-35B-A3B"
 QWEN36_REVISION = "345d467b117d1fd5eda9b879a5988de9ae5f47a7"
 QWEN36_DEFAULT_MAX_NEW_TOKENS = 4096
 QWEN36_MAX_NEW_TOKENS_ENV_VAR = "RDLAB_QWEN36_MAX_NEW_TOKENS"
+QWEN36_SEED_VARIANT_ENV_VAR = "RDLAB_QWEN36_SEED_VARIANT"
+QWEN36_SEED_VARIANT_UNSET = "none"
+QWEN36_SEED_VARIANT_PATTERN = re.compile(r"\A[a-z0-9][a-z0-9_-]{0,31}\Z")
 # d3-mini's gate SHA is the reviewed bd0090dd. d3-flash's is its own pin: its eight remote-code files are byte-identical
 # to d3-mini's reviewed ones (R&D, 2026-11-15), and the d3 transport re-proves that from the receipts at every load.
 # d3's is its own pin too: seven files byte-identical to d3-mini's, and d3_runtime.py checked against its own reviewed
@@ -16945,6 +16958,41 @@ def validate_qwen36_real_window_max_new_tokens(
             f"{QWEN36_MAX_NEW_TOKENS_ENV_VAR} must be > 0, got {val}.",
         )
     return val
+
+
+def validate_qwen36_seed_variant(
+    raw_value: str | None = None,
+    *,
+    judge_ids: Sequence[str] | None = None,
+    env: Mapping[str, str] | None = None,
+) -> str | None:
+    """Validate optional `RDLAB_QWEN36_SEED_VARIANT` and refuse non-Qwen3.6 judges when it is set."""
+    source = os.environ if env is None else env
+    raw = str(source.get(QWEN36_SEED_VARIANT_ENV_VAR, "") if raw_value is None else raw_value or "")
+    if not raw:
+        return None
+    if raw.lower() == QWEN36_SEED_VARIANT_UNSET or not QWEN36_SEED_VARIANT_PATTERN.fullmatch(raw):
+        raise RefusalError(
+            "QWEN36_SEED_VARIANT_INVALID",
+            f"{QWEN36_SEED_VARIANT_ENV_VAR} must match {QWEN36_SEED_VARIANT_PATTERN.pattern} (excluding 'none'), got {raw!r}.",
+        )
+    selected = (
+        judge_ids
+        if judge_ids is not None
+        else gate_selected_judge_ids(
+            raw_only_judges=source.get("RDLAB_ONLY_JUDGES"),
+            raw_plan=source.get(JUDGE_PASS_MODES_ENV_VAR),
+            from_env=False,
+        )
+    )
+    target_ids = [str(j) for j in selected]
+    unsupported = [jid for jid in target_ids if jid != QWEN36_JUDGE_ID]
+    if not target_ids or unsupported:
+        raise RefusalError(
+            "QWEN36_SEED_VARIANT_UNSUPPORTED_JUDGE",
+            f"{QWEN36_SEED_VARIANT_ENV_VAR}={raw!r} is only supported for {QWEN36_JUDGE_ID!r}, not {(unsupported or ['default bakeoff judges'])!r}.",
+        )
+    return raw
 
 
 def _judge_passes(
