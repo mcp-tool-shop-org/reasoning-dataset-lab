@@ -43,6 +43,7 @@ from reasoning_dataset_lab.pilot_b.run_records import (
     REVERIFY_HINT_TEMPLATE,
     UNVERIFIED_JUDGE_DONE_FILENAME,
     collect_run_unverified_passes,
+    find_synthetic_in_run_dir,
     format_unverified_or_incomplete_refusal,
     read_excluded_incomplete_passes,
 )
@@ -1201,6 +1202,14 @@ def merge_shards(
         if isinstance(replacement_shard_dirs, Mapping)
         else tuple(Path(p) for p in replacement_shard_dirs)
     )
+    for sdir in (*shard_dirs, *raw_replacement_dirs):
+        synth_reason = find_synthetic_in_run_dir(sdir)
+        if synth_reason is not None:
+            raise MergeRefusalError(
+                "MERGE_SYNTHETIC_ITEMS",
+                f"shard directory {sdir} contains declared synthetic items or outputs ({synth_reason}); "
+                "synthetic --time-one windows are for timing only and can never enter shard merge.",
+            )
     rig_real_mode = not bool(allow_unpinned_stub)
     if rig_real_mode:
         guard_no_test_hooks_in_counted_mode(any_real=True, allow_unverified=bool(allow_unverified))

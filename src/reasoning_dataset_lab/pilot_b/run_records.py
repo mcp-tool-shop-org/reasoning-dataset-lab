@@ -12,6 +12,7 @@ Marker semantics (`.unverified_judge_done`):
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 import json
 from pathlib import Path
 import re
@@ -28,6 +29,7 @@ from reasoning_dataset_lab.pilot_b.three_way_wording import (
 UNVERIFIED_JUDGE_DONE_FILENAME = ".unverified_judge_done"
 OUTCOME_DRAFT_FILENAME = "outcome.draft.json"
 ROWS_INCOMPLETE_DIRNAME = "rows.incomplete"
+SYNTHETIC_ITEM_ID_PREFIX = "synth-"
 REVERIFY_HINT_TEMPLATE = (
     "Run 'python scripts/colab/vm_judges.py reverify-unverified <out_dir>' offline to re-verify timed-out passes "
     "against progress.jsonl and prune verified entries without opening a Colab session."
@@ -328,3 +330,76 @@ def format_unverified_or_incomplete_refusal(
     )
     hint = f"For unverified pass(es) [{unv_listed}]: {REVERIFY_HINT_TEMPLATE} For incomplete rows [{inc_listed}]: {excl_hint}"
     return msg, hint
+
+
+def _read_json_mapping_quiet(path: Path) -> Mapping[str, Any] | None:
+    if path.is_symlink() or not path.is_file():
+        return None
+    try:
+        doc = json.loads(path.read_bytes().decode("utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError):
+        return None
+    return doc if isinstance(doc, Mapping) else None
+
+
+def find_synthetic_in_rows(rows: Sequence[Mapping[str, Any]], *, source: str = "rows") -> str | None:
+    """Return a concise non-text reason if any row marks `synthetic_items: true` or has a `synth-` item id."""
+    for idx, row in enumerate(rows, start=1):
+        if not isinstance(row, Mapping):
+            continue
+        if row.get("synthetic_items") is True:
+            iid = str(row.get("item_id") or row.get("id") or "").strip()
+            return f"{source} row {idx} (item_id={iid!r}) records synthetic_items=true"
+        for key in ("item_id", "id"):
+            val = str(row.get(key) or "").strip()
+            if val.startswith(SYNTHETIC_ITEM_ID_PREFIX):
+                return f"{source} row {idx} has {key}={val!r} starting with {SYNTHETIC_ITEM_ID_PREFIX!r}"
+    return None
+
+
+def find_synthetic_in_run_dir(run_dir: Path) -> str | None:
+    """Return a concise non-text reason if any record, `judge_done`, or row file in `run_dir` is synthetic."""
+    resolved = Path(run_dir)
+    for fname in ("window.json", "vm_receipt.json", "receipt.json", OUTCOME_DRAFT_FILENAME, "time_one_summary.json"):
+        doc = _read_json_mapping_quiet(resolved / fname)
+        if doc is None:
+            continue
+        if doc.get("synthetic_items") is True:
+            return f"{fname} records synthetic_items=true"
+        part_ident = doc.get("part_identity")
+        if isinstance(part_ident, Mapping) and part_ident.get("synthetic_items") is True:
+            return f"{fname} part_identity records synthetic_items=true"
+
+    jdone_dir = resolved / "judge_done"
+    if jdone_dir.is_dir():
+        for jf in sorted(jdone_dir.glob("*.json")):
+            jdoc = _read_json_mapping_quiet(jf)
+            if jdoc is not None and jdoc.get("synthetic_items") is True:
+                return f"judge_done/{jf.name} records synthetic_items=true"
+
+    for sub in ("rows", "anchor_rows"):
+        sub_dir = resolved / sub
+        if not sub_dir.is_dir():
+            continue
+        for rf in sorted(sub_dir.glob("*.jsonl")):
+            if rf.is_symlink() or not rf.is_file():
+                continue
+            try:
+                raw_text = rf.read_bytes().decode("utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            parsed_rows: list[Mapping[str, Any]] = []
+            for ln in raw_text.splitlines():
+                stripped = ln.strip()
+                if not stripped:
+                    continue
+                try:
+                    obj = json.loads(stripped)
+                except ValueError:
+                    continue
+                if isinstance(obj, Mapping):
+                    parsed_rows.append(obj)
+            reason = find_synthetic_in_rows(parsed_rows, source=f"{sub}/{rf.name}")
+            if reason is not None:
+                return reason
+    return None

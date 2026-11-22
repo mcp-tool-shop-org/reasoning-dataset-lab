@@ -62,6 +62,8 @@ GOLDEN_ANCHOR_MANIFEST=""
 WINDOW_ID=""
 PASS_MODE="${RDLAB_PASS_MODE:-}"
 PASS_MODE_FLAG=0
+SYNTHETIC_ITEMS_RAW="${RDLAB_SYNTHETIC_ITEMS:-0}"
+SYNTHETIC_ITEMS_FLAG=0
 # The kit identity (#107), set by compute_kit_identity before any session opens; empty = could not be read (null).
 KIT_HEAD_SHA=""
 KIT_TREE_CLEAN=""
@@ -128,7 +130,7 @@ REREAD_RESERVED_RT=""
 
 usage() {
   cat <<'EOF'
-Usage: scripts/colab/launch_judges.sh [--session-smoke] [--probe] [--stub] [--time-one] [--lock-check] [--lock-check-stub] [--lock-check-phase anchors|p0a|all] [--counted] [--counted-stub] [--card A100|G4|L4|T4] [--shape standard|high-mem] [--until STEP] [--dry] [--resume] [--run-id ID] [--out-dir DIR] [--items-file FILE] [--part-dir DIR] [--anchor-items FILE] [--p0a-items FILE] [--p0a-part-dir DIR] [--counted-items FILE] [--counted-manifest FILE] [--receipts-dir DIR] [--cap UNITS] [--max-rate UNITS_PER_H] [--pass-mode binary|three_way|three_way_contradicted|three_way_two_question|three_way_symmetric|three_way_nli|three_way_schedules|per_judge]
+Usage: scripts/colab/launch_judges.sh [--session-smoke] [--probe] [--stub] [--time-one] [--lock-check] [--lock-check-stub] [--lock-check-phase anchors|p0a|all] [--counted] [--counted-stub] [--card A100|G4|L4|T4] [--shape standard|high-mem] [--until STEP] [--dry] [--resume] [--run-id ID] [--out-dir DIR] [--items-file FILE] [--part-dir DIR] [--synthetic-items] [--anchor-items FILE] [--p0a-items FILE] [--p0a-part-dir DIR] [--counted-items FILE] [--counted-manifest FILE] [--receipts-dir DIR] [--cap UNITS] [--max-rate UNITS_PER_H] [--pass-mode binary|three_way|three_way_contradicted|three_way_two_question|three_way_symmetric|three_way_nli|three_way_schedules|per_judge]
 
 Options:
   --session-smoke      Run the CPU session smoke check only (open, verify row, stop, verify gone)
@@ -174,6 +176,10 @@ Options:
                        Required for --time-one and --counted (the items file is a projection kept outside the part,
                        made by `rdlab bakeoff-project`); other modes default to the items file's directory
                        (or set RDLAB_PART_DIR)
+  --synthetic-items    Declared synthetic timing only (--time-one only; or set RDLAB_SYNTHETIC_ITEMS). Takes
+                       --items-file only (refuses --part-dir and all counted/lock-check/stub modes before any colab
+                       call). Every item id must start with synth-. Rows carry synthetic_items: true and can never be
+                       scored.
   --anchor-items FILE  For --lock-check / --lock-check-stub: the 50 anchor items from the counted part (label-blind LC-1 rule, rdlab bakeoff-lockcheck-anchors; the 25 lowest-margin are recorded as low-margin anchors) for the 5-judge anchor pass, golden_anchor_manifest.json, and boot_gatekeeper_goldens.filled.json (or set RDLAB_ANCHOR_ITEMS_FILE)
   --p0a-items FILE     For --lock-check / --lock-check-stub: the 114 burned pilot items for P0a only, the projection of
                        the pilot part (or set RDLAB_P0A_ITEMS_FILE)
@@ -487,6 +493,10 @@ while [[ $# -gt 0 ]]; do
       MAX_RATE="${1#*=}"
       shift
       ;;
+    --synthetic-items)
+      SYNTHETIC_ITEMS_FLAG=1
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -498,6 +508,29 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+_synth_norm="$(printf '%s' "$SYNTHETIC_ITEMS_RAW" | tr '[:upper:]' '[:lower:]' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+case "$_synth_norm" in
+  ""|0|false|no|off)
+    ;;
+  1|true|yes|on)
+    SYNTHETIC_ITEMS_FLAG=1
+    ;;
+  *)
+    echo "SYNTHETIC_ITEMS_INVALID: RDLAB_SYNTHETIC_ITEMS must be a boolean (0/1/true/false), got '$SYNTHETIC_ITEMS_RAW'" >&2
+    exit 2
+    ;;
+esac
+if [[ "$SYNTHETIC_ITEMS_FLAG" -eq 1 ]]; then
+  if [[ "$SESSION_SMOKE_FLAG" -eq 1 ]] || [[ "$MODE" != "time-one" ]]; then
+    echo "SYNTHETIC_ITEMS_MODE_FORBIDDEN: --synthetic-items (RDLAB_SYNTHETIC_ITEMS=1) is allowed only with --time-one (got mode=$MODE session_smoke=$SESSION_SMOKE_FLAG)" >&2
+    exit 2
+  fi
+  if [[ -n "$PART_DIR" ]]; then
+    echo "SYNTHETIC_ITEMS_PART_DIR_FORBIDDEN: --synthetic-items cannot be combined with --part-dir ($PART_DIR); synthetic timing takes --items-file only" >&2
+    exit 2
+  fi
+fi
 
 if [[ "$UNTIL_FLAG_SET" -eq 1 ]] || [[ -n "$UNTIL_STEP" ]]; then
   if [[ "$MODE" != "stub" ]] || [[ "$SESSION_SMOKE_FLAG" -eq 1 ]]; then
@@ -887,6 +920,9 @@ compute_cleanup_bounds
 # before any colab call (--dry and live), and before the judge/gatekeeper preflight below, as the part check itself
 # refuses in real modes.
 require_part_dir_for_mode() {
+  if [[ "$SYNTHETIC_ITEMS_FLAG" -eq 1 ]] && [[ "$MODE" == "time-one" ]]; then
+    return 0
+  fi
   if [[ "$MODE" == "time-one" || "$MODE" == "counted" ]] && [[ "${VM_DRYRUN:-0}" != "1" ]] && [[ -z "$PART_DIR" ]]; then
     RUN_WHY="--$MODE requires --part-dir"
     echo "PART_MANIFEST_MISSING: --$MODE requires --part-dir <the sealed part directory: part.json, checksums.txt, items.jsonl>; the items file is a projection kept outside the part (rdlab bakeoff-project), so its directory is never the part" >&2
@@ -1228,7 +1264,7 @@ effective_part_dir() {
 }
 
 check_part_manifest_beside_items() {
-  "$PYTHON_BIN" - "$REPO_ROOT" "$1" "$MODE" "${VM_DRYRUN:-0}" "$(effective_part_dir "$1")" "$PASS_MODE" <<'PY'
+  "$PYTHON_BIN" - "$REPO_ROOT" "$1" "$MODE" "${VM_DRYRUN:-0}" "$(effective_part_dir "$1")" "$PASS_MODE" "$SYNTHETIC_ITEMS_FLAG" <<'PY'
 import sys
 from pathlib import Path
 
@@ -1238,21 +1274,34 @@ mode = sys.argv[3]
 vm_dryrun = sys.argv[4] == "1"
 part_dir = Path(sys.argv[5])
 pass_mode = sys.argv[6].strip() if len(sys.argv) > 6 else ""
+synthetic_items = sys.argv[7].strip() == "1" if len(sys.argv) > 7 else False
 sys.path.insert(0, str(repo_root / "src"))
 sys.path.insert(0, str(repo_root / "scripts" / "colab"))
 import vm_judges
 from reasoning_dataset_lab.pilot_b import schema_check
 
 try:
-    identity = vm_judges.preflight_part_manifest(
-        items_file,
-        mode=mode,
-        dryrun=vm_dryrun,
-        part_dir=part_dir,
-        part_items_file=part_dir / "items.jsonl",
-        schema_errors=lambda doc: schema_check.validate(doc, "part"),
-        pass_mode=pass_mode or None,
-    )
+    if synthetic_items:
+        vm_judges.verify_synthetic_items_prefix(items_file)
+        identity = vm_judges.preflight_part_manifest(
+            items_file,
+            mode=mode,
+            dryrun=vm_dryrun,
+            part_dir=None,
+            pass_mode=pass_mode or None,
+            synthetic_items=True,
+            checked_by="launcher",
+        )
+    else:
+        identity = vm_judges.preflight_part_manifest(
+            items_file,
+            mode=mode,
+            dryrun=vm_dryrun,
+            part_dir=part_dir,
+            part_items_file=part_dir / "items.jsonl",
+            schema_errors=lambda doc: schema_check.validate(doc, "part"),
+            pass_mode=pass_mode or None,
+        )
 except vm_judges.RefusalError as exc:
     sys.stderr.write(f"{exc}\n")
     raise SystemExit(2)
@@ -1262,7 +1311,7 @@ if identity is not None:
         f"[part] part_id={identity['part_id']} items_count={identity['items_count']} "
         f"part_json_sha256={identity['part_json_sha256']} uploaded_items={b['uploaded_items']} rule={b['rule']} "
         f"projection_checked={b['projection_checked']} checked_by={b['checked_by']} pin={identity['pin']} "
-        f"pilot_40b={identity['is_pilot_40b']}\n"
+        f"pilot_40b={identity['is_pilot_40b']} synthetic_items={bool(identity.get('synthetic_items'))}\n"
     )
 PY
 }
@@ -1364,6 +1413,9 @@ build_exec_env_args() {
   # Forwarded only for a 3-way window, so a binary window's exec line is unchanged (the VM's default is binary).
   if [[ "${PASS_MODE:-binary}" != "binary" ]]; then
     EXEC_ENV_ARGS+=(--env "RDLAB_PASS_MODE=$PASS_MODE"); if [[ "$PASS_MODE" == "per_judge" ]]; then EXEC_ENV_ARGS+=(--env "RDLAB_JUDGE_PASS_MODES=${RDLAB_JUDGE_PASS_MODES:-}"); fi
+  fi
+  if [[ "$SYNTHETIC_ITEMS_FLAG" -eq 1 ]]; then
+    EXEC_ENV_ARGS+=(--env "RDLAB_SYNTHETIC_ITEMS=1")
   fi
   if [[ -n "${RDLAB_FIRST_LOAD_JUDGE_ID+x}" ]] && [[ -n "${RDLAB_FIRST_LOAD_JUDGE_ID}" ]]; then
     EXEC_ENV_ARGS+=(--env "RDLAB_FIRST_LOAD_JUDGE_ID=$RDLAB_FIRST_LOAD_JUDGE_ID")
@@ -1751,13 +1803,14 @@ except bakeoff_judge.RdlabError as exc:
 PY
     fi
   elif [[ "$MODE" != "probe" ]] && [[ -n "$ITEMS_FILE" ]]; then
-    "$PYTHON_BIN" - "$REPO_ROOT" "$ITEMS_FILE" "$SESSION_SMOKE_FLAG" <<'PY'
+    "$PYTHON_BIN" - "$REPO_ROOT" "$ITEMS_FILE" "$SESSION_SMOKE_FLAG" "$SYNTHETIC_ITEMS_FLAG" <<'PY'
 import sys
 from pathlib import Path
 
 repo_root = Path(sys.argv[1])
 items_file = Path(sys.argv[2])
 is_smoke = sys.argv[3] == "1"
+synthetic_items = sys.argv[4] == "1" if len(sys.argv) > 4 else False
 sys.path.insert(0, str(repo_root / "src"))
 sys.path.insert(0, str(repo_root / "scripts" / "colab"))
 import vm_judges
@@ -1765,7 +1818,10 @@ import vm_judges
 try:
     vm_judges.check_upload_path_allowed(items_file)
     if not is_smoke or items_file.is_file():
-        vm_judges.verify_items_allowlist(items_file)
+        if synthetic_items:
+            vm_judges.verify_synthetic_items_prefix(items_file)
+        else:
+            vm_judges.verify_items_allowlist(items_file)
 except vm_judges.RefusalError as exc:
     sys.stderr.write(f"{exc}\n")
     raise SystemExit(2)
@@ -1846,7 +1902,7 @@ PY
       fi
     else
       printf 'colab upload -s %s %s /content/rdlab_items/items.jsonl\n' "$SESSION_NAME" "$STAGED_ITEMS_FILE"
-      if [[ -n "$ITEMS_FILE" ]] && [[ -f "$(effective_part_dir "$ITEMS_FILE")/part.json" ]]; then
+      if [[ "$SYNTHETIC_ITEMS_FLAG" -ne 1 ]] && [[ -n "$ITEMS_FILE" ]] && [[ -f "$(effective_part_dir "$ITEMS_FILE")/part.json" ]]; then
         printf 'colab upload -s %s %s /content/rdlab_items/part.json\n' "$SESSION_NAME" "$STAGED_PART_JSON_FILE"
         printf 'colab upload -s %s %s /content/rdlab_items/checksums.txt\n' "$SESSION_NAME" "$STAGED_PART_CHECKSUMS_FILE"
         printf 'colab upload -s %s %s /content/rdlab_items/launcher_part_binding.json\n' "$SESSION_NAME" "$STAGED_BINDING_FILE"
@@ -2363,6 +2419,7 @@ write_outcome_draft() {
   RDLAB_PRICING_RATE="$PRICING_RATE_UNITS_PER_HOUR" \
   RDLAB_OUTCOME_LOCK_CHECK_PHASE="$LOCK_CHECK_PHASE" \
   RDLAB_OUTCOME_PASS_MODE="${PASS_MODE:-binary}" \
+  RDLAB_OUTCOME_SYNTHETIC_ITEMS="$SYNTHETIC_ITEMS_FLAG" \
   RDLAB_OUTCOME_KIT_HEAD_SHA="${KIT_HEAD_SHA:-}" \
   RDLAB_OUTCOME_KIT_TREE_CLEAN="${KIT_TREE_CLEAN:-}" \
   RDLAB_OUTCOME_KIT_VM_JUDGES_PY_SHA256="${KIT_VM_JUDGES_PY_SHA256:-}" \
@@ -2619,6 +2676,7 @@ only_judges_list: list[str] | None = (
 )
 payload["only_judges"] = only_judges_list
 payload["pass_mode"] = os.environ.get("RDLAB_OUTCOME_PASS_MODE", "").strip() or "binary"; payload.update({"judge_pass_modes": [p for p in os.environ.get("RDLAB_JUDGE_PASS_MODES", "").split(",") if p]} if payload["pass_mode"] == "per_judge" else {})  # noqa: E501
+payload["synthetic_items"] = os.environ.get("RDLAB_OUTCOME_SYNTHETIC_ITEMS", "0").strip() == "1"
 # The kit identity (#107), computed on the rig before any session opened; an empty value could not be read (null).
 payload["kit_head_sha"] = os.environ.get("RDLAB_OUTCOME_KIT_HEAD_SHA", "").strip() or None
 payload["kit_tree_clean"] = {"true": True, "false": False}.get(os.environ.get("RDLAB_OUTCOME_KIT_TREE_CLEAN", "").strip())
@@ -3830,18 +3888,22 @@ else
     echo "ITEMS_FILE_MISSING: $ITEMS_FILE" >&2
     exit 2
   fi
-  if ! "$PYTHON_BIN" - "$REPO_ROOT" "$ITEMS_FILE" <<'PY'
+  if ! "$PYTHON_BIN" - "$REPO_ROOT" "$ITEMS_FILE" "$SYNTHETIC_ITEMS_FLAG" <<'PY'
 import sys
 from pathlib import Path
 
 repo_root = Path(sys.argv[1])
 items_file = Path(sys.argv[2])
+synthetic_items = sys.argv[3] == "1" if len(sys.argv) > 3 else False
 sys.path.insert(0, str(repo_root / "src"))
 sys.path.insert(0, str(repo_root / "scripts" / "colab"))
 import vm_judges
 
 try:
-    vm_judges.verify_items_allowlist(items_file)
+    if synthetic_items:
+        vm_judges.verify_synthetic_items_prefix(items_file)
+    else:
+        vm_judges.verify_items_allowlist(items_file)
 except vm_judges.RefusalError as exc:
     sys.stderr.write(f"{exc}\n")
     raise SystemExit(2)
@@ -3860,6 +3922,8 @@ PY
     elif [[ "$part_check_err" == *"THREE_WAY_PARTIAL_UPLOAD"* ]]; then
       RUN_FAILURE_CLASS="THREE_WAY_PARTIAL_UPLOAD"
       RUN_WHY="THREE_WAY_PARTIAL_UPLOAD: partial or reordered three-way items upload refused before session open"
+    elif [[ "$part_check_err" == *"SYNTHETIC_ITEMS_"* ]]; then
+      RUN_WHY="synthetic items check refused before session open"
     else
       RUN_WHY="part files refused before session open: $(effective_part_dir "$ITEMS_FILE")/part.json"
     fi
@@ -3923,7 +3987,7 @@ fi
 mkdir -p "$STAGE_DIR"
 # Part files left in the stage dir by an earlier, interrupted launch must never be uploaded for this one.
 rm -f "$STAGED_PART_JSON_FILE" "$STAGED_PART_CHECKSUMS_FILE" "$STAGED_P0A_PART_JSON_FILE" "$STAGED_P0A_CHECKSUMS_FILE" "$STAGED_BINDING_FILE" "$RIG_BINDING_FILE"
-if ! "$PYTHON_BIN" - "$REPO_ROOT" "$ITEMS_FILE" "$STAGED_ITEMS_FILE" "$RECEIPTS_DIR" "$RECEIPTS_TAR" "$REPO_TAR" "$STAGED_DEVICE_PY" "$GOLDEN_ANCHOR_MANIFEST" "$ANCHOR_ITEMS_FILE" "$STAGED_ANCHOR_ITEMS_FILE" "$P0A_ITEMS_FILE" "$STAGED_P0A_ITEMS_FILE" "$COUNTED_ITEMS_FILE" "$COUNTED_MANIFEST_FILE" "$STAGED_BINDING_FILE" "$MODE" "${VM_DRYRUN:-0}" "$STAGED_PART_JSON_FILE" "$STAGED_PART_CHECKSUMS_FILE" "$(effective_part_dir "$ITEMS_FILE")" "$P0A_PART_DIR" "$STAGED_P0A_PART_JSON_FILE" "$STAGED_P0A_CHECKSUMS_FILE" "$STAGED_VM_SCRIPT" "$PASS_MODE" <<'PY'
+if ! "$PYTHON_BIN" - "$REPO_ROOT" "$ITEMS_FILE" "$STAGED_ITEMS_FILE" "$RECEIPTS_DIR" "$RECEIPTS_TAR" "$REPO_TAR" "$STAGED_DEVICE_PY" "$GOLDEN_ANCHOR_MANIFEST" "$ANCHOR_ITEMS_FILE" "$STAGED_ANCHOR_ITEMS_FILE" "$P0A_ITEMS_FILE" "$STAGED_P0A_ITEMS_FILE" "$COUNTED_ITEMS_FILE" "$COUNTED_MANIFEST_FILE" "$STAGED_BINDING_FILE" "$MODE" "${VM_DRYRUN:-0}" "$STAGED_PART_JSON_FILE" "$STAGED_PART_CHECKSUMS_FILE" "$(effective_part_dir "$ITEMS_FILE")" "$P0A_PART_DIR" "$STAGED_P0A_PART_JSON_FILE" "$STAGED_P0A_CHECKSUMS_FILE" "$STAGED_VM_SCRIPT" "$PASS_MODE" "$SYNTHETIC_ITEMS_FLAG" <<'PY'
 import datetime
 import json
 import shutil
@@ -3956,6 +4020,7 @@ raw_p0a_part_json_dst = sys.argv[22].strip() if len(sys.argv) > 22 else ""
 raw_p0a_checksums_dst = sys.argv[23].strip() if len(sys.argv) > 23 else ""
 raw_sent_vm_script = sys.argv[24].strip() if len(sys.argv) > 24 else ""
 raw_pass_mode = sys.argv[25].strip() if len(sys.argv) > 25 else ""
+stage_synthetic_items = (sys.argv[26].strip() == "1") if len(sys.argv) > 26 else False
 
 sys.path.insert(0, str(repo_root / "src"))
 sys.path.insert(0, str(repo_root / "scripts" / "colab"))
@@ -3963,7 +4028,10 @@ import vm_judges
 BAKEOFF_JUDGE_SPECS = vm_judges.BAKEOFF_JUDGE_SPECS
 
 vm_judges.check_upload_path_allowed(items_src)
-vm_judges.verify_items_allowlist(items_src)
+if stage_synthetic_items:
+    vm_judges.verify_synthetic_items_prefix(items_src)
+else:
+    vm_judges.verify_items_allowlist(items_src)
 _ = vm_judges.collect_claim_ngram_sha256s(items_src)
 shutil.copyfile(items_src, items_dst)
 binding_record: dict = {
@@ -3974,7 +4042,17 @@ binding_record: dict = {
     "window_part": None,
     "p0a_part": None,
 }
-if stage_mode not in ("lock-check", "lock-check-stub") and raw_part_json_dst and raw_part_checksums_dst:
+if stage_mode not in ("lock-check", "lock-check-stub") and stage_synthetic_items:
+    _ = vm_judges.preflight_part_manifest(
+        items_src,
+        mode=stage_mode,
+        dryrun=stage_vm_dryrun,
+        part_dir=None,
+        pass_mode=raw_pass_mode or None,
+        synthetic_items=True,
+        checked_by="launcher",
+    )
+elif stage_mode not in ("lock-check", "lock-check-stub") and raw_part_json_dst and raw_part_checksums_dst:
     # The part's own part.json and checksums.txt go to the VM beside items.jsonl, checked by the same rules as
     # check_part_manifest_beside_items first; they are copied as given, never created or rewritten.
     from reasoning_dataset_lab.pilot_b import schema_check

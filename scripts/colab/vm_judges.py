@@ -220,6 +220,12 @@ P0A_REPORT_FILENAME = "p0a_report.json"
 P0A_CHILDREN_FILENAME = "p0a_children.json"
 P0A_CHILDREN_DIRNAME = "p0a_children"
 WINDOW_MANIFEST_FILENAME = "window.json"
+SYNTHETIC_ITEMS_ENV_VAR = "RDLAB_SYNTHETIC_ITEMS"
+SYNTHETIC_ITEM_ID_PREFIX = "synth-"
+SYNTHETIC_ITEMS_MODE_FORBIDDEN = "SYNTHETIC_ITEMS_MODE_FORBIDDEN"
+SYNTHETIC_ITEMS_PART_DIR_FORBIDDEN = "SYNTHETIC_ITEMS_PART_DIR_FORBIDDEN"
+SYNTHETIC_ITEMS_ID_PREFIX_INVALID = "SYNTHETIC_ITEMS_ID_PREFIX_INVALID"
+SYNTHETIC_ITEMS_INVALID = "SYNTHETIC_ITEMS_INVALID"
 LOW_MARGIN_ANCHOR_SELECTION_RULE = "min_verdict_token_margin_asc_exclude_stratified_25_tiebreak_item_id"
 CANARY_ANCHOR_SELECTION_RULE = LOW_MARGIN_ANCHOR_SELECTION_RULE
 PINNED_ATTN_IMPLEMENTATION = "sdpa"
@@ -4993,6 +4999,7 @@ def write_window_manifest(
     counted_source_sha256: str | None = None,
     pass_mode: str | None = None,
     kit_identity: Mapping[str, Any] | None = None,
+    synthetic_items: bool | None = None,
 ) -> dict[str, Any]:
     """Build and write `run_dir / window.json` listing `{sha256, bytes}` for every allow-listed artifact in `run_dir`.
 
@@ -5016,6 +5023,7 @@ def write_window_manifest(
     prev_p0a_sha: str | None = None
     prev_counted_sha: str | None = None
     prev_pass_mode: str | None = None
+    prev_synthetic_items: bool | None = None
     prev_kit: dict[str, Any] = {}
     if existing_win_path.is_file():
         try:
@@ -5025,12 +5033,19 @@ def write_window_manifest(
                 prev_p0a_sha = str(prev_win_doc.get("p0a_items_sha256") or "").strip() or None
                 prev_counted_sha = str(prev_win_doc.get("counted_source_sha256") or "").strip() or None
                 prev_pass_mode = str(prev_win_doc.get("pass_mode") or "").strip() or None
+                if isinstance(prev_win_doc.get("synthetic_items"), bool):
+                    prev_synthetic_items = bool(prev_win_doc["synthetic_items"])
                 prev_kit = {f: prev_win_doc[f] for f in KIT_IDENTITY_FIELDS if f in prev_win_doc}
         except Exception:
             pass
     eff_anchor_sha = (str(anchor_items_sha256).strip() if anchor_items_sha256 else None) or prev_anchor_sha
     eff_p0a_sha = (str(p0a_items_sha256).strip() if p0a_items_sha256 else None) or prev_p0a_sha
     eff_counted_sha = (str(counted_source_sha256).strip() if counted_source_sha256 else None) or prev_counted_sha
+    eff_synthetic_items = (
+        bool(synthetic_items)
+        if synthetic_items is not None
+        else (prev_synthetic_items if prev_synthetic_items is not None else False)
+    )
     files_map: dict[str, dict[str, Any]] = {}
     for p in sorted(run_dir.rglob("*")):
         if not p.is_file() or p.is_symlink():
@@ -5047,6 +5062,7 @@ def write_window_manifest(
         "schema_version": "1.0",
         "window_id": eff_window_id,
         "mode": eff_mode,
+        "synthetic_items": eff_synthetic_items,
         "file_count": len(files_map),
         "files": files_map,
     }
@@ -6610,6 +6626,105 @@ def part_manifest_required(mode: str | None, *, dryrun: bool = False) -> bool:
     return str(mode or "").strip().lower() not in LOCK_CHECK_WINDOW_MODES
 
 
+def parse_synthetic_items_flag(
+    raw: bool | str | None = None,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> bool:
+    """Parse `--synthetic-items` / `RDLAB_SYNTHETIC_ITEMS` (refusing invalid values with `SYNTHETIC_ITEMS_INVALID`)."""
+    if isinstance(raw, bool):
+        return raw
+    env = os.environ if environ is None else environ
+    val = env.get(SYNTHETIC_ITEMS_ENV_VAR) if raw is None else str(raw)
+    if val is None:
+        return False
+    norm = str(val).strip().lower()
+    if norm in ("", "0", "false", "no", "off"):
+        return False
+    if norm in ("1", "true", "yes", "on"):
+        return True
+    raise RefusalError(
+        SYNTHETIC_ITEMS_INVALID,
+        f"{SYNTHETIC_ITEMS_ENV_VAR} must be a boolean (0/1/true/false), got {val!r}.",
+    )
+
+
+def validate_synthetic_items_mode(
+    mode: str | None,
+    *,
+    synthetic_items: bool,
+    part_dir: Path | str | None = None,
+    session_smoke: bool = False,
+) -> None:
+    """Enforce that `--synthetic-items` is allowed only in `--time-one` and never with `--part-dir`."""
+    if not synthetic_items:
+        return
+    norm_mode = str(mode or "").strip().lower()
+    if session_smoke or norm_mode not in ("time-one", "time_one"):
+        raise RefusalError(
+            SYNTHETIC_ITEMS_MODE_FORBIDDEN,
+            f"--synthetic-items ({SYNTHETIC_ITEMS_ENV_VAR}=1) is allowed only with --time-one, "
+            f"got mode={mode!r} (session_smoke={session_smoke!r}); every counted, lock-check, and scored mode refuses it.",
+        )
+    if part_dir is not None and str(part_dir).strip() != "":
+        raise RefusalError(
+            SYNTHETIC_ITEMS_PART_DIR_FORBIDDEN,
+            f"--synthetic-items cannot be combined with --part-dir ({part_dir}); synthetic timing takes --items-file only.",
+        )
+
+
+def verify_synthetic_items_prefix(items_file: Path) -> int:
+    """Enforce `{id, material, claim}` allow-list and require every item id to start with `synth-`."""
+    eff_items = Path(items_file)
+    row_count = verify_items_allowlist(eff_items)
+    for lineno, raw_line in enumerate(eff_items.read_text(encoding="utf-8").splitlines(), start=1):
+        line = raw_line.strip()
+        if not line:
+            continue
+        obj = json.loads(line)
+        raw_id = str(obj.get("id") or "").strip() if isinstance(obj, Mapping) else ""
+        if not raw_id.startswith(SYNTHETIC_ITEM_ID_PREFIX):
+            raise RefusalError(
+                SYNTHETIC_ITEMS_ID_PREFIX_INVALID,
+                f"Declared synthetic items file {eff_items.name} line {lineno} has id={raw_id!r}; "
+                f"every item id under --synthetic-items must start with {SYNTHETIC_ITEM_ID_PREFIX!r}.",
+            )
+    return row_count
+
+
+def build_synthetic_part_identity(items_file: Path, *, checked_by: str = "vm") -> dict[str, Any]:
+    """Construct the declared synthetic part identity (`synthetic_items: true`, no part directory)."""
+    eff_items = Path(items_file)
+    count = verify_synthetic_items_prefix(eff_items)
+    items_sha = sha256_file(eff_items)
+    return {
+        "source": "synthetic_items",
+        "part_id": "synthetic",
+        "synthesized": True,
+        "synthetic_items": True,
+        "items_count": int(count),
+        "part_json_sha256": None,
+        "items_jsonl_sha256": items_sha,
+        "checksums_sha256": None,
+        "is_pilot_40b": False,
+        "pin": None,
+        "pin_status": "synthetic",
+        "seal": {
+            "frozen": False,
+            "frozen_mac_present": False,
+            "frozen_mac_verified": False,
+            "frozen_mac_not_verified_reason": FROZEN_MAC_NOT_VERIFIED_REASON,
+        },
+        "binding": {
+            "rule": "synthetic_items",
+            "checked_by": checked_by,
+            "projection_checked": False,
+            "uploaded_items": int(count),
+            "uploaded_items_sha256": items_sha,
+        },
+    }
+
+
 def preflight_part_manifest(
     items_file: Path,
     *,
@@ -6622,6 +6737,8 @@ def preflight_part_manifest(
     judge_pass_modes: str | Sequence[tuple[str, str]] | None = None,
     raw_limit_items: str | int | None = None,
     effective_limit_items: int | None = None,
+    synthetic_items: bool = False,
+    checked_by: str = "vm",
 ) -> dict[str, Any] | None:
     """Check the part's `part.json` + `checksums.txt` and bind the items file to them, before any paid step.
 
@@ -6634,6 +6751,24 @@ def preflight_part_manifest(
     """
     eff_items = Path(items_file)
     eff_items_jsonl = eff_items / "items.jsonl" if eff_items.is_dir() else eff_items
+    if synthetic_items:
+        validate_synthetic_items_mode(mode, synthetic_items=True, part_dir=part_dir)
+        check_upload_path_allowed(eff_items_jsonl)
+        identity = build_synthetic_part_identity(eff_items_jsonl, checked_by=checked_by)
+        tw_req, tw_modes = requires_three_way_whole_part_upload(
+            mode,
+            dryrun=dryrun,
+            pass_mode=pass_mode,
+            judge_pass_modes=judge_pass_modes,
+        )
+        if tw_req:
+            check_three_way_whole_part_item_limit(
+                identity,
+                tw_modes=tw_modes,
+                raw_limit_items=raw_limit_items,
+                effective_limit_items=effective_limit_items,
+            )
+        return identity
     eff_part_dir = Path(part_dir) if part_dir is not None else eff_items_jsonl.parent
     part_json = eff_part_dir / PART_JSON_FILENAME
     if not part_json.is_file():
@@ -6856,6 +6991,7 @@ def _ensure_part_manifest_for_run(
     dryrun: bool = False,
     pass_mode: str | None = None,
     effective_limit_items: int | None = None,
+    synthetic_items: bool = False,
 ) -> tuple[dict[str, Any], bool]:
     """Read the staged part identity beside the items (`part_dir` is the items directory or the items file) or refuse
     with `PART_MANIFEST_MISSING` in real modes; the pipeline body's second line behind VM `main`'s
@@ -6865,6 +7001,19 @@ def _ensure_part_manifest_for_run(
     nothing is written. Returns `(identity, was_synthesized)`.
     """
     items_jsonl = Path(part_dir) / "items.jsonl" if Path(part_dir).is_dir() else Path(part_dir)
+    if synthetic_items:
+        identity = preflight_part_manifest(
+            items_jsonl,
+            mode=mode,
+            dryrun=dryrun,
+            part_dir=None,
+            pass_mode=pass_mode,
+            effective_limit_items=effective_limit_items,
+            synthetic_items=True,
+            checked_by="vm",
+        )
+        assert identity is not None
+        return identity, True
     identity = preflight_part_manifest(
         items_jsonl,
         mode=mode,
@@ -7459,6 +7608,7 @@ def run_judges_pipeline(
     replacement_session: bool = False,
     lock_check_phase: str | None = None,
     pass_mode: str | None = None,
+    synthetic_items: bool | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Run all 5 judges (or `only_judge_ids`) as separate child subprocesses in their synced venvs and compute readouts."""
     anchor_stage_dir = run_dir.parent / f".{run_dir.name}_anchor_part"
@@ -7498,6 +7648,7 @@ def run_judges_pipeline(
             replacement_session=replacement_session,
             lock_check_phase=lock_check_phase,
             pass_mode=pass_mode,
+            synthetic_items=synthetic_items,
         )
         return t1_summary, mass_readout
     finally:
@@ -7540,8 +7691,11 @@ def _run_judges_pipeline_body(
     replacement_session: bool = False,
     lock_check_phase: str | None = None,
     pass_mode: str | None = None,
+    synthetic_items: bool | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     _ensure_repo_imports(repo_root)
+    eff_synthetic_items = parse_synthetic_items_flag(synthetic_items)
+    validate_synthetic_items_mode(mode, synthetic_items=eff_synthetic_items)
     eff_repo_dir = (repo_root or resolve_repo_dir()).resolve()
     eff_work_dir = (
         work_dir
@@ -7665,6 +7819,7 @@ def _run_judges_pipeline_body(
             dryrun=dryrun,
             pass_mode=pass_mode,
             effective_limit_items=limit_items,
+            synthetic_items=eff_synthetic_items,
         )
     selected_specs = _select_judge_specs(
         only_judge_ids if only_judge_ids is not None else judge_order
@@ -7863,7 +8018,7 @@ def _run_judges_pipeline_body(
                 if (run_dir / GOLDEN_ANCHOR_MANIFEST_FILENAME).is_file()
                 else (
                     (part_dir / GOLDEN_ANCHOR_MANIFEST_FILENAME)
-                    if (part_dir / GOLDEN_ANCHOR_MANIFEST_FILENAME).is_file()
+                    if (part_dir.is_dir() and (part_dir / GOLDEN_ANCHOR_MANIFEST_FILENAME).is_file())
                     else (
                         (eff_repo_dir / GOLDEN_ANCHOR_MANIFEST_FILENAME)
                         if (eff_repo_dir / GOLDEN_ANCHOR_MANIFEST_FILENAME).is_file()
@@ -7902,6 +8057,8 @@ def _run_judges_pipeline_body(
             child_cmd.append("--replacement-session")
         if mode:
             child_cmd.extend(["--window-mode", str(mode)])
+        if eff_synthetic_items:
+            child_cmd.append("--synthetic-items")
 
         child_env = build_judge_child_env(
             hf_home,
@@ -8585,6 +8742,7 @@ def _run_judges_pipeline_body(
     window_limits = forwarded_window_limits()
     time_one_summary: dict[str, Any] = {
         "mode": mode,
+        "synthetic_items": bool(eff_synthetic_items),
         "part_identity": part_manifest_doc,
         # The launch's own limits as the launcher forwarded them; null when not forwarded, never a default.
         "wall_seconds": window_limits["rig_wall_seconds"],
@@ -8970,6 +9128,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--dryrun",
         action="store_true",
         default=(os.environ.get("VM_DRYRUN") == "1"),
+    )
+    parser.add_argument(
+        "--synthetic-items",
+        action="store_true",
+        default=None,
     )
     effective_argv: list[str] = [] if (argv is None or is_kernel_env(argv)) else list(argv)
     parsed = parser.parse_args(effective_argv)
@@ -14594,6 +14757,7 @@ def build_vm_receipt_doc(
     p0a_items_sha256: str | None = None,
     counted_source_sha256: str | None = None,
     pass_mode: str = DEFAULT_PASS_MODE,
+    synthetic_items: bool = False,
 ) -> dict[str, Any]:
     """Build the canonical `vm_receipt.json` document (used by `vm_judges.main` and tests)."""
     if session_env_report is None and session_env is not None:
@@ -14615,6 +14779,7 @@ def build_vm_receipt_doc(
     receipt_doc: dict[str, Any] = {
         "status": "ok",
         "mode": mode,
+        "synthetic_items": bool(synthetic_items),
         "lock_check_phase": lock_check_phase,
         "pass_mode": pass_mode,
         **receipt_hardware_fields(mode, dryrun=dryrun, card_type_check=card_type_check),
@@ -14902,11 +15067,15 @@ def main(argv: list[str] | None = None) -> int:
     # Whether the VM-side script check ran (#108 fix 1): passed, refused, not_sent (no hash forwarded); None if not reached.
     kit_vm_script_check: str | None = None
     main_pass_mode: str | None = None
+    main_synthetic_items: bool = False
     main_part_identity: dict[str, Any] | None = None
     anchor_items_sha256: str | None = None
     p0a_items_sha256: str | None = None
     counted_source_sha256: str | None = None
     try:
+        current_step = "validate_synthetic_items"
+        main_synthetic_items = parse_synthetic_items_flag(getattr(args, "synthetic_items", None))
+        validate_synthetic_items_mode(args.mode, synthetic_items=main_synthetic_items)
         # The lock-check phase first: a lock-check window with no phase (or a phase on another mode) refuses before
         # anything else is checked or written.
         current_step = "validate_lock_check_phase"
@@ -15072,16 +15241,27 @@ def main(argv: list[str] | None = None) -> int:
             # only the projected items file, so it checks the identity and the counts; the launcher, which has the
             # part, also checked the projection row by row.
             current_step = "verify_part_manifest"
-            staged_part_dir = args.items_file if args.items_file.is_dir() else args.items_file.parent
-            for staged_name in (*PART_STAGED_FILENAMES, LAUNCHER_BINDING_FILENAME):
-                staged_part_file = staged_part_dir / staged_name
-                if staged_part_file.is_file():
-                    check_upload_path_allowed(staged_part_file)
-                    if staged_part_file not in uploaded_item_files:
-                        uploaded_item_files.append(staged_part_file)
-            main_part_identity = preflight_part_manifest(
-                args.items_file, mode=args.mode, dryrun=dryrun, pass_mode=main_pass_mode
-            )
+            if main_synthetic_items:
+                verify_synthetic_items_prefix(args.items_file)
+                main_part_identity = preflight_part_manifest(
+                    args.items_file,
+                    mode=args.mode,
+                    dryrun=dryrun,
+                    part_dir=None,
+                    pass_mode=main_pass_mode,
+                    synthetic_items=True,
+                )
+            else:
+                staged_part_dir = args.items_file if args.items_file.is_dir() else args.items_file.parent
+                for staged_name in (*PART_STAGED_FILENAMES, LAUNCHER_BINDING_FILENAME):
+                    staged_part_file = staged_part_dir / staged_name
+                    if staged_part_file.is_file():
+                        check_upload_path_allowed(staged_part_file)
+                        if staged_part_file not in uploaded_item_files:
+                            uploaded_item_files.append(staged_part_file)
+                main_part_identity = preflight_part_manifest(
+                    args.items_file, mode=args.mode, dryrun=dryrun, pass_mode=main_pass_mode
+                )
 
         cgroup_chain_at_start = read_cgroup_limit_chain()
 
@@ -15410,6 +15590,7 @@ def main(argv: list[str] | None = None) -> int:
                         real_load_on_cpu=True,
                         child_timeout_seconds=resolve_first_load_timeout_seconds(),
                         pass_mode=main_pass_mode,
+                        synthetic_items=main_synthetic_items,
                     )
                     _record_step_end(
                         "judge_pass",
@@ -15525,7 +15706,11 @@ def main(argv: list[str] | None = None) -> int:
                     t_jpass, start_jpass, _ = _record_step_start(
                         "judge_pass", progress_path=progress_path
                     )
-                    part_dir = args.items_file.parent
+                    part_dir = (
+                        args.items_file
+                        if main_synthetic_items and args.items_file.is_file() and args.items_file.name != "items.jsonl"
+                        else args.items_file.parent
+                    )
                     time_one_summary, pilot_mass_readout = run_judges_pipeline(
                         mode=args.mode,
                         part_dir=part_dir,
@@ -15568,6 +15753,7 @@ def main(argv: list[str] | None = None) -> int:
                         replacement_session=bool(
                             getattr(args, "replacement_session", False)
                         ),
+                        synthetic_items=main_synthetic_items,
                     )
                     if time_one_summary is not None and gatekeeper_record_fields:
                         time_one_summary.update(gatekeeper_record_fields)
@@ -15691,6 +15877,7 @@ def main(argv: list[str] | None = None) -> int:
             p0a_items_sha256=p0a_items_sha256,
             counted_source_sha256=counted_source_sha256,
             pass_mode=main_pass_mode,
+            synthetic_items=main_synthetic_items,
         )
         receipt_serialized = json.dumps(receipt_doc, indent=2) + "\n"
         # Set before the first write (#108 fix 1): a failure while either OK receipt is written still rewrites both.
@@ -15715,6 +15902,7 @@ def main(argv: list[str] | None = None) -> int:
             counted_source_sha256=counted_source_sha256,
             pass_mode=main_pass_mode,
             kit_identity=kit_identity,
+            synthetic_items=main_synthetic_items,
         )
         build_allowlisted_result_tar(args.run_dir, args.result_tar)
         _record_step_end(
@@ -15747,6 +15935,7 @@ def main(argv: list[str] | None = None) -> int:
             counted_source_sha256=counted_source_sha256,
             pass_mode=main_pass_mode,
             kit_identity=kit_identity,
+            synthetic_items=main_synthetic_items,
         )
         build_allowlisted_result_tar(args.run_dir, args.result_tar)
 
@@ -15859,6 +16048,7 @@ def main(argv: list[str] | None = None) -> int:
             counted_source_sha256=counted_source_sha256,
             pass_mode=main_pass_mode,
             kit_identity=kit_identity,
+            synthetic_items=main_synthetic_items,
         )
         build_allowlisted_result_tar(args.run_dir, args.result_tar)
         return 0
@@ -15934,6 +16124,7 @@ def main(argv: list[str] | None = None) -> int:
             "detail": scrub_log_text(str(detail)),
             "reason": f"{failure_class}: {scrub_log_text(str(detail))}",
             "mode": args.mode,
+            "synthetic_items": bool(main_synthetic_items),
             "lock_check_phase": main_lock_check_phase,
             "judge_venvs": fail_judge_venvs_map,
             "judge_order": list(judge_order),
@@ -16092,6 +16283,7 @@ def main(argv: list[str] | None = None) -> int:
             counted_source_sha256=counted_source_sha256,
             pass_mode=main_pass_mode,
             kit_identity=kit_identity,
+            synthetic_items=main_synthetic_items,
         )
         _pack_failure_result_tar(args.run_dir, args.result_tar)  # last write into run_dir (#94)
         sys.stderr.write(f"{failure_class}: {scrub_log_text(str(detail))}\n")
@@ -16149,6 +16341,7 @@ def main(argv: list[str] | None = None) -> int:
                     "detail": f"step={current_step} {exc_type}: {exc_text}",
                     "reason": f"UNEXPECTED_ERROR: step={current_step} {exc_type}: {exc_text}",
                     "mode": args.mode,
+                    "synthetic_items": bool(main_synthetic_items),
                     "lock_check_phase": main_lock_check_phase,
                     "judge_order": list(judge_order),
                     "judge_order_source": judge_order_source,
@@ -16197,6 +16390,7 @@ def main(argv: list[str] | None = None) -> int:
             counted_source_sha256=counted_source_sha256,
             pass_mode=main_pass_mode,
             kit_identity=kit_identity,
+            synthetic_items=main_synthetic_items,
         )
         _pack_failure_result_tar(args.run_dir, args.result_tar)  # last write into run_dir (#94)
         sys.stderr.write(f"UNEXPECTED_ERROR: step={current_step} {exc_type}: {exc_text}\n")
@@ -17275,9 +17469,16 @@ def _load_run_records_module() -> Any:
 
 
 def _checked_logprob_rows_dir(judge_output_dir: Path) -> Path:
-    """Refuse (`BAKEOFF_LOGPROB_MASS_UNVERIFIED_PASS`) via the shared `run_records` reader if any pass is unverified."""
+    """Refuse (`BAKEOFF_LOGPROB_MASS_SYNTHETIC_ITEMS` / `BAKEOFF_LOGPROB_MASS_UNVERIFIED_PASS`) via `run_records`."""
     run_records = _load_run_records_module()
     resolved_dir = Path(judge_output_dir)
+    synth_reason = run_records.find_synthetic_in_run_dir(resolved_dir)
+    if synth_reason is not None:
+        raise RefusalError(
+            "BAKEOFF_LOGPROB_MASS_SYNTHETIC_ITEMS",
+            f"Run directory '{resolved_dir}' holds declared synthetic outputs ({synth_reason}); "
+            "synthetic --time-one windows are for timing and length measurement only and cannot produce pilot readouts.",
+        )
     try:
         unverified_entries = run_records.collect_run_unverified_passes(resolved_dir)
     except (OSError, ValueError) as exc:

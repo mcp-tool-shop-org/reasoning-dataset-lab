@@ -76,7 +76,7 @@ from reasoning_dataset_lab.pilot_b.low_margin_fields import (
 )
 
 OrderMode = Literal["AB", "BA"]
-from reasoning_dataset_lab.pilot_b.run_records import OUTCOME_DRAFT_FILENAME, REVERIFY_HINT_TEMPLATE, UNVERIFIED_JUDGE_DONE_FILENAME, collect_run_unverified_passes, format_unverified_or_incomplete_refusal  # noqa: E501
+from reasoning_dataset_lab.pilot_b.run_records import OUTCOME_DRAFT_FILENAME, REVERIFY_HINT_TEMPLATE, SYNTHETIC_ITEM_ID_PREFIX, UNVERIFIED_JUDGE_DONE_FILENAME, collect_run_unverified_passes, find_synthetic_in_run_dir, format_unverified_or_incomplete_refusal  # noqa: E501
 from reasoning_dataset_lab.pilot_b.three_way_wording import NLI_PASS_MODES, PASS_MODE_CHOICES, THREE_WAY_PASS_MODES, TWO_QUESTION_PASS_MODES, PassMode, judge_done_filename_for_pass, judge_supports_pass_mode, rows_filename_is_three_way, three_way_wording  # noqa: E501
 DoneReason = Literal["stop", "length", "abort", "error"]
 RowState = Literal["parsed", "unparseable", "length_stop", "aborted"]
@@ -4761,9 +4761,15 @@ def check_bakeoff_logprob_mass(
             f"pinned SHA-256), got part_id={part_id!r}.",
             "Pass --part-dir <the burned pilot's sealed part directory> (and --part-id bakeoff-d-t10-sealed, optional).",
         )
-    pilot_identity = verify_pinned_pilot_part_dir(part_dir)
-
     resolved_judge_dir = Path(judge_output_dir).resolve()
+    synth_reason = find_synthetic_in_run_dir(resolved_judge_dir)
+    if synth_reason is not None:
+        raise refused_error(
+            "BAKEOFF_LOGPROB_MASS_SYNTHETIC_ITEMS",
+            f"Refusing bakeoff-logprob-mass on synthetic outputs in '{resolved_judge_dir}': {synth_reason}.",
+            "Declared synthetic --time-one runs are for timing and length measurement only and cannot produce pilot readouts.",
+        )
+    pilot_identity = verify_pinned_pilot_part_dir(part_dir)
     try:
         unverified_entries = collect_run_unverified_passes(resolved_judge_dir)
     except (OSError, ValueError) as exc:
@@ -4973,6 +4979,7 @@ def run_bakeoff_judge(
     window_mode: str | None = None,
     replacement_session: bool = False,
     resume_overlap_pairs: int = DEFAULT_RECOVERY_OVERLAP_ITEM_PAIRS,
+    synthetic_items: bool = False,
 ) -> dict[str, object]:
     """Run a single judge over `part_bakeoff_sealed/items.jsonl` and write unsealed rows and `generations.jsonl`."""
     try:
@@ -5004,6 +5011,12 @@ def run_bakeoff_judge(
     ).strip() or None
     if eff_window_mode is None and fake_transport:
         eff_window_mode = "stub"
+    if synthetic_items and eff_window_mode is not None and eff_window_mode.lower() not in ("time-one", "time_one", "dryrun", "dry-run"):
+        raise refused_error(
+            "BAKEOFF_JUDGE_SYNTHETIC_MODE_FORBIDDEN",
+            f"--synthetic-items is allowed only with time-one mode, got window_mode={eff_window_mode!r}.",
+            "Run synthetic timing only in --time-one.",
+        )
     guard_no_test_hooks_in_counted_mode(
         eff_window_mode,
         shard_spec=eff_shard_spec,
@@ -5132,6 +5145,14 @@ def run_bakeoff_judge(
 
     verified_digest = transport.verify_ready(spec, allow_remote_code_reviewed=allow_remote_code_reviewed)
     items, items_sha256 = load_judge_items(part_dir, limit=limit_items)
+    if synthetic_items:
+        bad_ids = [it.item_id for it in items if not it.item_id.startswith(SYNTHETIC_ITEM_ID_PREFIX)]
+        if bad_ids:
+            raise refused_error(
+                "BAKEOFF_JUDGE_SYNTHETIC_ID_INVALID",
+                f"--synthetic-items requires every item id to start with {SYNTHETIC_ITEM_ID_PREFIX!r}; got {bad_ids[0]!r}.",
+                f"Prefix every synthetic item id with {SYNTHETIC_ITEM_ID_PREFIX!r}.",
+            )
     items_by_id = {it.item_id: it for it in items}
     item_index_by_id = {it.item_id: idx for idx, it in enumerate(items)}
     if spec.judge_id == QWEN36_JUDGE_ID:
@@ -5901,6 +5922,7 @@ def run_bakeoff_judge(
                 "seconds": round(elapsed, 6),
                 "vram_peak_mib": call_vram_peak,
                 "receipt_sha256": receipt_sha256,
+                "synthetic_items": bool(synthetic_items),
             }
             if will_halt_error_rate:
                 base_row_obj["run_status"] = "failed_to_run"
@@ -6058,6 +6080,7 @@ def run_bakeoff_judge(
             # The file this pass wrote: `rows/<judge>.jsonl` (binary) or `rows/<judge>.three_way.jsonl` (3-way).
             "rows_file": f"{ROWS_DIRNAME}/{row_path.name}",
             "pass_mode": pass_mode,
+            "synthetic_items": bool(synthetic_items),
             "bytes": len(row_bytes),
             "items_count": len(shard_item_ids) if eff_shard_spec is not None else len(items),
             "calls_count": calls_so_far,
@@ -8016,6 +8039,7 @@ def build_window_manifest(
     p0a_items_sha256: str | None = None,
     counted_source_sha256: str | None = None,
     pass_mode: str | None = None,
+    synthetic_items: bool | None = None,
 ) -> dict[str, Any]:
     """Write `window.json` in `run_dir` listing every file in `run_dir` with its `sha256` and `bytes`."""
     resolved_dir = Path(run_dir).resolve()
@@ -8024,6 +8048,7 @@ def build_window_manifest(
     prev_p0a_sha: str | None = None
     prev_counted_sha: str | None = None
     prev_pass_mode: str | None = None
+    prev_synthetic_items: bool | None = None
     prev_kit: dict[str, Any] = {}
     if existing_win_path.is_file():
         try:
@@ -8033,12 +8058,19 @@ def build_window_manifest(
                 prev_p0a_sha = str(prev_win_doc.get("p0a_items_sha256") or "").strip() or None
                 prev_counted_sha = str(prev_win_doc.get("counted_source_sha256") or "").strip() or None
                 prev_pass_mode = str(prev_win_doc.get("pass_mode") or "").strip() or None
+                if isinstance(prev_win_doc.get("synthetic_items"), bool):
+                    prev_synthetic_items = bool(prev_win_doc["synthetic_items"])
                 prev_kit = {f: prev_win_doc[f] for f in WINDOW_KIT_IDENTITY_FIELDS if f in prev_win_doc}
         except Exception:
             pass
     eff_anchor_sha = (str(anchor_items_sha256).strip() if anchor_items_sha256 else None) or prev_anchor_sha
     eff_p0a_sha = (str(p0a_items_sha256).strip() if p0a_items_sha256 else None) or prev_p0a_sha
     eff_counted_sha = (str(counted_source_sha256).strip() if counted_source_sha256 else None) or prev_counted_sha
+    eff_synthetic_items = (
+        bool(synthetic_items)
+        if synthetic_items is not None
+        else (prev_synthetic_items if prev_synthetic_items is not None else False)
+    )
     files_map: dict[str, dict[str, Any]] = {}
     for p in sorted(resolved_dir.rglob("*")):
         if not p.is_file():
@@ -8055,6 +8087,7 @@ def build_window_manifest(
         "schema_version": "1.0",
         "window_id": str(window_id or resolved_dir.name),
         "mode": str(mode or "unknown"),
+        "synthetic_items": eff_synthetic_items,
         "file_count": len(files_map),
         "files": dict(sorted(files_map.items())),
     }
@@ -8330,6 +8363,11 @@ def main_judge_runner(argv: Sequence[str] | None = None) -> int:
         help="Enforce 3-item-pair overlap verification on resume.",
     )
     parser.add_argument(
+        "--synthetic-items",
+        action="store_true",
+        help="Declared synthetic items mode for --time-one timing and length measurement only.",
+    )
+    parser.add_argument(
         "--p0a-stage",
         choices=P0A_CHILD_STAGES,
         default=None,
@@ -8375,6 +8413,12 @@ def main_judge_runner(argv: Sequence[str] | None = None) -> int:
             else None
         )
         if args.p0a_stage is not None:
+            if args.synthetic_items:
+                raise refused_error(
+                    "BAKEOFF_JUDGE_SYNTHETIC_MODE_FORBIDDEN",
+                    "--synthetic-items cannot be combined with --p0a-stage.",
+                    "Run synthetic timing only in --time-one.",
+                )
             if args.p0a_out is None:
                 raise usage_error(
                     "P0A_CHILD_STAGE_INVALID",
@@ -8434,6 +8478,7 @@ def main_judge_runner(argv: Sequence[str] | None = None) -> int:
             session_fingerprint_sha256=args.session_fingerprint_sha256,
             window_mode=args.window_mode,
             replacement_session=bool(args.replacement_session),
+            synthetic_items=bool(args.synthetic_items),
         )
         return 0
     except RdlabError as exc:
