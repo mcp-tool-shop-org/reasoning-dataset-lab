@@ -6,6 +6,8 @@ All notable changes to `reasoning-dataset-lab` are documented here. The format i
 
 ## Unreleased
 
+- **Anchor-rows seed-variant resume check (#135, `src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py`, `tests/test_colab_judge_qwen36.py`):** checked `anchor_rows/` alongside `rows/` in `run_bakeoff_judge` before model load and resume reads (refusing `QWEN36_RESUME_SEED_VARIANT_MISMATCH` with zero model calls when existing or legacy anchor rows differ, leaving fresh unsharded runs unchanged); updated kit resume docs and added synthetic anchor-rows resume and fresh-run regression tests.
+
 ### Optional `RDLAB_QWEN36_SEED_VARIANT` for `qwen3.6-35b-a3b`
 
 - **Named per-call seed variant (`src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py`, `scripts/colab/vm_judges.py`, `scripts/colab/launch_judges.sh`):** added optional `RDLAB_QWEN36_SEED_VARIANT`, forwarded in `EXEC_ENV_ARGS` when non-empty and omitted when unset/empty. When unset or empty, `derive_qwen36_call_seed` remains byte-identical to baseline and `"none"` is recorded; when set, values are validated against `\A[a-z0-9][a-z0-9_-]{0,31}\Z` excluding `"none"` case-insensitively (`QWEN36_SEED_VARIANT_INVALID`), any non-`qwen3.6-35b-a3b` judge refuses `QWEN36_SEED_VARIANT_UNSUPPORTED_JUDGE` at start, and the variant enters `derive_qwen36_call_seed` as a third `\x00`-separated field without changing prompt text or sampling settings.

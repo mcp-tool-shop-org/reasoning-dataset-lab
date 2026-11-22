@@ -5023,8 +5023,17 @@ def run_bakeoff_judge(
     eff_qwen36_seed_variant_recorded = (
         eff_qwen36_seed_variant if eff_qwen36_seed_variant is not None else QWEN36_SEED_VARIANT_UNSET
     )
+    row_filename = f"{spec.judge_id}.jsonl" if pass_mode == "binary" else f"{spec.judge_id}.{pass_mode}.jsonl"
     if spec.judge_id == QWEN36_JUDGE_ID:
         resolve_qwen36_max_new_tokens(require_explicit=is_real_qwen36)
+        _check_qwen36_resume_seed_variant_file(
+            resolved_out / ROWS_DIRNAME / row_filename,
+            eff_qwen36_seed_variant_recorded,
+        )
+        _check_qwen36_resume_seed_variant_file(
+            resolved_out / ANCHOR_ROWS_DIRNAME / row_filename,
+            eff_qwen36_seed_variant_recorded,
+        )
     det_status = configure_torch_determinism(window_mode=eff_window_mode, shard_spec=eff_shard_spec)
 
     eff_manifest_path_raw = (
@@ -5351,10 +5360,6 @@ def run_bakeoff_judge(
                     ]
         except Exception:
             prev_load_history = []
-
-    row_filename = f"{spec.judge_id}.jsonl" if pass_mode == "binary" else f"{spec.judge_id}.{pass_mode}.jsonl"
-    if spec.judge_id == QWEN36_JUDGE_ID:
-        _check_qwen36_resume_seed_variant_file(resolved_out / ROWS_DIRNAME / row_filename, eff_qwen36_seed_variant_recorded)
 
     # Resolve canary items present in this item set
     canary_cfg = load_canary_config(canary_config_path) if (run_canary or canary_config_path is not None) else {}
@@ -9535,7 +9540,7 @@ def _check_qwen36_resume_seed_variant_file(path: Path, expected_seed_variant: st
             hint_val = row_variant if row_variant != QWEN36_SEED_VARIANT_UNSET else "<unset>"
             raise refused_error(
                 "QWEN36_RESUME_SEED_VARIANT_MISMATCH",
-                f"Cannot resume '{path.name}': existing row has seed_variant={row_variant!r}, current run has {expected_seed_variant!r}.",
+                f"Cannot resume '{path.parent.name}/{path.name}': existing row has seed_variant={row_variant!r}, current run has {expected_seed_variant!r}.",
                 f"Set {QWEN36_SEED_VARIANT_ENV_VAR}={hint_val} or use a fresh output directory.",
             )
 
