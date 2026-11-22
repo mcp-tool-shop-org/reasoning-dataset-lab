@@ -10697,6 +10697,7 @@ def test_child_progress_1_lines_in_order_and_fields_for_two_item_child(
         "parsed": 4,
         "unparseable": 0,
         "length_stop": 0,
+        "aborted": 0,
         "failed_to_run": 0,
     }
     assert isinstance(ce["total_seconds"], (int, float)) and ce["total_seconds"] >= 0.0
@@ -10734,6 +10735,7 @@ def test_child_progress_1_lines_in_order_and_fields_for_two_item_child(
         "parsed": 2,
         "unparseable": 1,
         "length_stop": 1,
+        "aborted": 0,
         "failed_to_run": 0,
     }
 
@@ -10778,6 +10780,7 @@ def test_child_progress_1_lines_in_order_and_fields_for_two_item_child(
         "parsed": 0,
         "unparseable": 0,
         "length_stop": 0,
+        "aborted": 0,
         "failed_to_run": 1,
     }
 

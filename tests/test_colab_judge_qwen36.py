@@ -983,13 +983,42 @@ def test_real_window_requires_explicit_max_new_tokens_and_stub_allows_default(
 
     exports_set = exports_missing + "export RDLAB_QWEN36_MAX_NEW_TOKENS=2048; "
     proc_ok = _run_launcher(
-        exports_set,
+        exports_set + _clean_git_shim_export(tmp_path),
         f"--time-one --card A100 --shape standard --window-id t1-q36-real-01 --part-dir '{part_dir_wsl}' --dry --out-dir '{_to_wsl_path(tmp_path / 'l_out_ok')}' --run-id t1-q36-ok",
     )
     assert "QWEN36_MAX_NEW_TOKENS_REQUIRED" not in proc_ok.stderr
-    if "KIT_TREE_DIRTY" not in proc_ok.stderr:
-        assert proc_ok.returncode == 0, f"stdout={proc_ok.stdout}\nstderr={proc_ok.stderr}"
-        assert "--env RDLAB_QWEN36_MAX_NEW_TOKENS=2048" in proc_ok.stdout
+    assert "KIT_TREE_DIRTY" not in proc_ok.stderr
+    assert proc_ok.returncode == 0, f"stdout={proc_ok.stdout}\nstderr={proc_ok.stderr}"
+    assert "--env RDLAB_QWEN36_MAX_NEW_TOKENS=2048" in proc_ok.stdout
+
+
+def _clean_git_shim_export(base: Path) -> str:
+    """Prepend a `git` shim reporting a clean worktree matching working-tree kit scripts."""
+    import shutil
+
+    shim_dir = base / "clean_git_shim"
+    shim_dir.mkdir(parents=True, exist_ok=True)
+    real_git = shutil.which("git") or "/usr/bin/git"
+    vm_py_wsl = _to_wsl_path(REPO_ROOT / "scripts" / "colab" / "vm_judges.py")
+    launch_sh_wsl = _to_wsl_path(LAUNCH_JUDGES_SH)
+    shim = shim_dir / "git"
+    shim.write_text(
+        "#!/bin/sh\n"
+        'if [ "$#" -eq 4 ] && [ "$1" = "-C" ] && [ "$3" = "status" ] && [ "$4" = "--porcelain" ]; then\n'
+        "  exit 0\n"
+        "fi\n"
+        f'if [ "$#" -eq 4 ] && [ "$1" = "-C" ] && [ "$3" = "show" ] && [ "$4" = "HEAD:scripts/colab/vm_judges.py" ]; then\n'
+        f"  exec cat '{vm_py_wsl}'\n"
+        f"fi\n"
+        f'if [ "$#" -eq 4 ] && [ "$1" = "-C" ] && [ "$3" = "show" ] && [ "$4" = "HEAD:scripts/colab/launch_judges.sh" ]; then\n'
+        f"  exec cat '{launch_sh_wsl}'\n"
+        f"fi\n"
+        f"exec '{real_git}' \"$@\"\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    shim.chmod(0o755)
+    return f"export PATH='{_to_wsl_path(shim_dir)}':\"$PATH\"; "
 
 
 def test_prompt_template_mismatch_refuses(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1257,3 +1286,470 @@ def test_qwen36_stub_and_tests_pass_without_snapshot_metadata_dir(tmp_path: Path
         run_canary=False,
     )
     assert res["status"] == "ok" and res["calls_count"] == 6
+
+
+def test_prompt_cap_refuses_before_load_and_blocks_max_model_len_crash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert bakeoff_judge.QWEN36_PROMPT_TOKEN_CAP == 4096
+    monkeypatch.setenv(bakeoff_judge.QWEN36_MAX_NEW_TOKENS_ENV_VAR, "64")
+    spec = JUDGE_SPECS[QWEN36_ID]
+
+    class _ConfigurableLenTok:
+        def __init__(self, tok_len: int) -> None:
+            self.tok_len = tok_len
+
+        def apply_chat_template(self, messages: list[dict[str, str]], **kwargs: Any) -> str:
+            _ = kwargs
+            return f"<|im_start|>user\n{messages[0]['content']}<|im_end|>\n<|im_start|>assistant\n<think>\n"
+
+        def convert_ids_to_tokens(self, ids: list[int]) -> list[str]:
+            return [{10: "<think>", 12: "</think>", 13: "\n", 32: "A"}.get(i, "x") for i in ids]
+
+        def encode(self, text: str, add_special_tokens: bool = False) -> list[int]:
+            _ = (text, add_special_tokens)
+            return list(range(self.tok_len))
+
+    # 1) Over QWEN36_PROMPT_TOKEN_CAP (4097 tokens) refuses in run_bakeoff_judge before LLM loads or generates.
+    lp = lambda tok, prob: SimpleNamespace(decoded_token=tok, logprob=math.log(prob))
+    dummy_comp = SimpleNamespace(
+        text="<think>R</think>\nA",
+        token_ids=[10, 12, 13, 32],
+        finish_reason="stop",
+        logprobs=[{10: lp("<think>", 0.99)}, {12: lp("</think>", 0.99)}, {13: lp("\n", 0.99)}, {32: lp("A", 0.90)}],
+    )
+    items_path = _write_items_jsonl(tmp_path / "items_over.jsonl", _synth_items(1))
+    env_over = _setup_fake_vllm_env(
+        tmp_path / "over_cap",
+        monkeypatch,
+        responses=[
+            SimpleNamespace(outputs=[dummy_comp], prompt_token_ids=None),
+            SimpleNamespace(outputs=[dummy_comp], prompt_token_ids=None),
+        ],
+        tokenizer_factory=lambda *a, **kw: _ConfigurableLenTok(bakeoff_judge.QWEN36_PROMPT_TOKEN_CAP + 1),
+    )
+    with pytest.raises(RdlabError) as exc_over:
+        run_bakeoff_judge(
+            part_dir=items_path,
+            output_dir=tmp_path / "out_over",
+            judge=QWEN36_ID,
+            pass_mode=CONTRA,
+            fake_transport=False,
+            receipts_dir=env_over["receipts_dir"],
+            hf_home=env_over["hf_home"],
+            device="cpu",
+            window_mode="time-one",
+            run_canary=False,
+        )
+    assert exc_over.value.code == "QWEN36_PROMPT_TOO_LONG"
+    assert env_over["llm_inits"] == []
+    assert env_over["generate_calls"] == 0
+
+    unverified_t = bakeoff_judge.VllmJudgeTransport(receipts_dir=tmp_path, hf_home=tmp_path, device="cpu")
+    dummy_prompt = bakeoff_judge.Qwen36ChoiceAdapter(spec).assemble_prompt(_synth_items(1)[0], order="AB", pass_mode=CONTRA)
+    with pytest.raises(RdlabError) as exc_unv_cap:
+        unverified_t.check_prompt_within_cap(spec, dummy_prompt)
+    assert exc_unv_cap.value.code == "VLLM_RUNTIME_UNVERIFIED"
+
+    # 2) Direct transport.generate with prompt > max_model_len (cap + max_new_tokens + 100) refuses before LLM load, blocking validation crash.
+    too_long_len = bakeoff_judge.QWEN36_PROMPT_TOKEN_CAP + 64 + 100
+    env_max = _setup_fake_vllm_env(
+        tmp_path / "over_max_model_len",
+        monkeypatch,
+        responses=[],
+        tokenizer_factory=lambda *a, **kw: _ConfigurableLenTok(too_long_len),
+    )
+    t_max = bakeoff_judge.VllmJudgeTransport(receipts_dir=env_max["receipts_dir"], hf_home=env_max["hf_home"], device="cuda")
+    t_max.verify_ready(spec)
+    with pytest.raises(RdlabError) as exc_max:
+        t_max.generate(spec, dummy_prompt, seed=1)
+    assert exc_max.value.code == "QWEN36_PROMPT_TOO_LONG"
+    assert env_max["llm_inits"] == []
+    assert env_max["generate_calls"] == 0
+
+    # 3) At/under cap (4096 tokens) succeeds and records prompt_token_count on every row.
+    comp_a = SimpleNamespace(
+        text="<think>R</think>\nA",
+        token_ids=[10, 12, 13, 32],
+        finish_reason="stop",
+        logprobs=[{10: lp("<think>", 0.99)}, {12: lp("</think>", 0.99)}, {13: lp("\n", 0.99)}, {32: lp("A", 0.90)}],
+    )
+    comp_b = SimpleNamespace(
+        text="<think>R</think>\nA",
+        token_ids=[10, 12, 13, 32],
+        finish_reason="stop",
+        logprobs=[{10: lp("<think>", 0.99)}, {12: lp("</think>", 0.99)}, {13: lp("\n", 0.99)}, {32: lp("A", 0.90)}],
+    )
+    env_ok = _setup_fake_vllm_env(
+        tmp_path / "under_cap",
+        monkeypatch,
+        responses=[
+            SimpleNamespace(outputs=[comp_a], prompt_token_ids=None),
+            SimpleNamespace(outputs=[comp_b], prompt_token_ids=None),
+        ],
+        tokenizer_factory=lambda *a, **kw: _ConfigurableLenTok(bakeoff_judge.QWEN36_PROMPT_TOKEN_CAP),
+    )
+    out_ok = tmp_path / "out_ok"
+    res_ok = run_bakeoff_judge(
+        part_dir=items_path,
+        output_dir=out_ok,
+        judge=QWEN36_ID,
+        pass_mode=CONTRA,
+        fake_transport=False,
+        receipts_dir=env_ok["receipts_dir"],
+        hf_home=env_ok["hf_home"],
+        device="cpu",
+        window_mode="time-one",
+        run_canary=False,
+    )
+    assert res_ok["status"] == "ok" and res_ok["calls_count"] == 2
+    assert len(env_ok["llm_inits"]) == 1 and env_ok["generate_calls"] == 2
+    rows_ok = [
+        json.loads(ln)
+        for ln in (out_ok / "rows" / f"{QWEN36_ID}.{CONTRA}.jsonl").read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    assert all(r["prompt_token_count"] == 4096 and r["input_token_count"] == 4096 for r in rows_ok)
+
+
+def test_child_end_counts_by_state_includes_aborted_and_sums_to_calls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(bakeoff_judge.QWEN36_MAX_NEW_TOKENS_ENV_VAR, "64")
+    lp = lambda tok, prob: SimpleNamespace(decoded_token=tok, logprob=math.log(prob))
+    abort_comp = SimpleNamespace(
+        text="<think>R</think>\nA",
+        token_ids=[10, 12, 32],
+        finish_reason="abort",
+        logprobs=[{10: lp("<think>", 0.99)}, {12: lp("</think>", 0.99)}, {32: lp("A", 0.80)}],
+    )
+    ok_comp = SimpleNamespace(
+        text="<think>R</think>\nA",
+        token_ids=[10, 12, 32],
+        finish_reason="stop",
+        logprobs=[{10: lp("<think>", 0.99)}, {12: lp("</think>", 0.99)}, {32: lp("A", 0.80)}],
+    )
+    env = _setup_fake_vllm_env(
+        tmp_path / "env_sum",
+        monkeypatch,
+        responses=[
+            SimpleNamespace(outputs=[abort_comp], prompt_token_ids=[1, 2]),
+            SimpleNamespace(outputs=[ok_comp], prompt_token_ids=[1, 2]),
+        ],
+    )
+    items_path = _write_items_jsonl(tmp_path / "items.jsonl", _synth_items(1))
+    prog_path = tmp_path / "progress.jsonl"
+    res = run_bakeoff_judge(
+        part_dir=items_path,
+        output_dir=tmp_path / "out_sum",
+        judge=QWEN36_ID,
+        pass_mode=CONTRA,
+        fake_transport=False,
+        receipts_dir=env["receipts_dir"],
+        hf_home=env["hf_home"],
+        device="cpu",
+        window_mode="time-one",
+        error_rate_min_calls=10,
+        progress_file=prog_path,
+        run_canary=False,
+    )
+    prog_events = [json.loads(ln) for ln in prog_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    child_end = [e for e in prog_events if e["kind"] == "child_end"][-1]
+    counts = child_end["counts_by_state"]
+    assert set(counts) == {"parsed", "unparseable", "length_stop", "aborted", "failed_to_run"}
+    assert counts["aborted"] == 1
+    assert counts["parsed"] == 1
+    assert sum(counts.values()) == res["calls_count"] == 2
+
+
+def test_scorer_error_rate_and_invalid_bar_count_aborted_rows(tmp_path: Path) -> None:
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge_score
+
+    keys = {
+        "item-1": bakeoff_judge_score.SealedKeyRecord(
+            item_id="item-1",
+            triad_id="T1",
+            triad_handle="h1",
+            key="supported",
+            item_class="supported",
+            key_source="construction",
+            value_set_id="vs1",
+            closure="closed",
+            split="test",
+            domain="d1",
+        ),
+        "item-2": bakeoff_judge_score.SealedKeyRecord(
+            item_id="item-2",
+            triad_id="T1",
+            triad_handle="h1",
+            key="unsupported",
+            item_class="unsupported",
+            key_source="construction",
+            value_set_id="vs1",
+            closure="closed",
+            split="test",
+            domain="d1",
+        ),
+    }
+    rows_by_item_order = {
+        "item-1": {
+            "AB": {"state": "aborted", "raw_verdict": None, "done_reason": "abort", "seconds": 0.05, "vram_peak_mib": 100},
+            "BA": {"state": "parsed", "raw_verdict": "yes", "done_reason": "stop", "seconds": 0.05, "vram_peak_mib": 100},
+        },
+        "item-2": {
+            "AB": {"state": "parsed", "raw_verdict": "no", "done_reason": "stop", "seconds": 0.05, "vram_peak_mib": 100},
+            "BA": {"state": "parsed", "raw_verdict": "no", "done_reason": "stop", "seconds": 0.05, "vram_peak_mib": 100},
+        },
+    }
+    summary, _, _ = bakeoff_judge_score._evaluate_judge_at_rule(
+        judge_id=QWEN36_ID,
+        judge_label="Qwen3.6-35B-A3B",
+        rule_name="plain",
+        threshold_value=None,
+        rows_by_item_order=rows_by_item_order,
+        first_order_by_item={"item-1": "AB", "item-2": "AB"},
+        keys_by_id=keys,
+        registered_domains=("d1",),
+        split_filter="test",
+        bootstrap_resamples=10,
+    )
+    assert summary["error_rate"] == pytest.approx(0.25)
+
+    # Invalid-rate bar in vm_judges (_three_way_choice_mass_report) counts aborted rows and fails > THREE_WAY_MAX_INVALID_RATE.
+    rf = tmp_path / f"{QWEN36_ID}.{CONTRA}.jsonl"
+    bar_rows: list[dict[str, Any]] = []
+    for idx in range(20):
+        is_aborted = idx == 0
+        bar_rows.append(
+            {
+                "item_id": f"i-{idx // 2}",
+                "order": "AB" if idx % 2 == 0 else "BA",
+                "pass_mode": CONTRA,
+                "state": "aborted" if is_aborted else "parsed",
+                "raw_verdict": None if is_aborted else "supported",
+                "top_20_logprobs": (
+                    []
+                    if is_aborted
+                    else [{"token": "A", "logprob": math.log(0.8)}, {"token": "B", "logprob": math.log(0.1)}, {"token": "C", "logprob": math.log(0.1)}]
+                ),
+            }
+        )
+    rf.write_text("\n".join(json.dumps(r) for r in bar_rows) + "\n", encoding="utf-8", newline="\n")
+    bar_report = vm_judges._three_way_choice_mass_report(rf, QWEN36_ID, 0.99, pass_mode=CONTRA)
+    assert bar_report["invalid_calls_count"] == 1
+    assert bar_report["invalid_rate"] == pytest.approx(0.05)
+    assert bar_report["max_invalid_rate"] == vm_judges.THREE_WAY_MAX_INVALID_RATE
+    assert bar_report["passed"] is False
+
+
+def test_resume_over_pre_argmax_rows_recomputes_or_refuses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(bakeoff_judge.QWEN36_MAX_NEW_TOKENS_ENV_VAR, "64")
+    items = _synth_items(4)
+    items_path = _write_items_jsonl(tmp_path / "items.jsonl", items)
+    lp = lambda tok, prob: SimpleNamespace(decoded_token=tok, logprob=math.log(prob))
+    fresh_comp_ab = SimpleNamespace(
+        text="<think>R</think>\nA",
+        token_ids=[10, 12, 32],
+        finish_reason="stop",
+        logprobs=[{10: lp("<think>", 0.99)}, {12: lp("</think>", 0.99)}, {32: lp("A", 0.90)}],
+    )
+    fresh_comp_ba = SimpleNamespace(
+        text="<think>R</think>\nA",
+        token_ids=[10, 12, 32],
+        finish_reason="stop",
+        logprobs=[{10: lp("<think>", 0.99)}, {12: lp("</think>", 0.99)}, {32: lp("A", 0.90)}],
+    )
+
+    out_recomp = tmp_path / "out_recomp"
+    (out_recomp / "rows").mkdir(parents=True)
+    # 1) Pre-argmax row with choice_probabilities disagreeing with raw_verdict (count +1)
+    row_cp_disagree = {
+        "judge_id": QWEN36_ID,
+        "item_id": items[0].item_id,
+        "order": "AB",
+        "pass_mode": CONTRA,
+        "state": "parsed",
+        "raw_verdict": "supported",
+        "choice_probabilities": {"supported": 0.2, "unsupported": 0.7, "cannot_tell": 0.1},
+        "seconds": 0.01,
+        "vram_peak_mib": 0,
+    }
+    # 2) Pre-argmax row with equal top probabilities -> tie goes to first label in label order ("supported"), disagreeing with "cannot_tell" (count +1)
+    row_tie_disagree = {
+        "judge_id": QWEN36_ID,
+        "item_id": items[0].item_id,
+        "order": "BA",
+        "pass_mode": CONTRA,
+        "state": "parsed",
+        "raw_verdict": "cannot_tell",
+        "choice_probabilities": {"supported": 0.45, "unsupported": 0.45, "cannot_tell": 0.10},
+        "seconds": 0.01,
+        "vram_peak_mib": 0,
+    }
+    # 3) Pre-argmax row relying on top_20_logprobs fallback agreeing with raw_verdict (count +0)
+    row_top20_agree = {
+        "judge_id": QWEN36_ID,
+        "item_id": items[1].item_id,
+        "order": "AB",
+        "pass_mode": CONTRA,
+        "state": "parsed",
+        "raw_verdict": "supported",
+        "top_20_logprobs": [{"token": "A", "logprob": math.log(0.8), "token_id": 32}],
+        "seconds": 0.01,
+        "vram_peak_mib": 0,
+    }
+    # 4) Pre-argmax parsed row with genuinely no A/B/C in top_20_logprobs -> choice_probabilities=None -> probs_missing, not disagreement
+    row_missing_probs = {
+        "judge_id": QWEN36_ID,
+        "item_id": items[1].item_id,
+        "order": "BA",
+        "pass_mode": CONTRA,
+        "state": "parsed",
+        "raw_verdict": "supported",
+        "choice_probabilities": None,
+        "top_20_logprobs": ["ignore-non-mapping", {"token": "foo", "logprob": -0.1, "token_id": 99}],
+        "seconds": 0.01,
+        "vram_peak_mib": 0,
+    }
+    # 5) Existing row WITH argmax_verdict present (disagree +1) and an aborted row
+    row_with_argmax = {
+        "judge_id": QWEN36_ID,
+        "item_id": items[2].item_id,
+        "order": "AB",
+        "pass_mode": CONTRA,
+        "state": "parsed",
+        "raw_verdict": "supported",
+        "argmax_verdict": "unsupported",
+        "choice_probabilities": {"supported": 0.2, "unsupported": 0.8, "cannot_tell": 0.0},
+        "seconds": 0.01,
+        "vram_peak_mib": 0,
+    }
+    row_aborted = {
+        "judge_id": QWEN36_ID,
+        "item_id": items[2].item_id,
+        "order": "BA",
+        "pass_mode": CONTRA,
+        "state": "aborted",
+        "raw_verdict": None,
+        "seconds": 0.01,
+        "vram_peak_mib": 0,
+    }
+    (out_recomp / "rows" / f"{QWEN36_ID}.{CONTRA}.jsonl").write_text(
+        "\n".join(
+            json.dumps(r)
+            for r in (row_cp_disagree, row_tie_disagree, row_top20_agree, row_missing_probs, row_with_argmax, row_aborted)
+        )
+        + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    env_r = _setup_fake_vllm_env(
+        tmp_path / "env_recomp",
+        monkeypatch,
+        responses=[
+            SimpleNamespace(outputs=[fresh_comp_ab], prompt_token_ids=[1, 2]),
+            SimpleNamespace(outputs=[fresh_comp_ba], prompt_token_ids=[1, 2]),
+        ],
+    )
+    res_r = run_bakeoff_judge(
+        part_dir=items_path,
+        output_dir=out_recomp,
+        judge=QWEN36_ID,
+        pass_mode=CONTRA,
+        fake_transport=False,
+        receipts_dir=env_r["receipts_dir"],
+        hf_home=env_r["hf_home"],
+        device="cpu",
+        window_mode="time-one",
+        run_canary=False,
+    )
+    assert res_r["verdict_disagreement_count"] == 3
+    assert res_r["probs_missing_count"] == 2
+    assert res_r["aborted_count"] == 1
+    assert bakeoff_judge._resolve_resumed_argmax_verdict(row_with_argmax, judge_id="mu-judge", pass_mode=CONTRA) is None
+
+    # Non-ABC top_20_logprobs WITHOUT choice_probabilities=None, and missing both, must refuse rather than undercount.
+    out_refuse_non_abc = tmp_path / "out_refuse_non_abc"
+    (out_refuse_non_abc / "rows").mkdir(parents=True)
+    non_abc_no_cp_ab = {
+        "judge_id": QWEN36_ID,
+        "item_id": items[0].item_id,
+        "order": "AB",
+        "pass_mode": CONTRA,
+        "state": "parsed",
+        "raw_verdict": "supported",
+        "top_20_logprobs": [{"token": "foo", "logprob": -0.1}],
+        "seconds": 0.01,
+        "vram_peak_mib": 0,
+    }
+    non_abc_no_cp_ba = {**non_abc_no_cp_ab, "order": "BA"}
+    (out_refuse_non_abc / "rows" / f"{QWEN36_ID}.{CONTRA}.jsonl").write_text(
+        json.dumps(non_abc_no_cp_ab) + "\n" + json.dumps(non_abc_no_cp_ba) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    with pytest.raises(RdlabError) as exc_non_abc:
+        run_bakeoff_judge(
+            part_dir=items_path,
+            output_dir=out_refuse_non_abc,
+            judge=QWEN36_ID,
+            pass_mode=CONTRA,
+            fake_transport=False,
+            receipts_dir=env_r["receipts_dir"],
+            hf_home=env_r["hf_home"],
+            device="cpu",
+            window_mode="time-one",
+            run_canary=False,
+        )
+    assert exc_non_abc.value.code == "QWEN36_RESUME_ARGMAX_VERDICT_UNAVAILABLE"
+
+    # Missing both choice_probabilities and top_20_logprobs must refuse rather than undercount.
+    out_refuse = tmp_path / "out_refuse_resume"
+    (out_refuse / "rows").mkdir(parents=True)
+    incomplete_ab = {
+        "judge_id": QWEN36_ID,
+        "item_id": items[0].item_id,
+        "order": "AB",
+        "pass_mode": CONTRA,
+        "state": "parsed",
+        "raw_verdict": "supported",
+        "top_20_logprobs": ["not-a-mapping"],
+        "seconds": 0.01,
+        "vram_peak_mib": 0,
+    }
+    incomplete_ba = {**incomplete_ab, "order": "BA"}
+    (out_refuse / "rows" / f"{QWEN36_ID}.{CONTRA}.jsonl").write_text(
+        json.dumps(incomplete_ab) + "\n" + json.dumps(incomplete_ba) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    with pytest.raises(RdlabError) as exc_res:
+        run_bakeoff_judge(
+            part_dir=items_path,
+            output_dir=out_refuse,
+            judge=QWEN36_ID,
+            pass_mode=CONTRA,
+            fake_transport=False,
+            receipts_dir=env_r["receipts_dir"],
+            hf_home=env_r["hf_home"],
+            device="cpu",
+            window_mode="time-one",
+            run_canary=False,
+        )
+    assert exc_res.value.code == "QWEN36_RESUME_ARGMAX_VERDICT_UNAVAILABLE"
+
+    with pytest.raises(RdlabError) as exc_absent:
+        bakeoff_judge._resolve_resumed_argmax_verdict(
+            {
+                "judge_id": QWEN36_ID,
+                "item_id": items[0].item_id,
+                "order": "AB",
+                "state": "parsed",
+                "raw_verdict": "supported",
+            },
+            judge_id=QWEN36_ID,
+            pass_mode=CONTRA,
+        )
+    assert exc_absent.value.code == "QWEN36_RESUME_ARGMAX_VERDICT_UNAVAILABLE"

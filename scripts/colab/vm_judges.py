@@ -195,7 +195,7 @@ PASS_MODES: tuple[str, ...] = ("binary", "three_way", "three_way_contradicted", 
 THREE_WAY_PASS_WINDOW_MODES: frozenset[str] = frozenset({"stub", "time-one", "time_one"})
 THREE_WAY_CLASS_LABELS: tuple[str, ...] = ("supported", "unsupported", "cannot_tell")
 THREE_WAY_OPTION_TOKENS: tuple[str, ...] = ("a", "b", "c")
-# D5a design §4.3 condition 1: invalid calls (unparseable or length_stop) at most 0.01 of the calls (<= 2 / 228).
+# D5a design §4.3 condition 1: invalid calls (unparseable, length_stop, or aborted) at most 0.01 of the calls (<= 2 / 228).
 THREE_WAY_MAX_INVALID_RATE = 0.01
 JUDGE_DONE_DIRNAME = "judge_done"
 DOWNLOAD_DONE_DIRNAME = "download_done"
@@ -2962,7 +2962,7 @@ def _three_way_choice_mass_report(rf: Path, judge_id: str, threshold: float, pas
     lines = _three_way_rows_of_pass_mode(rf, pass_mode)  # refuses a row whose pass_mode is not the file's arm
     all_calls = [r for r in lines if r.get("run_status") != "failed_to_run"]
     parsed_rows = [r for r in all_calls if r.get("state") == "parsed"]
-    # Calls the parse rejected (unparseable, length_stop) are counted, never dropped: the design's invalid-rate rule
+    # Calls the parse rejected (unparseable, length_stop, aborted) are counted, never dropped: the design's invalid-rate rule
     # (<= THREE_WAY_MAX_INVALID_RATE of the calls) fails the readout, so 1 parsed call of 20 cannot pass it.
     invalid_calls = len(all_calls) - len(parsed_rows)
     invalid_rate = (invalid_calls / len(all_calls)) if all_calls else None

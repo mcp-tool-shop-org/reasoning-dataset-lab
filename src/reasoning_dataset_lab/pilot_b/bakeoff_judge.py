@@ -5118,6 +5118,15 @@ def run_bakeoff_judge(
                 )
 
     verified_digest = transport.verify_ready(spec, allow_remote_code_reviewed=allow_remote_code_reviewed)
+    items, items_sha256 = load_judge_items(part_dir, limit=limit_items)
+    items_by_id = {it.item_id: it for it in items}
+    item_index_by_id = {it.item_id: idx for idx, it in enumerate(items)}
+    if spec.judge_id == QWEN36_JUDGE_ID:
+        check_cap_fn = getattr(transport, "check_prompt_within_cap", None)
+        if callable(check_cap_fn):
+            for it in items:
+                for ord_mode in ("AB", "BA"):
+                    check_cap_fn(spec, adapter.assemble_prompt(it, order=ord_mode, pass_mode=pass_mode))
     ensure_loaded_fn = getattr(transport, "_ensure_loaded", None)
     if callable(ensure_loaded_fn):
         ensure_loaded_fn(spec)
@@ -5133,9 +5142,6 @@ def run_bakeoff_judge(
         },
         lock=progress_lock,
     )
-    items, items_sha256 = load_judge_items(part_dir, limit=limit_items)
-    items_by_id = {it.item_id: it for it in items}
-    item_index_by_id = {it.item_id: idx for idx, it in enumerate(items)}
     schedule = load_or_create_schedule(
         resolved_out,
         items,
@@ -5450,7 +5456,12 @@ def run_bakeoff_judge(
     length_stop_count = sum(1 for r in existing_row_objs if r.get("state") == "length_stop")
     aborted_count = sum(1 for r in existing_row_objs if r.get("state") == "aborted")
     parsed_count = sum(1 for r in existing_row_objs if r.get("state") == "parsed")
-    verdict_disagreement_count = sum(1 for r in existing_row_objs if r.get("state") == "parsed" and r.get("raw_verdict") is not None and r.get("argmax_verdict") is not None and r.get("raw_verdict") != r.get("argmax_verdict"))
+    verdict_disagreement_count = sum(
+        1
+        for r in existing_row_objs
+        for resumed_argmax in (_resolve_resumed_argmax_verdict(r, judge_id=spec.judge_id, pass_mode=pass_mode),)
+        if resumed_argmax is not None and str(r.get("raw_verdict")) != resumed_argmax
+    )
     probs_missing_count = sum(1 for r in existing_row_objs if spec.judge_id == QWEN36_JUDGE_ID and r.get("state") == "parsed" and r.get("choice_probabilities") is None)
     failed_to_run_count = 0
     vram_peak_overall = max((int(r.get("vram_peak_mib", 0)) for r in existing_row_objs), default=0)
@@ -5681,6 +5692,7 @@ def run_bakeoff_judge(
                             "parsed": parsed_count,
                             "unparseable": unparseable_count,
                             "length_stop": length_stop_count,
+                            "aborted": aborted_count,
                             "failed_to_run": failed_to_run_count,
                         },
                         "total_seconds": failed_wall_s,
@@ -5859,6 +5871,7 @@ def run_bakeoff_judge(
                     readout=readout,
                     item_id=item.item_id,
                     order=entry.order,
+                    in_tok_cnt=in_tok_cnt,
                     out_tok_cnt=out_tok_cnt,
                     stop_rsn=stop_rsn,
                     library_pins=pins_with_determinism,
@@ -5912,6 +5925,7 @@ def run_bakeoff_judge(
                             "parsed": parsed_count,
                             "unparseable": unparseable_count,
                             "length_stop": length_stop_count,
+                            "aborted": aborted_count,
                             "failed_to_run": failed_to_run_count,
                         },
                         "total_seconds": failed_wall_s,
@@ -5937,6 +5951,7 @@ def run_bakeoff_judge(
                 "parsed": parsed_count,
                 "unparseable": unparseable_count,
                 "length_stop": length_stop_count,
+                "aborted": aborted_count,
                 "failed_to_run": failed_to_run_count,
             },
             "total_seconds": child_wall_elapsed_s,
@@ -8510,7 +8525,8 @@ QWEN36_REPO_ID = "Qwen/Qwen3.6-35B-A3B"
 QWEN36_REVISION = "345d467b117d1fd5eda9b879a5988de9ae5f47a7"
 QWEN36_DEFAULT_MAX_NEW_TOKENS = 4096
 QWEN36_MAX_NEW_TOKENS_ENV_VAR = "RDLAB_QWEN36_MAX_NEW_TOKENS"
-# Prompt token cap: 8x NLI_MAX_INPUT_TOKENS (512 tokens for STATE + claim), leaving room for prompt template tokens while bounding KV cache below 262k.
+# Unmeasured estimate (8x NLI_MAX_INPUT_TOKENS = 512 tokens, bounding KV cache below 262k):
+# to be replaced by a measured value after running over real prompts.
 QWEN36_PROMPT_TOKEN_CAP = 4096
 QWEN36_GPU_MEMORY_UTILIZATION = 0.90
 QWEN36_ENFORCE_EAGER = False
@@ -9485,6 +9501,53 @@ def _compute_quantiles(values: Sequence[float]) -> dict[str, float] | None:
     return out
 
 
+def _resolve_resumed_argmax_verdict(
+    row: Mapping[str, Any],
+    *,
+    judge_id: str,
+    pass_mode: PassMode,
+) -> str | None:
+    """Resolve `argmax_verdict` for a resumed row, recomputing or failing closed on pre-field rows."""
+    if judge_id != QWEN36_JUDGE_ID or row.get("state") != "parsed" or row.get("raw_verdict") is None:
+        return None
+    if "argmax_verdict" in row:
+        raw_arg = row["argmax_verdict"]
+        return str(raw_arg) if raw_arg is not None else None
+    label_map = three_way_wording(pass_mode, judge_id).letter_to_internal()
+    label_order = tuple(label_map.values())
+    probs = row.get("choice_probabilities")
+    if isinstance(probs, Mapping) and all(
+        lbl in probs
+        and isinstance(probs[lbl], (int, float))
+        and not isinstance(probs[lbl], bool)
+        and math.isfinite(float(probs[lbl]))
+        for lbl in label_order
+    ):
+        return max(label_order, key=lambda lbl: float(probs[lbl]))
+    top_lps = row.get("top_20_logprobs")
+    if isinstance(top_lps, Sequence) and not isinstance(top_lps, (str, bytes)) and top_lps:
+        entries = [
+            TopLogprobEntry(
+                token=str(entry["token"]),
+                logprob=float(entry["logprob"]),
+                token_id=int(entry["token_id"]) if isinstance(entry.get("token_id"), int) else None,
+            )
+            for entry in top_lps
+            if isinstance(entry, Mapping) and "token" in entry and isinstance(entry.get("logprob"), (int, float))
+        ]
+        if entries:
+            _, best_cls = compute_three_way_choice_probs(entries, label_map=label_map)
+            if best_cls is not None:
+                return best_cls
+            if "choice_probabilities" in row and row["choice_probabilities"] is None:
+                return None
+    raise refused_error(
+        "QWEN36_RESUME_ARGMAX_VERDICT_UNAVAILABLE",
+        f"Cannot recompute missing 'argmax_verdict' for resumed parsed row ({row.get('item_id')}/{row.get('order')}) without valid choice_probabilities or top_20_logprobs.",
+        "Re-run from clean output or resume rows carrying choice_probabilities or top_20_logprobs.",
+    )
+
+
 def qwen36_row_fields(
     spec: JudgeSpec,
     resp: JudgeTransportResponse,
@@ -9492,6 +9555,7 @@ def qwen36_row_fields(
     readout: ParsedJudgeReadout,
     item_id: str,
     order: OrderMode,
+    in_tok_cnt: int | None = None,
     out_tok_cnt: int,
     stop_rsn: str,
     library_pins: Mapping[str, Any],
@@ -9499,9 +9563,11 @@ def qwen36_row_fields(
     """Row-level telemetry fields recorded on Qwen3.6 (and any thinking-token transport) rows."""
     if spec.judge_id != QWEN36_JUDGE_ID and resp.thinking_token_count is None:
         return {}
+    prompt_tok_cnt = int(in_tok_cnt if in_tok_cnt is not None else resp.input_token_count)
     return {
         "argmax_verdict": readout.argmax_verdict,
         "unparseable_answer_text": readout.unparseable_answer_text,
+        "prompt_token_count": prompt_tok_cnt,
         "generated_token_count": int(out_tok_cnt),
         "thinking_token_count": resp.thinking_token_count,
         "finish_reason": stop_rsn,
@@ -9643,6 +9709,48 @@ class VllmJudgeTransport:
         self._verified_digest = digest
         return digest
 
+    def _ensure_tokenizer_loaded(self, spec: JudgeSpec) -> None:
+        if self._tokenizer is not None:
+            return
+        if self._snapshot_dir is None:
+            raise refused_error(
+                "VLLM_RUNTIME_UNVERIFIED",
+                f"{spec.judge_id} was not verified (verify_ready) before load.",
+                "Call verify_ready first.",
+            )
+        from transformers import AutoTokenizer
+
+        self._tokenizer = AutoTokenizer.from_pretrained(
+            str(self._snapshot_dir), local_files_only=True, trust_remote_code=False
+        )
+
+    def check_prompt_within_cap(self, spec: JudgeSpec, prompt: AssembledPrompt) -> tuple[str, list[int]]:
+        """Render with the snapshot tokenizer, verify byte identity, and refuse above `QWEN36_PROMPT_TOKEN_CAP`."""
+        self._ensure_tokenizer_loaded(spec)
+        assert self._tokenizer is not None
+        rendered_prompt = render_qwen36_chat_prompt(self._tokenizer, prompt.messages)
+        if rendered_prompt.encode("utf-8") != prompt.prompt_text.encode("utf-8"):
+            raise refused_error(
+                "QWEN36_PROMPT_TEMPLATE_MISMATCH",
+                f"Tokenizer-rendered prompt for {spec.judge_id} ({prompt.item_id}/{prompt.order}) differs bytewise from recorded prompt_text (prompt_sha256={prompt.prompt_sha256}).",
+                "Ensure the snapshot tokenizer apply_chat_template matches Qwen36ChoiceAdapter._build_prompt.",
+            )
+        tok_ids = [int(x) for x in self._tokenizer.encode(rendered_prompt, add_special_tokens=False)]
+        if len(tok_ids) > QWEN36_PROMPT_TOKEN_CAP:
+            raise refused_error(
+                "QWEN36_PROMPT_TOO_LONG",
+                f"Rendered prompt for {spec.judge_id} ({prompt.item_id}/{prompt.order}) has {len(tok_ids)} tokens > cap {QWEN36_PROMPT_TOKEN_CAP}.",
+                "Ensure prompts stay at or below QWEN36_PROMPT_TOKEN_CAP before loading or calling vLLM.",
+            )
+        return rendered_prompt, tok_ids
+
+    def count_prompt_tokens(self, spec: JudgeSpec, prompt: AssembledPrompt) -> int:
+        """Count tokens of the chat-template-rendered prompt using the snapshot tokenizer."""
+        self._ensure_tokenizer_loaded(spec)
+        assert self._tokenizer is not None
+        rendered_prompt = render_qwen36_chat_prompt(self._tokenizer, prompt.messages)
+        return len(self._tokenizer.encode(rendered_prompt, add_special_tokens=False))
+
     def _ensure_loaded(self, spec: JudgeSpec) -> None:
         if self._llm is not None and self._tokenizer is not None:
             return
@@ -9654,12 +9762,9 @@ class VllmJudgeTransport:
             )
         max_new_tokens = resolve_qwen36_max_new_tokens(require_explicit=is_real_mode(self.window_mode))
         max_model_len = QWEN36_PROMPT_TOKEN_CAP + max_new_tokens
-        from transformers import AutoTokenizer
+        self._ensure_tokenizer_loaded(spec)
         from vllm import LLM
 
-        self._tokenizer = AutoTokenizer.from_pretrained(
-            str(self._snapshot_dir), local_files_only=True, trust_remote_code=False
-        )
         self._llm = LLM(
             model=str(self._snapshot_dir),
             dtype=self.torch_dtype,
@@ -9721,6 +9826,7 @@ class VllmJudgeTransport:
 
     def generate(self, spec: JudgeSpec, prompt: AssembledPrompt, *, seed: int) -> JudgeTransportResponse:
         _ = seed  # Qwen3.6 sampling seed depends solely on (item_id, order).
+        rendered_prompt, checked_tok_ids = self.check_prompt_within_cap(spec, prompt)
         self._ensure_loaded(spec)
         assert self._llm is not None and self._tokenizer is not None and self._verified_digest is not None
         assert self._max_model_len is not None
@@ -9730,13 +9836,6 @@ class VllmJudgeTransport:
         import vllm
         from vllm import SamplingParams
 
-        rendered_prompt = render_qwen36_chat_prompt(self._tokenizer, prompt.messages)
-        if rendered_prompt.encode("utf-8") != prompt.prompt_text.encode("utf-8"):
-            raise refused_error(
-                "QWEN36_PROMPT_TEMPLATE_MISMATCH",
-                f"Tokenizer-rendered prompt for {spec.judge_id} ({prompt.item_id}/{prompt.order}) differs bytewise from recorded prompt_text (prompt_sha256={prompt.prompt_sha256}).",
-                "Ensure the snapshot tokenizer apply_chat_template matches Qwen36ChoiceAdapter._build_prompt.",
-            )
         max_new_tokens = resolve_qwen36_max_new_tokens(require_explicit=is_real_mode(self.window_mode))
         call_seed = derive_qwen36_call_seed(prompt.item_id, prompt.order)
         sampling_params = SamplingParams(
@@ -9792,7 +9891,7 @@ class VllmJudgeTransport:
         if prompt_tok_ids is not None:
             in_tok_ids = [int(x) for x in prompt_tok_ids]
         else:
-            in_tok_ids = [int(x) for x in self._tokenizer.encode(rendered_prompt, add_special_tokens=False)]
+            in_tok_ids = list(checked_tok_ids)
 
         library_pins: dict[str, Any] = {
             "transport": "VllmJudgeTransport",
