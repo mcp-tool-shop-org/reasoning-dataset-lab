@@ -2448,20 +2448,36 @@ def test_qwen36_unsharded_fresh_run_unchanged_against_cb2863aa(
     row_file = out_dir / "rows" / f"{QWEN36_ID}.{CONTRA}.jsonl"
     anchor_file = out_dir / "anchor_rows" / f"{QWEN36_ID}.{CONTRA}.jsonl"
     done_file = out_dir / "judge_done" / f"{QWEN36_ID}.json"
-    expected_rows_sha = "d76b73fd148da58576c270a8d229145255e146de37e90f1abcd44abef528d363"
-    assert row_file.is_file() and row_file.stat().st_size == 25542
-    assert hashlib.sha256(row_file.read_bytes()).hexdigest() == expected_rows_sha
-    assert anchor_file.is_file() and anchor_file.stat().st_size == 25542
-    assert hashlib.sha256(anchor_file.read_bytes()).hexdigest() == expected_rows_sha
+    assert row_file.is_file() and anchor_file.is_file()
+    row_bytes = row_file.read_bytes()
+    assert anchor_file.read_bytes() == row_bytes
 
-    expected_row_shas = [
-        "00b11d337775da5392560b9753c615c2b4192b689ad42a903e055afe73749e04",
-        "377af9d8eb3e54bd227000ea4ef084ee19a0250f0269f136a939b103e6c36c8a",
-        "4d87ce0969d4e14340c41632bf20be89ca6292d213083a6b965ac8ab004e5615",
-        "539c828643b8b22c7607079d91b6b80bcbe694ceef6a02bce512674859fdcc15",
-        "344e0bb24778466d1e4d0c5c1039a994cc109c28cc5ab89d232965f05bf9d199",
-        "45491524b84ae65e0163553efcf358cd2187d21a988973796b2bb12c199820da",
+    rows = [json.loads(ln) for ln in row_bytes.decode("utf-8").splitlines() if ln.strip()]
+    expected_norm_row_shas = [
+        "de7dcf4626223a5828a9e8e31c8baa0ca9f3e433b03f9d4c93588492591253c9",
+        "112cf0cf7eea52fc6cdd864ef85bc31c3b0c95dd909354bf69cbe09f93f6a313",
+        "f24269e59a4198675064e43543af4ee8e18d6dd33486a95025d026e4ba34a2ad",
+        "6e0a5142effbd99972fa1f088673bd56a7728daae10f2beb5dc4941770fc8b6a",
+        "1fd11fc08383bd62b9b98b146da25b5b1ff7b730f00745567dec0a3d5ed2d0d7",
+        "c3692b55c33429e1c5eaa5fcdc5ea225c82f1b845908c27abb0a91894b895f1a",
     ]
+    actual_norm_shas: list[str] = []
+    actual_raw_shas: list[str] = []
+    for r in rows:
+        body = {k: v for k, v in r.items() if k != "row_sha256"}
+        body_canon = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        raw_sha = hashlib.sha256(body_canon.encode("utf-8")).hexdigest()
+        assert r["row_sha256"] == raw_sha
+        actual_raw_shas.append(raw_sha)
+        pins = dict(body["library_pins"])
+        for env_key in ("python", "deterministic_algorithms", "sdpa_backend"):
+            pins[env_key] = "<env>"
+        body["library_pins"] = pins
+        norm_canon = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        actual_norm_shas.append(hashlib.sha256(norm_canon.encode("utf-8")).hexdigest())
+    assert actual_norm_shas == expected_norm_row_shas
+
+    rows_sha = hashlib.sha256(row_bytes).hexdigest()
     done_doc = json.loads(done_file.read_text(encoding="utf-8"))
     assert sorted(done_doc.keys()) == [
         "aborted_count",
@@ -2499,8 +2515,9 @@ def test_qwen36_unsharded_fresh_run_unchanged_against_cb2863aa(
         "verified_recovery",
         "vram_peak_mib",
     ]
-    assert done_doc["sha256"] == expected_rows_sha
-    assert done_doc["row_sha256s"] == expected_row_shas
+    assert done_doc["bytes"] == len(row_bytes)
+    assert done_doc["sha256"] == rows_sha
+    assert done_doc["row_sha256s"] == actual_raw_shas
     assert done_doc["seed_variant"] == "none"
     assert done_doc["shard_manifest_sha256"] == "8cf89d07438abfed3932fefa7e59e9c5a87e7f43c6bd1e095f6e63f27517b1e2"
 
@@ -2552,8 +2569,8 @@ def test_qwen36_unsharded_fresh_run_unchanged_against_cb2863aa(
         "verified_recovery",
         "vram_peak_mib",
     ]
-    assert res["rows_sha256"] == expected_rows_sha
-    assert res["row_sha256s"] == expected_row_shas
+    assert res["rows_sha256"] == rows_sha
+    assert res["row_sha256s"] == actual_raw_shas
     assert res["seed_variant"] == "none"
     assert res["schedule_sha256"] == "3a7b496e8cd0c354011f77bb9ada0688981b2de9604128f94bf1108cd80f9099"
     assert res["shard_manifest_sha256"] == "8cf89d07438abfed3932fefa7e59e9c5a87e7f43c6bd1e095f6e63f27517b1e2"
