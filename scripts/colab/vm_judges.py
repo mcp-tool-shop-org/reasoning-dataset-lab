@@ -451,6 +451,11 @@ EXPECTED_JUDGE_LOCK_SHA256 = (
 EXPECTED_D3_LOCK_SHA256 = (
     "08801f9ac5e3cfb14ce819b051aeef388bea3e564e7b99bddc10d91537ab78e2"
 )
+EXPECTED_VLLM_LOCK_SHA256 = (
+    "a9243e0bb6416650c21ff131beefb4f3406bc42310919219409d68459cb3cef5"
+)
+VLLM_VENV_NAME = "venv-vllm"
+VLLM_PYTHON_VERSION = "3.13"
 EXPECTED_DEVICE_PY_SHA256 = (
     "0755b739628d8f91adb696df4df90dbda78b0cfe5233fe33b54ae7987e55232d"
 )
@@ -7766,11 +7771,26 @@ def _run_judges_pipeline_body(
     for is_anchor_prefix_pass, subblock_idx, active_chunk in pipeline_passes:
       for judge_id, spec, pass_mode_j, pass_key_j in _judge_passes(selected_specs, eff_pass_mode, elephant={"work_dir": eff_work_dir, "repo_dir": eff_repo_dir, "run_dir": run_dir, "hf_home": hf_home, "progress_path": progress_path, "metrics": per_judge_metrics, "real": not dryrun and norm_mode not in STUB_OR_DRYRUN_MODES and not real_load_on_cpu, "stub_exercise": stub_exercise_elephant}):  # noqa: E501
         is_d3 = judge_id in D3_FAMILY_JUDGE_IDS
-        venv_name = "venv-d3" if is_d3 else (elephant_venv_name() if judge_id == ELEPHANT_JUDGE_ID else "venv-judge")
+        is_vllm = judge_id == QWEN36_JUDGE_ID and vllm_venv_name() == VLLM_VENV_NAME
+        venv_name = (
+            "venv-d3"
+            if is_d3
+            else (
+                VLLM_VENV_NAME
+                if is_vllm
+                else (elephant_venv_name() if judge_id == ELEPHANT_JUDGE_ID else "venv-judge")
+            )
+        )
         venv_python = eff_work_dir / venv_name / "bin" / "python"
-        lock_file = "d3.lock.txt" if is_d3 else "judge.lock.txt"
+        lock_file = (
+            "d3.lock.txt"
+            if is_d3
+            else ("vllm.lock.txt" if is_vllm else "judge.lock.txt")
+        )
         lock_sha256 = (
-            EXPECTED_D3_LOCK_SHA256 if is_d3 else EXPECTED_JUDGE_LOCK_SHA256
+            EXPECTED_D3_LOCK_SHA256
+            if is_d3
+            else (EXPECTED_VLLM_LOCK_SHA256 if is_vllm else EXPECTED_JUDGE_LOCK_SHA256)
         )
         if not venv_python.exists() and dryrun:
             _ensure_dryrun_venv_python_wrapper(venv_python)
@@ -8381,6 +8401,12 @@ def _run_judges_pipeline_body(
             "dtype": dtype_str,
             "canary_drift": canary_info,
         }
+        if "max_new_tokens" in done_doc:
+            per_judge_metrics[pass_key_j]["max_new_tokens"] = done_doc["max_new_tokens"]
+        if done_doc.get("thinking_length_quantiles") is not None:
+            per_judge_metrics[pass_key_j]["thinking_length_quantiles"] = done_doc["thinking_length_quantiles"]
+        if done_doc.get("call_seconds_quantiles") is not None:
+            per_judge_metrics[pass_key_j]["call_seconds_quantiles"] = done_doc["call_seconds_quantiles"]
 
     golden_anchor_manifest_file_sha256: str | None = None
     p0a_report_sha256: str | None = None
@@ -8963,18 +8989,27 @@ def _query_free_disk_bytes(path: Path) -> int:
 
 def compute_required_vm_disk_bytes() -> dict[str, int]:
     """Compute required free bytes from `EXPECTED_WEIGHTS_TOTAL_BYTES` (matched to receipts), venvs estimate, and 15% margin,
-    plus elephant-1's and vllm-sr/d3's weights (and venv-elephant) when the window selects them."""
+    plus elephant-1's, vllm-sr/d3's, and Qwen3.6's weights (and venv-elephant / venv-vllm) when the window selects them."""
+    qwen_extra = qwen36_window_extra_bytes()
     weights_bytes = (
-        EXPECTED_WEIGHTS_TOTAL_BYTES + elephant_window_extra_bytes()["weights_bytes"] + d3_window_extra_bytes()["weights_bytes"]
+        EXPECTED_WEIGHTS_TOTAL_BYTES
+        + elephant_window_extra_bytes()["weights_bytes"]
+        + d3_window_extra_bytes()["weights_bytes"]
+        + qwen_extra["weights_bytes"]
     )
-    subtotal = weights_bytes + VENVS_ESTIMATED_BYTES + elephant_window_extra_bytes()["venv_bytes"]
+    venvs_bytes = (
+        VENVS_ESTIMATED_BYTES
+        + elephant_window_extra_bytes()["venv_bytes"]
+        + qwen_extra["venv_bytes"]
+    )
+    subtotal = weights_bytes + venvs_bytes
     required = (
         subtotal * DISK_PREFLIGHT_MARGIN_NUMERATOR
         + (DISK_PREFLIGHT_MARGIN_DENOMINATOR - 1)
     ) // DISK_PREFLIGHT_MARGIN_DENOMINATOR
     return {
         "weights_total_bytes": weights_bytes,
-        "venvs_estimated_bytes": VENVS_ESTIMATED_BYTES + elephant_window_extra_bytes()["venv_bytes"],
+        "venvs_estimated_bytes": venvs_bytes,
         "subtotal_bytes": subtotal,
         "required_bytes": required,
     }
@@ -10420,7 +10455,7 @@ def validate_first_load_judge_id(
             "FIRST_LOAD_JUDGE_ID_INVALID",
             f"RDLAB_FIRST_LOAD_JUDGE_ID is allowed only with --stub --until first_load (got mode={mode!r}, until={until!r}, session_smoke={session_smoke!r})",
         )
-    if raw_val in (D3_JUDGE_ID, ELEPHANT_JUDGE_ID):
+    if raw_val in (D3_JUDGE_ID, ELEPHANT_JUDGE_ID, QWEN36_JUDGE_ID):
         raise RefusalError(
             "FIRST_LOAD_JUDGE_ID_INVALID",
             f"RDLAB_FIRST_LOAD_JUDGE_ID={raw_val!r} needs disk beyond the base gate, and --step gate sizes the window "
@@ -16189,7 +16224,9 @@ THREE_WAY_PASS_MODES: frozenset[str] = frozenset(m for m in PASS_MODES if m != "
 PASS_MODE_JUDGES: dict[str, frozenset[str]] = {
     "binary": frozenset({"d3-mini", "flow-judge-v0.1", "granite-guardian-4.1-8b", "mu-judge", "nemotron-3-nano-4b"}),
     "three_way": frozenset({"mu-judge", "nemotron-3-nano-4b", "d3-mini", "flow-judge-v0.1"}),
-    "three_way_contradicted": frozenset({"mu-judge", "nemotron-3-nano-4b", "d3-mini", "d3-flash", "d3", "elephant-1"}),
+    "three_way_contradicted": frozenset(
+        {"mu-judge", "nemotron-3-nano-4b", "d3-mini", "d3-flash", "d3", "elephant-1", "qwen3.6-35b-a3b"}
+    ),
     "three_way_two_question": frozenset({"d3-mini", "d3"}),
     "three_way_symmetric": frozenset({"d3-mini"}),
     "three_way_nli": frozenset({"nli-deberta-v3-large"}),
@@ -16259,6 +16296,10 @@ NLI_JUDGE_ID = "nli-deberta-v3-large"
 ELEPHANT_JUDGE_ID = "elephant-1"
 D3_JUDGE_ID = "d3"
 D3_REVISION = "62f07e54c6c3a5ff5f695107377edc43e1a86ea8"
+QWEN36_JUDGE_ID = "qwen3.6-35b-a3b"
+QWEN36_REPO_ID = "Qwen/Qwen3.6-35B-A3B"
+QWEN36_REVISION = "345d467b117d1fd5eda9b879a5988de9ae5f47a7"
+QWEN36_DEFAULT_MAX_NEW_TOKENS = 4096
 # d3-mini's gate SHA is the reviewed bd0090dd. d3-flash's is its own pin: its eight remote-code files are byte-identical
 # to d3-mini's reviewed ones (R&D, 2026-11-15), and the d3 transport re-proves that from the receipts at every load.
 # d3's is its own pin too: seven files byte-identical to d3-mini's, and d3_runtime.py checked against its own reviewed
@@ -16339,6 +16380,22 @@ D5C_JUDGE_SPECS: dict[str, JudgeSpec] = dict(
             card_snapshot_path="cards/baselabs_elephant-1.md",
             card_snapshot_sha256="0c1f7c170191d0906218c3b34ad7a11ae4bc49a04d210eb12e5bb7a5461648f7",
         ),
+        QWEN36_JUDGE_ID: JudgeSpec(
+            judge_id=QWEN36_JUDGE_ID,
+            judge_label="Qwen/Qwen3.6-35B-A3B",
+            repo_id=QWEN36_REPO_ID,
+            revision=QWEN36_REVISION,
+            card_registry_id="qwen3.6-35b-a3b-hf-card",
+            licence_registry_id="qwen3.6-35b-a3b-licence",
+            requires_remote_code=False,
+            remote_code_files=(),
+            supports_three_way=True,
+            has_probability=True,
+            verdict_position="after_thinking_block",
+            max_new_tokens=QWEN36_DEFAULT_MAX_NEW_TOKENS,
+            card_snapshot_path="cards/Qwen_Qwen3.6-35B-A3B.md",
+            card_snapshot_sha256="c4ddaa065649ff6352648f64747a16eda31726f3e34add94ce04abb461c77b75",
+        ),
     }
 )
 JUDGE_SPECS: dict[str, JudgeSpec] = {**BAKEOFF_JUDGE_SPECS, **D5C_JUDGE_SPECS}
@@ -16380,6 +16437,180 @@ GATE_SELECTION_INVALID = "GATE_JUDGE_SELECTION_INVALID"
 # vllm-sr/d3's weights: total_bytes of scripts/colab/receipts/vllm-sr__d3.sha256.json. A window that selects d3 needs
 # room for them on top of the seven-receipt base; its venv is venv-d3, which the base already counts.
 D3_WEIGHTS_BYTES = 52_202_137_725
+# Qwen/Qwen3.6-35B-A3B's weights (`total_bytes` of scripts/colab/receipts/Qwen__Qwen3.6-35B-A3B.sha256.json) + venv-vllm.
+QWEN36_WEIGHTS_BYTES = 71_926_859_142
+VENV_VLLM_ESTIMATED_BYTES = 12 * 1024**3
+_LAST_VLLM_INSTALL: dict[str, Any] | None = None
+
+
+def qwen36_window_extra_bytes(raw_only_judges: str | None = None) -> dict[str, int]:
+    """The disk the window adds for `qwen3.6-35b-a3b`: its weights (~71.9 GB) and `venv-vllm`, only when selected."""
+    if raw_only_judges is None:
+        named = QWEN36_JUDGE_ID in gate_selected_judge_ids()
+    else:
+        named = QWEN36_JUDGE_ID in gate_selected_judge_ids(raw_only_judges, "", from_env=False)
+    return {
+        "weights_bytes": QWEN36_WEIGHTS_BYTES if named else 0,
+        "venv_bytes": VENV_VLLM_ESTIMATED_BYTES if named else 0,
+    }
+
+
+def verify_vllm_lock(
+    vllm_lock: Path,
+    *,
+    env_vllm_sha256: str | None = None,
+    expected_vllm_sha256: str = EXPECTED_VLLM_LOCK_SHA256,
+) -> dict[str, Any]:
+    """Verify `scripts/colab/locks/vllm.lock.txt` sdist/wheel pins and SHA-256."""
+    report = verify_lock_sdist_and_hashes(vllm_lock)
+    actual_sha = str(report["lock_sha256"])
+    if actual_sha != expected_vllm_sha256:
+        raise RefusalError(
+            "LOCK_SHA256_MISMATCH",
+            f"vllm.lock.txt sha256 mismatch: file={actual_sha}, expected={expected_vllm_sha256}",
+        )
+    if env_vllm_sha256 is not None and env_vllm_sha256.strip() and env_vllm_sha256.strip() != actual_sha:
+        raise RefusalError(
+            "LOCK_SHA256_MISMATCH",
+            f"vllm.lock.txt sha256 mismatch against RDLAB_VLLM_LOCK_SHA256: file={actual_sha}, env={env_vllm_sha256}",
+        )
+    return {
+        "vllm_lock_sha256": actual_sha,
+        "package_count": int(report["package_count"]),
+        "sdists": list(report["sdists"]),
+    }
+
+
+def vllm_venv_name() -> str:
+    """`venv-vllm` once synced for a real GPU window, else `venv-judge` (for stub/dryrun windows)."""
+    ok = (
+        _LAST_VLLM_INSTALL is not None
+        and _LAST_VLLM_INSTALL.get("status") == "ok"
+    )
+    return VLLM_VENV_NAME if ok else "venv-judge"
+
+
+def ensure_vllm_venv(
+    *,
+    work_dir: Path,
+    repo_dir: Path,
+    run_dir: Path,
+    real: bool,
+) -> dict[str, Any]:
+    """Sync `venv-vllm` from `scripts/colab/locks/vllm.lock.txt` on Python 3.13 in real windows."""
+    global _LAST_VLLM_INSTALL
+    vllm_lock = Path(repo_dir) / "scripts" / "colab" / "locks" / "vllm.lock.txt"
+    rec: dict[str, Any] = {
+        "venv": VLLM_VENV_NAME,
+        "python_version": VLLM_PYTHON_VERSION,
+        "lock_file": "scripts/colab/locks/vllm.lock.txt",
+        "run_dir": str(Path(run_dir)),
+    }
+    try:
+        lock_info = verify_vllm_lock(vllm_lock, env_vllm_sha256=os.environ.get("RDLAB_VLLM_LOCK_SHA256"))
+        rec["lock_sha256"] = lock_info["vllm_lock_sha256"]
+    except RefusalError as exc:
+        if not real:
+            rec["status"] = "skipped_not_real_mode"
+            _LAST_VLLM_INSTALL = dict(rec)
+            return rec
+        rec["status"] = "failed"
+        rec["failure_class"] = exc.code
+        rec["detail"] = exc.message
+        _LAST_VLLM_INSTALL = dict(rec)
+        return rec
+
+    if not real:
+        rec["status"] = "skipped_not_real_mode"
+        _LAST_VLLM_INSTALL = dict(rec)
+        return rec
+
+    venv_dir = Path(work_dir) / VLLM_VENV_NAME
+    venv_python = venv_dir / "bin" / "python"
+    uv_env = build_vm_uv_env()
+    t0 = time.monotonic()
+    try:
+        run_vm_subprocess(["uv", "venv", "--python", VLLM_PYTHON_VERSION, str(venv_dir)], env=uv_env, check=True)
+        run_vm_subprocess(
+            [
+                "uv",
+                "pip",
+                "sync",
+                "--python",
+                str(venv_python),
+                "--only-binary",
+                ":all:",
+                "--no-binary",
+                "pyyaml",
+                "--require-hashes",
+                "--index-strategy",
+                "unsafe-best-match",
+                str(vllm_lock),
+            ],
+            env=uv_env,
+            check=True,
+        )
+        run_vm_subprocess([str(venv_python), "-c", "import vllm, transformers, torch"], env=uv_env, check=True)
+    except (RefusalError, subprocess.SubprocessError, OSError) as exc:
+        rec["status"] = "failed"
+        rec["failure_class"] = "VLLM_INSTALL_FAILED"
+        rec["detail"] = str(exc)
+        rec["install_seconds"] = round(time.monotonic() - t0, 3)
+        _LAST_VLLM_INSTALL = dict(rec)
+        return rec
+    rec["status"] = "ok"
+    rec["install_seconds"] = round(time.monotonic() - t0, 3)
+    _LAST_VLLM_INSTALL = dict(rec)
+    return rec
+
+
+def _apply_vllm_venv_install(passes: list[tuple[str, Any, str, str]], ctx: Mapping[str, Any]) -> list[tuple[str, Any, str, str]]:
+    """Prepare `venv-vllm` when `qwen3.6-35b-a3b` is scheduled; mark failed passes if sync fails in real windows."""
+    real = bool(ctx.get("real"))
+    prior = _LAST_VLLM_INSTALL
+    if (
+        prior is not None
+        and prior.get("run_dir") == str(Path(ctx["run_dir"]))
+        and (prior.get("status") != "skipped_not_real_mode") == real
+    ):
+        rec = dict(prior)
+    else:
+        rec = ensure_vllm_venv(
+            work_dir=Path(ctx["work_dir"]),
+            repo_dir=Path(ctx["repo_dir"]),
+            run_dir=Path(ctx["run_dir"]),
+            real=real,
+        )
+    if rec.get("status") != "failed":
+        return passes
+    kept: list[tuple[str, Any, str, str]] = []
+    for jid, s, mode, key in passes:
+        if jid != QWEN36_JUDGE_ID:
+            kept.append((jid, s, mode, key))
+            continue
+        metrics = ctx.get("metrics")
+        if isinstance(metrics, dict):
+            metrics[key] = {
+                "judge_id": jid,
+                "pass_mode": mode,
+                "run_status": "failed_to_run",
+                "failure_class": rec.get("failure_class"),
+                "vllm_install": dict(rec),
+            }
+        if ctx.get("progress_path") is not None:
+            append_progress_line(
+                Path(ctx["progress_path"]),
+                {
+                    "kind": "judge_failed",
+                    "judge": jid,
+                    "judge_id": jid,
+                    "pass_mode": mode,
+                    "run_status": "failed_to_run",
+                    "failure_class": rec.get("failure_class"),
+                    "detail": rec.get("detail"),
+                },
+            )
+    return kept
 
 
 def gate_selected_judge_ids(
@@ -16666,11 +16897,13 @@ def _judge_passes(
     """The window's judge passes in run order, as (judge_id, spec, pass_mode, pass_key): one per selected judge in the
     window's mode (the key is the judge id, as before), or a per-judge window's plan entries in their listed order.
     With elephant-1 among them and the run context in `elephant`, venv-elephant is built first
-    (`ensure_elephant_venv`); if that fails, elephant-1's passes become `failed_to_run` and the other passes run."""
+    (`ensure_elephant_venv`); with qwen3.6-35b-a3b among them, `venv-vllm` is prepared via `ensure_vllm_venv`."""
     passes = _planned_judge_passes(selected_specs, window_pass_mode)
-    if elephant is None or not any(jid == ELEPHANT_JUDGE_ID for jid, *_ in passes):
-        return passes
-    return _apply_elephant_install(passes, elephant)
+    if elephant is not None and any(jid == ELEPHANT_JUDGE_ID for jid, *_ in passes):
+        passes = _apply_elephant_install(passes, elephant)
+    if elephant is not None and any(jid == QWEN36_JUDGE_ID for jid, *_ in passes):
+        passes = _apply_vllm_venv_install(passes, elephant)
+    return passes
 
 
 def _planned_judge_passes(selected_specs: Sequence[tuple[str, Any]], window_pass_mode: str) -> list[tuple[str, Any, str, str]]:

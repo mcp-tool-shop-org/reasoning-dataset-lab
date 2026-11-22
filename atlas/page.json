@@ -33,30 +33,53 @@
   ],
   "changes": {
     "fileCounts": {
-      "added": 1,
-      "changed": 1,
+      "added": 3,
+      "changed": 12,
       "moved": 0,
-      "parts": 2,
+      "parts": 5,
       "removed": 0
     },
     "items": [
       {
         "kind": "landing",
-        "sentence": "tests/test_tracked_path_hygiene.py is now read by tests/test_tracked_path_hygiene.py.",
+        "sentence": ".gitattributes is now also read by scripts/colab/receipts/Qwen__Qwen3.6-35B-A3B.sha256.json.",
         "subjects": [
-          "tests/test_tracked_path_hygiene.py",
-          "tests/test_tracked_path_hygiene.py"
+          ".gitattributes",
+          "scripts/colab/receipts/Qwen__Qwen3.6-35B-A3B.sha256.json"
         ]
       },
       {
+        "kind": "landing",
+        "sentence": "LICENSE is now also read by scripts/colab/receipts/Qwen__Qwen3.6-35B-A3B.sha256.json and tests/test_colab_judge_qwen36.py.",
+        "subjects": [
+          "LICENSE",
+          "scripts/colab/receipts/Qwen__Qwen3.6-35B-A3B.sha256.json",
+          "tests/test_colab_judge_qwen36.py"
+        ]
+      },
+      {
+        "kind": "landing",
+        "sentence": "README.md is now also read by scripts/colab/receipts/Qwen__Qwen3.6-35B-A3B.sha256.json and tests/test_colab_judge_qwen36.py.",
+        "subjects": [
+          "README.md",
+          "scripts/colab/receipts/Qwen__Qwen3.6-35B-A3B.sha256.json",
+          "tests/test_colab_judge_qwen36.py"
+        ]
+      },
+      {
+        "kind": "landing",
+        "sentence": "And 1 more new writer or reader of a place.",
+        "subjects": []
+      },
+      {
         "kind": "counts",
-        "sentence": "1 file added and 1 changed content, across 2 parts.",
+        "sentence": "3 files added and 12 changed content, across 5 parts.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "424ad83126ba2e4ee34e698651014f4f9c722f66",
-      "generatedAt": "2026-11-21T20:17:47.287Z"
+      "commit": "7308e95a753c62aec3dddef1f4d8badaf80ec2f1",
+      "generatedAt": "2026-11-21T20:50:45.732Z"
     },
     "unchanged": false
   },
@@ -143,9 +166,9 @@
     "Window: 180 days; a pair counts from 3 shared commits, since 14 source files reach 10 revisions; the floor rises to 10 when 25 do."
   ],
   "changesTogetherWithTests": 1,
-  "commit": "7308e95a753c62aec3dddef1f4d8badaf80ec2f1",
+  "commit": "089179b1cc23409b851e42445f6bf643816439ad",
   "defaultBranch": "main",
-  "derived": "9 parts, mostly Python (98 files), shell (3), CSS (2), JavaScript (2), TypeScript (2) and Astro (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.",
+  "derived": "9 parts, mostly Python (99 files), shell (3), CSS (2), JavaScript (2), TypeScript (2) and Astro (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.",
   "doors": [
     {
       "checks": [],
@@ -167,7 +190,7 @@
         {
           "boundary": "tests",
           "depth": 0,
-          "files": 61
+          "files": 62
         },
         {
           "boundary": "src",
@@ -302,7 +325,7 @@
       ]
     }
   ],
-  "generatedAt": "2026-11-21T20:50:45.732Z",
+  "generatedAt": "2026-11-22T04:54:50.406Z",
   "limits": [
     "8 import sites name a declared dependency that shares its name with a local module (role_set); they are read as the dependency, which is not in this repository.",
     "20 imports could not be resolved: `scripts/colab/vm_judges.py` imports a path built at run time; `scripts/colab/vm_judges.py` imports `device`, which is no module on its import path and no declared dependency, twice; `tests/test_bakeoff_judge_d3_transport.py` imports a path built at run time; and 16 more.",
@@ -345,10 +368,10 @@
   "startReason": "This path follows rdlab (a command people run) from its entry, since ci runs only tests and scripts that import no code here.",
   "summary": "reasoning-dataset-lab plans a dataset as a pre-registered map, builds items whose answer keys are constructed and proved by code, asks a local model only for the wording, and records the provenance of every item.",
   "summaryFrom": "person",
-  "testFiles": 77,
+  "testFiles": 78,
   "testedBy": {
-    "scripts": 16,
-    "src": 53
+    "scripts": 17,
+    "src": 54
   },
   "testedCodeParts": 2,
   "unnamedWrites": 14,

@@ -45,8 +45,15 @@ subprocess (`<venv>/bin/python -m reasoning_dataset_lab.pilot_b.bakeoff_judge`) 
 `stdin=subprocess.DEVNULL`, and `start_new_session=True`:
 
 - `venv-judge/bin/python` (`judge.lock.txt`, `transformers==5.19.0`, `huggingface-hub==2.4.0`): `flow-judge-v0.1`,
-  `granite-guardian-4.1-8b`, `mu-judge`, and `nemotron-3-nano-4b`.
-- `venv-d3/bin/python` (`d3.lock.txt`, `transformers==5.17.0`, `huggingface-hub==1.33.0`): `d3-mini`.
+  `granite-guardian-4.1-8b`, `mu-judge`, and `nemotron-3-nano-4b` (and `nli-deberta-v3-large`; `elephant-1` uses
+  `venv-elephant` cloned from `venv-judge`).
+- `venv-d3/bin/python` (`d3.lock.txt`, `transformers==5.17.0`, `huggingface-hub==1.33.0`): `d3-mini`, `d3-flash`, and `d3`.
+- `venv-vllm/bin/python` (`vllm.lock.txt`, `vllm==0.34.0`, `transformers==5.22.2`, `torch==2.14.0`, CPython `3.13`,
+  created lazily on real windows that select `qwen3.6-35b-a3b` via `ensure_vllm_venv`): `qwen3.6-35b-a3b`
+  (`VllmJudgeTransport`, offline in-process batch size `1`, `language_model_only=True`, `tensor_parallel_size=1`,
+  `enable_thinking=True`, general-thinking sampling `temperature=1.0`, `top_p=0.95`, `top_k=20`, `min_p=0.0`,
+  `presence_penalty=1.5`, `repetition_penalty=1.0`, deterministic per-call seed from `(item_id, order)`,
+  `max_new_tokens` from `RDLAB_QWEN36_MAX_NEW_TOKENS`, default `2048`).
 
 When a judge child finishes, it writes `<run_dir>/judge_done/<judge>.json` (`row_count` and `sha256` of
 `rows/<judge>.jsonl`), and the parent records `judge_pass_done` in `progress.jsonl`. If a judge child is killed by the

@@ -1,17 +1,20 @@
 # reasoning-dataset-lab: how it works
 
-Mapped at 2026-11-21 from commit 7308e95 by Atlas 1.26.0.
+Mapped at 2026-11-22 from commit 089179b by Atlas 1.26.0.
 
 ## What this is
 
 reasoning-dataset-lab plans a dataset as a pre-registered map, builds items whose answer keys are constructed and proved by code, asks a local model only for the wording, and records the provenance of every item. (written by a person)
 
-9 parts, mostly Python (98 files), shell (3), CSS (2), JavaScript (2), TypeScript (2) and Astro (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.
+9 parts, mostly Python (99 files), shell (3), CSS (2), JavaScript (2), TypeScript (2) and Astro (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.
 
-## What changed since 2026-11-21 (424ad83)
+## What changed since 2026-11-21 (7308e95)
 
-- tests/test_tracked_path_hygiene.py is now read by tests/test_tracked_path_hygiene.py.
-- 1 file added and 1 changed content, across 2 parts.
+- .gitattributes is now also read by scripts/colab/receipts/Qwen__Qwen3.6-35B-A3B.sha256.json.
+- LICENSE is now also read by scripts/colab/receipts/Qwen__Qwen3.6-35B-A3B.sha256.json and tests/test_colab_judge_qwen36.py.
+- README.md is now also read by scripts/colab/receipts/Qwen__Qwen3.6-35B-A3B.sha256.json and tests/test_colab_judge_qwen36.py.
+- And 1 more new writer or reader of a place.
+- 3 files added and 12 changed content, across 5 parts.
 
 ## What comes in
 

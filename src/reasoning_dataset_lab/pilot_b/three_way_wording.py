@@ -209,10 +209,11 @@ NLI_LABEL_TO_INTERNAL: dict[str, dict[str, str]] = {
     "three_way_nli": {"entailment": "supported", "contradiction": "unsupported", "neutral": "cannot_tell"},
 }
 
-# The family of each judge in the choice wordings: "STATE" (mu-judge, Nemotron) and "the_state" (the d3 family).
+# The family of each judge in the choice wordings: "STATE" (mu-judge, Nemotron, Qwen3.6) and "the_state" (d3 family).
 THREE_WAY_WORDING_FAMILY_BY_JUDGE: dict[str, str] = {
     "mu-judge": "STATE",
     "nemotron-3-nano-4b": "STATE",
+    "qwen3.6-35b-a3b": "STATE",
     "d3-mini": "the_state",
     "d3-flash": "the_state",
     "d3": "the_state",  # vllm-sr/d3 (arms 7C and 7Q): exactly d3-mini's words in both modes
@@ -230,7 +231,9 @@ ORIGINAL_JUDGE_IDS: tuple[str, ...] = (
 PASS_MODE_JUDGES: dict[str, frozenset[str]] = {
     "binary": frozenset(ORIGINAL_JUDGE_IDS),
     "three_way": frozenset({"mu-judge", "nemotron-3-nano-4b", "d3-mini", "flow-judge-v0.1"}),
-    "three_way_contradicted": frozenset({"mu-judge", "nemotron-3-nano-4b", "d3-mini", "d3-flash", "d3", "elephant-1"}),
+    "three_way_contradicted": frozenset(
+        {"mu-judge", "nemotron-3-nano-4b", "d3-mini", "d3-flash", "d3", "elephant-1", "qwen3.6-35b-a3b"}
+    ),
     "three_way_two_question": frozenset({"d3-mini", "d3"}),
     "three_way_symmetric": frozenset({"d3-mini"}),
     "three_way_nli": frozenset({"nli-deberta-v3-large"}),

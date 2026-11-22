@@ -352,6 +352,7 @@ POLARITY_MAP_BY_JUDGE: dict[str, dict[str, Any]] = {
         "inverted": True,
     },
     "flow-judge-v0.1": {"supported_yes_token": "Pass/1/yes", "unsupported_no_token": "Fail/0/no", "inverted": False},
+    "qwen3.6-35b-a3b": {"supported_yes_token": "A", "unsupported_no_token": "B", "inverted": False},
 }
 
 MODEL_PARAM_BILLIONS_BY_JUDGE: dict[str, float] = {
@@ -543,6 +544,9 @@ class JudgeTransportResponse:
     stop_reason: str | None = None
     min_top2_logit_margin: float | None = None
     verdict_token_margin: float | None = None
+    thinking_token_count: int | None = None
+    call_seed: int | None = None
+    max_new_tokens_used: int | None = None
 
 
 @dataclass(frozen=True)
@@ -1571,6 +1575,25 @@ class BaseJudgeAdapter:
         raise NotImplementedError  # pragma: no cover
 
 
+def render_three_way_choice_user_content(
+    judge_id: str,
+    ordered_material: str,
+    claim: str,
+    pass_mode: PassMode,
+) -> str:
+    """Render the exact choice-pass user message shared across STATE-family judges (`mu-judge`, Nemotron, Qwen3.6)."""
+    wording = three_way_wording(pass_mode, judge_id)
+    instructions = wording.render_instruction(claim)
+    opt_lines = [f"{o.letter}. {o.shown_label}: {o.description}" for o in wording.options]
+    question_block = (
+        f"QUESTION (choice): {instructions}\n"
+        "Options:\n"
+        + "\n".join(opt_lines)
+        + "\nAnswer with the letter of one option."
+    )
+    return f"STATE:\n{ordered_material}\n\n{question_block}"
+
+
 class MuJudgeAdapter(BaseJudgeAdapter):
     """Adapter for `qybaihe/mu-judge-nemotron-nano-4b` using `pipeline/judge_format.py` verbatim (Appendix A lines 35-62)."""
 
@@ -1598,19 +1621,11 @@ class MuJudgeAdapter(BaseJudgeAdapter):
         if pass_mode == "binary":
             instructions = f"Is the following claim supported by STATE? Claim: {item.claim}"
             question_block = f"QUESTION (yes or no): {instructions}\nAnswer yes or no."
+            user_content = f"STATE:\n{ordered_material}\n\n{question_block}"
         else:
-            # The shown words are the arm's entry in `three_way_wording.THREE_WAY_WORDINGS`.
-            wording = three_way_wording(pass_mode, self.spec.judge_id)
-            instructions = wording.render_instruction(item.claim)
-            opt_lines = [f"{o.letter}. {o.shown_label}: {o.description}" for o in wording.options]
-            # The readout maps each letter back to its internal class (`letter_to_internal`).
-            question_block = (
-                f"QUESTION (choice): {instructions}\n"
-                "Options:\n"
-                + "\n".join(opt_lines)
-                + "\nAnswer with the letter of one option."
+            user_content = render_three_way_choice_user_content(
+                self.spec.judge_id, ordered_material, item.claim, pass_mode
             )
-        user_content = f"STATE:\n{ordered_material}\n\n{question_block}"
         msgs = (
             {"role": "system", "content": self.SYSTEM_PROMPT},
             {"role": "user", "content": user_content},
@@ -1712,19 +1727,11 @@ class NemotronNanoBaseAdapter(BaseJudgeAdapter):
         if pass_mode == "binary":
             instructions = f"Is the following claim supported by STATE? Claim: {item.claim}"
             question_block = f"QUESTION (yes or no): {instructions}\nAnswer yes or no."
+            user_content = f"STATE:\n{ordered_material}\n\n{question_block}"
         else:
-            # The shown words are the arm's entry in `three_way_wording.THREE_WAY_WORDINGS`.
-            wording = three_way_wording(pass_mode, self.spec.judge_id)
-            instructions = wording.render_instruction(item.claim)
-            opt_lines = [f"{o.letter}. {o.shown_label}: {o.description}" for o in wording.options]
-            # The readout maps each letter back to its internal class (`letter_to_internal`).
-            question_block = (
-                f"QUESTION (choice): {instructions}\n"
-                "Options:\n"
-                + "\n".join(opt_lines)
-                + "\nAnswer with the letter of one option."
+            user_content = render_three_way_choice_user_content(
+                self.spec.judge_id, ordered_material, item.claim, pass_mode
             )
-        user_content = f"STATE:\n{ordered_material}\n\n{question_block}"
         msgs = (
             {"role": "system", "content": self.SYSTEM_PROMPT},
             {"role": "user", "content": user_content},
@@ -2940,6 +2947,14 @@ class DeterministicFakeJudgeTransport:
         self.force_flip_items = frozenset(force_Flip_items)
         self.expected_revision_override = expected_revision_override
         self.torch_dtype = str(torch_dtype)
+        self._qwen36_stub_role_by_key: dict[tuple[str, str], str] = {}
+        self._qwen36_non_canary_count: int = 0
+        try:
+            self._canary_item_ids: frozenset[str] = frozenset(
+                str(iid) for iid in load_canary_config(DEFAULT_CANARY_CONFIG_PATH).get("canary_item_ids", [])
+            )
+        except Exception:
+            self._canary_item_ids = frozenset()
         os.environ["CUBLAS_WORKSPACE_CONFIG"] = CUBLAS_WORKSPACE_CONFIG_VALUE
 
     def verify_ready(self, spec: JudgeSpec, *, allow_remote_code_reviewed: str | None = None) -> str:
@@ -2956,6 +2971,20 @@ class DeterministicFakeJudgeTransport:
     def prefill(self, spec: JudgeSpec, prompt: AssembledPrompt, *, seed: int = 0) -> None:
         _ = seed
         encode_canonical_prompt_token_ids(spec.judge_id, prompt.prompt_text)
+
+    def _resolve_qwen36_stub_role(self, item_id: str, order: str) -> str:
+        if self.force_length_stop_items or self.force_unparseable_items:
+            return "normal"
+        key = (item_id, order)
+        if key in self._qwen36_stub_role_by_key:
+            return self._qwen36_stub_role_by_key[key]
+        if item_id in self._canary_item_ids:
+            return "normal"
+        idx = self._qwen36_non_canary_count
+        self._qwen36_non_canary_count += 1
+        role = "length_stop" if idx == 1 else ("unparseable" if idx == 2 else "normal")
+        self._qwen36_stub_role_by_key[key] = role
+        return role
 
     def generate(self, spec: JudgeSpec, prompt: AssembledPrompt, *, seed: int) -> JudgeTransportResponse:
         digest = f"fake-sha256:{spec.revision}"
@@ -2987,6 +3016,10 @@ class DeterministicFakeJudgeTransport:
             done_reason: DoneReason,
             seconds: float,
             system_one_result: dict[str, Any] | None = None,
+            thinking_token_count: int | None = None,
+            call_seed: int | None = None,
+            max_new_tokens_used: int | None = None,
+            library_pins_extra: Mapping[str, Any] | None = None,
         ) -> JudgeTransportResponse:
             out_sha = compute_response_output_token_ids_sha256(
                 spec.judge_id,
@@ -2995,6 +3028,7 @@ class DeterministicFakeJudgeTransport:
             )
             margin = compute_min_top2_logit_margin_from_logprobs(verdict_top_logprobs)
             stop_rsn = "max_new_tokens" if done_reason == "length" else "eos"
+            merged_pins = {**library_pins, **(dict(library_pins_extra) if library_pins_extra else {})}
             return JudgeTransportResponse(
                 raw_text=raw_text,
                 tokens=tokens,
@@ -3003,7 +3037,7 @@ class DeterministicFakeJudgeTransport:
                 seconds=seconds,
                 model_digest=digest,
                 server_binary=server_binary,
-                library_pins=library_pins,
+                library_pins=merged_pins,
                 system_one_result=system_one_result,
                 input_token_ids_sha256=in_tok_sha,
                 output_token_ids_sha256=out_sha,
@@ -3012,6 +3046,9 @@ class DeterministicFakeJudgeTransport:
                 stop_reason=stop_rsn,
                 min_top2_logit_margin=margin,
                 verdict_token_margin=margin,
+                thinking_token_count=thinking_token_count,
+                call_seed=call_seed,
+                max_new_tokens_used=max_new_tokens_used,
             )
 
         if (
@@ -3068,6 +3105,14 @@ class DeterministicFakeJudgeTransport:
         if prompt.item_id in self.force_flip_items and prompt.order == "BA":
             p_yes_target = round(1.0 - p_yes_target, 4)
         is_yes = p_yes_target >= 0.5
+        if spec.judge_id == QWEN36_JUDGE_ID and prompt.pass_mode in THREE_WAY_PASS_MODES:
+            return qwen36_fake_response(
+                spec,
+                prompt,
+                h_bytes,
+                _make_resp,
+                stub_role=self._resolve_qwen36_stub_role(prompt.item_id, prompt.order),
+            )
         if (d5c := d5c_fake_response(spec, prompt, h_bytes, _make_resp)) is not None: return d5c  # noqa: E701
         if prompt.pass_mode in THREE_WAY_PASS_MODES:
             choices = ("supported", "unsupported", "cannot_tell")
@@ -5787,6 +5832,15 @@ def run_bakeoff_judge(
                 "raw_verdict": readout.raw_verdict,
                 "confidence": round(readout.p_yes, 6) if readout.p_yes is not None else None,
                 "choice_probabilities": readout.choice_probabilities, **two_question_row_fields(readout, pass_mode),
+                **qwen36_row_fields(
+                    spec,
+                    resp,
+                    item_id=item.item_id,
+                    order=entry.order,
+                    out_tok_cnt=out_tok_cnt,
+                    stop_rsn=stop_rsn,
+                    library_pins=pins_with_determinism,
+                ),
                 "top_logprobs": top5_dicts,
                 "top_20_logprobs": top20_dicts,
                 "polarity_map": polarity_map,
@@ -5918,6 +5972,26 @@ def run_bakeoff_judge(
         else [*prev_load_history, load_wall_seconds]
     )
 
+    call_seconds_vals = [
+        float(r["seconds"])
+        for r in final_row_objs
+        if isinstance(r, dict) and isinstance(r.get("seconds"), (int, float)) and not isinstance(r.get("seconds"), bool)
+    ]
+    thinking_len_vals = [
+        float(r["thinking_token_count"])
+        for r in final_row_objs
+        if isinstance(r, dict)
+        and isinstance(r.get("thinking_token_count"), (int, float))
+        and not isinstance(r.get("thinking_token_count"), bool)
+    ]
+    call_seconds_quantiles = _compute_quantiles(call_seconds_vals)
+    thinking_length_quantiles = _compute_quantiles(thinking_len_vals)
+    qwen36_summary_extra: dict[str, Any] = {}
+    if spec.judge_id == QWEN36_JUDGE_ID:
+        qwen36_summary_extra["max_new_tokens"] = resolve_qwen36_max_new_tokens()
+        qwen36_summary_extra["thinking_length_quantiles"] = thinking_length_quantiles
+        qwen36_summary_extra["call_seconds_quantiles"] = call_seconds_quantiles
+
     if not anchor_prefix_only:
         judge_done_dir.mkdir(parents=True, exist_ok=True)
         judge_done_doc: dict[str, Any] = {
@@ -5949,6 +6023,7 @@ def run_bakeoff_judge(
             "verified_recovery": verified_recovery,
             "canary": canary_summary,
             "canary_start_records": canary_start_records,
+            **qwen36_summary_extra,
         }
         judge_done_tmp.write_text(
             json.dumps(judge_done_doc, indent=2, sort_keys=True) + "\n",
@@ -5996,6 +6071,7 @@ def run_bakeoff_judge(
         "canary": canary_summary,
         "rows_path": str(row_path),
         "judge_done_path": str(judge_done_path),
+        **qwen36_summary_extra,
         "generations_path": str(gen_path),
     }
 
@@ -8399,6 +8475,23 @@ D3_VRAM_HALT_MIB = 68_000
 # Arm 5's input limit: an input over 512 tokens is an invalid call (never truncated).
 NLI_MAX_INPUT_TOKENS = 512
 
+# Qwen/Qwen3.6-35B-A3B: thinking judge for `three_way_contradicted` only, served offline via vLLM (batch 1).
+QWEN36_JUDGE_ID = "qwen3.6-35b-a3b"
+QWEN36_REPO_ID = "Qwen/Qwen3.6-35B-A3B"
+QWEN36_REVISION = "345d467b117d1fd5eda9b879a5988de9ae5f47a7"
+QWEN36_DEFAULT_MAX_NEW_TOKENS = 4096
+QWEN36_MAX_NEW_TOKENS_ENV_VAR = "RDLAB_QWEN36_MAX_NEW_TOKENS"
+# BF16 weights (71.93 GB = 68,595 MiB) + vLLM runtime/KV cache headroom under the 97,250 MiB 96 GB card ceiling.
+QWEN36_VRAM_HALT_MIB = 92_000
+QWEN36_THINKING_SAMPLING: dict[str, float | int] = {
+    "temperature": 1.0,
+    "top_p": 0.95,
+    "top_k": 20,
+    "min_p": 0.0,
+    "presence_penalty": 1.5,
+    "repetition_penalty": 1.0,
+}
+
 # The D5c judges: pinned and resolvable by id (`JUDGE_SPECS`), but never in BAKEOFF_JUDGE_SPECS, which stays the
 # bake-off's five, so every all-judge window, receipt and loop is unchanged. They run only when a window names them.
 D5C_JUDGE_SPECS: dict[str, JudgeSpec] = dict(
@@ -8469,6 +8562,23 @@ D5C_JUDGE_SPECS: dict[str, JudgeSpec] = dict(
             card_snapshot_path="cards/baselabs_elephant-1.md",
             card_snapshot_sha256="0c1f7c170191d0906218c3b34ad7a11ae4bc49a04d210eb12e5bb7a5461648f7",
         ),
+        QWEN36_JUDGE_ID: JudgeSpec(
+            judge_id=QWEN36_JUDGE_ID,
+            judge_label="Qwen/Qwen3.6-35B-A3B",
+            repo_id=QWEN36_REPO_ID,
+            revision=QWEN36_REVISION,
+            card_registry_id="qwen3.6-35b-a3b-hf-card",
+            licence_registry_id="qwen3.6-35b-a3b-licence",
+            requires_remote_code=False,
+            remote_code_files=(),
+            supports_three_way=True,
+            has_probability=True,
+            verdict_position="after_thinking_block",
+            max_new_tokens=QWEN36_DEFAULT_MAX_NEW_TOKENS,
+            card_snapshot_path="cards/Qwen_Qwen3.6-35B-A3B.md",
+            card_snapshot_sha256="c4ddaa065649ff6352648f64747a16eda31726f3e34add94ce04abb461c77b75",
+            vram_halt_mib=QWEN36_VRAM_HALT_MIB,
+        ),
     }
 )
 # Every pinned judge, by id: the bake-off's five and the D5c ones.
@@ -8481,9 +8591,27 @@ JUDGE_ALIASES.update(
         "vllm-sr/d3": D3_JUDGE_ID,
         "nli-deberta-v3-large": NLI_JUDGE_ID,
         "moritzlaurer/deberta-v3-large-mnli-fever-anli-ling-wanli": NLI_JUDGE_ID,
+        "qwen3.6-35b-a3b": QWEN36_JUDGE_ID,
+        "qwen/qwen3.6-35b-a3b": QWEN36_JUDGE_ID,
     }
 )
-MODEL_PARAM_BILLIONS_BY_JUDGE.update({D3_FLASH_JUDGE_ID: 8.39, D3_JUDGE_ID: 26.09, NLI_JUDGE_ID: 0.435})
+MODEL_PARAM_BILLIONS_BY_JUDGE.update({D3_FLASH_JUDGE_ID: 8.39, D3_JUDGE_ID: 26.09, NLI_JUDGE_ID: 0.435, QWEN36_JUDGE_ID: 35.0})
+JUDGE_SPECIFIC_NOTES[QWEN36_JUDGE_ID] = {
+    "native_format": (
+        "Qwen/Qwen3.6-35B-A3B chat template (apply_chat_template(..., add_generation_prompt=True, "
+        "enable_thinking=True)) over mu-judge's three_way_contradicted user content (no system prompt)"
+    ),
+    "execution_format": (
+        "offline vLLM (batch 1, language_model_only=True) with general-thinking sampling "
+        "(temperature=1.0, top_p=0.95, top_k=20, min_p=0.0, presence_penalty=1.5, repetition_penalty=1.0)"
+    ),
+    "readout_mapping": (
+        "Answer is text after closing </think>, parsed with the same choice-letter map as mu-judge "
+        "(A->supported, B->unsupported, C->cannot_tell). Multi-token answers are refused as unparseable; "
+        "probabilities come from the top-20 logprobs at the first non-whitespace token after </think>."
+    ),
+    "polarity_map": POLARITY_MAP_BY_JUDGE[QWEN36_JUDGE_ID],
+}
 
 
 # --- the d3-family remote-code gate ---------------------------------------------------------------------------------
@@ -8914,7 +9042,7 @@ class NliSequenceClassificationTransport(TransformersJudgeTransport):
 
 def build_judge_adapter(judge: str | JudgeSpec) -> BaseJudgeAdapter:
     """Instantiate the dedicated adapter class for `judge`: the d3 family shares the System One adapter, the NLI
-    encoder has its own, and the five original judges keep theirs (`_build_original_judge_adapter`)."""
+    encoder has its own, Qwen3.6 uses `Qwen36ChoiceAdapter`, and the five original judges keep theirs."""
     spec = judge if isinstance(judge, JudgeSpec) else resolve_judge_spec(judge)
     if spec.judge_id in D3_FAMILY_JUDGE_IDS:
         return D3MiniAdapter(spec)
@@ -8922,6 +9050,8 @@ def build_judge_adapter(judge: str | JudgeSpec) -> BaseJudgeAdapter:
         return NliEncoderAdapter(spec)
     if spec.judge_id == ELEPHANT_JUDGE_ID:
         return ElephantAdapter(spec)
+    if spec.judge_id == QWEN36_JUDGE_ID:
+        return Qwen36ChoiceAdapter(spec)
     return _build_original_judge_adapter(spec)
 
 
@@ -9253,12 +9383,461 @@ def elephant_outside_mass(mass: Mapping[str, Any], qids: Sequence[str]) -> tuple
 
 
 def real_transport_class_for(spec: JudgeSpec) -> Any:
-    """The real (non-d3) transport class for a judge: the NLI encoder's, elephant-1's (qev), else transformers'."""
+    """The real (non-d3) transport class for a judge: NLI encoder, elephant-1, Qwen3.6 (vLLM), else transformers."""
     if spec.judge_id in NLI_JUDGE_IDS:
         return NliSequenceClassificationTransport
     if spec.judge_id == ELEPHANT_JUDGE_ID:
         return ElephantDecisionTransport
+    if spec.judge_id == QWEN36_JUDGE_ID:
+        return VllmJudgeTransport
     return TransformersJudgeTransport
+
+
+def resolve_qwen36_max_new_tokens(env: Mapping[str, str] | None = None) -> int:
+    """Resolve `max_new_tokens` for Qwen3.6 from `RDLAB_QWEN36_MAX_NEW_TOKENS`, else `QWEN36_DEFAULT_MAX_NEW_TOKENS`."""
+    source = os.environ if env is None else env
+    raw = str(source.get(QWEN36_MAX_NEW_TOKENS_ENV_VAR, "") or "").strip()
+    if not raw:
+        return QWEN36_DEFAULT_MAX_NEW_TOKENS
+    try:
+        val = int(raw)
+    except ValueError as exc:
+        raise usage_error(
+            "BAKEOFF_MAX_NEW_TOKENS_INVALID",
+            f"{QWEN36_MAX_NEW_TOKENS_ENV_VAR} must be a positive integer, got {raw!r}.",
+            f"Pass a positive integer in {QWEN36_MAX_NEW_TOKENS_ENV_VAR} or leave it unset.",
+        ) from exc
+    if val <= 0:
+        raise usage_error(
+            "BAKEOFF_MAX_NEW_TOKENS_INVALID",
+            f"{QWEN36_MAX_NEW_TOKENS_ENV_VAR} must be > 0, got {val}.",
+            f"Pass a positive integer in {QWEN36_MAX_NEW_TOKENS_ENV_VAR} or leave it unset.",
+        )
+    return val
+
+
+def derive_qwen36_call_seed(item_id: str, order: OrderMode) -> int:
+    """Derive a deterministic per-call sampling seed solely from `item_id` and `order` ('AB' or 'BA')."""
+    digest = hashlib.sha256(f"{item_id}\x00{order}".encode("utf-8")).digest()
+    return int.from_bytes(digest[:4], "big") & 0x7FFFFFFF
+
+
+def render_qwen36_chat_prompt(tokenizer: Any, messages: Sequence[Mapping[str, str]]) -> str:
+    """Render `messages` using the model tokenizer's chat template with thinking enabled."""
+    return str(
+        tokenizer.apply_chat_template(
+            list(messages),
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=True,
+        )
+    )
+
+
+def _compute_quantiles(values: Sequence[float]) -> dict[str, float] | None:
+    """Nearest-rank p50, p95, and p99 quantiles matching `bakeoff_judge`'s percentile convention."""
+    if not values:
+        return None
+    ordered = sorted(float(v) for v in values)
+    n = len(ordered)
+    out: dict[str, float] = {}
+    for label, q in (("p50", 0.50), ("p95", 0.95), ("p99", 0.99)):
+        idx = min(n - 1, max(0, int(math.ceil(q * n)) - 1))
+        out[label] = round(ordered[idx], 6)
+    return out
+
+
+def qwen36_row_fields(
+    spec: JudgeSpec,
+    resp: JudgeTransportResponse,
+    *,
+    item_id: str,
+    order: OrderMode,
+    out_tok_cnt: int,
+    stop_rsn: str,
+    library_pins: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Row-level telemetry fields recorded on Qwen3.6 (and any thinking-token transport) rows."""
+    if spec.judge_id != QWEN36_JUDGE_ID and resp.thinking_token_count is None:
+        return {}
+    return {
+        "generated_token_count": int(out_tok_cnt),
+        "thinking_token_count": resp.thinking_token_count,
+        "finish_reason": stop_rsn,
+        "call_seed": resp.call_seed if resp.call_seed is not None else derive_qwen36_call_seed(item_id, order),
+        "max_new_tokens": resp.max_new_tokens_used if resp.max_new_tokens_used is not None else resolve_qwen36_max_new_tokens(),
+        "library_pins": dict(library_pins),
+    }
+
+
+class Qwen36ChoiceAdapter(BaseJudgeAdapter):
+    """Adapter for `Qwen/Qwen3.6-35B-A3B` on `three_way_contradicted` with thinking enabled.
+
+    Sends the exact user message content that `mu-judge` and `nemotron-3-nano-4b` receive (`render_three_way_choice_user_content`),
+    with no system prompt, no added instruction, and no suffix. Thinking is enabled strictly through the tokenizer's
+    `apply_chat_template(..., enable_thinking=True)` switch.
+
+    Multi-token label handling: `three_way_contradicted` asks for one option letter (`A`, `B`, or `C`), each a single
+    token. Log-probabilities are extracted solely at the first non-whitespace token after `</think>` and normalized over
+    the three option letters via `compute_three_way_choice_probs`. Any multi-token response after `</think>` (more than
+    one whitespace-delimited token or a multi-token word outside `{a, b, c}`) is marked `unparseable`.
+    """
+
+    def __init__(self, spec: JudgeSpec | None = None) -> None:
+        super().__init__(spec if spec is not None else JUDGE_SPECS[QWEN36_JUDGE_ID])
+
+    def _build_prompt(
+        self,
+        *,
+        item: JudgeInputItem,
+        ordered_material: str,
+        order: OrderMode,
+        pass_mode: PassMode,
+    ) -> AssembledPrompt:
+        user_content = render_three_way_choice_user_content(
+            self.spec.judge_id, ordered_material, item.claim, pass_mode
+        )
+        msgs = ({"role": "user", "content": user_content},)
+        rendered = f"<|im_start|>user\n{user_content}<|im_end|>\n<|im_start|>assistant\n<think>\n"
+        return AssembledPrompt(
+            judge_id=self.spec.judge_id,
+            item_id=item.item_id,
+            order=order,
+            pass_mode=pass_mode,
+            prompt_text=rendered,
+            messages=msgs,
+            structured_payload={
+                "enable_thinking": True,
+                "sampling": dict(QWEN36_THINKING_SAMPLING),
+                "max_new_tokens": resolve_qwen36_max_new_tokens(),
+                "call_seed": derive_qwen36_call_seed(item.item_id, order),
+            },
+        )
+
+    def _parse_non_length_response(
+        self,
+        response: JudgeTransportResponse,
+        *,
+        pass_mode: PassMode,
+    ) -> ParsedJudgeReadout:
+        top5 = response.verdict_top_logprobs[:5]
+
+        def _bad(note: str) -> ParsedJudgeReadout:
+            return ParsedJudgeReadout(
+                state="unparseable",
+                done_reason=response.done_reason,
+                raw_verdict=None,
+                p_yes=None,
+                choice_probabilities=None,
+                verdict_top_logprobs=top5,
+                parse_note=note,
+            )
+
+        if response.done_reason != "stop":
+            return _bad(f"non-stop finish reason {response.done_reason!r}")
+        if "</think>" not in response.raw_text:
+            return _bad("missing closing </think> tag")
+        answer_text = response.raw_text.rsplit("</think>", 1)[1].strip()
+        if not answer_text:
+            return _bad("no label after closing </think>")
+        tokens = answer_text.split()
+        if len(tokens) != 1:
+            return _bad(f"multiple labels or extra tokens after </think>: {answer_text!r}")
+        # Reuse the same choice-letter mapping (`letter_to_internal`) as `MuJudgeAdapter._parse_non_length_response`.
+        label_map = three_way_wording(pass_mode, self.spec.judge_id).letter_to_internal()
+        norm = tokens[0].strip().lower()
+        if norm not in label_map:
+            return _bad(f"label {tokens[0]!r} outside shown set {sorted(label_map)}")
+        probs, _ = compute_three_way_choice_probs(response.verdict_top_logprobs, label_map=label_map)
+        return ParsedJudgeReadout(
+            state="parsed",
+            done_reason=response.done_reason,
+            raw_verdict=label_map[norm],
+            p_yes=(probs.get("supported") if probs is not None else None),
+            choice_probabilities=probs,
+            verdict_top_logprobs=top5,
+        )
+
+
+class VllmJudgeTransport:
+    """Offline, in-process, batch-1 vLLM transport for `Qwen/Qwen3.6-35B-A3B` (`venv-vllm`)."""
+
+    def __init__(
+        self,
+        *,
+        receipts_dir: Path,
+        hf_home: Path | None = None,
+        device: str = "cuda",
+        torch_dtype: str = DEFAULT_TORCH_DTYPE,
+        window_mode: str | None = None,
+        shard_spec: str | None = None,
+        **_ignored: Any,
+    ) -> None:
+        ensure_offline_env(set_if_unset=True)
+        ensure_sync_weight_loading()
+        disable_bytecode_writing()
+        self.receipts_dir = Path(receipts_dir)
+        self.hf_home = Path(hf_home) if hf_home is not None else None
+        self.device = str(device)
+        self.torch_dtype = str(torch_dtype)
+        self.window_mode = window_mode
+        self.shard_spec = shard_spec
+        self._snapshot_dir: Path | None = None
+        self._verified_digest: str | None = None
+        self._tokenizer: Any = None
+        self._llm: Any = None
+
+    def verify_ready(self, spec: JudgeSpec, *, allow_remote_code_reviewed: str | None = None) -> str:
+        check_remote_code_gate(spec, allow_remote_code_reviewed=allow_remote_code_reviewed)
+        ensure_offline_env(set_if_unset=False)
+        snapshot_dir, digest = verify_snapshot_against_receipt(
+            spec, receipts_dir=self.receipts_dir, hf_home=self.hf_home
+        )
+        self._snapshot_dir = snapshot_dir
+        self._verified_digest = digest
+        return digest
+
+    def _ensure_loaded(self, spec: JudgeSpec) -> None:
+        if self._llm is not None and self._tokenizer is not None:
+            return
+        if self._snapshot_dir is None:
+            raise refused_error(
+                "VLLM_RUNTIME_UNVERIFIED",
+                f"{spec.judge_id} was not verified (verify_ready) before load.",
+                "Call verify_ready first.",
+            )
+        from transformers import AutoTokenizer
+        from vllm import LLM
+
+        self._tokenizer = AutoTokenizer.from_pretrained(
+            str(self._snapshot_dir), local_files_only=True, trust_remote_code=False
+        )
+        self._llm = LLM(
+            model=str(self._snapshot_dir),
+            dtype=self.torch_dtype,
+            tensor_parallel_size=1,
+            trust_remote_code=False,
+            language_model_only=True,
+        )
+
+    def _decode_token_id(self, token_id: int) -> str:
+        assert self._tokenizer is not None
+        if hasattr(self._tokenizer, "convert_ids_to_tokens"):
+            raw = self._tokenizer.convert_ids_to_tokens([token_id])
+            if raw and isinstance(raw[0], str):
+                if hasattr(self._tokenizer, "convert_tokens_to_string"):
+                    return str(self._tokenizer.convert_tokens_to_string([raw[0]]))
+                return str(raw[0])
+        return str(self._tokenizer.decode([token_id], skip_special_tokens=False))
+
+    @staticmethod
+    def _find_close_think_index(tokens: Sequence[str]) -> int | None:
+        for idx in range(len(tokens) - 1, -1, -1):
+            if tokens[idx] == "</think>" or tokens[idx].endswith("</think>"):
+                return idx
+        # Fallback if `</think>` spanned multiple tokens.
+        acc = ""
+        for idx, tok in enumerate(tokens):
+            acc += tok
+            if "</think>" in acc:
+                return idx
+        return None
+
+    def _extract_top_logprobs(self, lp_map: Any) -> tuple[TopLogprobEntry, ...]:
+        if not isinstance(lp_map, Mapping):
+            return ()
+        items: list[tuple[int, float, str]] = []
+        for tid_raw, entry in lp_map.items():
+            tid = int(tid_raw)
+            if isinstance(entry, (int, float)):
+                lp = float(entry)
+                tok_str = self._decode_token_id(tid)
+            else:
+                lp = float(getattr(entry, "logprob"))
+                dec = getattr(entry, "decoded_token", None)
+                tok_str = str(dec) if dec is not None else self._decode_token_id(tid)
+            items.append((tid, lp, tok_str))
+        items.sort(key=lambda row: row[1], reverse=True)
+        return tuple(
+            TopLogprobEntry(token=tok_str, logprob=lp, token_id=tid)
+            for tid, lp, tok_str in items[:20]
+        )
+
+    def generate(self, spec: JudgeSpec, prompt: AssembledPrompt, *, seed: int) -> JudgeTransportResponse:
+        _ = seed  # Qwen3.6 sampling seed depends solely on (item_id, order).
+        self._ensure_loaded(spec)
+        assert self._llm is not None and self._tokenizer is not None and self._verified_digest is not None
+        import tokenizers
+        import torch
+        import transformers
+        import vllm
+        from vllm import SamplingParams
+
+        rendered_prompt = render_qwen36_chat_prompt(self._tokenizer, prompt.messages)
+        max_new_tokens = resolve_qwen36_max_new_tokens()
+        call_seed = derive_qwen36_call_seed(prompt.item_id, prompt.order)
+        sampling_params = SamplingParams(
+            temperature=float(QWEN36_THINKING_SAMPLING["temperature"]),
+            top_p=float(QWEN36_THINKING_SAMPLING["top_p"]),
+            top_k=int(QWEN36_THINKING_SAMPLING["top_k"]),
+            min_p=float(QWEN36_THINKING_SAMPLING["min_p"]),
+            presence_penalty=float(QWEN36_THINKING_SAMPLING["presence_penalty"]),
+            repetition_penalty=float(QWEN36_THINKING_SAMPLING["repetition_penalty"]),
+            max_tokens=max_new_tokens,
+            seed=call_seed,
+            logprobs=20,
+        )
+
+        t0 = time.monotonic()
+        outputs = self._llm.generate([rendered_prompt], sampling_params=sampling_params)
+        elapsed = max(0.0001, time.monotonic() - t0)
+
+        req_out = outputs[0]
+        comp = req_out.outputs[0]
+        raw_text = str(getattr(comp, "text", ""))
+        token_ids = tuple(int(tid) for tid in getattr(comp, "token_ids", ()))
+        tokens = tuple(self._decode_token_id(tid) for tid in token_ids)
+
+        close_idx = self._find_close_think_index(tokens)
+        thinking_token_count = (close_idx + 1) if close_idx is not None else len(token_ids)
+        label_pos: int | None = None
+        if close_idx is not None:
+            for idx in range(close_idx + 1, len(tokens)):
+                if tokens[idx].strip():
+                    label_pos = idx
+                    break
+
+        comp_logprobs = getattr(comp, "logprobs", None) or ()
+        verdict_top_logprobs = (
+            self._extract_top_logprobs(comp_logprobs[label_pos])
+            if label_pos is not None and label_pos < len(comp_logprobs)
+            else ()
+        )
+
+        raw_finish = str(getattr(comp, "finish_reason", None) or "")
+        if not raw_finish:
+            raw_finish = "length" if len(token_ids) >= max_new_tokens else "stop"
+        done_reason: DoneReason = "length" if raw_finish == "length" else "stop"
+        stop_reason = "max_new_tokens" if done_reason == "length" else raw_finish
+
+        prompt_tok_ids = getattr(req_out, "prompt_token_ids", None)
+        if prompt_tok_ids is not None:
+            in_tok_ids = [int(x) for x in prompt_tok_ids]
+        else:
+            in_tok_ids = [int(x) for x in self._tokenizer.encode(rendered_prompt, add_special_tokens=False)]
+
+        library_pins: dict[str, Any] = {
+            "transport": "VllmJudgeTransport",
+            "backend": "vllm",
+            "python": sys.version.split()[0],
+            "vllm": getattr(vllm, "__version__", "unknown"),
+            "torch": getattr(torch, "__version__", "unknown"),
+            "transformers": getattr(transformers, "__version__", "unknown"),
+            "tokenizers": getattr(tokenizers, "__version__", "unknown"),
+            "dtype": self.torch_dtype,
+            "enable_thinking": True,
+            "language_model_only": True,
+            "sampling": dict(QWEN36_THINKING_SAMPLING),
+            "max_new_tokens": max_new_tokens,
+            "call_seed": call_seed,
+        }
+        return JudgeTransportResponse(
+            raw_text=raw_text,
+            tokens=tokens,
+            verdict_top_logprobs=verdict_top_logprobs,
+            done_reason=done_reason,
+            seconds=elapsed,
+            model_digest=self._verified_digest,
+            server_binary=f"vllm/{library_pins['vllm']};torch/{library_pins['torch']};{self.device}",
+            library_pins=library_pins,
+            input_token_ids_sha256=compute_token_ids_sha256(in_tok_ids),
+            output_token_ids_sha256=compute_response_output_token_ids_sha256(spec.judge_id, tokens),
+            input_token_count=len(in_tok_ids),
+            output_token_count=len(token_ids),
+            stop_reason=stop_reason,
+            min_top2_logit_margin=compute_min_top2_logit_margin_from_logprobs(verdict_top_logprobs),
+            verdict_token_margin=compute_min_top2_logit_margin_from_logprobs(verdict_top_logprobs),
+            thinking_token_count=thinking_token_count,
+            call_seed=call_seed,
+            max_new_tokens_used=max_new_tokens,
+        )
+
+
+def qwen36_fake_response(
+    spec: JudgeSpec,
+    prompt: AssembledPrompt,
+    h_bytes: bytes,
+    make_resp: Callable[..., JudgeTransportResponse],
+    *,
+    stub_role: str = "normal",
+) -> JudgeTransportResponse:
+    """`DeterministicFakeJudgeTransport` answer for `qwen3.6-35b-a3b` (thinking block, label, and telemetry)."""
+    call_seed = derive_qwen36_call_seed(prompt.item_id, prompt.order)
+    max_new_tokens = resolve_qwen36_max_new_tokens()
+    pins_extra: dict[str, Any] = {
+        "backend": "vllm",
+        "vllm": "0.34.0 (pinned-not-loaded)",
+        "torch": "2.14.0 (pinned-not-loaded)",
+        "transformers": "5.22.2 (pinned-not-loaded)",
+        "enable_thinking": True,
+        "language_model_only": True,
+        "sampling": dict(QWEN36_THINKING_SAMPLING),
+        "max_new_tokens": max_new_tokens,
+        "call_seed": call_seed,
+    }
+    seconds = round(0.001 + 0.0005 * (h_bytes[6] % 11), 6)
+    if stub_role == "length_stop":
+        think_toks = tuple(["<think>", "Synthetic", "reasoning", "truncated"] + [f"step_{i}" for i in range(10)])
+        return make_resp(
+            raw_text=" ".join(think_toks) + "...",
+            tokens=think_toks,
+            verdict_top_logprobs=(),
+            done_reason="length",
+            seconds=seconds,
+            thinking_token_count=len(think_toks),
+            call_seed=call_seed,
+            max_new_tokens_used=max_new_tokens,
+            library_pins_extra=pins_extra,
+        )
+    letters = ("A", "B", "C")
+    c_idx = h_bytes[4] % 3
+    chosen_letter = letters[c_idx]
+    lp_top = _pad_top_logprobs_to_20(
+        (
+            TopLogprobEntry(token=chosen_letter, logprob=math.log(0.76)),
+            TopLogprobEntry(token=letters[(c_idx + 1) % 3], logprob=math.log(0.14)),
+            TopLogprobEntry(token=letters[(c_idx + 2) % 3], logprob=math.log(0.06)),
+            TopLogprobEntry(token=f" {chosen_letter.lower()}", logprob=math.log(0.03)),
+            TopLogprobEntry(token="none", logprob=math.log(0.01)),
+        )
+    )
+    if stub_role == "unparseable":
+        return make_resp(
+            raw_text=chosen_letter,
+            tokens=(chosen_letter,),
+            verdict_top_logprobs=lp_top,
+            done_reason="stop",
+            seconds=seconds,
+            thinking_token_count=1,
+            call_seed=call_seed,
+            max_new_tokens_used=max_new_tokens,
+            library_pins_extra=pins_extra,
+        )
+    extra_steps = [f"step_{i}" for i in range(6 + (h_bytes[5] % 12))]
+    think_tokens = ("<think>", "Checking", "STATE", "for", prompt.item_id, prompt.order, *extra_steps, "</think>")
+    all_tokens = (*think_tokens, "\n", chosen_letter)
+    raw_text = f"<think>Checking STATE for {prompt.item_id} {prompt.order} {' '.join(extra_steps)}.</think>\n{chosen_letter}"
+    return make_resp(
+        raw_text=raw_text,
+        tokens=all_tokens,
+        verdict_top_logprobs=lp_top,
+        done_reason="stop",
+        seconds=seconds,
+        thinking_token_count=len(think_tokens),
+        call_seed=call_seed,
+        max_new_tokens_used=max_new_tokens,
+        library_pins_extra=pins_extra,
+    )
 
 
 def elephant_fake_response(
