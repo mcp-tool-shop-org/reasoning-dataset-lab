@@ -53,7 +53,7 @@ subprocess (`<venv>/bin/python -m reasoning_dataset_lab.pilot_b.bakeoff_judge`) 
   (`VllmJudgeTransport`, offline in-process batch size `1`, `language_model_only=True`, `tensor_parallel_size=1`,
   `enable_thinking=True`, general-thinking sampling `temperature=1.0`, `top_p=0.95`, `top_k=20`, `min_p=0.0`,
   `presence_penalty=1.5`, `repetition_penalty=1.0`, deterministic per-call seed from `(item_id, order)`,
-  `max_new_tokens` from `RDLAB_QWEN36_MAX_NEW_TOKENS`, default `2048`).
+  `max_new_tokens` from `RDLAB_QWEN36_MAX_NEW_TOKENS`, default `4096`).
 
 When a judge child finishes, it writes `<run_dir>/judge_done/<judge>.json` (`row_count` and `sha256` of
 `rows/<judge>.jsonl`), and the parent records `judge_pass_done` in `progress.jsonl`. If a judge child is killed by the
