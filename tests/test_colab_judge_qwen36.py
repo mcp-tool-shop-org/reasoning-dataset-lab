@@ -572,7 +572,6 @@ def _seed_qwen36_snapshot_and_receipt(receipts_dir: Path, hf_home: Path) -> None
 
 
 def test_launcher_stub_end_to_end_qwen36(tmp_path: Path) -> None:
-    monkeypatch.setenv("RDLAB_LIMIT_ITEMS", "10")
     receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "data")
     _seed_qwen36_snapshot_and_receipt(receipts_dir, hf_home)
     items_file = _make_synthetic_public_items(tmp_path / "data", count=10)
