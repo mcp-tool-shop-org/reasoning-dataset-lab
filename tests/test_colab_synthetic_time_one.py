@@ -479,13 +479,13 @@ def test_synthetic_items_time_one_dryrun_records_flag_everywhere(tmp_path: Path)
     assert json.loads((out_plain / "vm_receipt.json").read_text(encoding="utf-8"))["synthetic_items"] is False
     assert json.loads((out_plain / "outcome.draft.json").read_text(encoding="utf-8"))["synthetic_items"] is False
     assert json.loads((out_plain / "time_one_summary.json").read_text(encoding="utf-8"))["synthetic_items"] is False
-    assert json.loads((out_plain / "judge_done" / "mu-judge.json").read_text(encoding="utf-8"))["synthetic_items"] is False
+    assert "synthetic_items" not in json.loads((out_plain / "judge_done" / "mu-judge.json").read_text(encoding="utf-8"))
     plain_rows = [
         json.loads(ln)
         for ln in (out_plain / "rows" / "mu-judge.jsonl").read_text(encoding="utf-8").splitlines()
         if ln.strip()
     ]
-    assert plain_rows and all(r["synthetic_items"] is False for r in plain_rows)
+    assert plain_rows and all("synthetic_items" not in r for r in plain_rows)
 
 
 def test_scorer_and_counted_readers_refuse_synthetic_outputs_at_every_entry_point(

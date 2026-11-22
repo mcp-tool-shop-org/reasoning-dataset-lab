@@ -5927,8 +5927,9 @@ def run_bakeoff_judge(
                 "seconds": round(elapsed, 6),
                 "vram_peak_mib": call_vram_peak,
                 "receipt_sha256": receipt_sha256,
-                "synthetic_items": bool(synthetic_items),
             }
+            if synthetic_items:
+                base_row_obj["synthetic_items"] = True
             if will_halt_error_rate:
                 base_row_obj["run_status"] = "failed_to_run"
                 base_row_obj["partial_counts"] = {
@@ -6085,7 +6086,6 @@ def run_bakeoff_judge(
             # The file this pass wrote: `rows/<judge>.jsonl` (binary) or `rows/<judge>.three_way.jsonl` (3-way).
             "rows_file": f"{ROWS_DIRNAME}/{row_path.name}",
             "pass_mode": pass_mode,
-            "synthetic_items": bool(synthetic_items),
             "bytes": len(row_bytes),
             "items_count": len(shard_item_ids) if eff_shard_spec is not None else len(items),
             "calls_count": calls_so_far,
@@ -6111,6 +6111,8 @@ def run_bakeoff_judge(
             "canary_start_records": canary_start_records,
             **qwen36_summary_extra,
         }
+        if synthetic_items:
+            judge_done_doc["synthetic_items"] = True
         judge_done_tmp.write_text(
             json.dumps(judge_done_doc, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
