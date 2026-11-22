@@ -8590,22 +8590,6 @@ JUDGE_ALIASES.update(
     }
 )
 MODEL_PARAM_BILLIONS_BY_JUDGE.update({D3_FLASH_JUDGE_ID: 8.39, D3_JUDGE_ID: 26.09, NLI_JUDGE_ID: 0.435, QWEN36_JUDGE_ID: 35.0})
-JUDGE_SPECIFIC_NOTES[QWEN36_JUDGE_ID] = {
-    "native_format": (
-        "Qwen/Qwen3.6-35B-A3B chat template (apply_chat_template(..., add_generation_prompt=True, "
-        "enable_thinking=True)) over mu-judge's three_way_contradicted user content (no system prompt)"
-    ),
-    "execution_format": (
-        "offline vLLM (batch 1, language_model_only=True) with general-thinking sampling "
-        "(temperature=1.0, top_p=0.95, top_k=20, min_p=0.0, presence_penalty=1.5, repetition_penalty=1.0)"
-    ),
-    "readout_mapping": (
-        "Answer is text after closing </think>, parsed with the same choice-letter map as mu-judge "
-        "(A->supported, B->unsupported, C->cannot_tell). Multi-token answers are refused as unparseable; "
-        "probabilities come from the top-20 logprobs at the first non-whitespace token after </think>."
-    ),
-    "polarity_map": POLARITY_MAP_BY_JUDGE[QWEN36_JUDGE_ID],
-}
 
 
 # --- the d3-family remote-code gate ---------------------------------------------------------------------------------
