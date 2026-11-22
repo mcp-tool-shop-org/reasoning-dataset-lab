@@ -265,7 +265,6 @@ def _infer_domain_from_key_obj(obj: Mapping[str, Any]) -> str:
 def verify_outputs_closed(judge_output_dir: Path) -> dict[str, Any]:
     """Verify that `outputs-closed.json` exists and every output file's sha256 matches it byte-for-byte."""
     resolved_dir = judge_output_dir.resolve()
-    _refuse_if_synthetic_run_dir(resolved_dir)
     closed_path = resolved_dir / OUTPUTS_CLOSED_FILENAME
     if not closed_path.is_file():
         raise refused_error(
@@ -341,6 +340,7 @@ def verify_outputs_closed(judge_output_dir: Path) -> dict[str, Any]:
                 "Scoring refuses to run when any output byte has changed after outputs-closed.",
             )
 
+    _refuse_if_synthetic_run_dir(resolved_dir)
     return dict(closed_doc)
 
 
