@@ -450,7 +450,7 @@
           "path": "scripts/colab/generate_weights_table.py"
         },
         {
-          "hash": "030640e588b54dcfd1d405f2e8b858127ec6bbde94b3aab61b0eaab6d5fb0a1c",
+          "hash": "95dfef483c54b08958e402cbf485308767b6e377a1053fe249bb059b05d30253",
           "path": "scripts/colab/launch_judges.sh"
         },
         {
@@ -773,12 +773,12 @@
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1208
+              "line": 1213
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1221
+              "line": 1220
             },
             {
               "in": "merge_shards",
@@ -1110,7 +1110,7 @@
               "line": 2509
             }
           ],
-          "hash": "23b5b0c48881e89ea6f22a8ee49542cf95765a6607e05fd33069fa0bfe3ccd59",
+          "hash": "c3c6466f57a44a2b0d46a7302c0cb9e5301ae44c6c0229bd785231d8769f55fb",
           "importsFiles": [
             "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py",
             "src/reasoning_dataset_lab/pilot_b/run_records.py",
@@ -23631,7 +23631,7 @@
   ],
   "engine": "1.26.0",
   "generatedFrom": {
-    "commit": "d486adedfd286367c97faca3133f5745e68d5139",
+    "commit": "c13f084b2ba361a5d98e1571d7c047540bfffdb5",
     "tracked": 210
   },
   "landings": [

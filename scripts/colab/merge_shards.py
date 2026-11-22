@@ -1202,14 +1202,6 @@ def merge_shards(
         if isinstance(replacement_shard_dirs, Mapping)
         else tuple(Path(p) for p in replacement_shard_dirs)
     )
-    for sdir in (*shard_dirs, *raw_replacement_dirs):
-        synth_reason = find_synthetic_in_run_dir(sdir)
-        if synth_reason is not None:
-            raise MergeRefusalError(
-                "MERGE_SYNTHETIC_ITEMS",
-                f"shard directory {sdir} contains declared synthetic items or outputs ({synth_reason}); "
-                "synthetic --time-one windows are for timing only and can never enter shard merge.",
-            )
     rig_real_mode = not bool(allow_unpinned_stub)
     if rig_real_mode:
         guard_no_test_hooks_in_counted_mode(any_real=True, allow_unverified=bool(allow_unverified))
@@ -1222,6 +1214,14 @@ def merge_shards(
             "MERGE_MANIFEST_PIN_REQUIRED",
             "real-mode merge requires --expected-manifest-sha256 (<64-hex> pre-registered rig manifest body sha256)",
         )
+    for sdir in (*shard_dirs, *raw_replacement_dirs):
+        synth_reason = find_synthetic_in_run_dir(sdir)
+        if synth_reason is not None:
+            raise MergeRefusalError(
+                "MERGE_SYNTHETIC_ITEMS",
+                f"shard directory {sdir} contains declared synthetic items or outputs ({synth_reason}); "
+                "synthetic --time-one windows are for timing only and can never enter shard merge.",
+            )
 
     manifest_doc = _load_json_dict(
         manifest_path, "MERGE_BIJECTION_FAILED", "shard_manifest.json"

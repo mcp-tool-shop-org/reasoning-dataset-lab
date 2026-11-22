@@ -920,7 +920,7 @@ compute_cleanup_bounds
 # before any colab call (--dry and live), and before the judge/gatekeeper preflight below, as the part check itself
 # refuses in real modes.
 require_part_dir_for_mode() {
-  if [[ "$SYNTHETIC_ITEMS_FLAG" -eq 1 ]] && [[ "$MODE" == "time-one" ]]; then
+  if [[ "${SYNTHETIC_ITEMS_FLAG:-0}" -eq 1 ]] && [[ "$MODE" == "time-one" ]]; then
     return 0
   fi
   if [[ "$MODE" == "time-one" || "$MODE" == "counted" ]] && [[ "${VM_DRYRUN:-0}" != "1" ]] && [[ -z "$PART_DIR" ]]; then
@@ -1264,7 +1264,7 @@ effective_part_dir() {
 }
 
 check_part_manifest_beside_items() {
-  "$PYTHON_BIN" - "$REPO_ROOT" "$1" "$MODE" "${VM_DRYRUN:-0}" "$(effective_part_dir "$1")" "$PASS_MODE" "$SYNTHETIC_ITEMS_FLAG" <<'PY'
+  "$PYTHON_BIN" - "$REPO_ROOT" "$1" "$MODE" "${VM_DRYRUN:-0}" "$(effective_part_dir "$1")" "$PASS_MODE" "${SYNTHETIC_ITEMS_FLAG:-0}" <<'PY'
 import sys
 from pathlib import Path
 
@@ -1414,7 +1414,7 @@ build_exec_env_args() {
   if [[ "${PASS_MODE:-binary}" != "binary" ]]; then
     EXEC_ENV_ARGS+=(--env "RDLAB_PASS_MODE=$PASS_MODE"); if [[ "$PASS_MODE" == "per_judge" ]]; then EXEC_ENV_ARGS+=(--env "RDLAB_JUDGE_PASS_MODES=${RDLAB_JUDGE_PASS_MODES:-}"); fi
   fi
-  if [[ "$SYNTHETIC_ITEMS_FLAG" -eq 1 ]]; then
+  if [[ "${SYNTHETIC_ITEMS_FLAG:-0}" -eq 1 ]]; then
     EXEC_ENV_ARGS+=(--env "RDLAB_SYNTHETIC_ITEMS=1")
   fi
   if [[ -n "${RDLAB_FIRST_LOAD_JUDGE_ID+x}" ]] && [[ -n "${RDLAB_FIRST_LOAD_JUDGE_ID}" ]]; then
@@ -2419,7 +2419,7 @@ write_outcome_draft() {
   RDLAB_PRICING_RATE="$PRICING_RATE_UNITS_PER_HOUR" \
   RDLAB_OUTCOME_LOCK_CHECK_PHASE="$LOCK_CHECK_PHASE" \
   RDLAB_OUTCOME_PASS_MODE="${PASS_MODE:-binary}" \
-  RDLAB_OUTCOME_SYNTHETIC_ITEMS="$SYNTHETIC_ITEMS_FLAG" \
+  RDLAB_OUTCOME_SYNTHETIC_ITEMS="${SYNTHETIC_ITEMS_FLAG:-0}" \
   RDLAB_OUTCOME_KIT_HEAD_SHA="${KIT_HEAD_SHA:-}" \
   RDLAB_OUTCOME_KIT_TREE_CLEAN="${KIT_TREE_CLEAN:-}" \
   RDLAB_OUTCOME_KIT_VM_JUDGES_PY_SHA256="${KIT_VM_JUDGES_PY_SHA256:-}" \
