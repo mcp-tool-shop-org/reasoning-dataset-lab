@@ -2247,3 +2247,330 @@ def test_launcher_seed_variant_forwarding_omission_and_preflight(tmp_path: Path)
     assert {r["call_seed"] for r in stub_rows} == {
         bakeoff_judge.derive_qwen36_call_seed(r["item_id"], r["order"], seed_variant="repro_01") for r in stub_rows
     }
+
+
+def test_qwen36_resume_checks_anchor_rows_seed_variant(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _clear_forbidden_hooks(monkeypatch)
+    monkeypatch.setenv(bakeoff_judge.QWEN36_MAX_NEW_TOKENS_ENV_VAR, "2048")
+    items = _synth_items(2)
+    items_path = _write_items_jsonl(tmp_path / "items.jsonl", items)
+    row_rel = Path("rows") / f"{QWEN36_ID}.{CONTRA}.jsonl"
+    anc_rel = Path("anchor_rows") / f"{QWEN36_ID}.{CONTRA}.jsonl"
+
+    base_row = {
+        "judge_id": QWEN36_ID,
+        "item_id": items[0].item_id,
+        "order": "AB",
+        "pass_mode": CONTRA,
+        "state": "parsed",
+        "raw_verdict": "supported",
+        "argmax_verdict": "supported",
+        "choice_probabilities": {"supported": 0.8, "unsupported": 0.1, "cannot_tell": 0.1},
+        "seconds": 0.01,
+        "vram_peak_mib": 0,
+    }
+
+    # 1) Main rows match ("repro1"), anchor rows carry another variant (and legacy/absent/None/blank -> "none") -> refuses with 0 model calls.
+    mismatch_cases = (
+        ("repro1", {"seed_variant": "repro2"}),
+        ("repro1", {}),
+        ("repro1", {"seed_variant": None}),
+        ("repro1", {"seed_variant": "   "}),
+        (None, {"seed_variant": "repro1"}),
+    )
+    for idx, (cur_variant, anc_override) in enumerate(mismatch_cases):
+        if cur_variant is None:
+            monkeypatch.delenv(bakeoff_judge.QWEN36_SEED_VARIANT_ENV_VAR, raising=False)
+            main_variant = "none"
+        else:
+            monkeypatch.setenv(bakeoff_judge.QWEN36_SEED_VARIANT_ENV_VAR, cur_variant)
+            main_variant = cur_variant
+        out_dir = tmp_path / f"out_anc_mm_{idx}"
+        (out_dir / "rows").mkdir(parents=True)
+        (out_dir / "anchor_rows").mkdir(parents=True)
+        (out_dir / row_rel).write_text(
+            json.dumps({**base_row, "seed_variant": main_variant}) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        anc_doc = dict(base_row)
+        anc_doc.update(anc_override)
+        (out_dir / anc_rel).write_text(
+            json.dumps(anc_doc) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        env_mm = _setup_fake_vllm_env(
+            tmp_path / f"vllm_mm_{idx}",
+            monkeypatch,
+            responses=[_fake_vllm_completion("A")],
+        )
+        with pytest.raises(RdlabError) as exc_anc:
+            run_bakeoff_judge(
+                part_dir=items_path,
+                output_dir=out_dir,
+                judge=QWEN36_ID,
+                pass_mode=CONTRA,
+                fake_transport=False,
+                receipts_dir=env_mm["receipts_dir"],
+                hf_home=env_mm["hf_home"],
+                device="cpu",
+                window_mode="time-one",
+                shard_spec="1/1",
+                run_canary=False,
+            )
+        assert exc_anc.value.code == "QWEN36_RESUME_SEED_VARIANT_MISMATCH"
+        assert "anchor_rows/" in exc_anc.value.message
+        assert env_mm["generate_calls"] == 0
+        assert env_mm["llm_inits"] == []
+
+    # 2) Same seed_variant on both anchor_rows and rows proceeds cleanly on resume.
+    monkeypatch.setenv(bakeoff_judge.QWEN36_SEED_VARIANT_ENV_VAR, "repro1")
+    out_ok = tmp_path / "out_anc_ok"
+    env_ok_1 = _setup_fake_vllm_env(
+        tmp_path / "vllm_ok_1",
+        monkeypatch,
+        responses=[_fake_vllm_completion("A"), _fake_vllm_completion("B")],
+    )
+    res_1 = run_bakeoff_judge(
+        part_dir=items_path,
+        output_dir=out_ok,
+        judge=QWEN36_ID,
+        pass_mode=CONTRA,
+        fake_transport=False,
+        receipts_dir=env_ok_1["receipts_dir"],
+        hf_home=env_ok_1["hf_home"],
+        device="cpu",
+        window_mode="time-one",
+        shard_spec="1/1",
+        active_item_ids=[items[0].item_id],
+        run_canary=False,
+    )
+    assert res_1["status"] == "ok" and res_1["calls_count"] == 2
+    assert (out_ok / anc_rel).is_file()
+
+    env_ok_2 = _setup_fake_vllm_env(
+        tmp_path / "vllm_ok_2",
+        monkeypatch,
+        responses=[_fake_vllm_completion("A"), _fake_vllm_completion("B")],
+    )
+    res_2 = run_bakeoff_judge(
+        part_dir=items_path,
+        output_dir=out_ok,
+        judge=QWEN36_ID,
+        pass_mode=CONTRA,
+        fake_transport=False,
+        receipts_dir=env_ok_2["receipts_dir"],
+        hf_home=env_ok_2["hf_home"],
+        device="cpu",
+        window_mode="time-one",
+        shard_spec="1/1",
+        run_canary=False,
+    )
+    assert res_2["status"] == "ok"
+    assert res_2["calls_count"] == 4
+    assert res_2["seed_variant"] == "repro1"
+    anc_rows = [json.loads(ln) for ln in (out_ok / anc_rel).read_text(encoding="utf-8").splitlines() if ln.strip()]
+    assert len(anc_rows) == 4
+    assert {r["seed_variant"] for r in anc_rows} == {"repro1"}
+
+    # 3) Main-rows mismatch still refuses when anchor_rows match, with zero model calls.
+    out_main_mm = tmp_path / "out_main_mm"
+    (out_main_mm / "rows").mkdir(parents=True)
+    (out_main_mm / "anchor_rows").mkdir(parents=True)
+    (out_main_mm / row_rel).write_text(
+        json.dumps({**base_row, "seed_variant": "repro2"}) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    (out_main_mm / anc_rel).write_text(
+        json.dumps({**base_row, "seed_variant": "repro1"}) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    env_main_mm = _setup_fake_vllm_env(
+        tmp_path / "vllm_main_mm",
+        monkeypatch,
+        responses=[_fake_vllm_completion("A")],
+    )
+    with pytest.raises(RdlabError) as exc_main:
+        run_bakeoff_judge(
+            part_dir=items_path,
+            output_dir=out_main_mm,
+            judge=QWEN36_ID,
+            pass_mode=CONTRA,
+            fake_transport=False,
+            receipts_dir=env_main_mm["receipts_dir"],
+            hf_home=env_main_mm["hf_home"],
+            device="cpu",
+            window_mode="time-one",
+            shard_spec="1/1",
+            run_canary=False,
+        )
+    assert exc_main.value.code == "QWEN36_RESUME_SEED_VARIANT_MISMATCH"
+    assert "rows/" in exc_main.value.message
+    assert env_main_mm["generate_calls"] == 0
+    assert env_main_mm["llm_inits"] == []
+
+
+def test_qwen36_unsharded_fresh_run_unchanged_against_cb2863aa(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Compare unsharded fresh run outputs against literal digests and static fields recorded at cb2863aa."""
+    _clear_forbidden_hooks(monkeypatch)
+    monkeypatch.delenv(bakeoff_judge.QWEN36_SEED_VARIANT_ENV_VAR, raising=False)
+    monkeypatch.setenv(bakeoff_judge.QWEN36_MAX_NEW_TOKENS_ENV_VAR, "2048")
+
+    items = [
+        JudgeInputItem(
+            item_id=f"synth-135-{i:04d}",
+            material=f"1. Fact A{i}.\n2. Fact B{i}.",
+            claim=f"Claim {i} holds.",
+        )
+        for i in range(3)
+    ]
+    items_path = _write_items_jsonl(tmp_path / "items.jsonl", items)
+    out_dir = tmp_path / "out"
+    res = run_bakeoff_judge(
+        part_dir=items_path,
+        output_dir=out_dir,
+        judge=QWEN36_ID,
+        pass_mode=CONTRA,
+        fake_transport=True,
+        schedule_seed=42,
+        shard_spec="1/1",
+        window_mode="stub",
+        run_canary=False,
+    )
+
+    row_file = out_dir / "rows" / f"{QWEN36_ID}.{CONTRA}.jsonl"
+    anchor_file = out_dir / "anchor_rows" / f"{QWEN36_ID}.{CONTRA}.jsonl"
+    done_file = out_dir / "judge_done" / f"{QWEN36_ID}.json"
+    assert row_file.is_file() and anchor_file.is_file()
+    row_bytes = row_file.read_bytes()
+    assert anchor_file.read_bytes() == row_bytes
+
+    rows = [json.loads(ln) for ln in row_bytes.decode("utf-8").splitlines() if ln.strip()]
+    expected_norm_row_shas = [
+        "de7dcf4626223a5828a9e8e31c8baa0ca9f3e433b03f9d4c93588492591253c9",
+        "112cf0cf7eea52fc6cdd864ef85bc31c3b0c95dd909354bf69cbe09f93f6a313",
+        "f24269e59a4198675064e43543af4ee8e18d6dd33486a95025d026e4ba34a2ad",
+        "6e0a5142effbd99972fa1f088673bd56a7728daae10f2beb5dc4941770fc8b6a",
+        "1fd11fc08383bd62b9b98b146da25b5b1ff7b730f00745567dec0a3d5ed2d0d7",
+        "c3692b55c33429e1c5eaa5fcdc5ea225c82f1b845908c27abb0a91894b895f1a",
+    ]
+    actual_norm_shas: list[str] = []
+    actual_raw_shas: list[str] = []
+    for r in rows:
+        body = {k: v for k, v in r.items() if k != "row_sha256"}
+        body_canon = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        raw_sha = hashlib.sha256(body_canon.encode("utf-8")).hexdigest()
+        assert r["row_sha256"] == raw_sha
+        actual_raw_shas.append(raw_sha)
+        pins = dict(body["library_pins"])
+        for env_key in ("python", "deterministic_algorithms", "sdpa_backend"):
+            pins[env_key] = "<env>"
+        body["library_pins"] = pins
+        norm_canon = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        actual_norm_shas.append(hashlib.sha256(norm_canon.encode("utf-8")).hexdigest())
+    assert actual_norm_shas == expected_norm_row_shas
+
+    rows_sha = hashlib.sha256(row_bytes).hexdigest()
+    done_doc = json.loads(done_file.read_text(encoding="utf-8"))
+    assert sorted(done_doc.keys()) == [
+        "aborted_count",
+        "bytes",
+        "call_seconds_quantiles",
+        "calls_count",
+        "canary",
+        "canary_start_records",
+        "device",
+        "discarded_incomplete_item_ids",
+        "dtype",
+        "elapsed_seconds",
+        "fill_uninitialized_memory",
+        "items_count",
+        "judge_id",
+        "length_stop_count",
+        "load_wall_seconds",
+        "load_wall_seconds_history",
+        "max_new_tokens",
+        "parsed_count",
+        "pass_mode",
+        "probs_missing_count",
+        "row_count",
+        "row_sha256s",
+        "rows_file",
+        "seed_variant",
+        "session_fingerprint_sha256",
+        "sha256",
+        "shard_manifest_sha256",
+        "shard_spec",
+        "thinking_length_quantiles",
+        "total_seconds",
+        "unparseable_count",
+        "verdict_disagreement_count",
+        "verified_recovery",
+        "vram_peak_mib",
+    ]
+    assert done_doc["bytes"] == len(row_bytes)
+    assert done_doc["sha256"] == rows_sha
+    assert done_doc["row_sha256s"] == actual_raw_shas
+    assert done_doc["seed_variant"] == "none"
+    assert done_doc["shard_manifest_sha256"] == "8cf89d07438abfed3932fefa7e59e9c5a87e7f43c6bd1e095f6e63f27517b1e2"
+
+    assert sorted(res.keys()) == [
+        "aborted_count",
+        "anchor_item_ids",
+        "attn_implementation",
+        "call_seconds_quantiles",
+        "calls_count",
+        "canary",
+        "cublas_workspace_config",
+        "deterministic_algorithms",
+        "device",
+        "discarded_incomplete_item_ids",
+        "dtype",
+        "elapsed_seconds",
+        "fill_uninitialized_memory",
+        "generations_path",
+        "items_count",
+        "judge_done_path",
+        "judge_id",
+        "judge_label",
+        "length_stop_count",
+        "load_wall_seconds",
+        "load_wall_seconds_history",
+        "max_new_tokens",
+        "model_digest",
+        "parsed_count",
+        "pass_mode",
+        "probs_missing_count",
+        "repo_id",
+        "revision",
+        "row_count",
+        "row_sha256s",
+        "rows_path",
+        "rows_sha256",
+        "schedule_seed",
+        "schedule_sha256",
+        "sdpa_backend",
+        "seed_variant",
+        "shard_item_ids",
+        "shard_manifest_sha256",
+        "shard_spec",
+        "status",
+        "thinking_length_quantiles",
+        "total_seconds",
+        "unparseable_count",
+        "verdict_disagreement_count",
+        "verified_recovery",
+        "vram_peak_mib",
+    ]
+    assert res["rows_sha256"] == rows_sha
+    assert res["row_sha256s"] == actual_raw_shas
+    assert res["seed_variant"] == "none"
+    assert res["schedule_sha256"] == "3a7b496e8cd0c354011f77bb9ada0688981b2de9604128f94bf1108cd80f9099"
+    assert res["shard_manifest_sha256"] == "8cf89d07438abfed3932fefa7e59e9c5a87e7f43c6bd1e095f6e63f27517b1e2"

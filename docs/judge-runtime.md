@@ -65,8 +65,8 @@ subprocess (`<venv>/bin/python -m reasoning_dataset_lab.pilot_b.bakeoff_judge`) 
   `prompt_token_count`, `raw_verdict`, and `argmax_verdict` (an argmax tie goes to the first label in label order:
   `supported`, `unsupported`, `cannot_tell`) plus `unparseable_answer_text` on unparseable rows, vLLM `abort` maps
   to `state="aborted"`, resume recomputes missing `argmax_verdict` from `choice_probabilities` or `top_20_logprobs` or
-  refuses `QWEN36_RESUME_ARGMAX_VERDICT_UNAVAILABLE` and refuses `QWEN36_RESUME_SEED_VARIANT_MISMATCH` if existing rows'
-  `seed_variant` (defaulting legacy/absent/`None` to `"none"`) differs from the current run's `seed_variant`,
+  refuses `QWEN36_RESUME_ARGMAX_VERDICT_UNAVAILABLE` and refuses `QWEN36_RESUME_SEED_VARIANT_MISMATCH` if existing rows in
+  `rows/` or `anchor_rows/` carry a `seed_variant` (defaulting legacy/absent/`None` to `"none"`) differing from the current run's `seed_variant`,
   `child_end["counts_by_state"]` records all five states
   (`parsed`, `unparseable`, `length_stop`, `aborted`, `failed_to_run`) summing to total calls, `aborted` counts in
   the scorer `error_rate` and invalid-rate bar (`THREE_WAY_MAX_INVALID_RATE`), and rows (`seed_variant` beside
