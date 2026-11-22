@@ -439,14 +439,16 @@ def test_vram_ceiling_is_per_judge_and_only_d3_has_its_own() -> None:
     mini_w = math.ceil(shards(_receipt_doc("vllm-sr/d3-mini")) / 2**20)
     assert (d3_w, mini_w) == (49_759, 8_661)
     assert bakeoff_judge.D3_VRAM_HALT_MIB == math.ceil((d3_w + (default - mini_w)) / 1000) * 1000
+    own_ceiling = {D3: 68_000, bakeoff_judge.QWEN36_JUDGE_ID: bakeoff_judge.QWEN36_VRAM_HALT_MIB}
+    assert own_ceiling[bakeoff_judge.QWEN36_JUDGE_ID] == 92_000 < 97_250
     for jid, spec in JUDGE_SPECS.items():
-        if jid != D3:
+        if jid not in own_ceiling:
             assert spec.vram_halt_mib == default, jid
         for window in (0, 10_000, 20_000, default, 30_000, 90_000):
             got = bakeoff_judge.resolve_judge_vram_halt_mib(spec, window)
-            # d3 always runs under its own ceiling: a window-wide value (RDLAB_VRAM_HALT_MIB) applies only to judges
-            # with none of their own (#107); 0 (stub) stays off for every judge.
-            want = 0 if window == 0 else (68_000 if jid == D3 else window)
+            # Judges with their own ceiling always run under it: a window-wide value (RDLAB_VRAM_HALT_MIB)
+            # applies only to judges with none of their own (#107); 0 (stub) stays off for every judge.
+            want = 0 if window == 0 else own_ceiling.get(jid, window)
             assert got == want, (jid, window)
 
 

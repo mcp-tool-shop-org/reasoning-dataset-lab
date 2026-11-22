@@ -2947,8 +2947,6 @@ class DeterministicFakeJudgeTransport:
         self.force_flip_items = frozenset(force_Flip_items)
         self.expected_revision_override = expected_revision_override
         self.torch_dtype = str(torch_dtype)
-        self._qwen36_stub_role_by_key: dict[tuple[str, str], str] = {}
-        self._qwen36_non_canary_count: int = 0
         try:
             self._canary_item_ids: frozenset[str] = frozenset(
                 str(iid) for iid in load_canary_config(DEFAULT_CANARY_CONFIG_PATH).get("canary_item_ids", [])
@@ -2973,18 +2971,14 @@ class DeterministicFakeJudgeTransport:
         encode_canonical_prompt_token_ids(spec.judge_id, prompt.prompt_text)
 
     def _resolve_qwen36_stub_role(self, item_id: str, order: str) -> str:
-        if self.force_length_stop_items or self.force_unparseable_items:
+        """Stateless per-(item_id, order) stub role so multi-shard anchors stay bit-identical across shards."""
+        if self.force_length_stop_items or self.force_unparseable_items or item_id in self._canary_item_ids:
             return "normal"
-        key = (item_id, order)
-        if key in self._qwen36_stub_role_by_key:
-            return self._qwen36_stub_role_by_key[key]
-        if item_id in self._canary_item_ids:
-            return "normal"
-        idx = self._qwen36_non_canary_count
-        self._qwen36_non_canary_count += 1
-        role = "length_stop" if idx == 1 else ("unparseable" if idx == 2 else "normal")
-        self._qwen36_stub_role_by_key[key] = role
-        return role
+        if (item_id, order) in {("item-0001", "BA"), ("synth-q36-0001", "BA")}:
+            return "length_stop"
+        if (item_id, order) in {("item-0002", "AB"), ("synth-q36-0002", "AB")}:
+            return "unparseable"
+        return "normal"
 
     def generate(self, spec: JudgeSpec, prompt: AssembledPrompt, *, seed: int) -> JudgeTransportResponse:
         digest = f"fake-sha256:{spec.revision}"

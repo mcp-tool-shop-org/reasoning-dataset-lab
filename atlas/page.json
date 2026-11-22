@@ -33,55 +33,24 @@
   ],
   "changes": {
     "fileCounts": {
-      "added": 3,
-      "changed": 12,
+      "added": 0,
+      "changed": 4,
       "moved": 0,
-      "parts": 5,
+      "parts": 3,
       "removed": 0
     },
     "items": [
       {
-        "kind": "landing",
-        "sentence": ".gitattributes is now also read by scripts/colab/receipts/Qwen__Qwen3.6-35B-A3B.sha256.json.",
-        "subjects": [
-          ".gitattributes",
-          "scripts/colab/receipts/Qwen__Qwen3.6-35B-A3B.sha256.json"
-        ]
-      },
-      {
-        "kind": "landing",
-        "sentence": "LICENSE is now also read by scripts/colab/receipts/Qwen__Qwen3.6-35B-A3B.sha256.json and tests/test_colab_judge_qwen36.py.",
-        "subjects": [
-          "LICENSE",
-          "scripts/colab/receipts/Qwen__Qwen3.6-35B-A3B.sha256.json",
-          "tests/test_colab_judge_qwen36.py"
-        ]
-      },
-      {
-        "kind": "landing",
-        "sentence": "README.md is now also read by scripts/colab/receipts/Qwen__Qwen3.6-35B-A3B.sha256.json and tests/test_colab_judge_qwen36.py.",
-        "subjects": [
-          "README.md",
-          "scripts/colab/receipts/Qwen__Qwen3.6-35B-A3B.sha256.json",
-          "tests/test_colab_judge_qwen36.py"
-        ]
-      },
-      {
-        "kind": "landing",
-        "sentence": "And 1 more new writer or reader of a place.",
-        "subjects": []
-      },
-      {
         "kind": "counts",
-        "sentence": "3 files added and 12 changed content, across 5 parts.",
+        "sentence": "Nothing structural changed since 2026-11-22; 4 files changed content.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "7308e95a753c62aec3dddef1f4d8badaf80ec2f1",
-      "generatedAt": "2026-11-21T20:50:45.732Z"
+      "commit": "089179b1cc23409b851e42445f6bf643816439ad",
+      "generatedAt": "2026-11-22T04:54:50.406Z"
     },
-    "unchanged": false
+    "unchanged": true
   },
   "changesTogether": [
     {
@@ -132,7 +101,7 @@
     {
       "a": "scripts/colab/vm_judges.py",
       "b": "tests/test_colab_judge_launcher.py",
-      "either": 60,
+      "either": 61,
       "partLabels": [
         "scripts",
         "tests"
@@ -142,7 +111,7 @@
         "tests"
       ],
       "relation": "b-imports-a",
-      "shared": 38
+      "shared": 39
     },
     {
       "a": "src/reasoning_dataset_lab/pilot_b/rendering.py",
@@ -166,7 +135,7 @@
     "Window: 180 days; a pair counts from 3 shared commits, since 14 source files reach 10 revisions; the floor rises to 10 when 25 do."
   ],
   "changesTogetherWithTests": 1,
-  "commit": "089179b1cc23409b851e42445f6bf643816439ad",
+  "commit": "d950cd1a97355f62783bb0b98b876216be3ea894",
   "defaultBranch": "main",
   "derived": "9 parts, mostly Python (99 files), shell (3), CSS (2), JavaScript (2), TypeScript (2) and Astro (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.",
   "doors": [
@@ -325,7 +294,7 @@
       ]
     }
   ],
-  "generatedAt": "2026-11-22T04:54:50.406Z",
+  "generatedAt": "2026-11-22T05:13:53.855Z",
   "limits": [
     "8 import sites name a declared dependency that shares its name with a local module (role_set); they are read as the dependency, which is not in this repository.",
     "20 imports could not be resolved: `scripts/colab/vm_judges.py` imports a path built at run time; `scripts/colab/vm_judges.py` imports `device`, which is no module on its import path and no declared dependency, twice; `tests/test_bakeoff_judge_d3_transport.py` imports a path built at run time; and 16 more.",

@@ -1,6 +1,6 @@
 # reasoning-dataset-lab: how it works
 
-Mapped at 2026-11-22 from commit 089179b by Atlas 1.26.0.
+Mapped at 2026-11-22 from commit d950cd1 by Atlas 1.26.0.
 
 ## What this is
 
@@ -8,13 +8,9 @@ reasoning-dataset-lab plans a dataset as a pre-registered map, builds items whos
 
 9 parts, mostly Python (99 files), shell (3), CSS (2), JavaScript (2), TypeScript (2) and Astro (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.
 
-## What changed since 2026-11-21 (7308e95)
+## What changed since 2026-11-22 (089179b)
 
-- .gitattributes is now also read by scripts/colab/receipts/Qwen__Qwen3.6-35B-A3B.sha256.json.
-- LICENSE is now also read by scripts/colab/receipts/Qwen__Qwen3.6-35B-A3B.sha256.json and tests/test_colab_judge_qwen36.py.
-- README.md is now also read by scripts/colab/receipts/Qwen__Qwen3.6-35B-A3B.sha256.json and tests/test_colab_judge_qwen36.py.
-- And 1 more new writer or reader of a place.
-- 3 files added and 12 changed content, across 5 parts.
+Nothing structural changed since 2026-11-22; 4 files changed content.
 
 ## What comes in
 
@@ -53,7 +49,7 @@ reasoning-dataset-lab plans a dataset as a pre-registered map, builds items whos
 - **src/reasoning_dataset_lab/pilot_b/value_certification.py** and **tests/test_pilot_b_value_certification.py** changed together in 8 of 8 commits, and the tests part imports the src part.
 - **src/reasoning_dataset_lab/pilot_b/models_and_build.py** and **tests/test_pilot_b_ollama_adapters.py** changed together in 10 of 12 commits, and the tests part imports the src part.
 - **src/reasoning_dataset_lab/pilot_b/fact_tables.py** and **tests/test_pilot_b_variety.py** changed together in 5 of 7 commits, and the tests part imports the src part.
-- **scripts/colab/vm_judges.py** and **tests/test_colab_judge_launcher.py** changed together in 38 of 60 commits, and the tests part imports the scripts part.
+- **scripts/colab/vm_judges.py** and **tests/test_colab_judge_launcher.py** changed together in 39 of 61 commits, and the tests part imports the scripts part.
 - **src/reasoning_dataset_lab/pilot_b/rendering.py** and **tests/test_pilot_b_part_b.py** changed together in 5 of 9 commits, and the tests part imports the src part.
 
 1 file changed together with its own test, as expected.

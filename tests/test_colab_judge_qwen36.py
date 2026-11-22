@@ -543,7 +543,7 @@ def test_launcher_stub_end_to_end_qwen36(tmp_path: Path) -> None:
         hf_home=hf_home,
         items_file=items_file,
     )
-    exports += f"export RDLAB_ONLY_JUDGES={QWEN36_ID}; export RDLAB_PASS_MODE={CONTRA}; "
+    exports += f"export RDLAB_ONLY_JUDGES={QWEN36_ID}; export RDLAB_PASS_MODE={CONTRA}; export RDLAB_LIMIT_ITEMS=10; export FAKE_COLAB_DISK_FREE_BYTES=220000000000; "
     proc = _run_launcher(exports, f"--stub --out-dir '{_to_wsl_path(out_dir)}' --run-id stub-q36-01")
     assert proc.returncode == 0, f"stdout={proc.stdout}\nstderr={proc.stderr}"
 

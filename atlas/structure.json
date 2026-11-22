@@ -337,7 +337,7 @@
           "path": "scripts/colab/README.md"
         },
         {
-          "hash": "886656ab8978d585025332faa36d686d5a72d4afcb06425646afa82c59374773",
+          "hash": "0d93f6ea557ecbbc0ee5f0ee1e58124513b3a149667caf196303a6b16e437f24",
           "path": "scripts/colab/REAL_SERVICE_ASSUMPTIONS.md"
         },
         {
@@ -7008,137 +7008,142 @@
             {
               "in": "__init__",
               "kind": "except",
-              "line": 2956
+              "line": 2954
             },
             {
               "in": "verify_ready",
               "kind": "raise",
-              "line": 2963
+              "line": 2961
             },
             {
               "in": "_resolve_snapshot_dir",
               "kind": "raise",
-              "line": 3257
+              "line": 3251
             },
             {
               "in": "_resolve_snapshot_dir",
               "kind": "raise",
-              "line": 3272
+              "line": 3266
             },
             {
               "in": "verify_snapshot_against_receipt",
               "kind": "raise",
-              "line": 3289
+              "line": 3283
             },
             {
               "in": "verify_snapshot_against_receipt",
               "kind": "except",
-              "line": 3296
+              "line": 3290
             },
             {
               "in": "verify_snapshot_against_receipt",
               "kind": "raise",
-              "line": 3297
+              "line": 3291
             },
             {
               "in": "verify_snapshot_against_receipt",
               "kind": "raise",
-              "line": 3304
+              "line": 3298
             },
             {
               "in": "verify_snapshot_against_receipt",
               "kind": "raise",
-              "line": 3313
+              "line": 3307
             },
             {
               "in": "verify_snapshot_against_receipt",
               "kind": "raise",
-              "line": 3333
+              "line": 3327
             },
             {
               "in": "verify_snapshot_against_receipt",
               "kind": "raise",
-              "line": 3347
+              "line": 3341
             },
             {
               "in": "verify_snapshot_against_receipt",
               "kind": "raise",
-              "line": 3357
+              "line": 3351
             },
             {
               "in": "verify_snapshot_against_receipt",
               "kind": "raise",
-              "line": 3370
+              "line": 3364
             },
             {
               "in": "verify_snapshot_against_receipt",
               "kind": "raise",
-              "line": 3390
+              "line": 3384
             },
             {
               "in": "__init__",
               "kind": "except",
-              "line": 3452
+              "line": 3446
             },
             {
               "in": "__init__",
               "kind": "raise",
-              "line": 3453
+              "line": 3447
             },
             {
               "in": "__init__",
               "kind": "raise",
-              "line": 3460
+              "line": 3454
             },
             {
               "in": "verify_ready",
               "kind": "raise",
-              "line": 3481
+              "line": 3475
             },
             {
               "in": "_ensure_loaded",
               "kind": "except",
-              "line": 3506
+              "line": 3500
             },
             {
               "in": "_ensure_loaded",
               "kind": "raise",
-              "line": 3507
+              "line": 3501
             },
             {
               "in": "generate",
               "kind": "except",
-              "line": 3632
+              "line": 3626
             },
             {
               "in": "generate",
               "kind": "raise",
-              "line": 3634
+              "line": 3628
             },
             {
               "in": "check_d3_mini_remote_code_gate",
               "kind": "raise",
-              "line": 3775
+              "line": 3769
             },
             {
               "in": "check_d3_mini_remote_code_gate",
               "kind": "raise",
-              "line": 3783
+              "line": 3777
             },
             {
               "in": "check_d3_mini_remote_code_gate",
               "kind": "raise",
-              "line": 3790
+              "line": 3784
             },
             {
               "in": "ensure_offline_env",
               "kind": "raise",
-              "line": 3806
+              "line": 3800
             },
             {
               "in": "ensure_sync_weight_loading",
               "kind": "raise",
-              "line": 3834
+              "line": 3828
+            },
+            {
+              "in": "_walk_d3_input",
+              "kind": "raise",
+              "line": 3840
             },
             {
               "in": "_walk_d3_input",
@@ -7148,17 +7153,17 @@
             {
               "in": "_walk_d3_input",
               "kind": "raise",
-              "line": 3852
+              "line": 3859
             },
             {
               "in": "_walk_d3_input",
               "kind": "raise",
-              "line": 3865
+              "line": 3867
             },
             {
-              "in": "_walk_d3_input",
+              "in": "check_d3_text_only_inputs",
               "kind": "raise",
-              "line": 3873
+              "line": 3879
             },
             {
               "in": "check_d3_text_only_inputs",
@@ -7168,67 +7173,67 @@
             {
               "in": "check_d3_text_only_inputs",
               "kind": "raise",
-              "line": 3891
-            },
-            {
-              "in": "check_d3_text_only_inputs",
-              "kind": "raise",
-              "line": 3898
+              "line": 3892
             },
             {
               "in": "__init__",
               "kind": "except",
-              "line": 3969
+              "line": 3963
             },
             {
               "in": "__init__",
               "kind": "raise",
-              "line": 3970
+              "line": 3964
             },
             {
               "in": "__init__",
               "kind": "raise",
-              "line": 3977
+              "line": 3971
             },
             {
               "in": "__init__",
               "kind": "raise",
-              "line": 4001
+              "line": 3995
             },
             {
               "in": "verify_ready",
               "kind": "raise",
-              "line": 4021
+              "line": 4015
             },
             {
               "in": "_ensure_loaded",
               "kind": "except",
-              "line": 4043
+              "line": 4037
             },
             {
               "in": "_ensure_loaded",
               "kind": "raise",
-              "line": 4044
+              "line": 4038
             },
             {
               "in": "_ensure_loaded",
               "kind": "raise",
-              "line": 4051
+              "line": 4045
             },
             {
               "in": "_ensure_loaded",
               "kind": "raise",
-              "line": 4068
+              "line": 4062
             },
             {
               "in": "load_canary_config",
               "kind": "raise",
-              "line": 4171
+              "line": 4165
             },
             {
               "in": "load_canary_config",
               "kind": "except",
-              "line": 4178
+              "line": 4172
+            },
+            {
+              "in": "load_canary_config",
+              "kind": "raise",
+              "line": 4173
             },
             {
               "in": "load_canary_config",
@@ -7236,159 +7241,159 @@
               "line": 4179
             },
             {
-              "in": "load_canary_config",
+              "in": "_compare_canary_snapshots",
               "kind": "raise",
-              "line": 4185
+              "line": 4232
             },
             {
               "in": "_compare_canary_snapshots",
               "kind": "raise",
-              "line": 4238
+              "line": 4241
             },
             {
               "in": "_compare_canary_snapshots",
               "kind": "raise",
-              "line": 4247
-            },
-            {
-              "in": "_compare_canary_snapshots",
-              "kind": "raise",
-              "line": 4258
+              "line": 4252
             },
             {
               "in": "measure_canary_tolerance",
               "kind": "raise",
-              "line": 4281
+              "line": 4275
             },
             {
               "in": "_run_cpu_transport_probe_for_judge",
               "kind": "raise",
-              "line": 4386
+              "line": 4380
             },
             {
               "in": "_run_cpu_transport_probe_for_judge",
               "kind": "except",
-              "line": 4509
+              "line": 4503
             },
             {
               "in": "verify_pinned_pilot_part_dir",
               "kind": "raise",
-              "line": 4686
+              "line": 4680
             },
             {
               "in": "verify_pinned_pilot_part_dir",
               "kind": "except",
-              "line": 4699
+              "line": 4693
             },
             {
               "in": "verify_pinned_pilot_part_dir",
               "kind": "raise",
-              "line": 4700
+              "line": 4694
             },
             {
               "in": "verify_pinned_pilot_part_dir",
               "kind": "raise",
-              "line": 4726
+              "line": 4720
             },
             {
               "in": "check_bakeoff_logprob_mass",
               "kind": "raise",
-              "line": 4749
+              "line": 4743
             },
             {
               "in": "check_bakeoff_logprob_mass",
               "kind": "except",
-              "line": 4760
+              "line": 4754
             },
             {
               "in": "check_bakeoff_logprob_mass",
               "kind": "raise",
-              "line": 4761
+              "line": 4755
             },
             {
               "in": "check_bakeoff_logprob_mass",
               "kind": "raise",
-              "line": 4771
+              "line": 4765
             },
             {
               "in": "check_bakeoff_logprob_mass",
               "kind": "raise",
-              "line": 4775
+              "line": 4769
             },
             {
               "in": "check_bakeoff_logprob_mass",
               "kind": "raise",
-              "line": 4782
+              "line": 4776
             },
             {
               "in": "_read_process_rss_bytes",
               "kind": "except",
-              "line": 4848
+              "line": 4842
             },
             {
               "in": "_read_process_rss_bytes",
               "kind": "except",
-              "line": 4856
+              "line": 4850
             },
             {
               "in": "resolve_child_heartbeat_interval_seconds",
               "kind": "except",
-              "line": 4871
+              "line": 4865
             },
             {
               "in": "_count_prompt_tokens",
               "kind": "except",
-              "line": 4909
+              "line": 4903
             },
             {
               "in": "run_bakeoff_judge",
               "kind": "except",
-              "line": 4971
+              "line": 4965
             },
             {
               "in": "run_bakeoff_judge",
               "kind": "raise",
-              "line": 4972
+              "line": 4966
             },
             {
               "in": "run_bakeoff_judge",
               "kind": "raise",
-              "line": 5057
+              "line": 5051
             },
             {
               "in": "run_bakeoff_judge",
               "kind": "raise",
-              "line": 5083
+              "line": 5077
             },
             {
               "in": "run_bakeoff_judge",
               "kind": "raise",
-              "line": 5158
+              "line": 5152
             },
             {
               "in": "run_bakeoff_judge",
               "kind": "raise",
-              "line": 5180
+              "line": 5174
             },
             {
               "in": "run_bakeoff_judge",
               "kind": "raise",
-              "line": 5187
+              "line": 5181
             },
             {
               "in": "run_bakeoff_judge",
               "kind": "raise",
-              "line": 5201
+              "line": 5195
             },
             {
               "in": "run_bakeoff_judge",
               "kind": "raise",
-              "line": 5223
+              "line": 5217
             },
             {
               "in": "run_bakeoff_judge",
               "kind": "except",
-              "line": 5230
+              "line": 5224
+            },
+            {
+              "in": "run_bakeoff_judge",
+              "kind": "raise",
+              "line": 5225
             },
             {
               "in": "run_bakeoff_judge",
@@ -7398,7 +7403,7 @@
             {
               "in": "run_bakeoff_judge",
               "kind": "raise",
-              "line": 5237
+              "line": 5255
             },
             {
               "in": "run_bakeoff_judge",
@@ -7408,77 +7413,77 @@
             {
               "in": "run_bakeoff_judge",
               "kind": "raise",
-              "line": 5267
+              "line": 5270
             },
             {
               "in": "run_bakeoff_judge",
               "kind": "raise",
-              "line": 5276
+              "line": 5277
             },
             {
               "in": "run_bakeoff_judge",
               "kind": "raise",
-              "line": 5283
-            },
-            {
-              "in": "run_bakeoff_judge",
-              "kind": "raise",
-              "line": 5290
+              "line": 5284
             },
             {
               "in": "run_bakeoff_judge",
               "kind": "except",
-              "line": 5321
+              "line": 5315
             },
             {
               "in": "run_bakeoff_judge",
               "kind": "raise",
-              "line": 5424
+              "line": 5418
             },
             {
               "in": "run_bakeoff_judge",
               "kind": "except",
-              "line": 5634
+              "line": 5628
             },
             {
               "in": "run_bakeoff_judge",
               "kind": "raise",
-              "line": 5676
+              "line": 5670
             },
             {
               "in": "run_bakeoff_judge",
               "kind": "raise",
-              "line": 5693
+              "line": 5687
             },
             {
               "in": "run_bakeoff_judge",
               "kind": "raise",
-              "line": 5899
+              "line": 5893
             },
             {
               "in": "close_bakeoff_outputs",
               "kind": "raise",
-              "line": 6091
+              "line": 6085
             },
             {
               "in": "close_bakeoff_outputs",
               "kind": "raise",
-              "line": 6099
+              "line": 6093
             },
             {
               "in": "_compute_low_margin_inputs_sha256",
               "kind": "raise",
-              "line": 6166
+              "line": 6160
             },
             {
               "in": "_compute_low_margin_inputs_sha256",
               "kind": "raise",
-              "line": 6176
+              "line": 6170
             },
             {
               "in": "_load_golden_anchors_for_shard_manifest",
               "kind": "except",
-              "line": 6515
+              "line": 6509
+            },
+            {
+              "in": "_load_golden_anchors_for_shard_manifest",
+              "kind": "raise",
+              "line": 6510
             },
             {
               "in": "_load_golden_anchors_for_shard_manifest",
@@ -7488,22 +7493,22 @@
             {
               "in": "_load_golden_anchors_for_shard_manifest",
               "kind": "raise",
-              "line": 6522
+              "line": 6540
             },
             {
               "in": "_load_golden_anchors_for_shard_manifest",
               "kind": "raise",
-              "line": 6546
-            },
-            {
-              "in": "_load_golden_anchors_for_shard_manifest",
-              "kind": "raise",
-              "line": 6553
+              "line": 6547
             },
             {
               "in": "_validate_manifest_item_count",
               "kind": "raise",
-              "line": 6583
+              "line": 6577
+            },
+            {
+              "in": "verify_lock_check_two_inputs",
+              "kind": "raise",
+              "line": 6667
             },
             {
               "in": "verify_lock_check_two_inputs",
@@ -7512,23 +7517,23 @@
             },
             {
               "in": "verify_lock_check_two_inputs",
-              "kind": "raise",
-              "line": 6679
-            },
-            {
-              "in": "verify_lock_check_two_inputs",
               "kind": "except",
-              "line": 6686
+              "line": 6680
             },
             {
               "in": "verify_lock_check_two_inputs",
               "kind": "raise",
-              "line": 6687
+              "line": 6681
             },
             {
               "in": "verify_lock_check_two_inputs",
               "kind": "except",
-              "line": 6688
+              "line": 6682
+            },
+            {
+              "in": "verify_lock_check_two_inputs",
+              "kind": "raise",
+              "line": 6683
             },
             {
               "in": "verify_lock_check_two_inputs",
@@ -7538,27 +7543,27 @@
             {
               "in": "verify_lock_check_two_inputs",
               "kind": "raise",
-              "line": 6695
+              "line": 6707
             },
             {
               "in": "verify_lock_check_two_inputs",
               "kind": "raise",
-              "line": 6713
+              "line": 6732
             },
             {
               "in": "verify_lock_check_two_inputs",
               "kind": "raise",
-              "line": 6738
+              "line": 6741
             },
             {
               "in": "verify_lock_check_two_inputs",
               "kind": "raise",
-              "line": 6747
+              "line": 6749
             },
             {
               "in": "verify_lock_check_two_inputs",
               "kind": "raise",
-              "line": 6755
+              "line": 6756
             },
             {
               "in": "verify_lock_check_two_inputs",
@@ -7566,99 +7571,99 @@
               "line": 6762
             },
             {
-              "in": "verify_lock_check_two_inputs",
+              "in": "_check_p0a_pilot_identity",
               "kind": "raise",
-              "line": 6768
+              "line": 6803
             },
             {
               "in": "_check_p0a_pilot_identity",
               "kind": "raise",
-              "line": 6809
-            },
-            {
-              "in": "_check_p0a_pilot_identity",
-              "kind": "raise",
-              "line": 6829
+              "line": 6823
             },
             {
               "in": "_verify_burned_pilot_for_p0a",
               "kind": "raise",
-              "line": 6858
+              "line": 6852
             },
             {
               "in": "_verify_burned_pilot_for_p0a",
               "kind": "raise",
-              "line": 6872
+              "line": 6866
             },
             {
               "in": "_verify_burned_pilot_for_p0a",
               "kind": "raise",
-              "line": 6883
+              "line": 6877
             },
             {
               "in": "_verify_burned_pilot_for_p0a",
               "kind": "raise",
-              "line": 6890
+              "line": 6884
             },
             {
               "in": "summarize_p0a_reversed_rerun",
               "kind": "raise",
-              "line": 7259
+              "line": 7253
             },
             {
               "in": "prepare_lock_check_p0a",
               "kind": "except",
-              "line": 7384
+              "line": 7378
             },
             {
               "in": "prepare_lock_check_p0a",
               "kind": "raise",
-              "line": 7385
+              "line": 7379
             },
             {
               "in": "prepare_lock_check_p0a",
               "kind": "raise",
-              "line": 7407
+              "line": 7401
             },
             {
               "in": "prepare_lock_check_p0a",
               "kind": "raise",
-              "line": 7415
+              "line": 7409
             },
             {
               "in": "prepare_lock_check_p0a",
               "kind": "except",
-              "line": 7439
+              "line": 7433
             },
             {
               "in": "resolve_p0a_transport",
               "kind": "raise",
-              "line": 7498
+              "line": 7492
             },
             {
               "in": "resolve_p0a_transport",
               "kind": "raise",
-              "line": 7513
+              "line": 7507
             },
             {
               "in": "read_p0a_reversed_low_margin_rerun",
               "kind": "raise",
-              "line": 7634
+              "line": 7628
             },
             {
               "in": "read_p0a_pilot_identity_file",
               "kind": "except",
-              "line": 7797
+              "line": 7791
             },
             {
               "in": "read_p0a_pilot_identity_file",
               "kind": "raise",
-              "line": 7798
+              "line": 7792
             },
             {
               "in": "read_p0a_pilot_identity_file",
               "kind": "raise",
-              "line": 7806
+              "line": 7800
+            },
+            {
+              "in": "run_p0a_child_stage",
+              "kind": "raise",
+              "line": 7838
             },
             {
               "in": "run_p0a_child_stage",
@@ -7667,143 +7672,143 @@
             },
             {
               "in": "run_p0a_child_stage",
-              "kind": "raise",
-              "line": 7850
-            },
-            {
-              "in": "run_p0a_child_stage",
               "kind": "except",
-              "line": 7875
+              "line": 7869
             },
             {
               "in": "run_p0a_child_stage",
               "kind": "raise",
-              "line": 7878
+              "line": 7872
             },
             {
               "in": "build_window_manifest",
               "kind": "except",
-              "line": 7976
+              "line": 7970
             },
             {
               "in": "guard_no_test_hooks_in_counted_mode",
               "kind": "raise",
-              "line": 8116
+              "line": 8110
             },
             {
               "in": "main_judge_runner",
               "kind": "except",
-              "line": 8304
+              "line": 8298
             },
             {
               "in": "main_judge_runner",
               "kind": "raise",
-              "line": 8305
+              "line": 8299
             },
             {
               "in": "main_judge_runner",
               "kind": "raise",
-              "line": 8318
+              "line": 8312
             },
             {
               "in": "main_judge_runner",
               "kind": "except",
-              "line": 8378
+              "line": 8372
             },
             {
               "in": "check_d3_family_remote_code_gate",
               "kind": "raise",
-              "line": 8629
+              "line": 8623
             },
             {
               "in": "check_d3_family_remote_code_gate",
               "kind": "raise",
-              "line": 8636
+              "line": 8630
             },
             {
               "in": "check_d3_family_remote_code_gate",
               "kind": "raise",
-              "line": 8643
+              "line": 8637
             },
             {
               "in": "_load_receipt_files",
               "kind": "except",
-              "line": 8656
+              "line": 8650
             },
             {
               "in": "check_d3_remote_code_matches_review",
               "kind": "raise",
-              "line": 8687
+              "line": 8681
             },
             {
               "in": "read_nli_id2label",
               "kind": "except",
-              "line": 8878
+              "line": 8872
             },
             {
               "in": "read_nli_id2label",
               "kind": "raise",
-              "line": 8879
+              "line": 8873
             },
             {
               "in": "read_nli_id2label",
               "kind": "raise",
-              "line": 8886
+              "line": 8880
             },
             {
               "in": "_ensure_loaded",
               "kind": "except",
-              "line": 8915
+              "line": 8909
             },
             {
               "in": "_ensure_loaded",
               "kind": "raise",
-              "line": 8916
+              "line": 8910
             },
             {
               "in": "_ensure_loaded",
               "kind": "raise",
-              "line": 8933
+              "line": 8927
             },
             {
               "in": "_encode",
               "kind": "raise",
-              "line": 8947
+              "line": 8941
             },
             {
               "in": "elephant_receipt_serve_patch_sha256",
               "kind": "except",
-              "line": 9210
+              "line": 9204
             },
             {
               "in": "elephant_install_record",
               "kind": "except",
-              "line": 9222
+              "line": 9216
             },
             {
               "in": "elephant_install_record",
               "kind": "raise",
-              "line": 9232
+              "line": 9226
             },
             {
               "in": "_ensure_loaded",
               "kind": "raise",
-              "line": 9286
+              "line": 9280
             },
             {
               "in": "generate",
               "kind": "except",
-              "line": 9322
+              "line": 9316
             },
             {
               "in": "generate",
               "kind": "raise",
-              "line": 9324
+              "line": 9318
             },
             {
               "in": "resolve_qwen36_max_new_tokens",
               "kind": "except",
-              "line": 9404
+              "line": 9398
+            },
+            {
+              "in": "resolve_qwen36_max_new_tokens",
+              "kind": "raise",
+              "line": 9399
             },
             {
               "in": "resolve_qwen36_max_new_tokens",
@@ -7811,21 +7816,16 @@
               "line": 9405
             },
             {
-              "in": "resolve_qwen36_max_new_tokens",
-              "kind": "raise",
-              "line": 9411
-            },
-            {
               "in": "_ensure_loaded",
               "kind": "raise",
-              "line": 9604
+              "line": 9598
             },
             {
               "kind": "raise",
-              "line": 9872
+              "line": 9866
             }
           ],
-          "hash": "21bcdce2eca3f554849ebf39bc99113cb6b726d69563c15bac676b154712ba43",
+          "hash": "4af1538015de5800a957ab5750117a63a4398e96d209858e1b8acd6ec0e24c2e",
           "importsFiles": [
             "src/reasoning_dataset_lab/errors.py",
             "src/reasoning_dataset_lab/pilot_b/__init__.py",
@@ -9055,7 +9055,7 @@
                   "via": "verify_schedule_invariants"
                 },
                 {
-                  "line": 6516,
+                  "line": 6510,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -9064,7 +9064,7 @@
                 },
                 {
                   "branch": "not isinstance(gm_doc, Mapping)",
-                  "line": 6522,
+                  "line": 6516,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -9073,7 +9073,7 @@
                 },
                 {
                   "branch": "len(gm_all) != int(anchor_count) or len(set(gm_all)) != int…",
-                  "line": 6546,
+                  "line": 6540,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -9082,7 +9082,7 @@
                 },
                 {
                   "branch": "missing_in_part",
-                  "line": 6553,
+                  "line": 6547,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -9208,14 +9208,14 @@
               "calls": [
                 {
                   "branch": "base_home is None",
-                  "line": 3257,
+                  "line": 3251,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
                   }
                 },
                 {
-                  "line": 3272,
+                  "line": 3266,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -9230,20 +9230,20 @@
             {
               "calls": [
                 {
-                  "line": 3287,
+                  "line": 3281,
                   "name": "resolve",
                   "target": null
                 },
                 {
                   "branch": "not receipt_path.is_file()",
-                  "line": 3289,
+                  "line": 3283,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
                   }
                 },
                 {
-                  "line": 3297,
+                  "line": 3291,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -9251,7 +9251,7 @@
                 },
                 {
                   "branch": "not isinstance(receipt_doc, Mapping) or not isinstance(rece…",
-                  "line": 3304,
+                  "line": 3298,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -9259,7 +9259,7 @@
                 },
                 {
                   "branch": "rec_repo != spec.repo_id or rec_rev != spec.revision",
-                  "line": 3313,
+                  "line": 3307,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -9267,7 +9267,7 @@
                 },
                 {
                   "branch": "base_home is None",
-                  "line": 3257,
+                  "line": 3251,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -9275,7 +9275,7 @@
                   "via": "_resolve_snapshot_dir"
                 },
                 {
-                  "line": 3272,
+                  "line": 3266,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -9284,7 +9284,7 @@
                 },
                 {
                   "branch": "missing_rels",
-                  "line": 3333,
+                  "line": 3327,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -9292,7 +9292,7 @@
                 },
                 {
                   "branch": "bytecode_rels",
-                  "line": 3347,
+                  "line": 3341,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -9300,7 +9300,7 @@
                 },
                 {
                   "branch": "extra_rels",
-                  "line": 3357,
+                  "line": 3351,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -9308,7 +9308,7 @@
                 },
                 {
                   "branch": "exp_bytes is not None and int(exp_bytes) != size_on_disk",
-                  "line": 3370,
+                  "line": 3364,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -9316,7 +9316,7 @@
                 },
                 {
                   "branch": "actual_sha != exp_sha",
-                  "line": 3390,
+                  "line": 3384,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -9332,7 +9332,7 @@
               "calls": [
                 {
                   "branch": "spec.judge_id != D3_MINI_JUDGE_ID",
-                  "line": 3775,
+                  "line": 3769,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -9340,7 +9340,7 @@
                 },
                 {
                   "branch": "not isinstance(allow_remote_code_reviewed, str) or allow_re…",
-                  "line": 3783,
+                  "line": 3777,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -9348,7 +9348,7 @@
                 },
                 {
                   "branch": "spec.revision != D3_MINI_REVIEWED_REVISION",
-                  "line": 3790,
+                  "line": 3784,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -9364,7 +9364,7 @@
               "calls": [
                 {
                   "branch": "value is None or value.strip().lower() not in _OFFLINE_TRUE…",
-                  "line": 3806,
+                  "line": 3800,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -9380,7 +9380,7 @@
               "calls": [
                 {
                   "branch": "value.strip().lower() not in _OFFLINE_TRUE_VALUES",
-                  "line": 3834,
+                  "line": 3828,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -9396,7 +9396,7 @@
               "calls": [
                 {
                   "branch": "not isinstance(key, str)",
-                  "line": 3846,
+                  "line": 3840,
                   "name": "refused_error",
                   "over": "value.items()",
                   "target": {
@@ -9405,7 +9405,7 @@
                 },
                 {
                   "branch": "key.strip().lower() in D3_MEDIA_INPUT_KEYS",
-                  "line": 3852,
+                  "line": 3846,
                   "name": "refused_error",
                   "over": "value.items()",
                   "target": {
@@ -9414,14 +9414,14 @@
                 },
                 {
                   "branch": "D3_URL_VALUE_RE.match(value)",
-                  "line": 3865,
+                  "line": 3859,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
                   }
                 },
                 {
-                  "line": 3873,
+                  "line": 3867,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -9437,7 +9437,7 @@
               "calls": [
                 {
                   "branch": "not isinstance(state, str) or not state.strip()",
-                  "line": 3885,
+                  "line": 3879,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -9445,7 +9445,7 @@
                 },
                 {
                   "branch": "not isinstance(questions, Mapping) or not questions",
-                  "line": 3891,
+                  "line": 3885,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -9453,7 +9453,7 @@
                 },
                 {
                   "branch": "isinstance(key, str) and key.strip().lower() in D3_MEDIA_IN…",
-                  "line": 3898,
+                  "line": 3892,
                   "name": "refused_error",
                   "over": "payload",
                   "target": {
@@ -9462,7 +9462,7 @@
                 },
                 {
                   "branch": "not isinstance(key, str)",
-                  "line": 3846,
+                  "line": 3840,
                   "name": "refused_error",
                   "over": "value.items()",
                   "target": {
@@ -9472,7 +9472,7 @@
                 },
                 {
                   "branch": "key.strip().lower() in D3_MEDIA_INPUT_KEYS",
-                  "line": 3852,
+                  "line": 3846,
                   "name": "refused_error",
                   "over": "value.items()",
                   "target": {
@@ -9482,7 +9482,7 @@
                 },
                 {
                   "branch": "D3_URL_VALUE_RE.match(value)",
-                  "line": 3865,
+                  "line": 3859,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -9490,7 +9490,7 @@
                   "via": "_walk_d3_input"
                 },
                 {
-                  "line": 3873,
+                  "line": 3867,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -9507,14 +9507,14 @@
               "calls": [
                 {
                   "branch": "not target.is_file()",
-                  "line": 4171,
+                  "line": 4165,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
                   }
                 },
                 {
-                  "line": 4179,
+                  "line": 4173,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -9522,7 +9522,7 @@
                 },
                 {
                   "branch": "not isinstance(doc, dict)",
-                  "line": 4185,
+                  "line": 4179,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -9537,17 +9537,17 @@
             {
               "calls": [
                 {
-                  "line": 4207,
+                  "line": 4201,
                   "name": "assemble_prompt",
                   "target": null
                 },
                 {
-                  "line": 4208,
+                  "line": 4202,
                   "name": "generate",
                   "target": null
                 },
                 {
-                  "line": 4209,
+                  "line": 4203,
                   "name": "parse_response",
                   "target": null
                 }
@@ -9561,7 +9561,7 @@
               "calls": [
                 {
                   "branch": "s_rec[\"raw_verdict\"] != e_rec[\"raw_verdict\"]",
-                  "line": 4238,
+                  "line": 4232,
                   "name": "refused_error",
                   "over": "zip(start_records, end_records, strict=True)",
                   "target": {
@@ -9570,7 +9570,7 @@
                 },
                 {
                   "branch": "s_tids != e_tids",
-                  "line": 4247,
+                  "line": 4241,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -9578,7 +9578,7 @@
                 },
                 {
                   "branch": "dev > logprob_tolerance + 1e-12",
-                  "line": 4258,
+                  "line": 4252,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -9594,7 +9594,7 @@
               "calls": [
                 {
                   "branch": "repeats < 2",
-                  "line": 4281,
+                  "line": 4275,
                   "name": "usage_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -9602,7 +9602,7 @@
                 },
                 {
                   "branch": "not target.is_file()",
-                  "line": 4171,
+                  "line": 4165,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -9610,7 +9610,7 @@
                   "via": "load_canary_config"
                 },
                 {
-                  "line": 4179,
+                  "line": 4173,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -9619,7 +9619,7 @@
                 },
                 {
                   "branch": "not isinstance(doc, dict)",
-                  "line": 4185,
+                  "line": 4179,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -9729,19 +9729,19 @@
                   "via": "_build_original_judge_adapter"
                 },
                 {
-                  "line": 4207,
+                  "line": 4201,
                   "name": "assemble_prompt",
                   "target": null,
                   "via": "_run_canary_snapshot"
                 },
                 {
-                  "line": 4208,
+                  "line": 4202,
                   "name": "generate",
                   "target": null,
                   "via": "_run_canary_snapshot"
                 },
                 {
-                  "line": 4209,
+                  "line": 4203,
                   "name": "parse_response",
                   "target": null,
                   "via": "_run_canary_snapshot"
@@ -9756,7 +9756,7 @@
               "calls": [
                 {
                   "branch": "_is_counted_window_mode(window_mode)",
-                  "line": 4386,
+                  "line": 4380,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -9781,25 +9781,25 @@
                   "via": "configure_torch_determinism_with_reason"
                 },
                 {
-                  "line": 4207,
+                  "line": 4201,
                   "name": "assemble_prompt",
                   "target": null,
                   "via": "_run_canary_snapshot"
                 },
                 {
-                  "line": 4208,
+                  "line": 4202,
                   "name": "generate",
                   "target": null,
                   "via": "_run_canary_snapshot"
                 },
                 {
-                  "line": 4209,
+                  "line": 4203,
                   "name": "parse_response",
                   "target": null,
                   "via": "_run_canary_snapshot"
                 },
                 {
-                  "line": 4556,
+                  "line": 4550,
                   "name": "assemble_prompt",
                   "target": null
                 }
@@ -9813,7 +9813,7 @@
               "calls": [
                 {
                   "branch": "not target.is_file()",
-                  "line": 4171,
+                  "line": 4165,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -9821,7 +9821,7 @@
                   "via": "load_canary_config"
                 },
                 {
-                  "line": 4179,
+                  "line": 4173,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -9830,7 +9830,7 @@
                 },
                 {
                   "branch": "not isinstance(doc, dict)",
-                  "line": 4185,
+                  "line": 4179,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -9941,7 +9941,7 @@
                 },
                 {
                   "branch": "_is_counted_window_mode(window_mode)",
-                  "line": 4386,
+                  "line": 4380,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -9967,25 +9967,25 @@
                   "via": "configure_torch_determinism_with_reason"
                 },
                 {
-                  "line": 4207,
+                  "line": 4201,
                   "name": "assemble_prompt",
                   "target": null,
                   "via": "_run_canary_snapshot"
                 },
                 {
-                  "line": 4208,
+                  "line": 4202,
                   "name": "generate",
                   "target": null,
                   "via": "_run_canary_snapshot"
                 },
                 {
-                  "line": 4209,
+                  "line": 4203,
                   "name": "parse_response",
                   "target": null,
                   "via": "_run_canary_snapshot"
                 },
                 {
-                  "line": 4556,
+                  "line": 4550,
                   "name": "assemble_prompt",
                   "target": null,
                   "via": "_run_cpu_transport_probe_for_judge"
@@ -10000,14 +10000,14 @@
               "calls": [
                 {
                   "branch": "part_dir is None",
-                  "line": 4686,
+                  "line": 4680,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
                   }
                 },
                 {
-                  "line": 4700,
+                  "line": 4694,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -10015,7 +10015,7 @@
                 },
                 {
                   "branch": "problems",
-                  "line": 4726,
+                  "line": 4720,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -10031,7 +10031,7 @@
               "calls": [
                 {
                   "branch": "part_id is not None and str(part_id).strip() != PILOT_40B_P…",
-                  "line": 4749,
+                  "line": 4743,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -10039,7 +10039,7 @@
                 },
                 {
                   "branch": "part_dir is None",
-                  "line": 4686,
+                  "line": 4680,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -10047,7 +10047,7 @@
                   "via": "verify_pinned_pilot_part_dir"
                 },
                 {
-                  "line": 4700,
+                  "line": 4694,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -10056,7 +10056,7 @@
                 },
                 {
                   "branch": "problems",
-                  "line": 4726,
+                  "line": 4720,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -10064,21 +10064,21 @@
                   "via": "verify_pinned_pilot_part_dir"
                 },
                 {
-                  "line": 4759,
+                  "line": 4753,
                   "name": "collect_run_unverified_passes",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/run_records.py"
                   }
                 },
                 {
-                  "line": 4761,
+                  "line": 4755,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
                   }
                 },
                 {
-                  "line": 4764,
+                  "line": 4758,
                   "name": "REVERIFY_HINT_TEMPLATE",
                   "passed": true,
                   "target": {
@@ -10087,7 +10087,7 @@
                 },
                 {
                   "branch": "unverified_entries",
-                  "line": 4767,
+                  "line": 4761,
                   "name": "format_unverified_or_incomplete_refusal",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/run_records.py"
@@ -10095,7 +10095,7 @@
                 },
                 {
                   "branch": "unverified_entries",
-                  "line": 4771,
+                  "line": 4765,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -10103,14 +10103,14 @@
                 },
                 {
                   "branch": "not rows_dir.is_dir()",
-                  "line": 4775,
+                  "line": 4769,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
                   }
                 },
                 {
-                  "line": 4780,
+                  "line": 4774,
                   "name": "rows_filename_is_three_way",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/three_way_wording.py"
@@ -10118,7 +10118,7 @@
                 },
                 {
                   "branch": "not row_files",
-                  "line": 4782,
+                  "line": 4776,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -10133,7 +10133,7 @@
             {
               "calls": [
                 {
-                  "line": 4895,
+                  "line": 4889,
                   "name": "open",
                   "target": null
                 }
@@ -10146,14 +10146,14 @@
             {
               "calls": [
                 {
-                  "line": 4970,
+                  "line": 4964,
                   "name": "normalize_judge_device",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/device.py"
                   }
                 },
                 {
-                  "line": 4972,
+                  "line": 4966,
                   "name": "RdlabError",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -10193,7 +10193,7 @@
                 },
                 {
                   "branch": "active_hooks",
-                  "line": 8116,
+                  "line": 8110,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -10273,14 +10273,14 @@
                   "via": "parse_shard_spec"
                 },
                 {
-                  "line": 4895,
+                  "line": 4889,
                   "name": "open",
                   "target": null,
                   "via": "_append_child_progress_line"
                 },
                 {
                   "branch": "smi_mode_raw and smi_mode_raw not in (\"ok\", \"high\", \"fail\",…",
-                  "line": 5057,
+                  "line": 5051,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -10297,14 +10297,14 @@
                 },
                 {
                   "branch": "receipts_dir is None",
-                  "line": 5083,
+                  "line": 5077,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
                   }
                 },
                 {
-                  "line": 5108,
+                  "line": 5102,
                   "name": "verify_ready",
                   "target": null
                 },
@@ -10366,7 +10366,7 @@
                 },
                 {
                   "branch": "not schedule_path.is_file() or not gen_path.is_file() or no…",
-                  "line": 6091,
+                  "line": 6085,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -10374,7 +10374,7 @@
                 },
                 {
                   "branch": "not row_files",
-                  "line": 6099,
+                  "line": 6093,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -10390,7 +10390,7 @@
               "calls": [
                 {
                   "branch": "low_margin_selection_rule is not None and canary_selection_…",
-                  "line": 6166,
+                  "line": 6160,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -10398,7 +10398,7 @@
                 },
                 {
                   "branch": "low_margin_telemetry_sha256 is not None and canary_telemetr…",
-                  "line": 6176,
+                  "line": 6170,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -10414,7 +10414,7 @@
               "calls": [
                 {
                   "branch": "low_margin_selection_rule is not None and canary_selection_…",
-                  "line": 6166,
+                  "line": 6160,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -10423,7 +10423,7 @@
                 },
                 {
                   "branch": "low_margin_telemetry_sha256 is not None and canary_telemetr…",
-                  "line": 6176,
+                  "line": 6170,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -10629,7 +10629,7 @@
                 },
                 {
                   "branch": "low_margin_selection_rule is not None and canary_selection_…",
-                  "line": 6166,
+                  "line": 6160,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -10638,7 +10638,7 @@
                 },
                 {
                   "branch": "low_margin_telemetry_sha256 is not None and canary_telemetr…",
-                  "line": 6176,
+                  "line": 6170,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -10654,7 +10654,7 @@
             {
               "calls": [
                 {
-                  "line": 6516,
+                  "line": 6510,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -10663,7 +10663,7 @@
                 },
                 {
                   "branch": "not isinstance(gm_doc, Mapping)",
-                  "line": 6522,
+                  "line": 6516,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -10672,7 +10672,7 @@
                 },
                 {
                   "branch": "len(gm_all) != int(anchor_count) or len(set(gm_all)) != int…",
-                  "line": 6546,
+                  "line": 6540,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -10681,7 +10681,7 @@
                 },
                 {
                   "branch": "missing_in_part",
-                  "line": 6553,
+                  "line": 6547,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -10697,7 +10697,7 @@
             {
               "calls": [
                 {
-                  "line": 6516,
+                  "line": 6510,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -10705,7 +10705,7 @@
                 },
                 {
                   "branch": "not isinstance(gm_doc, Mapping)",
-                  "line": 6522,
+                  "line": 6516,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -10713,7 +10713,7 @@
                 },
                 {
                   "branch": "len(gm_all) != int(anchor_count) or len(set(gm_all)) != int…",
-                  "line": 6546,
+                  "line": 6540,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -10721,7 +10721,7 @@
                 },
                 {
                   "branch": "missing_in_part",
-                  "line": 6553,
+                  "line": 6547,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -10737,7 +10737,7 @@
               "calls": [
                 {
                   "branch": "raw_cnt is not None and (isinstance(raw_cnt, bool) or not i…",
-                  "line": 6583,
+                  "line": 6577,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -10753,7 +10753,7 @@
               "calls": [
                 {
                   "branch": "isinstance(counted_source, Mapping)",
-                  "line": 6583,
+                  "line": 6577,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -10795,7 +10795,7 @@
               "calls": [
                 {
                   "branch": "counted_items_or_manifest is None",
-                  "line": 6673,
+                  "line": 6667,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -10803,7 +10803,7 @@
                 },
                 {
                   "branch": "isinstance(counted_items_or_manifest, (Path, str)) and not …",
-                  "line": 6679,
+                  "line": 6673,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -10811,7 +10811,7 @@
                 },
                 {
                   "branch": "isinstance(counted_source, Mapping)",
-                  "line": 6583,
+                  "line": 6577,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -10844,7 +10844,7 @@
                   "via": "load_judge_items"
                 },
                 {
-                  "line": 6689,
+                  "line": 6683,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -10852,7 +10852,7 @@
                 },
                 {
                   "branch": "not counted_id_set",
-                  "line": 6695,
+                  "line": 6689,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -10860,7 +10860,7 @@
                 },
                 {
                   "branch": "anchor_part_json.is_file() and hashlib.sha256(anchor_part_j…",
-                  "line": 6713,
+                  "line": 6707,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -10868,7 +10868,7 @@
                 },
                 {
                   "branch": "overlap_ids",
-                  "line": 6738,
+                  "line": 6732,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -10876,7 +10876,7 @@
                 },
                 {
                   "branch": "counted_in_p0a",
-                  "line": 6747,
+                  "line": 6741,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -10884,7 +10884,7 @@
                 },
                 {
                   "branch": "len(anchor_items) != int(expected_anchor_count) or len(anch…",
-                  "line": 6755,
+                  "line": 6749,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -10892,7 +10892,7 @@
                 },
                 {
                   "branch": "not_in_counted",
-                  "line": 6762,
+                  "line": 6756,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -10900,7 +10900,7 @@
                 },
                 {
                   "branch": "counted_id_set <= anchor_id_set",
-                  "line": 6768,
+                  "line": 6762,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11003,7 +11003,7 @@
               "calls": [
                 {
                   "branch": "not isinstance(pilot_identity, Mapping)",
-                  "line": 6809,
+                  "line": 6803,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11011,7 +11011,7 @@
                 },
                 {
                   "branch": "problems",
-                  "line": 6829,
+                  "line": 6823,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11027,7 +11027,7 @@
               "calls": [
                 {
                   "branch": "overlap",
-                  "line": 6858,
+                  "line": 6852,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11035,7 +11035,7 @@
                 },
                 {
                   "branch": "isinstance(counted_source, Mapping)",
-                  "line": 6583,
+                  "line": 6577,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11069,7 +11069,7 @@
                 },
                 {
                   "branch": "counted_hits",
-                  "line": 6872,
+                  "line": 6866,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11077,7 +11077,7 @@
                 },
                 {
                   "branch": "any(part_name.startswith(prefix) for prefix in (\"part01\", \"…",
-                  "line": 6883,
+                  "line": 6877,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11085,7 +11085,7 @@
                 },
                 {
                   "branch": "len(items) != PILOT_BURNED_ITEM_COUNT or len(schedule.entri…",
-                  "line": 6890,
+                  "line": 6884,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11093,7 +11093,7 @@
                 },
                 {
                   "branch": "not isinstance(pilot_identity, Mapping)",
-                  "line": 6809,
+                  "line": 6803,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11102,7 +11102,7 @@
                 },
                 {
                   "branch": "problems",
-                  "line": 6829,
+                  "line": 6823,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11143,17 +11143,17 @@
             {
               "calls": [
                 {
-                  "line": 7060,
+                  "line": 7054,
                   "name": "assemble_prompt",
                   "target": null
                 },
                 {
-                  "line": 7070,
+                  "line": 7064,
                   "name": "generate",
                   "target": null
                 },
                 {
-                  "line": 7074,
+                  "line": 7068,
                   "name": "parse_response",
                   "target": null
                 },
@@ -11183,17 +11183,17 @@
             {
               "calls": [
                 {
-                  "line": 7176,
+                  "line": 7170,
                   "name": "assemble_prompt",
                   "target": null
                 },
                 {
-                  "line": 7177,
+                  "line": 7171,
                   "name": "generate",
                   "target": null
                 },
                 {
-                  "line": 7178,
+                  "line": 7172,
                   "name": "parse_response",
                   "target": null
                 },
@@ -11223,19 +11223,19 @@
             {
               "calls": [
                 {
-                  "line": 7176,
+                  "line": 7170,
                   "name": "assemble_prompt",
                   "target": null,
                   "via": "_p0a_call_row"
                 },
                 {
-                  "line": 7177,
+                  "line": 7171,
                   "name": "generate",
                   "target": null,
                   "via": "_p0a_call_row"
                 },
                 {
-                  "line": 7178,
+                  "line": 7172,
                   "name": "parse_response",
                   "target": null,
                   "via": "_p0a_call_row"
@@ -11267,7 +11267,7 @@
               "calls": [
                 {
                   "branch": "got_keys != expected_keys or any(str(r.get(\"judge_id\") or \"…",
-                  "line": 7259,
+                  "line": 7253,
                   "name": "refused_error",
                   "over": "judge_ids",
                   "target": {
@@ -11283,19 +11283,19 @@
             {
               "calls": [
                 {
-                  "line": 7176,
+                  "line": 7170,
                   "name": "assemble_prompt",
                   "target": null,
                   "via": "_p0a_call_row"
                 },
                 {
-                  "line": 7177,
+                  "line": 7171,
                   "name": "generate",
                   "target": null,
                   "via": "_p0a_call_row"
                 },
                 {
-                  "line": 7178,
+                  "line": 7172,
                   "name": "parse_response",
                   "target": null,
                   "via": "_p0a_call_row"
@@ -11319,7 +11319,7 @@
                 },
                 {
                   "branch": "got_keys != expected_keys or any(str(r.get(\"judge_id\") or \"…",
-                  "line": 7259,
+                  "line": 7253,
                   "name": "refused_error",
                   "over": "judge_ids",
                   "target": {
@@ -11336,14 +11336,14 @@
             {
               "calls": [
                 {
-                  "line": 7383,
+                  "line": 7377,
                   "name": "normalize_judge_device",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/device.py"
                   }
                 },
                 {
-                  "line": 7385,
+                  "line": 7379,
                   "name": "RdlabError",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11366,7 +11366,7 @@
                 },
                 {
                   "branch": "in_real_mode and fake_transport",
-                  "line": 7407,
+                  "line": 7401,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11374,7 +11374,7 @@
                 },
                 {
                   "branch": "any(part_name.startswith(prefix) for prefix in (\"part01\", \"…",
-                  "line": 7415,
+                  "line": 7409,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11523,7 +11523,7 @@
                 },
                 {
                   "branch": "overlap",
-                  "line": 6858,
+                  "line": 6852,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11541,7 +11541,7 @@
               "calls": [
                 {
                   "branch": "ctx.in_real_mode or not ctx.fake_transport) and _is_stub_or…",
-                  "line": 7498,
+                  "line": 7492,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11558,7 +11558,7 @@
                 },
                 {
                   "branch": "receipts_dir is None",
-                  "line": 7513,
+                  "line": 7507,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11573,19 +11573,19 @@
             {
               "calls": [
                 {
-                  "line": 7176,
+                  "line": 7170,
                   "name": "assemble_prompt",
                   "target": null,
                   "via": "_p0a_call_row"
                 },
                 {
-                  "line": 7177,
+                  "line": 7171,
                   "name": "generate",
                   "target": null,
                   "via": "_p0a_call_row"
                 },
                 {
-                  "line": 7178,
+                  "line": 7172,
                   "name": "parse_response",
                   "target": null,
                   "via": "_p0a_call_row"
@@ -11617,7 +11617,7 @@
               "calls": [
                 {
                   "branch": "not isinstance(sec, Mapping)",
-                  "line": 7634,
+                  "line": 7628,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11632,7 +11632,7 @@
             {
               "calls": [
                 {
-                  "line": 7383,
+                  "line": 7377,
                   "name": "normalize_judge_device",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/device.py"
@@ -11640,7 +11640,7 @@
                   "via": "prepare_lock_check_p0a"
                 },
                 {
-                  "line": 7385,
+                  "line": 7379,
                   "name": "RdlabError",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11664,7 +11664,7 @@
                 },
                 {
                   "branch": "in_real_mode and fake_transport",
-                  "line": 7407,
+                  "line": 7401,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11673,7 +11673,7 @@
                 },
                 {
                   "branch": "any(part_name.startswith(prefix) for prefix in (\"part01\", \"…",
-                  "line": 7415,
+                  "line": 7409,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11823,7 +11823,7 @@
                 },
                 {
                   "branch": "overlap",
-                  "line": 6858,
+                  "line": 6852,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11840,7 +11840,7 @@
             {
               "calls": [
                 {
-                  "line": 7785,
+                  "line": 7779,
                   "name": "with_name",
                   "target": null
                 }
@@ -11853,7 +11853,7 @@
             {
               "calls": [
                 {
-                  "line": 7798,
+                  "line": 7792,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11861,7 +11861,7 @@
                 },
                 {
                   "branch": "not isinstance(doc, dict)",
-                  "line": 7806,
+                  "line": 7800,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11877,7 +11877,7 @@
               "calls": [
                 {
                   "branch": "stage not in P0A_CHILD_STAGES",
-                  "line": 7844,
+                  "line": 7838,
                   "name": "usage_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11885,14 +11885,14 @@
                 },
                 {
                   "branch": "judge not in BAKEOFF_JUDGE_SPECS",
-                  "line": 7850,
+                  "line": 7844,
                   "name": "usage_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
                   }
                 },
                 {
-                  "line": 7798,
+                  "line": 7792,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11901,7 +11901,7 @@
                 },
                 {
                   "branch": "not isinstance(doc, dict)",
-                  "line": 7806,
+                  "line": 7800,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11909,7 +11909,7 @@
                   "via": "read_p0a_pilot_identity_file"
                 },
                 {
-                  "line": 7383,
+                  "line": 7377,
                   "name": "normalize_judge_device",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/device.py"
@@ -11917,7 +11917,7 @@
                   "via": "prepare_lock_check_p0a"
                 },
                 {
-                  "line": 7385,
+                  "line": 7379,
                   "name": "RdlabError",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11941,7 +11941,7 @@
                 },
                 {
                   "branch": "in_real_mode and fake_transport",
-                  "line": 7407,
+                  "line": 7401,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11950,7 +11950,7 @@
                 },
                 {
                   "branch": "any(part_name.startswith(prefix) for prefix in (\"part01\", \"…",
-                  "line": 7415,
+                  "line": 7409,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -12085,7 +12085,7 @@
               "calls": [
                 {
                   "branch": "active_hooks",
-                  "line": 8116,
+                  "line": 8110,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -12100,7 +12100,7 @@
             {
               "calls": [
                 {
-                  "line": 8181,
+                  "line": 8175,
                   "name": "PASS_MODE_CHOICES",
                   "passed": true,
                   "target": {
@@ -12108,14 +12108,14 @@
                   }
                 },
                 {
-                  "line": 8303,
+                  "line": 8297,
                   "name": "normalize_judge_device",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/device.py"
                   }
                 },
                 {
-                  "line": 8305,
+                  "line": 8299,
                   "name": "RdlabError",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -12123,7 +12123,7 @@
                 },
                 {
                   "branch": "args.p0a_out is None",
-                  "line": 8318,
+                  "line": 8312,
                   "name": "usage_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -12131,14 +12131,14 @@
                 },
                 {
                   "branch": "args.p0a_stage is not None",
-                  "line": 8327,
+                  "line": 8321,
                   "name": "run_p0a_child_stage",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/__init__.py"
                   }
                 },
                 {
-                  "line": 4970,
+                  "line": 4964,
                   "name": "normalize_judge_device",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/device.py"
@@ -12146,7 +12146,7 @@
                   "via": "run_bakeoff_judge"
                 },
                 {
-                  "line": 4972,
+                  "line": 4966,
                   "name": "RdlabError",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -12187,7 +12187,7 @@
                 },
                 {
                   "branch": "active_hooks",
-                  "line": 8116,
+                  "line": 8110,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -12267,14 +12267,14 @@
                   "via": "parse_shard_spec"
                 },
                 {
-                  "line": 4895,
+                  "line": 4889,
                   "name": "open",
                   "target": null,
                   "via": "_append_child_progress_line"
                 },
                 {
                   "branch": "smi_mode_raw and smi_mode_raw not in (\"ok\", \"high\", \"fail\",…",
-                  "line": 5057,
+                  "line": 5051,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -12292,7 +12292,7 @@
                 },
                 {
                   "branch": "receipts_dir is None",
-                  "line": 5083,
+                  "line": 5077,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -12376,7 +12376,7 @@
                   "via": "_build_original_judge_adapter"
                 },
                 {
-                  "line": 8411,
+                  "line": 8405,
                   "name": "judge_supports_pass_mode",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/three_way_wording.py"
@@ -12392,7 +12392,7 @@
               "calls": [
                 {
                   "branch": "spec.judge_id not in D3_FAMILY_JUDGE_IDS or spec.judge_id =…",
-                  "line": 3775,
+                  "line": 3769,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -12401,7 +12401,7 @@
                 },
                 {
                   "branch": "not isinstance(allow_remote_code_reviewed, str) or allow_re…",
-                  "line": 8629,
+                  "line": 8623,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -12409,7 +12409,7 @@
                 },
                 {
                   "branch": "spec.revision != pinned",
-                  "line": 8636,
+                  "line": 8630,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -12417,7 +12417,7 @@
                 },
                 {
                   "branch": "tuple(sorted(spec.remote_code_files)) != tuple(sorted(revie…",
-                  "line": 8643,
+                  "line": 8637,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -12433,7 +12433,7 @@
               "calls": [
                 {
                   "branch": "reviewed is None or differing",
-                  "line": 8687,
+                  "line": 8681,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -12448,7 +12448,7 @@
             {
               "calls": [
                 {
-                  "line": 8734,
+                  "line": 8728,
                   "name": "two_question_wording",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/three_way_wording.py"
@@ -12463,14 +12463,14 @@
             {
               "calls": [
                 {
-                  "line": 8750,
+                  "line": 8744,
                   "name": "two_question_wording",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/three_way_wording.py"
                   }
                 },
                 {
-                  "line": 8773,
+                  "line": 8767,
                   "name": "two_question_verdict",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/three_way_wording.py"
@@ -12485,14 +12485,14 @@
             {
               "calls": [
                 {
-                  "line": 8879,
+                  "line": 8873,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
                   }
                 },
                 {
-                  "line": 8884,
+                  "line": 8878,
                   "name": "values",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/three_way_wording.py"
@@ -12500,7 +12500,7 @@
                 },
                 {
                   "branch": "sorted(id2label) != list(range(len(id2label))) or any(set(i…",
-                  "line": 8886,
+                  "line": 8880,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -12541,14 +12541,14 @@
               "calls": [
                 {
                   "branch": "prompt.pass_mode in TWO_QUESTION_PASS_MODES and spec.judge_…",
-                  "line": 9067,
+                  "line": 9061,
                   "name": "two_question_wording",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/three_way_wording.py"
                   }
                 },
                 {
-                  "line": 9850,
+                  "line": 9844,
                   "name": "three_way_wording",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/three_way_wording.py"
@@ -12565,7 +12565,7 @@
               "calls": [
                 {
                   "branch": "not isinstance(doc, Mapping) or doc.get(\"status\") != \"ok\" o…",
-                  "line": 9232,
+                  "line": 9226,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -12580,7 +12580,7 @@
             {
               "calls": [
                 {
-                  "line": 9405,
+                  "line": 9399,
                   "name": "usage_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -12588,7 +12588,7 @@
                 },
                 {
                   "branch": "val <= 0",
-                  "line": 9411,
+                  "line": 9405,
                   "name": "usage_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -12603,7 +12603,7 @@
             {
               "calls": [
                 {
-                  "line": 9428,
+                  "line": 9422,
                   "name": "apply_chat_template",
                   "target": null
                 }
@@ -12616,7 +12616,7 @@
             {
               "calls": [
                 {
-                  "line": 9405,
+                  "line": 9399,
                   "name": "usage_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -12625,7 +12625,7 @@
                 },
                 {
                   "branch": "val <= 0",
-                  "line": 9411,
+                  "line": 9405,
                   "name": "usage_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -12641,7 +12641,7 @@
             {
               "calls": [
                 {
-                  "line": 9405,
+                  "line": 9399,
                   "name": "usage_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -12650,7 +12650,7 @@
                 },
                 {
                   "branch": "val <= 0",
-                  "line": 9411,
+                  "line": 9405,
                   "name": "usage_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -12666,7 +12666,7 @@
             {
               "calls": [
                 {
-                  "line": 9850,
+                  "line": 9844,
                   "name": "three_way_wording",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/three_way_wording.py"
@@ -20225,7 +20225,7 @@
             "test_launcher_gate_selection_check_refuses_unexpected_values",
             "test_vram_ceiling_is_per_judge_and_only_d3_has_its_own"
           ],
-          "hash": "a3d7d591ab3bb0461f2547e2cb01c5eb23fa572ad1d5b40c0de79322275852ec",
+          "hash": "64d036cb019ad6b140d4f280e277387b2cc5d8f9e75e0b8dd665f9b2dfed7df2",
           "importOrder": [
             "src/reasoning_dataset_lab/errors.py",
             "src/reasoning_dataset_lab/pilot_b/__init__.py",
@@ -20747,7 +20747,7 @@
             "test_user_message_byte_identical_to_mu_judge",
             "test_vllm_transport_sampling_and_first_answer_token_logprobs"
           ],
-          "hash": "f6fe820c6bed7457fabbe6b5544ed15a512283342443ef577547e16653986552",
+          "hash": "03307983f3ebea6d269518c3c9ce26207732365a04692bb462e3bfd12fc9ebba",
           "importsFiles": [
             "src/reasoning_dataset_lab/errors.py",
             "src/reasoning_dataset_lab/pilot_b/__init__.py",
@@ -22747,7 +22747,7 @@
   ],
   "engine": "1.26.0",
   "generatedFrom": {
-    "commit": "089179b1cc23409b851e42445f6bf643816439ad",
+    "commit": "d950cd1a97355f62783bb0b98b876216be3ea894",
     "tracked": 209
   },
   "landings": [
