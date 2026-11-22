@@ -51,9 +51,16 @@ subprocess (`<venv>/bin/python -m reasoning_dataset_lab.pilot_b.bakeoff_judge`) 
 - `venv-vllm/bin/python` (`vllm.lock.txt`, `vllm==0.34.0`, `transformers==5.22.2`, `torch==2.14.0`, CPython `3.13`,
   created lazily on real windows that select `qwen3.6-35b-a3b` via `ensure_vllm_venv`): `qwen3.6-35b-a3b`
   (`VllmJudgeTransport`, offline in-process batch size `1`, `language_model_only=True`, `tensor_parallel_size=1`,
-  `enable_thinking=True`, general-thinking sampling `temperature=1.0`, `top_p=0.95`, `top_k=20`, `min_p=0.0`,
-  `presence_penalty=1.5`, `repetition_penalty=1.0`, deterministic per-call seed from `(item_id, order)`,
-  `max_new_tokens` from `RDLAB_QWEN36_MAX_NEW_TOKENS`, default `4096`).
+  explicit `max_model_len = QWEN36_PROMPT_TOKEN_CAP (4096) + max_new_tokens`, `gpu_memory_utilization=0.90`,
+  `enforce_eager=False`, `logprobs_mode="raw_logprobs"` extracting raw top-20 logprobs before temperature and
+  penalties, `enable_thinking=True`, prompt template byte-identity check refusing `QWEN36_PROMPT_TEMPLATE_MISMATCH`,
+  general-thinking sampling `temperature=1.0`, `top_p=0.95`, `top_k=20`, `min_p=0.0`, `presence_penalty=1.5`,
+  `repetition_penalty=1.0`, deterministic per-call seed from `(item_id, order)`, `max_new_tokens` required via
+  `RDLAB_QWEN36_MAX_NEW_TOKENS` on real windows (`QWEN36_MAX_NEW_TOKENS_REQUIRED` if unset, `4096` default only on
+  stub/dryrun paths); rows record both `raw_verdict` and `argmax_verdict` plus `unparseable_answer_text` on
+  unparseable rows, vLLM `abort` maps to `state="aborted"`, and `judge_done`/summary record `unparseable_count`,
+  `aborted_count`, `verdict_disagreement_count`, and `probs_missing_count`; the `92,000` MiB VRAM halt, `12 GiB`
+  `venv-vllm` size, and install/startup seconds are unmeasured estimates to be measured by a stub GPU window).
 
 When a judge child finishes, it writes `<run_dir>/judge_done/<judge>.json` (`row_count` and `sha256` of
 `rows/<judge>.jsonl`), and the parent records `judge_pass_done` in `progress.jsonl`. If a judge child is killed by the

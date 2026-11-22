@@ -7676,6 +7676,11 @@ def _run_judges_pipeline_body(
         pass_mode,
         judge_ids=[jid for jid, _ in selected_specs],
     )
+    validate_qwen36_real_window_max_new_tokens(
+        norm_mode,
+        judge_ids=[jid for jid, _ in selected_specs],
+        dryrun=dryrun,
+    )
     stub_exercise_elephant = validate_stub_exercise_elephant_install(
         norm_mode,
         judge_ids=[jid for jid, _ in selected_specs],
@@ -8381,6 +8386,11 @@ def _run_judges_pipeline_body(
             "lock_sha256": lock_sha256,
             "device": device_str,
             "row_count": len(row_objs),
+            "unparseable_count": int(done_doc["unparseable_count"]) if "unparseable_count" in done_doc else sum(1 for r in row_objs if r.get("state") == "unparseable"),
+            "length_stop_count": int(done_doc["length_stop_count"]) if "length_stop_count" in done_doc else sum(1 for r in row_objs if r.get("state") == "length_stop"),
+            "aborted_count": int(done_doc["aborted_count"]) if "aborted_count" in done_doc else sum(1 for r in row_objs if r.get("state") == "aborted"),
+            "verdict_disagreement_count": int(done_doc["verdict_disagreement_count"]) if "verdict_disagreement_count" in done_doc else 0,
+            "probs_missing_count": int(done_doc["probs_missing_count"]) if "probs_missing_count" in done_doc else 0,
             "rows_sha256": actual_rows_sha,
             "items_count": int(done_doc.get("items_count", len(shard_item_ids))),
             "orders": ["AB", "BA"],
@@ -14966,6 +14976,13 @@ def main(argv: list[str] | None = None) -> int:
             judge_ids=judge_order,
         )
 
+        current_step = "validate_qwen36_max_new_tokens"
+        validate_qwen36_real_window_max_new_tokens(
+            args.mode,
+            judge_ids=judge_order,
+            dryrun=dryrun,
+        )
+
         current_step = "validate_stub_exercise_elephant_install_plan"
         validate_stub_exercise_elephant_install(
             args.mode,
@@ -16300,6 +16317,7 @@ QWEN36_JUDGE_ID = "qwen3.6-35b-a3b"
 QWEN36_REPO_ID = "Qwen/Qwen3.6-35B-A3B"
 QWEN36_REVISION = "345d467b117d1fd5eda9b879a5988de9ae5f47a7"
 QWEN36_DEFAULT_MAX_NEW_TOKENS = 4096
+QWEN36_MAX_NEW_TOKENS_ENV_VAR = "RDLAB_QWEN36_MAX_NEW_TOKENS"
 # d3-mini's gate SHA is the reviewed bd0090dd. d3-flash's is its own pin: its eight remote-code files are byte-identical
 # to d3-mini's reviewed ones (R&D, 2026-11-15), and the d3 transport re-proves that from the receipts at every load.
 # d3's is its own pin too: seven files byte-identical to d3-mini's, and d3_runtime.py checked against its own reviewed
@@ -16439,6 +16457,7 @@ GATE_SELECTION_INVALID = "GATE_JUDGE_SELECTION_INVALID"
 D3_WEIGHTS_BYTES = 52_202_137_725
 # Qwen/Qwen3.6-35B-A3B's weights (`total_bytes` of scripts/colab/receipts/Qwen__Qwen3.6-35B-A3B.sha256.json) + venv-vllm.
 QWEN36_WEIGHTS_BYTES = 71_926_859_142
+# Unmeasured 12 GiB estimate from unpacked `vllm.lock.txt` wheels (and unmeasured venv install / engine startup seconds), to be measured on a stub GPU window.
 VENV_VLLM_ESTIMATED_BYTES = 12 * 1024**3
 _LAST_VLLM_INSTALL: dict[str, Any] | None = None
 
@@ -16889,6 +16908,43 @@ def validate_pass_mode(
                 "3-way pass mode.",
             )
     return cleaned
+
+
+def validate_qwen36_real_window_max_new_tokens(
+    mode: str | None,
+    raw_value: str | None = None,
+    *,
+    judge_ids: Sequence[str] | None = None,
+    dryrun: bool = False,
+    env: Mapping[str, str] | None = None,
+) -> int | None:
+    """Refuse real (non-stub, non-dryrun) windows naming `qwen3.6-35b-a3b` unless `RDLAB_QWEN36_MAX_NEW_TOKENS` is set."""
+    target_ids = [str(j) for j in (judge_ids if judge_ids is not None else gate_selected_judge_ids())]
+    if QWEN36_JUDGE_ID not in target_ids:
+        return None
+    source = os.environ if env is None else env
+    eff_dryrun = bool(dryrun or str(source.get("VM_DRYRUN", "") or "").strip() == "1")
+    raw = str(source.get(QWEN36_MAX_NEW_TOKENS_ENV_VAR, "") if raw_value is None else raw_value or "").strip()
+    if not raw:
+        if is_real_mode(mode, dryrun=eff_dryrun):
+            raise RefusalError(
+                "QWEN36_MAX_NEW_TOKENS_REQUIRED",
+                f"{QWEN36_MAX_NEW_TOKENS_ENV_VAR} is required for {QWEN36_JUDGE_ID} in real (non-stub) windows (no guessed default).",
+            )
+        return QWEN36_DEFAULT_MAX_NEW_TOKENS
+    try:
+        val = int(raw)
+    except ValueError as exc:
+        raise RefusalError(
+            "BAKEOFF_MAX_NEW_TOKENS_INVALID",
+            f"{QWEN36_MAX_NEW_TOKENS_ENV_VAR} must be a positive integer, got {raw!r}.",
+        ) from exc
+    if val <= 0:
+        raise RefusalError(
+            "BAKEOFF_MAX_NEW_TOKENS_INVALID",
+            f"{QWEN36_MAX_NEW_TOKENS_ENV_VAR} must be > 0, got {val}.",
+        )
+    return val
 
 
 def _judge_passes(

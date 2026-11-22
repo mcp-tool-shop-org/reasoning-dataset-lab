@@ -78,8 +78,8 @@ from reasoning_dataset_lab.pilot_b.low_margin_fields import (
 OrderMode = Literal["AB", "BA"]
 from reasoning_dataset_lab.pilot_b.run_records import OUTCOME_DRAFT_FILENAME, REVERIFY_HINT_TEMPLATE, UNVERIFIED_JUDGE_DONE_FILENAME, collect_run_unverified_passes, format_unverified_or_incomplete_refusal  # noqa: E501
 from reasoning_dataset_lab.pilot_b.three_way_wording import NLI_PASS_MODES, PASS_MODE_CHOICES, THREE_WAY_PASS_MODES, TWO_QUESTION_PASS_MODES, PassMode, judge_done_filename_for_pass, judge_supports_pass_mode, rows_filename_is_three_way, three_way_wording  # noqa: E501
-DoneReason = Literal["stop", "length", "error"]
-RowState = Literal["parsed", "unparseable", "length_stop"]
+DoneReason = Literal["stop", "length", "abort", "error"]
+RowState = Literal["parsed", "unparseable", "length_stop", "aborted"]
 
 DEFAULT_SCHEDULE_SEED = 20261030
 DEFAULT_VRAM_HALT_MIB = 26_000
@@ -560,6 +560,8 @@ class ParsedJudgeReadout:
     choice_probabilities: dict[str, float] | None
     verdict_top_logprobs: tuple[TopLogprobEntry, ...]
     parse_note: str | None = None
+    argmax_verdict: str | None = None
+    unparseable_answer_text: str | None = None
 
 
 @runtime_checkable
@@ -1563,6 +1565,16 @@ class BaseJudgeAdapter:
                 choice_probabilities=None,
                 verdict_top_logprobs=response.verdict_top_logprobs[:5],
                 parse_note="generation cut by max_new_tokens limit",
+            )
+        if response.done_reason == "abort":
+            return ParsedJudgeReadout(
+                state="aborted",
+                done_reason="abort",
+                raw_verdict=None,
+                p_yes=None,
+                choice_probabilities=None,
+                verdict_top_logprobs=response.verdict_top_logprobs[:5],
+                parse_note="generation aborted by backend",
             )
         return self._parse_non_length_response(response, pass_mode=pass_mode)
 
@@ -4994,6 +5006,12 @@ def run_bakeoff_judge(
         shard_spec=eff_shard_spec,
         fake_transport=bool(fake_transport or transport is not None),
     )
+    is_real_qwen36 = spec.judge_id == QWEN36_JUDGE_ID and is_real_mode(
+        eff_window_mode,
+        fake_transport=bool(fake_transport or isinstance(transport, DeterministicFakeJudgeTransport)),
+    )
+    if spec.judge_id == QWEN36_JUDGE_ID:
+        resolve_qwen36_max_new_tokens(require_explicit=is_real_qwen36)
     det_status = configure_torch_determinism(window_mode=eff_window_mode, shard_spec=eff_shard_spec)
 
     eff_manifest_path_raw = (
@@ -5430,7 +5448,10 @@ def run_bakeoff_judge(
 
     unparseable_count = sum(1 for r in existing_row_objs if r.get("state") == "unparseable")
     length_stop_count = sum(1 for r in existing_row_objs if r.get("state") == "length_stop")
+    aborted_count = sum(1 for r in existing_row_objs if r.get("state") == "aborted")
     parsed_count = sum(1 for r in existing_row_objs if r.get("state") == "parsed")
+    verdict_disagreement_count = sum(1 for r in existing_row_objs if r.get("state") == "parsed" and r.get("raw_verdict") is not None and r.get("argmax_verdict") is not None and r.get("raw_verdict") != r.get("argmax_verdict"))
+    probs_missing_count = sum(1 for r in existing_row_objs if spec.judge_id == QWEN36_JUDGE_ID and r.get("state") == "parsed" and r.get("choice_probabilities") is None)
     failed_to_run_count = 0
     vram_peak_overall = max((int(r.get("vram_peak_mib", 0)) for r in existing_row_objs), default=0)
     total_seconds = sum(float(r.get("seconds", 0.0)) for r in existing_row_objs)
@@ -5660,6 +5681,7 @@ def run_bakeoff_judge(
                             "parsed": parsed_count,
                             "unparseable": unparseable_count,
                             "length_stop": length_stop_count,
+                            "aborted": aborted_count,
                             "failed_to_run": failed_to_run_count,
                         },
                         "total_seconds": failed_wall_s,
@@ -5693,13 +5715,19 @@ def run_bakeoff_judge(
             readout = adapter.parse_response(resp, pass_mode=pass_mode)
             if readout.state == "length_stop":
                 length_stop_count += 1
+            elif readout.state == "aborted":
+                aborted_count += 1
             elif readout.state == "unparseable":
                 unparseable_count += 1
             else:
                 parsed_count += 1
+                if readout.raw_verdict is not None and readout.argmax_verdict is not None and readout.raw_verdict != readout.argmax_verdict:
+                    verdict_disagreement_count += 1
+                if spec.judge_id == QWEN36_JUDGE_ID and readout.choice_probabilities is None:
+                    probs_missing_count += 1
 
             calls_so_far += 1
-            bad_calls = unparseable_count + length_stop_count
+            bad_calls = unparseable_count + length_stop_count + aborted_count
             will_halt_error_rate = calls_so_far >= error_rate_min_calls and (bad_calls / calls_so_far) > error_rate_stop
             _append_child_progress_line(
                 eff_progress_file,
@@ -5829,6 +5857,7 @@ def run_bakeoff_judge(
                 **qwen36_row_fields(
                     spec,
                     resp,
+                    readout=readout,
                     item_id=item.item_id,
                     order=entry.order,
                     out_tok_cnt=out_tok_cnt,
@@ -5852,6 +5881,7 @@ def run_bakeoff_judge(
                     "parsed_count": parsed_count,
                     "unparseable_count": unparseable_count,
                     "length_stop_count": length_stop_count,
+                    "aborted_count": aborted_count,
                 }
             row_obj = _build_sealed_row_with_sha256(base_row_obj)
             rf.write(_canonical_json_line(row_obj) + "\n")
@@ -5883,6 +5913,7 @@ def run_bakeoff_judge(
                             "parsed": parsed_count,
                             "unparseable": unparseable_count,
                             "length_stop": length_stop_count,
+                            "aborted": aborted_count,
                             "failed_to_run": failed_to_run_count,
                         },
                         "total_seconds": failed_wall_s,
@@ -5893,7 +5924,7 @@ def run_bakeoff_judge(
                 raise refused_error(
                     "BAKEOFF_JUDGE_ERROR_RATE_STOP",
                     f"Stop rule triggered for '{spec.judge_id}': unparseable ({unparseable_count}) + length_stop "
-                    f"({length_stop_count}) = {bad_calls}/{calls_so_far} ({bad_calls / calls_so_far:.1%}) > {error_rate_stop:.1%}.",
+                    f"({length_stop_count}) + aborted ({aborted_count}) = {bad_calls}/{calls_so_far} ({bad_calls / calls_so_far:.1%}) > {error_rate_stop:.1%}.",
                     "Inspect prompt formatting and max_new_tokens settings before continuing.",
                 )
 
@@ -5908,6 +5939,7 @@ def run_bakeoff_judge(
                 "parsed": parsed_count,
                 "unparseable": unparseable_count,
                 "length_stop": length_stop_count,
+                "aborted": aborted_count,
                 "failed_to_run": failed_to_run_count,
             },
             "total_seconds": child_wall_elapsed_s,
@@ -5982,7 +6014,7 @@ def run_bakeoff_judge(
     thinking_length_quantiles = _compute_quantiles(thinking_len_vals)
     qwen36_summary_extra: dict[str, Any] = {}
     if spec.judge_id == QWEN36_JUDGE_ID:
-        qwen36_summary_extra["max_new_tokens"] = resolve_qwen36_max_new_tokens()
+        qwen36_summary_extra["max_new_tokens"] = resolve_qwen36_max_new_tokens(require_explicit=is_real_qwen36)
         qwen36_summary_extra["thinking_length_quantiles"] = thinking_length_quantiles
         qwen36_summary_extra["call_seconds_quantiles"] = call_seconds_quantiles
 
@@ -6003,6 +6035,9 @@ def run_bakeoff_judge(
             "parsed_count": parsed_count,
             "unparseable_count": unparseable_count,
             "length_stop_count": length_stop_count,
+            "aborted_count": aborted_count,
+            "verdict_disagreement_count": verdict_disagreement_count,
+            "probs_missing_count": probs_missing_count,
             "vram_peak_mib": vram_peak_overall,
             "load_wall_seconds": load_wall_seconds,
             "load_wall_seconds_history": load_history,
@@ -6049,6 +6084,9 @@ def run_bakeoff_judge(
         "parsed_count": parsed_count,
         "unparseable_count": unparseable_count,
         "length_stop_count": length_stop_count,
+        "aborted_count": aborted_count,
+        "verdict_disagreement_count": verdict_disagreement_count,
+        "probs_missing_count": probs_missing_count,
         "vram_peak_mib": vram_peak_overall,
         "load_wall_seconds": load_wall_seconds,
         "load_wall_seconds_history": load_history,
@@ -8475,7 +8513,18 @@ QWEN36_REPO_ID = "Qwen/Qwen3.6-35B-A3B"
 QWEN36_REVISION = "345d467b117d1fd5eda9b879a5988de9ae5f47a7"
 QWEN36_DEFAULT_MAX_NEW_TOKENS = 4096
 QWEN36_MAX_NEW_TOKENS_ENV_VAR = "RDLAB_QWEN36_MAX_NEW_TOKENS"
-# BF16 weights (71.93 GB = 68,595 MiB) + vLLM runtime/KV cache headroom under the 97,250 MiB 96 GB card ceiling.
+# Prompt token cap: 8x NLI_MAX_INPUT_TOKENS (512 tokens for STATE + claim), leaving room for prompt template tokens while bounding KV cache below 262k.
+QWEN36_PROMPT_TOKEN_CAP = 4096
+QWEN36_GPU_MEMORY_UTILIZATION = 0.90
+QWEN36_ENFORCE_EAGER = False
+QWEN36_LOGPROBS_MODE = "raw_logprobs"
+QWEN36_LOGPROBS_BASIS = (
+    "vllm==0.34.0 default logprobs_mode='raw_logprobs': top-20 logprobs from raw logits before "
+    "temperature/penalties (vllm/config/model.py:305-309; vllm/v1/worker/gpu/sample/sampler.py:170-183; "
+    "vllm/v1/worker/gpu/sample/logprob.py:84-133)"
+)
+# Unmeasured estimate (BF16 weights 71.93 GB = 68,595 MiB + estimated vLLM runtime/KV headroom under 97,250 MiB ceiling;
+# to be measured on a stub GPU window, along with venv size and install/startup seconds).
 QWEN36_VRAM_HALT_MIB = 92_000
 QWEN36_THINKING_SAMPLING: dict[str, float | int] = {
     "temperature": 1.0,
@@ -9371,11 +9420,25 @@ def real_transport_class_for(spec: JudgeSpec) -> Any:
     return TransformersJudgeTransport
 
 
-def resolve_qwen36_max_new_tokens(env: Mapping[str, str] | None = None) -> int:
-    """Resolve `max_new_tokens` for Qwen3.6 from `RDLAB_QWEN36_MAX_NEW_TOKENS`, else `QWEN36_DEFAULT_MAX_NEW_TOKENS`."""
+def resolve_qwen36_max_new_tokens(
+    env: Mapping[str, str] | None = None,
+    *,
+    require_explicit: bool = False,
+) -> int:
+    """Resolve `max_new_tokens` for Qwen3.6 from `RDLAB_QWEN36_MAX_NEW_TOKENS`.
+
+    Real (non-stub) windows must set `RDLAB_QWEN36_MAX_NEW_TOKENS` explicitly (`QWEN36_MAX_NEW_TOKENS_REQUIRED`);
+    stub/dryrun paths may fall back to `QWEN36_DEFAULT_MAX_NEW_TOKENS`.
+    """
     source = os.environ if env is None else env
     raw = str(source.get(QWEN36_MAX_NEW_TOKENS_ENV_VAR, "") or "").strip()
     if not raw:
+        if require_explicit:
+            raise refused_error(
+                "QWEN36_MAX_NEW_TOKENS_REQUIRED",
+                f"{QWEN36_MAX_NEW_TOKENS_ENV_VAR} must be explicitly set for {QWEN36_JUDGE_ID} in real (non-stub) windows (no guessed default).",
+                f"Set {QWEN36_MAX_NEW_TOKENS_ENV_VAR}=<positive integer> before running a real window naming {QWEN36_JUDGE_ID}.",
+            )
         return QWEN36_DEFAULT_MAX_NEW_TOKENS
     try:
         val = int(raw)
@@ -9429,6 +9492,7 @@ def qwen36_row_fields(
     spec: JudgeSpec,
     resp: JudgeTransportResponse,
     *,
+    readout: ParsedJudgeReadout,
     item_id: str,
     order: OrderMode,
     out_tok_cnt: int,
@@ -9439,6 +9503,8 @@ def qwen36_row_fields(
     if spec.judge_id != QWEN36_JUDGE_ID and resp.thinking_token_count is None:
         return {}
     return {
+        "argmax_verdict": readout.argmax_verdict,
+        "unparseable_answer_text": readout.unparseable_answer_text,
         "generated_token_count": int(out_tok_cnt),
         "thinking_token_count": resp.thinking_token_count,
         "finish_reason": stop_rsn,
@@ -9500,7 +9566,7 @@ class Qwen36ChoiceAdapter(BaseJudgeAdapter):
     ) -> ParsedJudgeReadout:
         top5 = response.verdict_top_logprobs[:5]
 
-        def _bad(note: str) -> ParsedJudgeReadout:
+        def _bad(note: str, answer_text: str) -> ParsedJudgeReadout:
             return ParsedJudgeReadout(
                 state="unparseable",
                 done_reason=response.done_reason,
@@ -9509,24 +9575,27 @@ class Qwen36ChoiceAdapter(BaseJudgeAdapter):
                 choice_probabilities=None,
                 verdict_top_logprobs=top5,
                 parse_note=note,
+                argmax_verdict=None,
+                unparseable_answer_text=answer_text,
             )
 
         if response.done_reason != "stop":
-            return _bad(f"non-stop finish reason {response.done_reason!r}")
+            return _bad(f"non-stop finish reason {response.done_reason!r}", response.raw_text)
         if "</think>" not in response.raw_text:
-            return _bad("missing closing </think> tag")
-        answer_text = response.raw_text.rsplit("</think>", 1)[1].strip()
+            return _bad("missing closing </think> tag", response.raw_text)
+        after_raw = response.raw_text.rsplit("</think>", 1)[1]
+        answer_text = after_raw.strip()
         if not answer_text:
-            return _bad("no label after closing </think>")
+            return _bad("no label after closing </think>", after_raw)
         tokens = answer_text.split()
         if len(tokens) != 1:
-            return _bad(f"multiple labels or extra tokens after </think>: {answer_text!r}")
+            return _bad(f"multiple labels or extra tokens after </think>: {answer_text!r}", answer_text)
         # Reuse the same choice-letter mapping (`letter_to_internal`) as `MuJudgeAdapter._parse_non_length_response`.
         label_map = three_way_wording(pass_mode, self.spec.judge_id).letter_to_internal()
         norm = tokens[0].strip().lower()
         if norm not in label_map:
-            return _bad(f"label {tokens[0]!r} outside shown set {sorted(label_map)}")
-        probs, _ = compute_three_way_choice_probs(response.verdict_top_logprobs, label_map=label_map)
+            return _bad(f"label {tokens[0]!r} outside shown set {sorted(label_map)}", answer_text)
+        probs, best_cls = compute_three_way_choice_probs(response.verdict_top_logprobs, label_map=label_map)
         return ParsedJudgeReadout(
             state="parsed",
             done_reason=response.done_reason,
@@ -9534,6 +9603,7 @@ class Qwen36ChoiceAdapter(BaseJudgeAdapter):
             p_yes=(probs.get("supported") if probs is not None else None),
             choice_probabilities=probs,
             verdict_top_logprobs=top5,
+            argmax_verdict=(best_cls if probs is not None else None),
         )
 
 
@@ -9564,6 +9634,7 @@ class VllmJudgeTransport:
         self._verified_digest: str | None = None
         self._tokenizer: Any = None
         self._llm: Any = None
+        self._max_model_len: int | None = None
 
     def verify_ready(self, spec: JudgeSpec, *, allow_remote_code_reviewed: str | None = None) -> str:
         check_remote_code_gate(spec, allow_remote_code_reviewed=allow_remote_code_reviewed)
@@ -9584,6 +9655,8 @@ class VllmJudgeTransport:
                 f"{spec.judge_id} was not verified (verify_ready) before load.",
                 "Call verify_ready first.",
             )
+        max_new_tokens = resolve_qwen36_max_new_tokens(require_explicit=is_real_mode(self.window_mode))
+        max_model_len = QWEN36_PROMPT_TOKEN_CAP + max_new_tokens
         from transformers import AutoTokenizer
         from vllm import LLM
 
@@ -9596,7 +9669,12 @@ class VllmJudgeTransport:
             tensor_parallel_size=1,
             trust_remote_code=False,
             language_model_only=True,
+            max_model_len=max_model_len,
+            gpu_memory_utilization=QWEN36_GPU_MEMORY_UTILIZATION,
+            enforce_eager=QWEN36_ENFORCE_EAGER,
+            logprobs_mode=QWEN36_LOGPROBS_MODE,
         )
+        self._max_model_len = max_model_len
 
     def _decode_token_id(self, token_id: int) -> str:
         assert self._tokenizer is not None
@@ -9613,13 +9691,16 @@ class VllmJudgeTransport:
         for idx in range(len(tokens) - 1, -1, -1):
             if tokens[idx] == "</think>" or tokens[idx].endswith("</think>"):
                 return idx
-        # Fallback if `</think>` spanned multiple tokens.
+        # Fallback if `</think>` spanned multiple tokens: return the ending token index of the last match.
         acc = ""
+        last_idx: int | None = None
+        tag = "</think>"
         for idx, tok in enumerate(tokens):
+            prev_len = len(acc)
             acc += tok
-            if "</think>" in acc:
-                return idx
-        return None
+            if tag in acc[max(0, prev_len - len(tag) + 1) :]:
+                last_idx = idx
+        return last_idx
 
     def _extract_top_logprobs(self, lp_map: Any) -> tuple[TopLogprobEntry, ...]:
         if not isinstance(lp_map, Mapping):
@@ -9645,6 +9726,7 @@ class VllmJudgeTransport:
         _ = seed  # Qwen3.6 sampling seed depends solely on (item_id, order).
         self._ensure_loaded(spec)
         assert self._llm is not None and self._tokenizer is not None and self._verified_digest is not None
+        assert self._max_model_len is not None
         import tokenizers
         import torch
         import transformers
@@ -9652,7 +9734,13 @@ class VllmJudgeTransport:
         from vllm import SamplingParams
 
         rendered_prompt = render_qwen36_chat_prompt(self._tokenizer, prompt.messages)
-        max_new_tokens = resolve_qwen36_max_new_tokens()
+        if rendered_prompt.encode("utf-8") != prompt.prompt_text.encode("utf-8"):
+            raise refused_error(
+                "QWEN36_PROMPT_TEMPLATE_MISMATCH",
+                f"Tokenizer-rendered prompt for {spec.judge_id} ({prompt.item_id}/{prompt.order}) differs bytewise from recorded prompt_text (prompt_sha256={prompt.prompt_sha256}).",
+                "Ensure the snapshot tokenizer apply_chat_template matches Qwen36ChoiceAdapter._build_prompt.",
+            )
+        max_new_tokens = resolve_qwen36_max_new_tokens(require_explicit=is_real_mode(self.window_mode))
         call_seed = derive_qwen36_call_seed(prompt.item_id, prompt.order)
         sampling_params = SamplingParams(
             temperature=float(QWEN36_THINKING_SAMPLING["temperature"]),
@@ -9695,7 +9783,12 @@ class VllmJudgeTransport:
         raw_finish = str(getattr(comp, "finish_reason", None) or "")
         if not raw_finish:
             raw_finish = "length" if len(token_ids) >= max_new_tokens else "stop"
-        done_reason: DoneReason = "length" if raw_finish == "length" else "stop"
+        if raw_finish == "length":
+            done_reason: DoneReason = "length"
+        elif raw_finish == "abort":
+            done_reason = "abort"
+        else:
+            done_reason = "stop"
         stop_reason = "max_new_tokens" if done_reason == "length" else raw_finish
 
         prompt_tok_ids = getattr(req_out, "prompt_token_ids", None)
@@ -9715,6 +9808,12 @@ class VllmJudgeTransport:
             "dtype": self.torch_dtype,
             "enable_thinking": True,
             "language_model_only": True,
+            "max_model_len": int(self._max_model_len),
+            "prompt_token_cap": QWEN36_PROMPT_TOKEN_CAP,
+            "gpu_memory_utilization": QWEN36_GPU_MEMORY_UTILIZATION,
+            "enforce_eager": QWEN36_ENFORCE_EAGER,
+            "logprobs_mode": QWEN36_LOGPROBS_MODE,
+            "logprobs_basis": QWEN36_LOGPROBS_BASIS,
             "sampling": dict(QWEN36_THINKING_SAMPLING),
             "max_new_tokens": max_new_tokens,
             "call_seed": call_seed,
@@ -9759,6 +9858,12 @@ def qwen36_fake_response(
         "transformers": "5.22.2 (pinned-not-loaded)",
         "enable_thinking": True,
         "language_model_only": True,
+        "max_model_len": QWEN36_PROMPT_TOKEN_CAP + max_new_tokens,
+        "prompt_token_cap": QWEN36_PROMPT_TOKEN_CAP,
+        "gpu_memory_utilization": QWEN36_GPU_MEMORY_UTILIZATION,
+        "enforce_eager": QWEN36_ENFORCE_EAGER,
+        "logprobs_mode": QWEN36_LOGPROBS_MODE,
+        "logprobs_basis": QWEN36_LOGPROBS_BASIS,
         "sampling": dict(QWEN36_THINKING_SAMPLING),
         "max_new_tokens": max_new_tokens,
         "call_seed": call_seed,

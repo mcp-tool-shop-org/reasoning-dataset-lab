@@ -1043,6 +1043,11 @@ try:
         judge_ids=judge_order_t,
         session_smoke=is_smoke,
     )
+    vm_judges.validate_qwen36_real_window_max_new_tokens(
+        mode,
+        judge_ids=judge_order_t,
+        dryrun=os.environ.get("VM_DRYRUN") == "1",
+    )
     vm_judges.validate_stub_exercise_elephant_install(
         mode,
         os.environ.get("RDLAB_STUB_EXERCISE_ELEPHANT_INSTALL", None),
