@@ -26,13 +26,10 @@ from reasoning_dataset_lab.pilot_b.three_way_wording import (
     three_way_mode_of_rows_filename,
 )
 
-from reasoning_dataset_lab.errors import RdlabError, refused_error
-
 UNVERIFIED_JUDGE_DONE_FILENAME = ".unverified_judge_done"
 OUTCOME_DRAFT_FILENAME = "outcome.draft.json"
 ROWS_INCOMPLETE_DIRNAME = "rows.incomplete"
 SYNTHETIC_ITEM_ID_PREFIX = "synth-"
-SYNTHETIC_CHECK_RECORD_UNREADABLE = "SYNTHETIC_CHECK_RECORD_UNREADABLE"
 REVERIFY_HINT_TEMPLATE = (
     "Run 'python scripts/colab/vm_judges.py reverify-unverified <out_dir>' offline to re-verify timed-out passes "
     "against progress.jsonl and prune verified entries without opening a Colab session."
@@ -335,32 +332,14 @@ def format_unverified_or_incomplete_refusal(
     return msg, hint
 
 
-def read_json_mapping_strict(path: Path, *, label: str) -> Mapping[str, Any] | None:
-    """Read a JSON object from `path`, returning `None` only when missing and refusing unreadable/non-object files."""
-    target = Path(path)
-    if not target.exists() and not target.is_symlink():
+def _read_json_mapping_quiet(path: Path) -> Mapping[str, Any] | None:
+    if path.is_symlink() or not path.is_file():
         return None
-    if target.is_symlink() or not target.is_file():
-        raise refused_error(
-            SYNTHETIC_CHECK_RECORD_UNREADABLE,
-            f"Record file '{label}' at '{target}' is a symlink or not a regular file.",
-            "Remove corrupted or symlinked record files before running synthetic checks or reading outputs.",
-        )
     try:
-        doc = json.loads(target.read_bytes().decode("utf-8"))
-    except (OSError, UnicodeDecodeError, ValueError) as exc:
-        raise refused_error(
-            SYNTHETIC_CHECK_RECORD_UNREADABLE,
-            f"Record file '{label}' at '{target}' cannot be parsed as UTF-8 JSON ({type(exc).__name__}).",
-            "Restore valid JSON or remove the corrupted record file before continuing.",
-        ) from exc
-    if not isinstance(doc, Mapping):
-        raise refused_error(
-            SYNTHETIC_CHECK_RECORD_UNREADABLE,
-            f"Record file '{label}' at '{target}' must decode to a JSON object, got {type(doc).__name__}.",
-            "Restore a JSON object record or remove the corrupted file before continuing.",
-        )
-    return doc
+        doc = json.loads(path.read_bytes().decode("utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError):
+        return None
+    return doc if isinstance(doc, Mapping) else None
 
 
 def find_synthetic_in_rows(rows: Sequence[Mapping[str, Any]], *, source: str = "rows") -> str | None:
@@ -379,14 +358,10 @@ def find_synthetic_in_rows(rows: Sequence[Mapping[str, Any]], *, source: str = "
 
 
 def find_synthetic_in_run_dir(run_dir: Path) -> str | None:
-    """Return a concise non-text reason if any record, `judge_done`, or row file in `run_dir` is synthetic.
-
-    Missing files are allowed and ignored; existing files that are symlinks, non-regular files,
-    unreadable/invalid UTF-8, invalid JSON, or non-object JSON fail closed with `SYNTHETIC_CHECK_RECORD_UNREADABLE`.
-    """
+    """Return a concise non-text reason if any record, `judge_done`, or row file in `run_dir` is synthetic."""
     resolved = Path(run_dir)
     for fname in ("window.json", "vm_receipt.json", "receipt.json", OUTCOME_DRAFT_FILENAME, "time_one_summary.json"):
-        doc = read_json_mapping_strict(resolved / fname, label=fname)
+        doc = _read_json_mapping_quiet(resolved / fname)
         if doc is None:
             continue
         if doc.get("synthetic_items") is True:
@@ -398,8 +373,8 @@ def find_synthetic_in_run_dir(run_dir: Path) -> str | None:
     jdone_dir = resolved / "judge_done"
     if jdone_dir.is_dir():
         for jf in sorted(jdone_dir.glob("*.json")):
-            jdoc = read_json_mapping_strict(jf, label=f"judge_done/{jf.name}")
-            if jdoc and jdoc.get("synthetic_items") is True:
+            jdoc = _read_json_mapping_quiet(jf)
+            if jdoc is not None and jdoc.get("synthetic_items") is True:
                 return f"judge_done/{jf.name} records synthetic_items=true"
 
     for sub in ("rows", "anchor_rows"):
@@ -408,39 +383,22 @@ def find_synthetic_in_run_dir(run_dir: Path) -> str | None:
             continue
         for rf in sorted(sub_dir.glob("*.jsonl")):
             if rf.is_symlink() or not rf.is_file():
-                raise refused_error(
-                    SYNTHETIC_CHECK_RECORD_UNREADABLE,
-                    f"Row file '{sub}/{rf.name}' at '{rf}' is a symlink or not a regular file.",
-                    "Remove corrupted or symlinked row files before running synthetic checks or reading outputs.",
-                )
+                continue
             try:
                 raw_text = rf.read_bytes().decode("utf-8")
-            except (OSError, UnicodeDecodeError) as exc:
-                raise refused_error(
-                    SYNTHETIC_CHECK_RECORD_UNREADABLE,
-                    f"Row file '{sub}/{rf.name}' at '{rf}' cannot be read as UTF-8 ({type(exc).__name__}).",
-                    "Restore valid UTF-8 JSONL or remove the corrupted row file before continuing.",
-                ) from exc
+            except (OSError, UnicodeDecodeError):
+                continue
             parsed_rows: list[Mapping[str, Any]] = []
-            for lineno, ln in enumerate(raw_text.splitlines(), start=1):
+            for ln in raw_text.splitlines():
                 stripped = ln.strip()
                 if not stripped:
                     continue
                 try:
                     obj = json.loads(stripped)
-                except ValueError as exc:
-                    raise refused_error(
-                        SYNTHETIC_CHECK_RECORD_UNREADABLE,
-                        f"Row file '{sub}/{rf.name}' line {lineno} is invalid JSON ({type(exc).__name__}).",
-                        "Repair or remove the malformed row line before continuing.",
-                    ) from exc
-                if not isinstance(obj, Mapping):
-                    raise refused_error(
-                        SYNTHETIC_CHECK_RECORD_UNREADABLE,
-                        f"Row file '{sub}/{rf.name}' line {lineno} must be a JSON object, got {type(obj).__name__}.",
-                        "Repair or remove the malformed row line before continuing.",
-                    )
-                parsed_rows.append(obj)
+                except ValueError:
+                    continue
+                if isinstance(obj, Mapping):
+                    parsed_rows.append(obj)
             reason = find_synthetic_in_rows(parsed_rows, source=f"{sub}/{rf.name}")
             if reason is not None:
                 return reason

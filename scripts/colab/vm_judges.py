@@ -17469,19 +17469,9 @@ def _load_run_records_module() -> Any:
 
 
 def _checked_logprob_rows_dir(judge_output_dir: Path) -> Path:
-    """Refuse (`BAKEOFF_LOGPROB_MASS_SYNTHETIC_ITEMS` / `BAKEOFF_LOGPROB_MASS_UNVERIFIED_PASS`) via `run_records`."""
+    """Refuse (`BAKEOFF_LOGPROB_MASS_UNVERIFIED_PASS` / `BAKEOFF_LOGPROB_MASS_SYNTHETIC_ITEMS`) via `run_records`."""
     run_records = _load_run_records_module()
     resolved_dir = Path(judge_output_dir)
-    try:
-        synth_reason = run_records.find_synthetic_in_run_dir(resolved_dir)
-    except run_records.RdlabError as exc:
-        raise RefusalError(exc.code, exc.message, hint=exc.hint) from exc
-    if synth_reason is not None:
-        raise RefusalError(
-            "BAKEOFF_LOGPROB_MASS_SYNTHETIC_ITEMS",
-            f"Run directory '{resolved_dir}' holds declared synthetic outputs ({synth_reason}); "
-            "synthetic --time-one windows are for timing and length measurement only and cannot produce pilot readouts.",
-        )
     try:
         unverified_entries = run_records.collect_run_unverified_passes(resolved_dir)
     except (OSError, ValueError) as exc:
@@ -17497,6 +17487,13 @@ def _checked_logprob_rows_dir(judge_output_dir: Path) -> Path:
             subject=f"Run directory '{resolved_dir}'",
         )
         raise RefusalError("BAKEOFF_LOGPROB_MASS_UNVERIFIED_PASS", msg, hint=hint)
+    synth_reason = run_records.find_synthetic_in_run_dir(resolved_dir)
+    if synth_reason is not None:
+        raise RefusalError(
+            "BAKEOFF_LOGPROB_MASS_SYNTHETIC_ITEMS",
+            f"Run directory '{resolved_dir}' holds declared synthetic outputs ({synth_reason}); "
+            "synthetic --time-one windows are for timing and length measurement only and cannot produce pilot readouts.",
+        )
     return resolved_dir / ROWS_DIRNAME
 
 

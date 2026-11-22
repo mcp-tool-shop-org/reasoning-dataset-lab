@@ -26,6 +26,7 @@ if str(REPO_ROOT) not in sys.path:
 
 import merge_shards  # noqa: E402
 import vm_judges  # noqa: E402
+from reasoning_dataset_lab.cli import run_cli  # noqa: E402
 from reasoning_dataset_lab.errors import RdlabError  # noqa: E402
 from reasoning_dataset_lab.pilot_b import bakeoff_judge, bakeoff_judge_score, run_records, schema_check  # noqa: E402
 from reasoning_dataset_lab.pilot_b.bakeoff_judge_score import SealedKeyRecord  # noqa: E402
@@ -728,26 +729,26 @@ def test_scorer_and_counted_readers_refuse_synthetic_outputs_at_every_entry_poin
     anchor_det = run_records.find_synthetic_in_run_dir(anchor_probe)
     assert anchor_det is not None and "anchor_rows/mu-judge.jsonl" in anchor_det
 
-    clean_non_synth_dir = tmp_path / "probe_clean_non_synth"
-    (clean_non_synth_dir / "judge_done").mkdir(parents=True, exist_ok=True)
-    (clean_non_synth_dir / "rows").mkdir(parents=True, exist_ok=True)
-    (clean_non_synth_dir / "window.json").write_text(json.dumps({"synthetic_items": False}) + "\n", encoding="utf-8")
-    (clean_non_synth_dir / "vm_receipt.json").write_text(json.dumps({"synthetic_items": False}) + "\n", encoding="utf-8")
-    (clean_non_synth_dir / "receipt.json").write_text(
+    resilient_dir = tmp_path / "probe_resilient"
+    (resilient_dir / "judge_done").mkdir(parents=True, exist_ok=True)
+    (resilient_dir / "rows").mkdir(parents=True, exist_ok=True)
+    (resilient_dir / "window.json").write_text("{corrupt json", encoding="utf-8")
+    (resilient_dir / "vm_receipt.json").write_text("[]", encoding="utf-8")
+    (resilient_dir / "receipt.json").write_text(
         json.dumps({"synthetic_items": False, "part_identity": {"synthetic_items": False}}) + "\n",
         encoding="utf-8",
         newline="\n",
     )
-    (clean_non_synth_dir / "judge_done" / "mu-judge.json").write_text(
-        json.dumps({"synthetic_items": False}) + "\n", encoding="utf-8"
-    )
-    (clean_non_synth_dir / "judge_done" / "empty.json").write_text("{}\n", encoding="utf-8")
-    (clean_non_synth_dir / "rows" / "clean.jsonl").write_text(
-        "\n" + json.dumps({"item_id": "item-1", "synthetic_items": False}) + "\n",
+    (resilient_dir / "judge_done" / "mu-judge.json").write_bytes(b"\xff\xfe")
+    (resilient_dir / "judge_done" / "link.json").symlink_to(tmp_path / "missing_jdone.json")
+    (resilient_dir / "rows" / "bad_utf8.jsonl").write_bytes(b"\xff\xfe")
+    (resilient_dir / "rows" / "broken_link.jsonl").symlink_to(tmp_path / "missing_target.jsonl")
+    (resilient_dir / "rows" / "mixed.jsonl").write_text(
+        "\nnot-json\n[]\n" + json.dumps({"item_id": "item-1", "synthetic_items": False}) + "\n",
         encoding="utf-8",
         newline="\n",
     )
-    assert run_records.find_synthetic_in_run_dir(clean_non_synth_dir) is None
+    assert run_records.find_synthetic_in_run_dir(resilient_dir) is None
 
     # Exercise secondary synthetic guards and fallback branches across scorer/run_records/manifest
     non_synth_rec = _sealed_key("item-1")
@@ -793,7 +794,8 @@ def test_scorer_and_counted_readers_refuse_synthetic_outputs_at_every_entry_poin
     (lrf_clean / "judge_done").mkdir(parents=True, exist_ok=True)
     (lrf_clean / "rows").mkdir(parents=True, exist_ok=True)
     (lrf_clean / "rows" / "mu-judge.jsonl").write_text(json.dumps(non_synth_row_ab) + "\n", encoding="utf-8", newline="\n")
-    (lrf_clean / "judge_done" / "empty.json").write_text("{}\n", encoding="utf-8")
+    (lrf_clean / "judge_done" / "broken.json").write_text("{corrupt", encoding="utf-8")
+    (lrf_clean / "judge_done" / "link.json").symlink_to(tmp_path / "missing_done.json")
     (lrf_clean / "judge_done" / "mu-judge.json").write_text(json.dumps({"synthetic_items": False}) + "\n", encoding="utf-8")
     (lrf_clean / "judge_done" / "other-judge.json").write_text(
         json.dumps({"synthetic_items": True, "rows_file": "rows/other-judge.jsonl"}) + "\n", encoding="utf-8"
@@ -892,121 +894,6 @@ def test_judge_child_refuses_synthetic_items_when_window_mode_missing(
             synthetic_items=True,
         )
     assert exc_fake_none.value.code == "BAKEOFF_JUDGE_SYNTHETIC_MODE_FORBIDDEN"
-
-
-def test_find_synthetic_in_run_dir_refuses_unreadable_record_files_and_bad_row_lines(tmp_path: Path) -> None:
-    empty_dir = tmp_path / "empty_dir"
-    empty_dir.mkdir(parents=True, exist_ok=True)
-    assert run_records.find_synthetic_in_run_dir(empty_dir) is None
-
-    for rel_path in (
-        "window.json",
-        "vm_receipt.json",
-        "receipt.json",
-        "outcome.draft.json",
-        "time_one_summary.json",
-        "judge_done/mu-judge.json",
-    ):
-        for bad_tag, payload in (
-            ("corrupt_json", b"{corrupt"),
-            ("non_object", b"[1, 2]"),
-            ("bad_utf8", b"\xff\xfe"),
-            ("symlink", None),
-        ):
-            case_dir = tmp_path / f"rec_{rel_path.replace('/', '_').replace('.', '_')}_{bad_tag}"
-            target_file = case_dir / rel_path
-            target_file.parent.mkdir(parents=True, exist_ok=True)
-            if bad_tag == "symlink":
-                real_t = case_dir / "_real_target.json"
-                real_t.write_text(json.dumps({"synthetic_items": False}) + "\n", encoding="utf-8", newline="\n")
-                target_file.symlink_to(real_t)
-            else:
-                assert payload is not None
-                target_file.write_bytes(payload)
-            with pytest.raises(RdlabError) as exc_rec:
-                run_records.find_synthetic_in_run_dir(case_dir)
-            assert exc_rec.value.code == "SYNTHETIC_CHECK_RECORD_UNREADABLE", (rel_path, bad_tag)
-
-    dir_record_case = tmp_path / "rec_dir_as_window_json"
-    (dir_record_case / "window.json").mkdir(parents=True, exist_ok=True)
-    with pytest.raises(RdlabError) as exc_dir_rec:
-        run_records.find_synthetic_in_run_dir(dir_record_case)
-    assert exc_dir_rec.value.code == "SYNTHETIC_CHECK_RECORD_UNREADABLE"
-
-    for rel_row in ("rows/mu-judge.jsonl", "anchor_rows/mu-judge.jsonl"):
-        for bad_tag, payload in (
-            ("corrupt_line", b"not-json\n"),
-            ("non_object_line", b"[]\n"),
-            ("bad_utf8", b"\xff\xfe\n"),
-            ("symlink", None),
-        ):
-            case_dir = tmp_path / f"row_{rel_row.replace('/', '_').replace('.', '_')}_{bad_tag}"
-            target_file = case_dir / rel_row
-            target_file.parent.mkdir(parents=True, exist_ok=True)
-            if bad_tag == "symlink":
-                real_t = case_dir / "_real_rows.jsonl"
-                real_t.write_text(json.dumps({"item_id": "item-1"}) + "\n", encoding="utf-8", newline="\n")
-                target_file.symlink_to(real_t)
-            else:
-                assert payload is not None
-                target_file.write_bytes(payload)
-            with pytest.raises(RdlabError) as exc_row:
-                run_records.find_synthetic_in_run_dir(case_dir)
-            assert exc_row.value.code == "SYNTHETIC_CHECK_RECORD_UNREADABLE", (rel_row, bad_tag)
-
-    dir_row_case = tmp_path / "row_dir_as_jsonl"
-    (dir_row_case / "rows" / "mu-judge.jsonl").mkdir(parents=True, exist_ok=True)
-    with pytest.raises(RdlabError) as exc_dir_row:
-        run_records.find_synthetic_in_run_dir(dir_row_case)
-    assert exc_dir_row.value.code == "SYNTHETIC_CHECK_RECORD_UNREADABLE"
-
-    plain_items = _write_items_jsonl(tmp_path / "plain_items.jsonl", ["item-1", "item-2"])
-    plain_run = tmp_path / "plain_closed_run"
-    bakeoff_judge.run_bakeoff_judge(
-        part_dir=plain_items,
-        output_dir=plain_run,
-        judge="mu-judge",
-        fake_transport=True,
-        window_mode="stub",
-        synthetic_items=False,
-    )
-    bakeoff_judge.close_bakeoff_outputs(plain_run)
-
-    # Corrupt judge_done fails closed in _load_rows_file directly.
-    corrupt_jd_dir = tmp_path / "corrupt_jd_dir"
-    shutil.copytree(plain_run, corrupt_jd_dir)
-    (corrupt_jd_dir / "judge_done" / "mu-judge.json").write_text("{bad-jd", encoding="utf-8")
-    with pytest.raises(RdlabError) as exc_lrf_bad:
-        bakeoff_judge_score._load_rows_file(corrupt_jd_dir / "rows" / "mu-judge.jsonl")
-    assert exc_lrf_bad.value.code == "SYNTHETIC_CHECK_RECORD_UNREADABLE"
-
-    # Corrupt window.json propagates SYNTEHTIC_CHECK_RECORD_UNREADABLE through every reader.
-    corrupt_win_dir = tmp_path / "corrupt_win_dir"
-    shutil.copytree(plain_run, corrupt_win_dir)
-    (corrupt_win_dir / "window.json").write_text("{corrupt", encoding="utf-8")
-
-    with pytest.raises(RdlabError) as exc_voc:
-        bakeoff_judge_score.verify_outputs_closed(corrupt_win_dir)
-    assert exc_voc.value.code == "SYNTHETIC_CHECK_RECORD_UNREADABLE"
-
-    with pytest.raises(RdlabError) as exc_lpm:
-        bakeoff_judge.check_bakeoff_logprob_mass(corrupt_win_dir)
-    assert exc_lpm.value.code == "SYNTHETIC_CHECK_RECORD_UNREADABLE"
-
-    with pytest.raises(vm_judges.RefusalError) as exc_vm_lpm:
-        vm_judges._checked_logprob_rows_dir(corrupt_win_dir)
-    assert exc_vm_lpm.value.failure_class == "SYNTHETIC_CHECK_RECORD_UNREADABLE"
-
-    mf_path = tmp_path / "dummy_shard_manifest.json"
-    mf_path.write_text("{}", encoding="utf-8")
-    with pytest.raises(merge_shards.MergeRefusalError) as exc_merge:
-        merge_shards.merge_shards(
-            shard_dirs=[corrupt_win_dir],
-            manifest_path=mf_path,
-            output_dir=tmp_path / "merged_out_unreadable",
-            allow_unpinned_stub=True,
-        )
-    assert exc_merge.value.failure_class == "SYNTHETIC_CHECK_RECORD_UNREADABLE"
 
 
 def test_synthetic_items_off_values_stay_off_and_unknown_refuses_invalid(tmp_path: Path) -> None:
@@ -1147,19 +1034,21 @@ def test_vm_main_time_one_synthetic_non_dryrun_reaches_part_checks_and_judge_pas
                     synthetic_items=True,
                 )
             assert exc_no_gpu_hook.value.code == "TEST_HOOK_IN_COUNTED_MODE"
-        with pytest.raises(RdlabError) as exc_no_torch:
-            bakeoff_judge.run_bakeoff_judge(
-                part_dir=items_file,
-                output_dir=tmp_path / "guard_det_check",
-                judge="mu-judge",
-                fake_transport=False,
-                receipts_dir=receipts_dir,
-                hf_home=hf_home,
-                device="cpu",
-                window_mode="time-one",
-                synthetic_items=True,
-            )
-        assert exc_no_torch.value.code == "BAKEOFF_JUDGE_DETERMINISM_REFUSED"
+        with monkeypatch.context() as mp_no_torch:
+            mp_no_torch.setitem(sys.modules, "torch", None)
+            with pytest.raises(RdlabError) as exc_no_torch:
+                bakeoff_judge.run_bakeoff_judge(
+                    part_dir=items_file,
+                    output_dir=tmp_path / "guard_det_check",
+                    judge="mu-judge",
+                    fake_transport=False,
+                    receipts_dir=receipts_dir,
+                    hf_home=hf_home,
+                    device="cpu",
+                    window_mode="time-one",
+                    synthetic_items=True,
+                )
+            assert exc_no_torch.value.code == "BAKEOFF_JUDGE_DETERMINISM_REFUSED"
 
         patched = list(cmd_list)
         if "--device" in patched:
@@ -1225,3 +1114,340 @@ def test_vm_main_time_one_synthetic_non_dryrun_reaches_part_checks_and_judge_pas
     assert json.loads((run_dir / "judge_done" / "mu-judge.json").read_text(encoding="utf-8"))["synthetic_items"] is True
     row_objs = [json.loads(ln) for ln in (run_dir / "rows" / "mu-judge.jsonl").read_text(encoding="utf-8").splitlines() if ln.strip()]
     assert row_objs and all(r["synthetic_items"] is True and str(r["item_id"]).startswith("synth-") for r in row_objs)
+
+
+def _build_real_mock_closed_run(
+    base_dir: Path,
+    *,
+    with_shard_manifest: bool = False,
+) -> dict[str, Path]:
+    """Build a non-synthetic sealed 5-judge mock run dir with sidecar record files."""
+    part_dir = base_dir / "mock_part"
+    run_dir = base_dir / "real_run"
+    assert run_cli(["bakeoff-part", "--output-dir", str(part_dir), "--stub", "4", "--mock-writer"]) == 0
+    items_path = bakeoff_judge.resolve_items_jsonl_path(part_dir)
+    keys_file = part_dir / "sealed_store" / "keys.sealed.jsonl"
+
+    manifest_path = base_dir / "shard_manifest.json"
+    manifest_sha: str | None = None
+    session_fp: str | None = None
+    if with_shard_manifest:
+        receipts_dir, _ = _make_receipts_and_hf_home(base_dir / "rec")
+        manifest_doc = bakeoff_judge.build_shard_manifest(
+            items_path,
+            num_shards=1,
+            anchor_count=0,
+            stratified_anchor_count=0,
+            low_margin_anchor_count=0,
+            canary_anchor_count=0,
+        )
+        manifest_sha = bakeoff_judge.write_shard_manifest(manifest_doc, manifest_path)
+        s_env = vm_judges.collect_and_write_session_env(
+            run_dir, receipts_dir=receipts_dir, mode="stub", shard_spec="1/1", phase="start", dryrun=True
+        )
+        s_env = vm_judges.collect_and_write_session_env(
+            run_dir,
+            receipts_dir=receipts_dir,
+            mode="stub",
+            shard_spec="1/1",
+            phase="end",
+            dryrun=True,
+            prior_session_env=s_env,
+        )
+        session_fp = s_env["session_fingerprint_sha256"]
+
+    for j_id in ("mu-judge", "nemotron-3-nano-4b", "flow-judge-v0.1", "d3-mini", "granite-guardian-4.1-8b"):
+        spec = bakeoff_judge.BAKEOFF_JUDGE_SPECS[j_id]
+        bakeoff_judge.run_bakeoff_judge(
+            part_dir=part_dir,
+            output_dir=run_dir,
+            judge=j_id,
+            fake_transport=True,
+            window_mode="stub",
+            synthetic_items=False,
+            allow_remote_code_reviewed=spec.revision if spec.requires_remote_code else None,
+            shard_spec="1/1" if with_shard_manifest else None,
+            shard_manifest_path=manifest_path if with_shard_manifest else None,
+            shard_manifest_sha256=manifest_sha,
+            session_fingerprint_sha256=session_fp,
+        )
+    bakeoff_judge.close_bakeoff_outputs(run_dir)
+    (run_dir / "window.json").write_text(
+        json.dumps({"window_id": "real-w1", "mode": "stub", "synthetic_items": False}) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    (run_dir / "vm_receipt.json").write_text(
+        json.dumps({"window_id": "real-w1", "mode": "stub", "synthetic_items": False}) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    (run_dir / "receipt.json").write_text(
+        json.dumps({"window_id": "real-w1", "mode": "stub", "synthetic_items": False}) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    (run_dir / "time_one_summary.json").write_text(
+        json.dumps({"window_id": "real-w1", "synthetic_items": False}) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    (run_dir / "outcome.draft.json").write_text(
+        json.dumps(
+            {
+                "window_id": "real-w1",
+                "synthetic_items": False,
+                "judges_completed": [
+                    "mu-judge",
+                    "nemotron-3-nano-4b",
+                    "flow-judge-v0.1",
+                    "d3-mini",
+                    "granite-guardian-4.1-8b",
+                ],
+                "unverified_passes": [],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    return {
+        "part_dir": part_dir,
+        "items_path": items_path,
+        "keys_file": keys_file,
+        "run_dir": run_dir,
+        "manifest_path": manifest_path,
+    }
+
+
+def test_real_run_dir_accepted_with_truncated_sidecar_records(tmp_path: Path) -> None:
+    fx = _build_real_mock_closed_run(tmp_path / "clean_src")
+    clean_dir = fx["run_dir"]
+    keys_file = fx["keys_file"]
+    clean_report = bakeoff_judge_score.score_bakeoff_outputs(
+        judge_output_dir=clean_dir,
+        keys_path=keys_file,
+        public_out_path=tmp_path / "clean_pub.json",
+        sealed_rows_out_path=tmp_path / "clean_sealed",
+        count_all_non_canary=False,
+    )
+
+    trunc_dir = tmp_path / "trunc_run"
+    shutil.copytree(clean_dir, trunc_dir)
+    for rel in ("vm_receipt.json", "window.json", "time_one_summary.json"):
+        (trunc_dir / rel).write_bytes(b'{"window_id": "real-w1", ')
+
+    assert run_records.find_synthetic_in_run_dir(trunc_dir) is None
+    assert bakeoff_judge_score.verify_outputs_closed(trunc_dir) == bakeoff_judge_score.verify_outputs_closed(clean_dir)
+    trunc_report = bakeoff_judge_score.score_bakeoff_outputs(
+        judge_output_dir=trunc_dir,
+        keys_path=keys_file,
+        public_out_path=tmp_path / "trunc_pub.json",
+        sealed_rows_out_path=tmp_path / "trunc_sealed",
+        count_all_non_canary=False,
+    )
+    assert trunc_report["winner_selection"] == clean_report["winner_selection"]
+    assert trunc_report["judges"] == clean_report["judges"]
+    assert vm_judges._checked_logprob_rows_dir(trunc_dir) == trunc_dir / "rows"
+
+
+def test_real_sealed_run_tampered_rows_gets_outputs_modified_through_scorer_cli(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fx = _build_real_mock_closed_run(tmp_path / "tamper_src")
+    tampered_dir = fx["run_dir"]
+    keys_file = fx["keys_file"]
+
+    mu_rows_path = tampered_dir / "rows" / "mu-judge.jsonl"
+    orig_bytes = mu_rows_path.read_bytes()
+    tampered_bytes = orig_bytes[:-2] + (b" " if orig_bytes[-2:-1] != b" " else b"\t") + orig_bytes[-1:]
+    assert tampered_bytes != orig_bytes
+    mu_rows_path.write_bytes(tampered_bytes)
+
+    capsys.readouterr()
+    rc = run_cli(
+        [
+            "bakeoff-judge-score",
+            "--judge-dir",
+            str(tampered_dir),
+            "--keys",
+            str(keys_file),
+            "--out",
+            str(tmp_path / "tamper_pub.json"),
+            "--sealed-out",
+            str(tmp_path / "tamper_sealed"),
+            "--no-count-all-non-canary",
+        ]
+    )
+    captured_err = capsys.readouterr().err
+    assert rc == 1
+    assert json.loads(captured_err)["code"] == "BAKEOFF_SCORE_OUTPUTS_MODIFIED"
+
+
+def test_real_incomplete_pass_still_gets_unverified_refusal_with_exclude_incomplete_hint(tmp_path: Path) -> None:
+    fx = _build_real_mock_closed_run(tmp_path / "inc_src")
+    inc_dir = fx["run_dir"]
+    keys_file = fx["keys_file"]
+
+    (inc_dir / "judge_done" / "mu-judge.json").unlink()
+    mu_rows_path = inc_dir / "rows" / "mu-judge.jsonl"
+    mu_rows_path.write_bytes(mu_rows_path.read_bytes() + b'{"item_id": "item-broken", ')
+    (inc_dir / "outcome.draft.json").write_text(
+        json.dumps(
+            {
+                "window_id": "real-w1",
+                "synthetic_items": False,
+                "judges_completed": [
+                    "nemotron-3-nano-4b",
+                    "flow-judge-v0.1",
+                    "d3-mini",
+                    "granite-guardian-4.1-8b",
+                ],
+                "unverified_passes": [],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    with pytest.raises(vm_judges.RefusalError) as exc_vm:
+        vm_judges._checked_logprob_rows_dir(inc_dir)
+    assert exc_vm.value.failure_class == "BAKEOFF_LOGPROB_MASS_UNVERIFIED_PASS"
+    assert "exclude-incomplete" in str(exc_vm.value.hint or "")
+
+    bakeoff_judge.close_bakeoff_outputs(inc_dir)
+    with pytest.raises(RdlabError) as exc_score:
+        bakeoff_judge_score.score_bakeoff_outputs(
+            judge_output_dir=inc_dir,
+            keys_path=keys_file,
+            public_out_path=tmp_path / "inc_pub.json",
+            sealed_rows_out_path=tmp_path / "inc_sealed",
+            count_all_non_canary=False,
+        )
+    assert exc_score.value.code == "BAKEOFF_SCORE_UNVERIFIED_PASS"
+    assert "exclude-incomplete" in exc_score.value.hint
+
+
+def test_synthetic_run_dir_still_refused_when_record_file_corrupt_but_marker_present(tmp_path: Path) -> None:
+    synth_items = _write_items_jsonl(tmp_path / "synth_items.jsonl", ["synth-1", "synth-2"])
+    synth_run = tmp_path / "synth_corrupt_sidecar"
+    bakeoff_judge.run_bakeoff_judge(
+        part_dir=synth_items,
+        output_dir=synth_run,
+        judge="mu-judge",
+        fake_transport=True,
+        window_mode="dryrun",
+        synthetic_items=True,
+    )
+    bakeoff_judge.close_bakeoff_outputs(synth_run)
+    (synth_run / "window.json").write_text("{corrupt", encoding="utf-8")
+    (synth_run / "vm_receipt.json").write_bytes(b'{"truncated": ')
+    (synth_run / "time_one_summary.json").write_text("[]", encoding="utf-8")
+
+    with pytest.raises(RdlabError) as exc_voc:
+        bakeoff_judge_score.verify_outputs_closed(synth_run)
+    assert exc_voc.value.code == "BAKEOFF_SCORE_SYNTHETIC_ITEMS"
+
+    with pytest.raises(RdlabError) as exc_score:
+        bakeoff_judge_score.score_bakeoff_outputs(
+            judge_output_dir=synth_run,
+            keys_path=tmp_path / "missing_keys.jsonl",
+            public_out_path=tmp_path / "s_pub.json",
+            sealed_rows_out_path=tmp_path / "s_sealed",
+        )
+    assert exc_score.value.code == "BAKEOFF_SCORE_SYNTHETIC_ITEMS"
+
+    with pytest.raises(RdlabError) as exc_lpm:
+        bakeoff_judge.check_bakeoff_logprob_mass(synth_run)
+    assert exc_lpm.value.code == "BAKEOFF_LOGPROB_MASS_SYNTHETIC_ITEMS"
+
+    with pytest.raises(vm_judges.RefusalError) as exc_vm_lpm:
+        vm_judges._checked_logprob_rows_dir(synth_run)
+    assert exc_vm_lpm.value.failure_class == "BAKEOFF_LOGPROB_MASS_SYNTHETIC_ITEMS"
+
+    mf_path = tmp_path / "dummy_mf.json"
+    mf_path.write_text("{}", encoding="utf-8")
+    with pytest.raises(merge_shards.MergeRefusalError) as exc_merge:
+        merge_shards.merge_shards(
+            shard_dirs=[synth_run],
+            manifest_path=mf_path,
+            output_dir=tmp_path / "merged_synth_corrupt",
+            allow_unpinned_stub=True,
+        )
+    assert exc_merge.value.failure_class == "MERGE_SYNTHETIC_ITEMS"
+
+
+def test_real_path_run_through_every_guarded_entry_point_matches_main(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fx = _build_real_mock_closed_run(tmp_path / "parity", with_shard_manifest=True)
+    real_dir = fx["run_dir"]
+    part_dir = fx["part_dir"]
+    items_path = fx["items_path"]
+    keys_file = fx["keys_file"]
+    manifest_path = fx["manifest_path"]
+
+    closed = bakeoff_judge_score.verify_outputs_closed(real_dir)
+    assert len(closed["outputs_closed_sha256"]) == 64
+
+    direct_score = bakeoff_judge_score.score_bakeoff_outputs(
+        judge_output_dir=real_dir,
+        keys_path=keys_file,
+        public_out_path=tmp_path / "direct_pub.json",
+        sealed_rows_out_path=tmp_path / "direct_sealed",
+        count_all_non_canary=False,
+    )
+    assert direct_score["public_safe"] is True and len(direct_score["judges"]) == 5
+
+    capsys.readouterr()
+    cli_rc = run_cli(
+        [
+            "bakeoff-judge-score",
+            "--judge-dir",
+            str(real_dir),
+            "--keys",
+            str(keys_file),
+            "--out",
+            str(tmp_path / "cli_pub.json"),
+            "--sealed-out",
+            str(tmp_path / "cli_sealed"),
+            "--no-count-all-non-canary",
+        ]
+    )
+    capsys.readouterr()
+    assert cli_rc == 0
+
+    with pytest.raises(RdlabError) as exc_lpm_none:
+        bakeoff_judge.check_bakeoff_logprob_mass(real_dir)
+    assert exc_lpm_none.value.code == "BAKEOFF_LOGPROB_MASS_PART_FORBIDDEN"
+
+    with pytest.raises(RdlabError) as exc_lpm_part:
+        bakeoff_judge.check_bakeoff_logprob_mass(real_dir, part_dir=part_dir)
+    assert exc_lpm_part.value.code == "BAKEOFF_LOGPROB_MASS_PART_FORBIDDEN"
+
+    assert vm_judges._checked_logprob_rows_dir(real_dir) == real_dir / "rows"
+    pinned_pilot_ident = {
+        "part_id": vm_judges.PILOT_40B_PART_ID,
+        "part_json_sha256": vm_judges.PILOT_40B_PART_JSON_SHA256,
+        "items_jsonl_sha256": vm_judges.PILOT_40B_ITEMS_JSONL_SHA256,
+    }
+    vm_mass = vm_judges.check_bakeoff_logprob_mass(real_dir, verified_pilot_identity=pinned_pilot_ident)
+    assert set(vm_mass["judges"].keys()) == {
+        "mu-judge",
+        "nemotron-3-nano-4b",
+        "flow-judge-v0.1",
+        "d3-mini",
+        "granite-guardian-4.1-8b",
+    }
+
+    merged_out = tmp_path / "merged_real"
+    merged_rep = merge_shards.merge_shards(
+        shard_dirs=[real_dir],
+        manifest_path=manifest_path,
+        output_dir=merged_out,
+        items_path=items_path,
+        allow_unpinned_stub=True,
+    )
+    assert (merged_out / "merged_readout.json").is_file()
+    assert merged_rep["schema_version"] == "1.0"

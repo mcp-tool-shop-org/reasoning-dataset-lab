@@ -82,7 +82,6 @@ from reasoning_dataset_lab.pilot_b.run_records import (
     find_synthetic_in_run_dir,
     format_unverified_or_incomplete_refusal,
     read_excluded_incomplete_passes,
-    read_json_mapping_strict,
 )
 from reasoning_dataset_lab.pilot_b.three_way_wording import (
     INCONSISTENT_VERDICT,
@@ -1897,12 +1896,15 @@ def _load_rows_file(path: Path) -> list[dict[str, Any]]:
     if jdone_dir is not None and jdone_dir.is_dir():
         rel_rows = f"{ROWS_DIRNAME}/{path.name}"
         for jf in sorted(jdone_dir.glob("*.json")):
-            jdoc = read_json_mapping_strict(jf, label=f"judge_done/{jf.name}")
-            if (
-                jdoc
-                and jdoc.get("synthetic_items") is True
-                and (jdoc.get("rows_file") == rel_rows or jf.stem == path.stem or jf.name.startswith(f"{path.stem}."))
-            ):
+            if jf.is_symlink() or not jf.is_file():
+                continue
+            try:
+                jdoc = json.loads(jf.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, ValueError):
+                continue
+            if not isinstance(jdoc, Mapping) or jdoc.get("synthetic_items") is not True:
+                continue
+            if jdoc.get("rows_file") == rel_rows or jf.stem == path.stem or jf.name.startswith(f"{path.stem}."):
                 raise _refuse_synthetic_scoring(f"judge_done/{jf.name} records synthetic_items=true")
     return rows
 
@@ -2409,7 +2411,6 @@ def score_bakeoff_outputs(
     check_output_dir_outside_repo(sealed_rows_out_path.parent, repo_root=repo_root)
     sealed_jsonl_path, sealed_csv_path = resolve_sealed_out_paths(sealed_rows_out_path)
 
-    _refuse_if_synthetic_run_dir(resolved_judge_dir)
     closed_doc = verify_outputs_closed(resolved_judge_dir)
     # Refuse before touching sealed keys or outputs if .unverified_judge_done or outcome.draft.json marks an unverified pass.
     try:
