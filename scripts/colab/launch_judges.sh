@@ -1048,6 +1048,9 @@ try:
         judge_ids=judge_order_t,
         dryrun=os.environ.get("VM_DRYRUN") == "1",
     )
+    vm_judges.validate_qwen36_seed_variant(
+        judge_ids=judge_order_t,
+    )
     vm_judges.validate_stub_exercise_elephant_install(
         mode,
         os.environ.get("RDLAB_STUB_EXERCISE_ELEPHANT_INSTALL", None),
@@ -1373,6 +1376,9 @@ build_exec_env_args() {
   fi
   if [[ -n "${RDLAB_QWEN36_MAX_NEW_TOKENS+x}" ]] && [[ -n "${RDLAB_QWEN36_MAX_NEW_TOKENS}" ]]; then
     EXEC_ENV_ARGS+=(--env "RDLAB_QWEN36_MAX_NEW_TOKENS=$RDLAB_QWEN36_MAX_NEW_TOKENS")
+  fi
+  if [[ -n "${RDLAB_QWEN36_SEED_VARIANT+x}" ]] && [[ -n "${RDLAB_QWEN36_SEED_VARIANT}" ]]; then
+    EXEC_ENV_ARGS+=(--env "RDLAB_QWEN36_SEED_VARIANT=$RDLAB_QWEN36_SEED_VARIANT")
   fi
   if [[ -n "${RDLAB_VLLM_LOCK_SHA256+x}" ]] && [[ -n "${RDLAB_VLLM_LOCK_SHA256}" ]]; then
     EXEC_ENV_ARGS+=(--env "RDLAB_VLLM_LOCK_SHA256=$RDLAB_VLLM_LOCK_SHA256")

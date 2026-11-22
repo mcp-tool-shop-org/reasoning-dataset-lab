@@ -1753,3 +1753,497 @@ def test_resume_over_pre_argmax_rows_recomputes_or_refuses(
             pass_mode=CONTRA,
         )
     assert exc_absent.value.code == "QWEN36_RESUME_ARGMAX_VERDICT_UNAVAILABLE"
+
+
+# --- 9. RDLAB_QWEN36_SEED_VARIANT option, recording, resume guard, and launcher forwarding ---------------------
+
+
+def _expected_seed_from_payload(payload: str) -> int:
+    digest = hashlib.sha256(payload.encode("utf-8")).digest()
+    return int.from_bytes(digest[:4], "big") & 0x7FFFFFFF
+
+
+def _fake_vllm_completion(letter: str = "A") -> Any:
+    lp = lambda tok, prob: SimpleNamespace(decoded_token=tok, logprob=math.log(prob))
+    tid = {"A": 32, "B": 33, "C": 34}[letter]
+    comp = SimpleNamespace(
+        text=f"<think>R</think>\n{letter}",
+        token_ids=[10, 11, 12, 13, tid],
+        finish_reason="stop",
+        logprobs=[
+            {10: lp("<think>", 0.99)},
+            {11: lp("R", 0.99)},
+            {12: lp("</think>", 0.99)},
+            {13: lp("\n", 0.99)},
+            {32: lp("A", 0.80), 33: lp("B", 0.12), 34: lp("C", 0.08)},
+        ],
+    )
+    return SimpleNamespace(outputs=[comp], prompt_token_ids=[1, 2, 3])
+
+
+def test_seed_variant_default_byte_identity_and_deterministic_variation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _clear_forbidden_hooks(monkeypatch)
+    monkeypatch.delenv(bakeoff_judge.QWEN36_SEED_VARIANT_ENV_VAR, raising=False)
+    monkeypatch.setenv(bakeoff_judge.QWEN36_MAX_NEW_TOKENS_ENV_VAR, "2048")
+
+    # Pinned literal 1d1677e9 default seeds for synthetic items/orders when unset.
+    assert bakeoff_judge.derive_qwen36_call_seed("synth-q36-0000", "AB") == 1391694488
+    assert bakeoff_judge.derive_qwen36_call_seed("synth-q36-0000", "BA") == 1099052376
+    assert bakeoff_judge.derive_qwen36_call_seed("synth-q36-0001", "AB") == 957472236
+    assert bakeoff_judge.derive_qwen36_call_seed("synth-q36-0000", "AB", seed_variant=None) == 1391694488
+    assert bakeoff_judge.derive_qwen36_call_seed("synth-q36-0000", "AB", seed_variant="") == 1391694488
+    assert bakeoff_judge.resolve_qwen36_seed_variant() is None
+    assert bakeoff_judge.resolve_qwen36_seed_variant("repro1") == "repro1"
+
+    item0 = _synth_items(1)[0]
+    adapter = bakeoff_judge.Qwen36ChoiceAdapter()
+    p_default = adapter.assemble_prompt(item0, order="AB", pass_mode=CONTRA)
+    assert p_default.structured_payload is not None
+    assert p_default.structured_payload["call_seed"] == 1391694488
+    assert p_default.structured_payload["seed_variant"] == "none"
+
+    max_len_variant = "a" + "b0_-" * 7 + "xyz"  # 32 chars
+    assert len(max_len_variant) == 32
+    for good in ("a", "repro1", "run-02_a", max_len_variant):
+        assert bakeoff_judge.normalize_qwen36_seed_variant(good) == good
+
+    monkeypatch.setenv(bakeoff_judge.QWEN36_SEED_VARIANT_ENV_VAR, "repro1")
+    p_variant = adapter.assemble_prompt(item0, order="AB", pass_mode=CONTRA)
+    expected_r1_ab = _expected_seed_from_payload("synth-q36-0000\x00AB\x00repro1")
+    expected_r1_ba = _expected_seed_from_payload("synth-q36-0000\x00BA\x00repro1")
+    assert expected_r1_ab != 1391694488
+    assert expected_r1_ba != 1099052376
+    assert bakeoff_judge.derive_qwen36_call_seed("synth-q36-0000", "AB", seed_variant="repro1") == expected_r1_ab
+    assert p_variant.prompt_text == p_default.prompt_text
+    assert p_variant.messages == p_default.messages
+    assert p_variant.prompt_sha256 == p_default.prompt_sha256
+    assert p_variant.structured_payload is not None
+    assert p_variant.structured_payload["sampling"] == p_default.structured_payload["sampling"]
+    assert p_variant.structured_payload["max_new_tokens"] == p_default.structured_payload["max_new_tokens"]
+    assert p_variant.structured_payload["call_seed"] == expected_r1_ab
+    assert p_variant.structured_payload["seed_variant"] == "repro1"
+
+    # Real (fake-vLLM) transport & run_bakeoff_judge recording for unset vs set variants across independent runs.
+    items_path = _write_items_jsonl(tmp_path / "items.jsonl", _synth_items(1))
+    recorded_sp: dict[str, list[dict[str, Any]]] = {}
+    recorded_rows: dict[str, list[dict[str, Any]]] = {}
+    for run_label, env_val in (("unset", None), ("r1_first", "repro1"), ("r1_second", "repro1")):
+        if env_val is None:
+            monkeypatch.delenv(bakeoff_judge.QWEN36_SEED_VARIANT_ENV_VAR, raising=False)
+            exp_recorded = "none"
+            exp_seeds = [1391694488, 1099052376]
+        else:
+            monkeypatch.setenv(bakeoff_judge.QWEN36_SEED_VARIANT_ENV_VAR, env_val)
+            exp_recorded = env_val
+            exp_seeds = [expected_r1_ab, expected_r1_ba]
+        env_r = _setup_fake_vllm_env(
+            tmp_path / run_label,
+            monkeypatch,
+            responses=[_fake_vllm_completion("A"), _fake_vllm_completion("A")],
+        )
+        out_r = tmp_path / f"out_{run_label}"
+        res_r = run_bakeoff_judge(
+            part_dir=items_path,
+            output_dir=out_r,
+            judge=QWEN36_ID,
+            pass_mode=CONTRA,
+            fake_transport=False,
+            receipts_dir=env_r["receipts_dir"],
+            hf_home=env_r["hf_home"],
+            device="cpu",
+            window_mode="counted",
+            run_canary=False,
+        )
+        assert res_r["seed_variant"] == exp_recorded
+        done_doc = json.loads((out_r / "judge_done" / f"{QWEN36_ID}.json").read_text(encoding="utf-8"))
+        assert done_doc["seed_variant"] == exp_recorded
+        rows_r = [
+            json.loads(ln)
+            for ln in (out_r / "rows" / f"{QWEN36_ID}.{CONTRA}.jsonl").read_text(encoding="utf-8").splitlines()
+            if ln.strip()
+        ]
+        gens_r = [
+            json.loads(ln)
+            for ln in (out_r / "generations.jsonl").read_text(encoding="utf-8").splitlines()
+            if ln.strip()
+        ]
+        assert {r["seed_variant"] for r in rows_r} == {exp_recorded}
+        assert {r["library_pins"]["seed_variant"] for r in rows_r} == {exp_recorded}
+        assert {g["library_pins"]["seed_variant"] for g in gens_r} == {exp_recorded}
+        assert {r["call_seed"] for r in rows_r} == set(exp_seeds)
+        sp_kwargs = [sp.kwargs for sp in env_r["sampling_params"]]
+        assert {kw["seed"] for kw in sp_kwargs} == set(exp_seeds)
+        recorded_sp[run_label] = sp_kwargs
+        recorded_rows[run_label] = rows_r
+
+    # Sampling settings (besides seed) remain identical when seed_variant changes; set runs match identically.
+    for kw_u, kw_r1 in zip(recorded_sp["unset"], recorded_sp["r1_first"], strict=True):
+        assert {k: v for k, v in kw_u.items() if k != "seed"} == {k: v for k, v in kw_r1.items() if k != "seed"}
+        assert kw_u["seed"] != kw_r1["seed"]
+    assert recorded_sp["r1_first"] == recorded_sp["r1_second"]
+    assert [(r["order"], r["call_seed"], r["seed_variant"]) for r in recorded_rows["r1_first"]] == [
+        (r["order"], r["call_seed"], r["seed_variant"]) for r in recorded_rows["r1_second"]
+    ]
+
+    # Direct qwen36_row_fields fallback (when transport response omits call_seed/seed_variant in response & library_pins).
+    monkeypatch.setenv(bakeoff_judge.QWEN36_SEED_VARIANT_ENV_VAR, "repro1")
+    fallback_fields = bakeoff_judge.qwen36_row_fields(
+        JUDGE_SPECS[QWEN36_ID],
+        _make_resp("<think>R</think>\nA", top_logprobs=_abc_top_logprobs(0.8, 0.1, 0.1)),
+        readout=bakeoff_judge.ParsedJudgeReadout(
+            state="parsed",
+            done_reason="stop",
+            raw_verdict="supported",
+            p_yes=0.8,
+            choice_probabilities={"supported": 0.8, "unsupported": 0.1, "cannot_tell": 0.1},
+            verdict_top_logprobs=(),
+            argmax_verdict="supported",
+        ),
+        item_id="synth-q36-0000",
+        order="AB",
+        out_tok_cnt=5,
+        stop_rsn="eos",
+        library_pins={"backend": "vllm"},
+    )
+    assert fallback_fields["call_seed"] == expected_r1_ab
+    assert fallback_fields["seed_variant"] == "repro1"
+    assert fallback_fields["library_pins"]["seed_variant"] == "repro1"
+
+    # Stub transport + vm_judges.run_judges_pipeline -> time_one_summary per_judge_metrics recording.
+    receipts_stub, hf_stub = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "stub_data")
+    _seed_qwen36_snapshot_and_receipt(receipts_stub, hf_stub)
+    items_stub = _make_synthetic_public_items(tmp_path / "stub_data", count=3)
+    for stub_label, env_val, exp_var in (("stub_unset", None, "none"), ("stub_r1", "repro1", "repro1")):
+        if env_val is None:
+            monkeypatch.delenv(bakeoff_judge.QWEN36_SEED_VARIANT_ENV_VAR, raising=False)
+        else:
+            monkeypatch.setenv(bakeoff_judge.QWEN36_SEED_VARIANT_ENV_VAR, env_val)
+        monkeypatch.setenv("RDLAB_ONLY_JUDGES", QWEN36_ID)
+        monkeypatch.setenv("RDLAB_PASS_MODE", CONTRA)
+        work_s = tmp_path / f"work_{stub_label}"
+        run_s = tmp_path / f"run_{stub_label}"
+        for venv_name in ("venv-judge", "venv-d3", "venv-vllm"):
+            vm_judges._ensure_dryrun_venv_python_wrapper(work_s / venv_name / "bin" / "python")
+        summary_s, _ = vm_judges.run_judges_pipeline(
+            run_dir=run_s,
+            work_dir=work_s,
+            repo_root=REPO_ROOT,
+            receipts_dir=receipts_stub,
+            hf_home=hf_stub,
+            part_dir=items_stub,
+            mode="time_one",
+            dryrun=True,
+            only_judge_ids=(QWEN36_ID,),
+            pass_mode=CONTRA,
+        )
+        assert summary_s["judges"][QWEN36_ID]["seed_variant"] == exp_var
+        stub_rows = [
+            json.loads(ln)
+            for ln in (run_s / "rows" / f"{QWEN36_ID}.{CONTRA}.jsonl").read_text(encoding="utf-8").splitlines()
+            if ln.strip()
+        ]
+        assert {r["seed_variant"] for r in stub_rows} == {exp_var}
+        assert {r["library_pins"]["seed_variant"] for r in stub_rows} == {exp_var}
+
+    # Non-Qwen judge pipeline omits seed_variant from per_judge_metrics.
+    monkeypatch.delenv(bakeoff_judge.QWEN36_SEED_VARIANT_ENV_VAR, raising=False)
+    monkeypatch.setenv("RDLAB_ONLY_JUDGES", "mu-judge")
+    monkeypatch.setenv("RDLAB_PASS_MODE", CONTRA)
+    work_mu = tmp_path / "work_mu_pipe"
+    vm_judges._ensure_dryrun_venv_python_wrapper(work_mu / "venv-judge" / "bin" / "python")
+    summary_mu, _ = vm_judges.run_judges_pipeline(
+        run_dir=tmp_path / "run_mu_pipe",
+        work_dir=work_mu,
+        repo_root=REPO_ROOT,
+        receipts_dir=receipts_stub,
+        hf_home=hf_stub,
+        part_dir=items_stub,
+        mode="time_one",
+        dryrun=True,
+        only_judge_ids=("mu-judge",),
+        pass_mode=CONTRA,
+    )
+    assert "seed_variant" not in summary_mu["judges"]["mu-judge"]
+
+
+def test_seed_variant_validation_non_qwen_and_resume_refusals(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _clear_forbidden_hooks(monkeypatch)
+    monkeypatch.setenv(bakeoff_judge.QWEN36_MAX_NEW_TOKENS_ENV_VAR, "1024")
+    items_1 = _synth_items(1)
+    items_2 = _synth_items(2)
+    items_1_path = _write_items_jsonl(tmp_path / "items1.jsonl", items_1)
+    items_2_path = _write_items_jsonl(tmp_path / "items2.jsonl", items_2)
+
+    # Invalid variant strings -> QWEN36_SEED_VARIANT_INVALID across both modules & entrypoint.
+    bad_variants = ("none", "None", "NONE", "-lead", "_lead", "Upper1", "has space", "a.b", "a" * 33, "r1\n", "   ")
+    for bad in bad_variants:
+        with pytest.raises(RdlabError) as exc_res:
+            bakeoff_judge.resolve_qwen36_seed_variant(bad)
+        assert exc_res.value.code == "QWEN36_SEED_VARIANT_INVALID"
+        with pytest.raises(RdlabError) as exc_der:
+            bakeoff_judge.derive_qwen36_call_seed("synth-q36-0000", "AB", seed_variant=bad)
+        assert exc_der.value.code == "QWEN36_SEED_VARIANT_INVALID"
+        with pytest.raises(vm_judges.RefusalError) as exc_vm:
+            vm_judges.validate_qwen36_seed_variant(bad, judge_ids=[QWEN36_ID])
+        assert exc_vm.value.code == "QWEN36_SEED_VARIANT_INVALID"
+
+    monkeypatch.setenv(bakeoff_judge.QWEN36_SEED_VARIANT_ENV_VAR, "BadVariant")
+    with pytest.raises(RdlabError) as exc_bj_bad:
+        run_bakeoff_judge(
+            part_dir=items_1_path,
+            output_dir=tmp_path / "out_bad",
+            judge=QWEN36_ID,
+            pass_mode=CONTRA,
+            fake_transport=True,
+        )
+    assert exc_bj_bad.value.code == "QWEN36_SEED_VARIANT_INVALID"
+
+    # Non-Qwen judge -> QWEN36_SEED_VARIANT_UNSUPPORTED_JUDGE at start.
+    monkeypatch.setenv(bakeoff_judge.QWEN36_SEED_VARIANT_ENV_VAR, "repro1")
+    assert vm_judges.validate_qwen36_seed_variant(env={"RDLAB_QWEN36_SEED_VARIANT": ""}) is None
+    assert vm_judges.validate_qwen36_seed_variant(judge_ids=[QWEN36_ID]) == "repro1"
+    with pytest.raises(vm_judges.RefusalError) as exc_default_judges:
+        vm_judges.validate_qwen36_seed_variant(env={"RDLAB_QWEN36_SEED_VARIANT": "repro1"})
+    assert exc_default_judges.value.code == "QWEN36_SEED_VARIANT_UNSUPPORTED_JUDGE"
+    for bad_judges in (["mu-judge"], [QWEN36_ID, "mu-judge"]):
+        with pytest.raises(vm_judges.RefusalError) as exc_nj:
+            vm_judges.validate_qwen36_seed_variant(judge_ids=bad_judges)
+        assert exc_nj.value.code == "QWEN36_SEED_VARIANT_UNSUPPORTED_JUDGE"
+
+    with pytest.raises(RdlabError) as exc_mu:
+        run_bakeoff_judge(
+            part_dir=items_1_path,
+            output_dir=tmp_path / "out_mu",
+            judge="mu-judge",
+            pass_mode=CONTRA,
+            fake_transport=True,
+        )
+    assert exc_mu.value.code == "QWEN36_SEED_VARIANT_UNSUPPORTED_JUDGE"
+
+    receipts_stub, hf_stub = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "nj_data")
+    work_nj = tmp_path / "work_nj"
+    vm_judges._ensure_dryrun_venv_python_wrapper(work_nj / "venv-judge" / "bin" / "python")
+    with pytest.raises(vm_judges.RefusalError) as exc_pipe_nj:
+        vm_judges.run_judges_pipeline(
+            run_dir=tmp_path / "run_nj",
+            work_dir=work_nj,
+            repo_root=REPO_ROOT,
+            receipts_dir=receipts_stub,
+            hf_home=hf_stub,
+            part_dir=_make_synthetic_public_items(tmp_path / "nj_data", count=1),
+            mode="time_one",
+            dryrun=True,
+            only_judge_ids=("mu-judge",),
+            pass_mode=CONTRA,
+        )
+    assert exc_pipe_nj.value.code == "QWEN36_SEED_VARIANT_UNSUPPORTED_JUDGE"
+
+    # Resume mismatch Case A: legacy rows (absent key, None, and blank/non-mapping lines) default to "none".
+    legacy_out = tmp_path / "out_legacy_resume"
+    (legacy_out / "rows").mkdir(parents=True)
+    legacy_row_ab = {
+        "judge_id": QWEN36_ID,
+        "item_id": items_2[0].item_id,
+        "order": "AB",
+        "pass_mode": CONTRA,
+        "state": "parsed",
+        "raw_verdict": "supported",
+        "argmax_verdict": "supported",
+        "choice_probabilities": {"supported": 0.8, "unsupported": 0.1, "cannot_tell": 0.1},
+        "seconds": 0.01,
+        "vram_peak_mib": 0,
+    }
+    legacy_row_ba = {**legacy_row_ab, "order": "BA", "seed_variant": None}
+    legacy_rows_file = legacy_out / "rows" / f"{QWEN36_ID}.{CONTRA}.jsonl"
+    legacy_rows_file.write_text(
+        json.dumps(legacy_row_ab) + "\n\n" + json.dumps(legacy_row_ba) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    non_map_file = tmp_path / "non_map_rows.jsonl"
+    non_map_file.write_text("123\n" + json.dumps({"seed_variant": "none"}) + "\n", encoding="utf-8")
+    bakeoff_judge._check_qwen36_resume_seed_variant_file(non_map_file, "none")
+
+    monkeypatch.setenv(bakeoff_judge.QWEN36_SEED_VARIANT_ENV_VAR, "repro1")
+    with pytest.raises(RdlabError) as exc_leg_refuse:
+        run_bakeoff_judge(
+            part_dir=items_2_path,
+            output_dir=legacy_out,
+            judge=QWEN36_ID,
+            pass_mode=CONTRA,
+            fake_transport=True,
+        )
+    assert exc_leg_refuse.value.code == "QWEN36_RESUME_SEED_VARIANT_MISMATCH"
+
+    monkeypatch.delenv(bakeoff_judge.QWEN36_SEED_VARIANT_ENV_VAR, raising=False)
+    res_leg_ok = run_bakeoff_judge(
+        part_dir=items_2_path,
+        output_dir=legacy_out,
+        judge=QWEN36_ID,
+        pass_mode=CONTRA,
+        fake_transport=True,
+    )
+    assert res_leg_ok["calls_count"] == 4
+    assert res_leg_ok["seed_variant"] == "none"
+
+    # Resume mismatch Case B: partial run under "repro1" (item 0 first) refuses unset ("none") and "repro2", allows "repro1".
+    partial_out = tmp_path / "out_partial_r1"
+    monkeypatch.setenv(bakeoff_judge.QWEN36_SEED_VARIANT_ENV_VAR, "repro1")
+    res_part1 = run_bakeoff_judge(
+        part_dir=items_2_path,
+        output_dir=partial_out,
+        judge=QWEN36_ID,
+        pass_mode=CONTRA,
+        fake_transport=True,
+        active_item_ids=[items_2[0].item_id],
+    )
+    assert res_part1["calls_count"] == 2 and res_part1["seed_variant"] == "repro1"
+
+    monkeypatch.delenv(bakeoff_judge.QWEN36_SEED_VARIANT_ENV_VAR, raising=False)
+    with pytest.raises(RdlabError) as exc_r1_vs_none:
+        run_bakeoff_judge(
+            part_dir=items_2_path,
+            output_dir=partial_out,
+            judge=QWEN36_ID,
+            pass_mode=CONTRA,
+            fake_transport=True,
+        )
+    assert exc_r1_vs_none.value.code == "QWEN36_RESUME_SEED_VARIANT_MISMATCH"
+
+    monkeypatch.setenv(bakeoff_judge.QWEN36_SEED_VARIANT_ENV_VAR, "repro2")
+    with pytest.raises(RdlabError) as exc_r1_vs_r2:
+        run_bakeoff_judge(
+            part_dir=items_2_path,
+            output_dir=partial_out,
+            judge=QWEN36_ID,
+            pass_mode=CONTRA,
+            fake_transport=True,
+        )
+    assert exc_r1_vs_r2.value.code == "QWEN36_RESUME_SEED_VARIANT_MISMATCH"
+
+    monkeypatch.setenv(bakeoff_judge.QWEN36_SEED_VARIANT_ENV_VAR, "repro1")
+    res_r1_resume = run_bakeoff_judge(
+        part_dir=items_2_path,
+        output_dir=partial_out,
+        judge=QWEN36_ID,
+        pass_mode=CONTRA,
+        fake_transport=True,
+    )
+    assert res_r1_resume["calls_count"] == 4
+    assert res_r1_resume["seed_variant"] == "repro1"
+
+    # Resume mismatch Case C: incomplete AB-only row under "repro1" refuses before discarding incomplete item.
+    incomplete_out = tmp_path / "out_incomplete_r1"
+    (incomplete_out / "rows").mkdir(parents=True)
+    incomplete_row = {**legacy_row_ab, "seed_variant": "repro1"}
+    incomplete_file = incomplete_out / "rows" / f"{QWEN36_ID}.{CONTRA}.jsonl"
+    incomplete_file.write_text(json.dumps(incomplete_row) + "\n", encoding="utf-8", newline="\n")
+    monkeypatch.setenv(bakeoff_judge.QWEN36_SEED_VARIANT_ENV_VAR, "repro2")
+    with pytest.raises(RdlabError) as exc_inc:
+        run_bakeoff_judge(
+            part_dir=items_2_path,
+            output_dir=incomplete_out,
+            judge=QWEN36_ID,
+            pass_mode=CONTRA,
+            fake_transport=True,
+        )
+    assert exc_inc.value.code == "QWEN36_RESUME_SEED_VARIANT_MISMATCH"
+    assert len(incomplete_file.read_text(encoding="utf-8").splitlines()) == 1
+
+
+def test_launcher_seed_variant_forwarding_omission_and_preflight(tmp_path: Path) -> None:
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "data")
+    _seed_qwen36_snapshot_and_receipt(receipts_dir, hf_home)
+    part_dir = _make_builder_part(tmp_path / "part", triads=2)
+    items_file = _project_part_items(part_dir, tmp_path / "items.jsonl")
+    part_dir_wsl = _to_wsl_path(part_dir)
+    env_p = fake_colab.setup_fake_colab_environment(tmp_path / "env")
+    exports_base = (
+        _base_launcher_exports(
+            env_p,
+            open_lock=tmp_path / "sv.lock",
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+            items_file=items_file,
+        ).replace("export VM_DRYRUN=1;", "export VM_DRYRUN=0;")
+        + "export RDLAB_QWEN36_MAX_NEW_TOKENS=2048; "
+        + f"export RDLAB_PASS_MODE={CONTRA}; "
+        + _clean_git_shim_export(tmp_path)
+    )
+
+    # Unset -> omitted from EXEC_ENV_ARGS.
+    proc_unset = _run_launcher(
+        exports_base + f"unset RDLAB_QWEN36_SEED_VARIANT; export RDLAB_ONLY_JUDGES={QWEN36_ID}; ",
+        f"--time-one --card A100 --shape standard --window-id t1-q36-sv-unset --part-dir '{part_dir_wsl}' --dry --out-dir '{_to_wsl_path(tmp_path / 'out_unset')}' --run-id t1-sv-unset",
+    )
+    assert proc_unset.returncode == 0, f"stdout={proc_unset.stdout}\nstderr={proc_unset.stderr}"
+    assert "RDLAB_QWEN36_SEED_VARIANT" not in proc_unset.stdout
+
+    # Empty string -> omitted from EXEC_ENV_ARGS.
+    proc_empty = _run_launcher(
+        exports_base + f"export RDLAB_QWEN36_SEED_VARIANT=''; export RDLAB_ONLY_JUDGES={QWEN36_ID}; ",
+        f"--time-one --card A100 --shape standard --window-id t1-q36-sv-empty --part-dir '{part_dir_wsl}' --dry --out-dir '{_to_wsl_path(tmp_path / 'out_empty')}' --run-id t1-sv-empty",
+    )
+    assert proc_empty.returncode == 0, f"stdout={proc_empty.stdout}\nstderr={proc_empty.stderr}"
+    assert "RDLAB_QWEN36_SEED_VARIANT" not in proc_empty.stdout
+
+    # Set -> forwarded with --env RDLAB_QWEN36_SEED_VARIANT=repro_01.
+    proc_set = _run_launcher(
+        exports_base + f"export RDLAB_QWEN36_SEED_VARIANT=repro_01; export RDLAB_ONLY_JUDGES={QWEN36_ID}; ",
+        f"--time-one --card A100 --shape standard --window-id t1-q36-sv-set --part-dir '{part_dir_wsl}' --dry --out-dir '{_to_wsl_path(tmp_path / 'out_set')}' --run-id t1-sv-set",
+    )
+    assert proc_set.returncode == 0, f"stdout={proc_set.stdout}\nstderr={proc_set.stderr}"
+    assert "--env RDLAB_QWEN36_SEED_VARIANT=repro_01" in proc_set.stdout
+
+    # Invalid value -> preflight refuses before `colab new`.
+    proc_bad = _run_launcher(
+        exports_base + f"export RDLAB_QWEN36_SEED_VARIANT=none; export RDLAB_ONLY_JUDGES={QWEN36_ID}; ",
+        f"--time-one --card A100 --shape standard --window-id t1-q36-sv-bad --part-dir '{part_dir_wsl}' --dry --out-dir '{_to_wsl_path(tmp_path / 'out_bad')}' --run-id t1-sv-bad",
+    )
+    assert proc_bad.returncode == 2
+    assert "QWEN36_SEED_VARIANT_INVALID" in proc_bad.stderr
+    assert not env_p["calls_log"].exists()
+
+    # Non-Qwen judge -> preflight refuses QWEN36_SEED_VARIANT_UNSUPPORTED_JUDGE before `colab new`.
+    proc_nj = _run_launcher(
+        exports_base + "export RDLAB_QWEN36_SEED_VARIANT=repro_01; export RDLAB_ONLY_JUDGES=mu-judge; ",
+        f"--time-one --card A100 --shape standard --window-id t1-q36-sv-nj --part-dir '{part_dir_wsl}' --dry --out-dir '{_to_wsl_path(tmp_path / 'out_nj')}' --run-id t1-sv-nj",
+    )
+    assert proc_nj.returncode == 2
+    assert "QWEN36_SEED_VARIANT_UNSUPPORTED_JUDGE" in proc_nj.stderr
+    assert not env_p["calls_log"].exists()
+
+    # End-to-end --stub run forwards RDLAB_QWEN36_SEED_VARIANT into vm_judges.main and outputs.
+    stub_items = _make_synthetic_public_items(tmp_path / "stub_items_dir", count=2)
+    stub_out = tmp_path / "out_sv_stub"
+    stub_exports = (
+        _base_launcher_exports(
+            env_p,
+            open_lock=tmp_path / "sv_stub.lock",
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+            items_file=stub_items,
+        )
+        + f"export RDLAB_ONLY_JUDGES={QWEN36_ID}; export RDLAB_PASS_MODE={CONTRA}; export RDLAB_LIMIT_ITEMS=2; "
+        + "export FAKE_COLAB_DISK_FREE_BYTES=220000000000; export RDLAB_QWEN36_SEED_VARIANT=repro_01; "
+    )
+    proc_stub = _run_launcher(stub_exports, f"--stub --out-dir '{_to_wsl_path(stub_out)}' --run-id stub-sv-01")
+    assert proc_stub.returncode == 0, f"stdout={proc_stub.stdout}\nstderr={proc_stub.stderr}"
+    stub_summary = json.loads((stub_out / "time_one_summary.json").read_text(encoding="utf-8"))
+    assert stub_summary["judges"][QWEN36_ID]["seed_variant"] == "repro_01"
+    stub_done = json.loads((stub_out / "judge_done" / f"{QWEN36_ID}.json").read_text(encoding="utf-8"))
+    assert stub_done["seed_variant"] == "repro_01"
+    stub_rows = [
+        json.loads(ln)
+        for ln in (stub_out / "rows" / f"{QWEN36_ID}.{CONTRA}.jsonl").read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    assert {r["seed_variant"] for r in stub_rows} == {"repro_01"}
+    assert {r["library_pins"]["seed_variant"] for r in stub_rows} == {"repro_01"}
+    assert {r["call_seed"] for r in stub_rows} == {
+        bakeoff_judge.derive_qwen36_call_seed(r["item_id"], r["order"], seed_variant="repro_01") for r in stub_rows
+    }

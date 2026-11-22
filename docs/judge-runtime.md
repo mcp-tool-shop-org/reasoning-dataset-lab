@@ -57,15 +57,22 @@ subprocess (`<venv>/bin/python -m reasoning_dataset_lab.pilot_b.bakeoff_judge`) 
   `QWEN36_PROMPT_TEMPLATE_MISMATCH`, prompt token count checked against `QWEN36_PROMPT_TOKEN_CAP` before model load
   and before `generate` refusing `QWEN36_PROMPT_TOO_LONG`, general-thinking sampling `temperature=1.0`, `top_p=0.95`,
   `top_k=20`, `min_p=0.0`, `presence_penalty=1.5`, `repetition_penalty=1.0`, deterministic per-call seed from
-  `(item_id, order)`, `max_new_tokens` required via `RDLAB_QWEN36_MAX_NEW_TOKENS` on real windows
-  (`QWEN36_MAX_NEW_TOKENS_REQUIRED` if unset, `4096` default only on stub/dryrun paths); rows record
+  `(item_id, order)` (or `(item_id, order, seed_variant)` when optional `RDLAB_QWEN36_SEED_VARIANT` is set, validated
+  against `\A[a-z0-9][a-z0-9_-]{0,31}\Z` excluding `"none"` — invalid refuses `QWEN36_SEED_VARIANT_INVALID`, and
+  setting it with any non-`qwen3.6-35b-a3b` judge refuses `QWEN36_SEED_VARIANT_UNSUPPORTED_JUDGE` at start; unset/empty
+  keeps the default seeds unchanged and records `"none"`), `max_new_tokens` required via `RDLAB_QWEN36_MAX_NEW_TOKENS`
+  on real windows (`QWEN36_MAX_NEW_TOKENS_REQUIRED` if unset, `4096` default only on stub/dryrun paths); rows record
   `prompt_token_count`, `raw_verdict`, and `argmax_verdict` (an argmax tie goes to the first label in label order:
   `supported`, `unsupported`, `cannot_tell`) plus `unparseable_answer_text` on unparseable rows, vLLM `abort` maps
   to `state="aborted"`, resume recomputes missing `argmax_verdict` from `choice_probabilities` or `top_20_logprobs` or
-  refuses `QWEN36_RESUME_ARGMAX_VERDICT_UNAVAILABLE`, `child_end["counts_by_state"]` records all five states
+  refuses `QWEN36_RESUME_ARGMAX_VERDICT_UNAVAILABLE` and refuses `QWEN36_RESUME_SEED_VARIANT_MISMATCH` if existing rows'
+  `seed_variant` (defaulting legacy/absent/`None` to `"none"`) differs from the current run's `seed_variant`,
+  `child_end["counts_by_state"]` records all five states
   (`parsed`, `unparseable`, `length_stop`, `aborted`, `failed_to_run`) summing to total calls, `aborted` counts in
-  the scorer `error_rate` and invalid-rate bar (`THREE_WAY_MAX_INVALID_RATE`), and `judge_done`/summary record
-  `unparseable_count`, `aborted_count`, `verdict_disagreement_count`, and `probs_missing_count`; the `92,000` MiB VRAM
+  the scorer `error_rate` and invalid-rate bar (`THREE_WAY_MAX_INVALID_RATE`), and rows (`seed_variant` beside
+  `call_seed` and in `library_pins`), `judge_done`, run summaries, and `time_one_summary.json` `per_judge_metrics`
+  record `seed_variant` (`"none"` or the validated variant) alongside `unparseable_count`, `aborted_count`,
+  `verdict_disagreement_count`, and `probs_missing_count`; the `92,000` MiB VRAM
   halt, `QWEN36_PROMPT_TOKEN_CAP (4096)`, `12 GiB` `venv-vllm` size, and install/startup seconds are unmeasured
   estimates to be measured on a stub GPU window).
 
