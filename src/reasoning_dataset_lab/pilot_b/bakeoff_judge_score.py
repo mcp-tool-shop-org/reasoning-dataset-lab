@@ -1527,6 +1527,7 @@ def _evaluate_judge_at_rule(
 
     length_stops = 0
     unparseable = 0
+    aborted = 0
     seconds_list: list[float] = []
     vram_peak = 0
     all_rows_for_ece: list[Mapping[str, Any]] = []
@@ -1549,6 +1550,8 @@ def _evaluate_judge_at_rule(
                 length_stops += 1
             elif r.get("state") == "unparseable":
                 unparseable += 1
+            elif r.get("state") == "aborted":
+                aborted += 1
             sec_val = _coerce_finite_float(r.get("seconds"))
             if sec_val is None:
                 raise refused_error(
@@ -1794,7 +1797,7 @@ def _evaluate_judge_at_rule(
         "reliability_bins": rel_points,
         "length_stops": length_stops,
         "unparseable": unparseable,
-        "error_rate": round((length_stops + unparseable) / max(1, total_calls), 6),
+        "error_rate": round((length_stops + unparseable + aborted) / max(1, total_calls), 6),
         "seconds_total": round(sum(seconds_list), 4),
         "seconds_mean": round(sum(seconds_list) / max(1, len(seconds_list)), 6),
         "seconds_median": round(statistics.median(seconds_list), 6) if seconds_list else None,

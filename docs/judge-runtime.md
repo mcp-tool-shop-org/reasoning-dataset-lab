@@ -45,8 +45,29 @@ subprocess (`<venv>/bin/python -m reasoning_dataset_lab.pilot_b.bakeoff_judge`) 
 `stdin=subprocess.DEVNULL`, and `start_new_session=True`:
 
 - `venv-judge/bin/python` (`judge.lock.txt`, `transformers==5.19.0`, `huggingface-hub==2.4.0`): `flow-judge-v0.1`,
-  `granite-guardian-4.1-8b`, `mu-judge`, and `nemotron-3-nano-4b`.
-- `venv-d3/bin/python` (`d3.lock.txt`, `transformers==5.17.0`, `huggingface-hub==1.33.0`): `d3-mini`.
+  `granite-guardian-4.1-8b`, `mu-judge`, and `nemotron-3-nano-4b` (and `nli-deberta-v3-large`; `elephant-1` uses
+  `venv-elephant` cloned from `venv-judge`).
+- `venv-d3/bin/python` (`d3.lock.txt`, `transformers==5.17.0`, `huggingface-hub==1.33.0`): `d3-mini`, `d3-flash`, and `d3`.
+- `venv-vllm/bin/python` (`vllm.lock.txt`, `vllm==0.34.0`, `transformers==5.22.2`, `torch==2.14.0`, CPython `3.13`,
+  created lazily on real windows that select `qwen3.6-35b-a3b` via `ensure_vllm_venv`): `qwen3.6-35b-a3b`
+  (`VllmJudgeTransport`, offline in-process batch size `1`, `language_model_only=True`, `tensor_parallel_size=1`,
+  explicit `max_model_len = QWEN36_PROMPT_TOKEN_CAP (4096, unmeasured estimate to be replaced by a measured value) + max_new_tokens`,
+  `gpu_memory_utilization=0.90`, `enforce_eager=False`, `logprobs_mode="raw_logprobs"` extracting raw top-20 logprobs
+  before temperature and penalties, `enable_thinking=True`, prompt template byte-identity check refusing
+  `QWEN36_PROMPT_TEMPLATE_MISMATCH`, prompt token count checked against `QWEN36_PROMPT_TOKEN_CAP` before model load
+  and before `generate` refusing `QWEN36_PROMPT_TOO_LONG`, general-thinking sampling `temperature=1.0`, `top_p=0.95`,
+  `top_k=20`, `min_p=0.0`, `presence_penalty=1.5`, `repetition_penalty=1.0`, deterministic per-call seed from
+  `(item_id, order)`, `max_new_tokens` required via `RDLAB_QWEN36_MAX_NEW_TOKENS` on real windows
+  (`QWEN36_MAX_NEW_TOKENS_REQUIRED` if unset, `4096` default only on stub/dryrun paths); rows record
+  `prompt_token_count`, `raw_verdict`, and `argmax_verdict` (an argmax tie goes to the first label in label order:
+  `supported`, `unsupported`, `cannot_tell`) plus `unparseable_answer_text` on unparseable rows, vLLM `abort` maps
+  to `state="aborted"`, resume recomputes missing `argmax_verdict` from `choice_probabilities` or `top_20_logprobs` or
+  refuses `QWEN36_RESUME_ARGMAX_VERDICT_UNAVAILABLE`, `child_end["counts_by_state"]` records all five states
+  (`parsed`, `unparseable`, `length_stop`, `aborted`, `failed_to_run`) summing to total calls, `aborted` counts in
+  the scorer `error_rate` and invalid-rate bar (`THREE_WAY_MAX_INVALID_RATE`), and `judge_done`/summary record
+  `unparseable_count`, `aborted_count`, `verdict_disagreement_count`, and `probs_missing_count`; the `92,000` MiB VRAM
+  halt, `QWEN36_PROMPT_TOKEN_CAP (4096)`, `12 GiB` `venv-vllm` size, and install/startup seconds are unmeasured
+  estimates to be measured on a stub GPU window).
 
 When a judge child finishes, it writes `<run_dir>/judge_done/<judge>.json` (`row_count` and `sha256` of
 `rows/<judge>.jsonl`), and the parent records `judge_pass_done` in `progress.jsonl`. If a judge child is killed by the

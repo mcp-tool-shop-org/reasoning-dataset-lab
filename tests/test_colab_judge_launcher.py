@@ -2847,12 +2847,21 @@ def test_real_service_assumptions_weights_table_matches_receipts(
     assert doc_path.is_file()
 
     rows = generate_weights_table.load_weights_rows_from_receipts(receipts_dir)
-    assert len(rows) == 9  # the five downloaded receipts and the four D5c metadata receipts
+    assert len(rows) == 10  # the five downloaded receipts and the five metadata receipts
     assert sum(int(r["total_bytes"]) for r in rows) == (
-        vm_judges.EXPECTED_WEIGHTS_TOTAL_BYTES + vm_judges.ELEPHANT_WEIGHTS_BYTES + vm_judges.D3_WEIGHTS_BYTES
+        vm_judges.EXPECTED_WEIGHTS_TOTAL_BYTES
+        + vm_judges.ELEPHANT_WEIGHTS_BYTES
+        + vm_judges.D3_WEIGHTS_BYTES
+        + vm_judges.QWEN36_WEIGHTS_BYTES
     )
     assert round(sum(float(r["seconds"]) for r in rows if r["seconds"] is not None), 1) == vm_judges.EXPECTED_WEIGHTS_DOWNLOAD_SECONDS
-    assert sorted(r["judge_id"] for r in rows if r["seconds"] is None) == ["d3", "d3-flash", "elephant-1", "nli-deberta-v3-large"]
+    assert sorted(r["judge_id"] for r in rows if r["seconds"] is None) == [
+        "d3",
+        "d3-flash",
+        "elephant-1",
+        "nli-deberta-v3-large",
+        "qwen3.6-35b-a3b",
+    ]
     for r in rows:
         from reasoning_dataset_lab.pilot_b.bakeoff_judge import JUDGE_SPECS
 
@@ -10688,6 +10697,7 @@ def test_child_progress_1_lines_in_order_and_fields_for_two_item_child(
         "parsed": 4,
         "unparseable": 0,
         "length_stop": 0,
+        "aborted": 0,
         "failed_to_run": 0,
     }
     assert isinstance(ce["total_seconds"], (int, float)) and ce["total_seconds"] >= 0.0
@@ -10725,6 +10735,7 @@ def test_child_progress_1_lines_in_order_and_fields_for_two_item_child(
         "parsed": 2,
         "unparseable": 1,
         "length_stop": 1,
+        "aborted": 0,
         "failed_to_run": 0,
     }
 
@@ -10769,6 +10780,7 @@ def test_child_progress_1_lines_in_order_and_fields_for_two_item_child(
         "parsed": 0,
         "unparseable": 0,
         "length_stop": 0,
+        "aborted": 0,
         "failed_to_run": 1,
     }
 

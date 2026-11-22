@@ -72,6 +72,7 @@ KIT_GATE_CLASS=""
 
 EXPECTED_JUDGE_LOCK_SHA256="608f56ab8eae6852718438366ff0ce74ef6aafb66db75faef034ae0bb5bdcf10"
 EXPECTED_D3_LOCK_SHA256="08801f9ac5e3cfb14ce819b051aeef388bea3e564e7b99bddc10d91537ab78e2"
+EXPECTED_VLLM_LOCK_SHA256="a9243e0bb6416650c21ff131beefb4f3406bc42310919219409d68459cb3cef5"
 EXPECTED_DEVICE_PY_SHA256="0755b739628d8f91adb696df4df90dbda78b0cfe5233fe33b54ae7987e55232d"
 EXPECTED_UV_VERSION="0.13.5"
 
@@ -1042,6 +1043,11 @@ try:
         judge_ids=judge_order_t,
         session_smoke=is_smoke,
     )
+    vm_judges.validate_qwen36_real_window_max_new_tokens(
+        mode,
+        judge_ids=judge_order_t,
+        dryrun=os.environ.get("VM_DRYRUN") == "1",
+    )
     vm_judges.validate_stub_exercise_elephant_install(
         mode,
         os.environ.get("RDLAB_STUB_EXERCISE_ELEPHANT_INSTALL", None),
@@ -1364,6 +1370,12 @@ build_exec_env_args() {
   fi
   if [[ -n "${RDLAB_STUB_EXERCISE_ELEPHANT_INSTALL+x}" ]] && [[ -n "${RDLAB_STUB_EXERCISE_ELEPHANT_INSTALL}" ]]; then
     EXEC_ENV_ARGS+=(--env "RDLAB_STUB_EXERCISE_ELEPHANT_INSTALL=$RDLAB_STUB_EXERCISE_ELEPHANT_INSTALL")
+  fi
+  if [[ -n "${RDLAB_QWEN36_MAX_NEW_TOKENS+x}" ]] && [[ -n "${RDLAB_QWEN36_MAX_NEW_TOKENS}" ]]; then
+    EXEC_ENV_ARGS+=(--env "RDLAB_QWEN36_MAX_NEW_TOKENS=$RDLAB_QWEN36_MAX_NEW_TOKENS")
+  fi
+  if [[ -n "${RDLAB_VLLM_LOCK_SHA256+x}" ]] && [[ -n "${RDLAB_VLLM_LOCK_SHA256}" ]]; then
+    EXEC_ENV_ARGS+=(--env "RDLAB_VLLM_LOCK_SHA256=$RDLAB_VLLM_LOCK_SHA256")
   fi
   if [[ "$EFFECTIVE_RESUME" -eq 1 ]] && [[ -f "$OUT_DIR/schedule.json" ]]; then
     EXEC_ENV_ARGS+=(--env "RDLAB_RESUME_TAR=/content/resume_state.tar.gz")
@@ -3858,7 +3870,7 @@ if [[ -z "$RECEIPTS_DIR" ]] || [[ ! -d "$RECEIPTS_DIR" ]]; then
   exit 2
 fi
 
-if ! "$PYTHON_BIN" - "$REPO_ROOT" "$EXPECTED_JUDGE_LOCK_SHA256" "$EXPECTED_D3_LOCK_SHA256" "$EXPECTED_DEVICE_PY_SHA256" <<'PY'
+if ! "$PYTHON_BIN" - "$REPO_ROOT" "$EXPECTED_JUDGE_LOCK_SHA256" "$EXPECTED_D3_LOCK_SHA256" "$EXPECTED_VLLM_LOCK_SHA256" "$EXPECTED_DEVICE_PY_SHA256" <<'PY'
 import os
 import sys
 from pathlib import Path
@@ -3866,7 +3878,8 @@ from pathlib import Path
 repo_root = Path(sys.argv[1])
 exp_judge = sys.argv[2]
 exp_d3 = sys.argv[3]
-exp_dev = sys.argv[4]
+exp_vllm = sys.argv[4]
+exp_dev = sys.argv[5]
 sys.path.insert(0, str(repo_root / "src"))
 sys.path.insert(0, str(repo_root / "scripts" / "colab"))
 import vm_judges
@@ -3879,6 +3892,13 @@ vm_judges.verify_lock_digests(
     expected_judge_sha256=exp_judge,
     expected_d3_sha256=exp_d3,
 )
+vllm_lock = repo_root / "scripts" / "colab" / "locks" / "vllm.lock.txt"
+if vllm_lock.is_file():
+    vm_judges.verify_vllm_lock(
+        vllm_lock,
+        env_vllm_sha256=os.environ.get("RDLAB_VLLM_LOCK_SHA256"),
+        expected_vllm_sha256=exp_vllm,
+    )
 vm_judges.verify_device_py_digest(
     repo_root / "src" / "reasoning_dataset_lab" / "pilot_b" / "device.py",
     env_device_sha256=(

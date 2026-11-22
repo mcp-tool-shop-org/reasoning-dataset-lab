@@ -130,6 +130,7 @@ def test_arm_wording_table_is_the_preregistered_words() -> None:
     assert three_way_wording.THREE_WAY_WORDING_FAMILY_BY_JUDGE == {
         "mu-judge": "STATE",
         "nemotron-3-nano-4b": "STATE",
+        "qwen3.6-35b-a3b": "STATE",
         "d3-mini": "the_state",
         "d3-flash": "the_state",  # arm 3: the d3 family's text, the same words as d3-mini's
         "d3": "the_state",  # arms 7C and 7Q: vllm-sr/d3 with d3-mini's words (PREREG-d5c-fitted-two-question-and-d3-27b)
