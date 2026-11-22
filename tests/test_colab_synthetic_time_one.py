@@ -733,14 +733,83 @@ def test_scorer_and_counted_readers_refuse_synthetic_outputs_at_every_entry_poin
     (resilient_dir / "rows").mkdir(parents=True, exist_ok=True)
     (resilient_dir / "window.json").write_text("{corrupt json", encoding="utf-8")
     (resilient_dir / "vm_receipt.json").write_text("[]", encoding="utf-8")
+    (resilient_dir / "receipt.json").write_text(
+        json.dumps({"synthetic_items": False, "part_identity": {"synthetic_items": False}}) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
     (resilient_dir / "judge_done" / "mu-judge.json").write_bytes(b"\xff\xfe")
     (resilient_dir / "rows" / "bad_utf8.jsonl").write_bytes(b"\xff\xfe")
+    (resilient_dir / "rows" / "broken_link.jsonl").symlink_to(tmp_path / "missing_target.jsonl")
     (resilient_dir / "rows" / "mixed.jsonl").write_text(
         "\nnot-json\n[]\n" + json.dumps({"item_id": "item-1", "synthetic_items": False}) + "\n",
         encoding="utf-8",
         newline="\n",
     )
     assert run_records.find_synthetic_in_run_dir(resilient_dir) is None
+
+    # Exercise secondary synthetic guards and fallback branches across scorer/run_records/manifest
+    non_synth_rec = _sealed_key("item-1")
+    non_synth_row_ab = {
+        "item_id": "item-1", "order": "AB", "state": "parsed", "raw_verdict": "supported",
+        "confidence": 0.8, "choice_probabilities": {"supported": 0.8, "unsupported": 0.1, "cannot_tell": 0.1},
+    }
+    non_synth_row_ba = {**non_synth_row_ab, "order": "BA"}
+    synth_flagged_row = {**non_synth_row_ab, "synthetic_items": True}
+    for extra_call in (
+        lambda: bakeoff_judge_score.fit_dev_threshold_youden([non_synth_row_ab], {"synth-1": synth_rec}),
+        lambda: bakeoff_judge_score._evaluate_judge_at_rule(
+            judge_id="mu-judge",
+            judge_label="mu-judge",
+            rule_name="plain",
+            threshold_value=None,
+            rows_by_item_order={"item-1": {"AB": synth_flagged_row, "BA": non_synth_row_ba}},
+            first_order_by_item={"item-1": "AB"},
+            keys_by_id={"item-1": non_synth_rec},
+            registered_domains=["logic"],
+        ),
+        lambda: bakeoff_judge_score._three_way_sealed_rows(
+            "mu-judge", non_synth_rec, {"AB": synth_flagged_row, "BA": non_synth_row_ba}
+        ),
+        lambda: bakeoff_judge_score._three_way_breakdown(
+            [(non_synth_rec, synth_flagged_row, non_synth_row_ba)]
+        ),
+        lambda: bakeoff_judge_score.select_bakeoff_winner(
+            [{"judge_id": "mu-judge", "synthetic_items": False}, {"judge_id": "d3-mini", "synthetic_items": True}],
+            [],
+            registered_domains=["logic"],
+        ),
+    ):
+        with pytest.raises(RdlabError) as exc_extra:
+            extra_call()
+        assert exc_extra.value.code == "BAKEOFF_SCORE_SYNTHETIC_ITEMS"
+
+    non_rows_file = tmp_path / "plain_outside.jsonl"
+    non_rows_file.write_text(json.dumps(non_synth_row_ab) + "\n", encoding="utf-8", newline="\n")
+    assert len(bakeoff_judge_score._load_rows_file(non_rows_file)) == 1
+
+    lrf_clean = tmp_path / "lrf_clean"
+    (lrf_clean / "judge_done").mkdir(parents=True, exist_ok=True)
+    (lrf_clean / "rows").mkdir(parents=True, exist_ok=True)
+    (lrf_clean / "rows" / "mu-judge.jsonl").write_text(json.dumps(non_synth_row_ab) + "\n", encoding="utf-8", newline="\n")
+    (lrf_clean / "judge_done" / "broken.json").write_text("{corrupt", encoding="utf-8")
+    (lrf_clean / "judge_done" / "link.json").symlink_to(tmp_path / "missing_done.json")
+    (lrf_clean / "judge_done" / "mu-judge.json").write_text(json.dumps({"synthetic_items": False}) + "\n", encoding="utf-8")
+    (lrf_clean / "judge_done" / "other-judge.json").write_text(
+        json.dumps({"synthetic_items": True, "rows_file": "rows/other-judge.jsonl"}) + "\n", encoding="utf-8"
+    )
+    loaded_clean = bakeoff_judge_score._load_rows_file(lrf_clean / "rows" / "mu-judge.jsonl")
+    assert len(loaded_clean) == 1 and loaded_clean[0]["item_id"] == "item-1"
+
+    win_legacy = tmp_path / "win_legacy"
+    win_legacy.mkdir(parents=True, exist_ok=True)
+    (win_legacy / "window.json").write_text(json.dumps({"mode": "stub"}) + "\n", encoding="utf-8")
+    assert bakeoff_judge.build_window_manifest(win_legacy)["synthetic_items"] is False
+
+    win_synth = tmp_path / "win_synth"
+    win_synth.mkdir(parents=True, exist_ok=True)
+    (win_synth / "window.json").write_text(json.dumps({"mode": "time-one", "synthetic_items": True}) + "\n", encoding="utf-8")
+    assert bakeoff_judge.build_window_manifest(win_synth)["synthetic_items"] is True
 
 
 def test_real_part_path_unchanged_without_synthetic_flag(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
