@@ -728,25 +728,26 @@ def test_scorer_and_counted_readers_refuse_synthetic_outputs_at_every_entry_poin
     anchor_det = run_records.find_synthetic_in_run_dir(anchor_probe)
     assert anchor_det is not None and "anchor_rows/mu-judge.jsonl" in anchor_det
 
-    resilient_dir = tmp_path / "probe_resilient"
-    (resilient_dir / "judge_done").mkdir(parents=True, exist_ok=True)
-    (resilient_dir / "rows").mkdir(parents=True, exist_ok=True)
-    (resilient_dir / "window.json").write_text("{corrupt json", encoding="utf-8")
-    (resilient_dir / "vm_receipt.json").write_text("[]", encoding="utf-8")
-    (resilient_dir / "receipt.json").write_text(
+    clean_non_synth_dir = tmp_path / "probe_clean_non_synth"
+    (clean_non_synth_dir / "judge_done").mkdir(parents=True, exist_ok=True)
+    (clean_non_synth_dir / "rows").mkdir(parents=True, exist_ok=True)
+    (clean_non_synth_dir / "window.json").write_text(json.dumps({"synthetic_items": False}) + "\n", encoding="utf-8")
+    (clean_non_synth_dir / "vm_receipt.json").write_text(json.dumps({"synthetic_items": False}) + "\n", encoding="utf-8")
+    (clean_non_synth_dir / "receipt.json").write_text(
         json.dumps({"synthetic_items": False, "part_identity": {"synthetic_items": False}}) + "\n",
         encoding="utf-8",
         newline="\n",
     )
-    (resilient_dir / "judge_done" / "mu-judge.json").write_bytes(b"\xff\xfe")
-    (resilient_dir / "rows" / "bad_utf8.jsonl").write_bytes(b"\xff\xfe")
-    (resilient_dir / "rows" / "broken_link.jsonl").symlink_to(tmp_path / "missing_target.jsonl")
-    (resilient_dir / "rows" / "mixed.jsonl").write_text(
-        "\nnot-json\n[]\n" + json.dumps({"item_id": "item-1", "synthetic_items": False}) + "\n",
+    (clean_non_synth_dir / "judge_done" / "mu-judge.json").write_text(
+        json.dumps({"synthetic_items": False}) + "\n", encoding="utf-8"
+    )
+    (clean_non_synth_dir / "judge_done" / "empty.json").write_text("{}\n", encoding="utf-8")
+    (clean_non_synth_dir / "rows" / "clean.jsonl").write_text(
+        "\n" + json.dumps({"item_id": "item-1", "synthetic_items": False}) + "\n",
         encoding="utf-8",
         newline="\n",
     )
-    assert run_records.find_synthetic_in_run_dir(resilient_dir) is None
+    assert run_records.find_synthetic_in_run_dir(clean_non_synth_dir) is None
 
     # Exercise secondary synthetic guards and fallback branches across scorer/run_records/manifest
     non_synth_rec = _sealed_key("item-1")
@@ -792,8 +793,7 @@ def test_scorer_and_counted_readers_refuse_synthetic_outputs_at_every_entry_poin
     (lrf_clean / "judge_done").mkdir(parents=True, exist_ok=True)
     (lrf_clean / "rows").mkdir(parents=True, exist_ok=True)
     (lrf_clean / "rows" / "mu-judge.jsonl").write_text(json.dumps(non_synth_row_ab) + "\n", encoding="utf-8", newline="\n")
-    (lrf_clean / "judge_done" / "broken.json").write_text("{corrupt", encoding="utf-8")
-    (lrf_clean / "judge_done" / "link.json").symlink_to(tmp_path / "missing_done.json")
+    (lrf_clean / "judge_done" / "empty.json").write_text("{}\n", encoding="utf-8")
     (lrf_clean / "judge_done" / "mu-judge.json").write_text(json.dumps({"synthetic_items": False}) + "\n", encoding="utf-8")
     (lrf_clean / "judge_done" / "other-judge.json").write_text(
         json.dumps({"synthetic_items": True, "rows_file": "rows/other-judge.jsonl"}) + "\n", encoding="utf-8"
@@ -859,3 +859,369 @@ def test_real_part_path_unchanged_without_synthetic_flag(tmp_path: Path, monkeyp
     )
     assert identity is not None
     assert identity["part_id"] == json.loads((part / "part.json").read_text(encoding="utf-8"))["part_id"]
+
+
+def test_judge_child_refuses_synthetic_items_when_window_mode_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("RDLAB_DETERMINISM_MODE", raising=False)
+    monkeypatch.delenv("RDLAB_WINDOW_MODE", raising=False)
+    for k in list(os.environ):
+        if bakeoff_judge.is_forbidden_counted_test_hook(k):
+            monkeypatch.delenv(k, raising=False)
+    synth_items = _write_items_jsonl(tmp_path / "items.jsonl", ["synth-1"])
+
+    with pytest.raises(RdlabError) as exc_real_none:
+        bakeoff_judge.run_bakeoff_judge(
+            part_dir=synth_items,
+            output_dir=tmp_path / "out_real_none",
+            judge="mu-judge",
+            fake_transport=False,
+            window_mode=None,
+            synthetic_items=True,
+        )
+    assert exc_real_none.value.code == "BAKEOFF_JUDGE_SYNTHETIC_MODE_FORBIDDEN"
+
+    with pytest.raises(RdlabError) as exc_fake_none:
+        bakeoff_judge.run_bakeoff_judge(
+            part_dir=synth_items,
+            output_dir=tmp_path / "out_fake_none",
+            judge="mu-judge",
+            fake_transport=True,
+            window_mode=None,
+            synthetic_items=True,
+        )
+    assert exc_fake_none.value.code == "BAKEOFF_JUDGE_SYNTHETIC_MODE_FORBIDDEN"
+
+
+def test_find_synthetic_in_run_dir_refuses_unreadable_record_files_and_bad_row_lines(tmp_path: Path) -> None:
+    empty_dir = tmp_path / "empty_dir"
+    empty_dir.mkdir(parents=True, exist_ok=True)
+    assert run_records.find_synthetic_in_run_dir(empty_dir) is None
+
+    for rel_path in (
+        "window.json",
+        "vm_receipt.json",
+        "receipt.json",
+        "outcome.draft.json",
+        "time_one_summary.json",
+        "judge_done/mu-judge.json",
+    ):
+        for bad_tag, payload in (
+            ("corrupt_json", b"{corrupt"),
+            ("non_object", b"[1, 2]"),
+            ("bad_utf8", b"\xff\xfe"),
+            ("symlink", None),
+        ):
+            case_dir = tmp_path / f"rec_{rel_path.replace('/', '_').replace('.', '_')}_{bad_tag}"
+            target_file = case_dir / rel_path
+            target_file.parent.mkdir(parents=True, exist_ok=True)
+            if bad_tag == "symlink":
+                real_t = case_dir / "_real_target.json"
+                real_t.write_text(json.dumps({"synthetic_items": False}) + "\n", encoding="utf-8", newline="\n")
+                target_file.symlink_to(real_t)
+            else:
+                assert payload is not None
+                target_file.write_bytes(payload)
+            with pytest.raises(RdlabError) as exc_rec:
+                run_records.find_synthetic_in_run_dir(case_dir)
+            assert exc_rec.value.code == "SYNTHETIC_CHECK_RECORD_UNREADABLE", (rel_path, bad_tag)
+
+    dir_record_case = tmp_path / "rec_dir_as_window_json"
+    (dir_record_case / "window.json").mkdir(parents=True, exist_ok=True)
+    with pytest.raises(RdlabError) as exc_dir_rec:
+        run_records.find_synthetic_in_run_dir(dir_record_case)
+    assert exc_dir_rec.value.code == "SYNTHETIC_CHECK_RECORD_UNREADABLE"
+
+    for rel_row in ("rows/mu-judge.jsonl", "anchor_rows/mu-judge.jsonl"):
+        for bad_tag, payload in (
+            ("corrupt_line", b"not-json\n"),
+            ("non_object_line", b"[]\n"),
+            ("bad_utf8", b"\xff\xfe\n"),
+            ("symlink", None),
+        ):
+            case_dir = tmp_path / f"row_{rel_row.replace('/', '_').replace('.', '_')}_{bad_tag}"
+            target_file = case_dir / rel_row
+            target_file.parent.mkdir(parents=True, exist_ok=True)
+            if bad_tag == "symlink":
+                real_t = case_dir / "_real_rows.jsonl"
+                real_t.write_text(json.dumps({"item_id": "item-1"}) + "\n", encoding="utf-8", newline="\n")
+                target_file.symlink_to(real_t)
+            else:
+                assert payload is not None
+                target_file.write_bytes(payload)
+            with pytest.raises(RdlabError) as exc_row:
+                run_records.find_synthetic_in_run_dir(case_dir)
+            assert exc_row.value.code == "SYNTHETIC_CHECK_RECORD_UNREADABLE", (rel_row, bad_tag)
+
+    dir_row_case = tmp_path / "row_dir_as_jsonl"
+    (dir_row_case / "rows" / "mu-judge.jsonl").mkdir(parents=True, exist_ok=True)
+    with pytest.raises(RdlabError) as exc_dir_row:
+        run_records.find_synthetic_in_run_dir(dir_row_case)
+    assert exc_dir_row.value.code == "SYNTHETIC_CHECK_RECORD_UNREADABLE"
+
+    plain_items = _write_items_jsonl(tmp_path / "plain_items.jsonl", ["item-1", "item-2"])
+    plain_run = tmp_path / "plain_closed_run"
+    bakeoff_judge.run_bakeoff_judge(
+        part_dir=plain_items,
+        output_dir=plain_run,
+        judge="mu-judge",
+        fake_transport=True,
+        window_mode="stub",
+        synthetic_items=False,
+    )
+    bakeoff_judge.close_bakeoff_outputs(plain_run)
+
+    # Corrupt judge_done fails closed in _load_rows_file directly.
+    corrupt_jd_dir = tmp_path / "corrupt_jd_dir"
+    shutil.copytree(plain_run, corrupt_jd_dir)
+    (corrupt_jd_dir / "judge_done" / "mu-judge.json").write_text("{bad-jd", encoding="utf-8")
+    with pytest.raises(RdlabError) as exc_lrf_bad:
+        bakeoff_judge_score._load_rows_file(corrupt_jd_dir / "rows" / "mu-judge.jsonl")
+    assert exc_lrf_bad.value.code == "SYNTHETIC_CHECK_RECORD_UNREADABLE"
+
+    # Corrupt window.json propagates SYNTEHTIC_CHECK_RECORD_UNREADABLE through every reader.
+    corrupt_win_dir = tmp_path / "corrupt_win_dir"
+    shutil.copytree(plain_run, corrupt_win_dir)
+    (corrupt_win_dir / "window.json").write_text("{corrupt", encoding="utf-8")
+
+    with pytest.raises(RdlabError) as exc_voc:
+        bakeoff_judge_score.verify_outputs_closed(corrupt_win_dir)
+    assert exc_voc.value.code == "SYNTHETIC_CHECK_RECORD_UNREADABLE"
+
+    with pytest.raises(RdlabError) as exc_lpm:
+        bakeoff_judge.check_bakeoff_logprob_mass(corrupt_win_dir)
+    assert exc_lpm.value.code == "SYNTHETIC_CHECK_RECORD_UNREADABLE"
+
+    with pytest.raises(vm_judges.RefusalError) as exc_vm_lpm:
+        vm_judges._checked_logprob_rows_dir(corrupt_win_dir)
+    assert exc_vm_lpm.value.failure_class == "SYNTHETIC_CHECK_RECORD_UNREADABLE"
+
+    mf_path = tmp_path / "dummy_shard_manifest.json"
+    mf_path.write_text("{}", encoding="utf-8")
+    with pytest.raises(merge_shards.MergeRefusalError) as exc_merge:
+        merge_shards.merge_shards(
+            shard_dirs=[corrupt_win_dir],
+            manifest_path=mf_path,
+            output_dir=tmp_path / "merged_out_unreadable",
+            allow_unpinned_stub=True,
+        )
+    assert exc_merge.value.failure_class == "SYNTHETIC_CHECK_RECORD_UNREADABLE"
+
+
+def test_synthetic_items_off_values_stay_off_and_unknown_refuses_invalid(tmp_path: Path) -> None:
+    for off_val in ("", "0", "false", "FALSE", " no ", "OFF", " off "):
+        assert vm_judges.parse_synthetic_items_flag(environ={"RDLAB_SYNTHETIC_ITEMS": off_val}) is False
+    assert vm_judges.parse_synthetic_items_flag(environ={}) is False
+
+    with pytest.raises(vm_judges.RefusalError) as exc_py_bad:
+        vm_judges.parse_synthetic_items_flag(environ={"RDLAB_SYNTHETIC_ITEMS": "maybe"})
+    assert exc_py_bad.value.failure_class == "SYNTHETIC_ITEMS_INVALID"
+
+    receipts_dir, hf_home = _make_receipts_and_hf_home(tmp_path / "off_rec")
+    plain_items = _write_items_jsonl(tmp_path / "plain_items.jsonl", ["item-1", "item-2"])
+    for off_val in ("", "0", "false", "no", "off"):
+        env_p = fake_colab.setup_fake_colab_environment(tmp_path / f"env_off_{off_val or 'empty'}")
+        exports = (
+            _launcher_exports(env_p, base_dir=tmp_path / f"b_off_{off_val or 'empty'}", receipts_dir=receipts_dir, hf_home=hf_home, items_file=plain_items)
+            + _clean_git_shim_export(tmp_path / f"gs_off_{off_val or 'empty'}")
+            + f"export RDLAB_SYNTHETIC_ITEMS='{off_val}'; "
+        )
+        proc = _run_launcher(
+            exports,
+            f"--stub --dry --out-dir '{_to_wsl_path(tmp_path / f'out_off_{off_val or "empty"}')}' --run-id off-{off_val or 'empty'}",
+        )
+        assert proc.returncode == 0, (off_val, proc.stdout, proc.stderr)
+        assert "SYNTHETIC_ITEMS_MODE_FORBIDDEN" not in proc.stderr
+        assert "RDLAB_SYNTHETIC_ITEMS=1" not in proc.stdout
+
+    env_bad = fake_colab.setup_fake_colab_environment(tmp_path / "env_unknown")
+    exports_bad = (
+        _launcher_exports(env_bad, base_dir=tmp_path / "b_unknown", receipts_dir=receipts_dir, hf_home=hf_home, items_file=plain_items)
+        + _clean_git_shim_export(tmp_path / "gs_unknown")
+        + "export RDLAB_SYNTHETIC_ITEMS='maybe'; "
+    )
+    proc_bad = _run_launcher(
+        exports_bad,
+        f"--time-one --card A100 --shape standard --dry --out-dir '{_to_wsl_path(tmp_path / 'out_unknown')}' --run-id unknown-01",
+    )
+    assert proc_bad.returncode == 2
+    assert "SYNTHETIC_ITEMS_INVALID" in proc_bad.stderr
+
+
+def test_vm_main_time_one_synthetic_non_dryrun_reaches_part_checks_and_judge_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    receipts_dir, hf_home = _make_receipts_and_hf_home(tmp_path / "nondry_rec")
+    content_dir = tmp_path / "content"
+    content_dir.mkdir(parents=True, exist_ok=True)
+    items_dir = tmp_path / "vm_items"
+    items_dir.mkdir(parents=True, exist_ok=True)
+    items_file = _write_items_jsonl(items_dir / "items.jsonl", ["synth-01", "synth-02"])
+
+    monkeypatch.delenv("VM_DRYRUN", raising=False)
+    for k in list(os.environ):
+        if vm_judges.is_forbidden_counted_test_hook(k) or bakeoff_judge.is_forbidden_counted_test_hook(k):
+            monkeypatch.delenv(k, raising=False)
+    monkeypatch.setattr(vm_judges, "DEFAULT_CONTENT_DIR", content_dir)
+    monkeypatch.setattr(vm_judges, "DEFAULT_ITEMS_DIR", items_dir)
+    monkeypatch.setattr(vm_judges, "DEFAULT_GATE_STATUS_FILE", tmp_path / "gate_status.json")
+    monkeypatch.setattr(vm_judges, "DEFAULT_PINNED_UV_DIR", tmp_path / "uv_pinned")
+    monkeypatch.setenv("RDLAB_ONLY_JUDGES", "mu-judge")
+    monkeypatch.setenv("RDLAB_JUDGE_LOCK_SHA256", EXPECTED_JUDGE_LOCK_SHA256)
+    monkeypatch.setenv("RDLAB_D3_LOCK_SHA256", EXPECTED_D3_LOCK_SHA256)
+    monkeypatch.setenv("RDLAB_CARD_TYPE", "A100")
+
+    monkeypatch.setattr(
+        vm_judges,
+        "verify_vm_card_type",
+        lambda mode, *, dryrun=False, until=None: {
+            "status": "checked",
+            "card_type": "A100",
+            "gpu_name": "NVIDIA A100-SXM4-40GB",
+        },
+    )
+    orig_sync = vm_judges.sync_judge_venvs
+    monkeypatch.setattr(
+        vm_judges,
+        "sync_judge_venvs",
+        lambda work_dir, repo_root, *, mode, dryrun=False, progress_path=None, step_timings=None, step_order=None: orig_sync(
+            work_dir, repo_root, mode=mode, dryrun=True, progress_path=progress_path, step_timings=step_timings, step_order=step_order
+        ),
+    )
+    orig_dev = vm_judges.run_device_check
+    monkeypatch.setattr(
+        vm_judges,
+        "run_device_check",
+        lambda work_dir, *, dryrun=False, mode="stub", progress_path=None, gate_status_path=None, step_timings=None, step_order=None: orig_dev(
+            work_dir, dryrun=True, mode=mode, progress_path=progress_path, gate_status_path=gate_status_path, step_timings=step_timings, step_order=step_order
+        ),
+    )
+    orig_gpu_gate = vm_judges.run_gpu_gate
+    monkeypatch.setattr(
+        vm_judges,
+        "run_gpu_gate",
+        lambda work_dir, *, dryrun=False, progress_path=None, gate_status_path=None, step_timings=None, step_order=None: orig_gpu_gate(
+            work_dir, dryrun=True, progress_path=progress_path, gate_status_path=gate_status_path, step_timings=step_timings, step_order=step_order
+        ),
+    )
+    orig_dl = vm_judges.download_and_verify_all_judge_weights
+    monkeypatch.setattr(
+        vm_judges,
+        "download_and_verify_all_judge_weights",
+        lambda r_dir, h_home, *, dryrun=False, **kw: orig_dl(r_dir, h_home, dryrun=True, **kw),
+    )
+    orig_gk = vm_judges.run_boot_gatekeeper
+    monkeypatch.setattr(
+        vm_judges,
+        "run_boot_gatekeeper",
+        lambda **kw: orig_gk(**{**kw, "dryrun": True, "device": "cpu"}),
+    )
+    orig_senv = vm_judges.collect_and_write_session_env
+    monkeypatch.setattr(
+        vm_judges,
+        "collect_and_write_session_env",
+        lambda run_dir, **kw: orig_senv(run_dir, **{**kw, "dryrun": True}),
+    )
+
+    recorded_child_cmds: list[list[str]] = []
+    orig_run_child = vm_judges._run_child_with_group_timeout
+
+    def _cpu_synthetic_child(cmd: Sequence[str], *, env: Mapping[str, str], timeout_seconds: float) -> dict[str, Any]:
+        cmd_list = [str(c) for c in cmd]
+        if vm_judges.JUDGE_RUNNER_MODULE not in cmd_list:
+            return orig_run_child(cmd_list, env=env, timeout_seconds=timeout_seconds)
+        recorded_child_cmds.append(list(cmd_list))
+        # Confirm real non-dry time-one + synthetic child guards remain active without GPU/torch.
+        with monkeypatch.context() as mp_hook:
+            mp_hook.setenv("FAKE_COLAB_STATE_DIR", str(tmp_path / "dummy_state"))
+            with pytest.raises(RdlabError) as exc_no_gpu_hook:
+                bakeoff_judge.run_bakeoff_judge(
+                    part_dir=items_file,
+                    output_dir=tmp_path / "guard_hook_check",
+                    judge="mu-judge",
+                    fake_transport=False,
+                    receipts_dir=receipts_dir,
+                    hf_home=hf_home,
+                    window_mode="time-one",
+                    synthetic_items=True,
+                )
+            assert exc_no_gpu_hook.value.code == "TEST_HOOK_IN_COUNTED_MODE"
+        with pytest.raises(RdlabError) as exc_no_torch:
+            bakeoff_judge.run_bakeoff_judge(
+                part_dir=items_file,
+                output_dir=tmp_path / "guard_det_check",
+                judge="mu-judge",
+                fake_transport=False,
+                receipts_dir=receipts_dir,
+                hf_home=hf_home,
+                device="cpu",
+                window_mode="time-one",
+                synthetic_items=True,
+            )
+        assert exc_no_torch.value.code == "BAKEOFF_JUDGE_DETERMINISM_REFUSED"
+
+        patched = list(cmd_list)
+        if "--device" in patched:
+            patched[patched.index("--device") + 1] = "cpu"
+        if "--window-mode" in patched:
+            patched[patched.index("--window-mode") + 1] = "dryrun"
+        if "--stub" not in patched:
+            patched.append("--stub")
+        if "--no-canary" not in patched:
+            patched.append("--no-canary")
+        return orig_run_child(patched, env=env, timeout_seconds=timeout_seconds)
+
+    monkeypatch.setattr(vm_judges, "_run_child_with_group_timeout", _cpu_synthetic_child)
+
+    run_dir = tmp_path / "vm_nondry_run"
+    work_dir = tmp_path / "vm_nondry_work"
+    status_file = tmp_path / "vm_nondry_status.json"
+    result_tar = tmp_path / "vm_nondry_result.tar.gz"
+    rc = vm_judges.main(
+        [
+            "--step",
+            "run",
+            "--mode",
+            "time-one",
+            "--synthetic-items",
+            "--window-id",
+            "synth-nondry-01",
+            "--repo-dir",
+            str(REPO_ROOT),
+            "--items-file",
+            str(items_file),
+            "--receipts-dir",
+            str(receipts_dir),
+            "--hf-home",
+            str(hf_home),
+            "--run-dir",
+            str(run_dir),
+            "--work-dir",
+            str(work_dir),
+            "--status-file",
+            str(status_file),
+            "--gate-status-file",
+            str(tmp_path / "gate_status.json"),
+            "--result-tar",
+            str(result_tar),
+        ]
+    )
+    assert rc == 0, status_file.read_text(encoding="utf-8") if status_file.is_file() else ""
+    assert not items_file.exists(), "uploaded items file must be deleted at the end of VM main"
+    assert recorded_child_cmds
+    assert "--synthetic-items" in recorded_child_cmds[0]
+    assert "--window-mode" in recorded_child_cmds[0]
+    assert recorded_child_cmds[0][recorded_child_cmds[0].index("--window-mode") + 1] == "time-one"
+    assert "--stub" not in recorded_child_cmds[0]
+
+    assert json.loads((run_dir / "window.json").read_text(encoding="utf-8"))["synthetic_items"] is True
+    vm_rec = json.loads((run_dir / "vm_receipt.json").read_text(encoding="utf-8"))
+    assert vm_rec["synthetic_items"] is True
+    assert vm_rec["part_identity"]["part_id"] == "synthetic"
+    assert vm_rec["part_identity"]["synthetic_items"] is True
+    t1_sum = json.loads((run_dir / "time_one_summary.json").read_text(encoding="utf-8"))
+    assert t1_sum["synthetic_items"] is True
+    assert json.loads((run_dir / "judge_done" / "mu-judge.json").read_text(encoding="utf-8"))["synthetic_items"] is True
+    row_objs = [json.loads(ln) for ln in (run_dir / "rows" / "mu-judge.jsonl").read_text(encoding="utf-8").splitlines() if ln.strip()]
+    assert row_objs and all(r["synthetic_items"] is True and str(r["item_id"]).startswith("synth-") for r in row_objs)

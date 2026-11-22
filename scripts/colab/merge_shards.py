@@ -54,6 +54,7 @@ from reasoning_dataset_lab.pilot_b.three_way_wording import (
     judge_supports_pass_mode,
     rows_filename_for_pass,
 )
+from reasoning_dataset_lab.errors import RdlabError
 
 HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -1215,7 +1216,10 @@ def merge_shards(
             "real-mode merge requires --expected-manifest-sha256 (<64-hex> pre-registered rig manifest body sha256)",
         )
     for sdir in (*shard_dirs, *raw_replacement_dirs):
-        synth_reason = find_synthetic_in_run_dir(sdir)
+        try:
+            synth_reason = find_synthetic_in_run_dir(sdir)
+        except RdlabError as exc:
+            raise MergeRefusalError(exc.code, exc.message) from exc
         if synth_reason is not None:
             raise MergeRefusalError(
                 "MERGE_SYNTHETIC_ITEMS",

@@ -5011,7 +5011,7 @@ def run_bakeoff_judge(
     ).strip() or None
     if eff_window_mode is None and fake_transport:
         eff_window_mode = "stub"
-    if synthetic_items and eff_window_mode is not None and eff_window_mode.lower() not in ("time-one", "time_one", "dryrun", "dry-run"):
+    if synthetic_items and (eff_window_mode is None or eff_window_mode.lower() not in ("time-one", "time_one", "dryrun", "dry-run")):
         raise refused_error(
             "BAKEOFF_JUDGE_SYNTHETIC_MODE_FORBIDDEN",
             f"--synthetic-items is allowed only with time-one mode, got window_mode={eff_window_mode!r}.",

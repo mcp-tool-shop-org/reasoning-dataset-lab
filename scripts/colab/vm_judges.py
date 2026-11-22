@@ -17472,7 +17472,10 @@ def _checked_logprob_rows_dir(judge_output_dir: Path) -> Path:
     """Refuse (`BAKEOFF_LOGPROB_MASS_SYNTHETIC_ITEMS` / `BAKEOFF_LOGPROB_MASS_UNVERIFIED_PASS`) via `run_records`."""
     run_records = _load_run_records_module()
     resolved_dir = Path(judge_output_dir)
-    synth_reason = run_records.find_synthetic_in_run_dir(resolved_dir)
+    try:
+        synth_reason = run_records.find_synthetic_in_run_dir(resolved_dir)
+    except run_records.RdlabError as exc:
+        raise RefusalError(exc.code, exc.message, hint=exc.hint) from exc
     if synth_reason is not None:
         raise RefusalError(
             "BAKEOFF_LOGPROB_MASS_SYNTHETIC_ITEMS",
