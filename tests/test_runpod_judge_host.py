@@ -261,74 +261,96 @@ def test_colab_dry_run_unchanged_against_base_commit(
     tmp_path: Path,
     clean_repo_root: Path,
 ) -> None:
-    base_bytes = subprocess.run(
-        ["git", "-C", str(REPO_ROOT), "show", "599276bb:scripts/colab/launch_judges.sh"],
+    import re as _re
+
+    golden_path = REPO_ROOT / "tests" / "fixtures" / "colab_dry_599276bb.json"
+    golden_doc = json.loads(golden_path.read_text(encoding="utf-8"))
+
+    git_has_base = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "cat-file", "-e", "599276bb:scripts/colab/launch_judges.sh"],
         stdin=subprocess.DEVNULL,
         capture_output=True,
-        check=True,
-    ).stdout
-    base_repo = tmp_path / "base_repo"
-    shutil.copytree(clean_repo_root / "src", base_repo / "src", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-    shutil.copytree(clean_repo_root / "scripts" / "colab", base_repo / "scripts" / "colab", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-    (base_repo / "scripts" / "colab" / "launch_judges.sh").write_bytes(base_bytes)
-    _init_clean_git_repo(base_repo)
+        check=False,
+    )
+    base_repo: Path | None = None
+    if git_has_base.returncode == 0:
+        base_bytes = subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "show", "599276bb:scripts/colab/launch_judges.sh"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            check=True,
+        ).stdout
+        assert hashlib.sha256(base_bytes).hexdigest() == golden_doc["base_launch_judges_sh_sha256"]
+        base_repo = tmp_path / "base_repo"
+        shutil.copytree(clean_repo_root / "src", base_repo / "src", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        shutil.copytree(clean_repo_root / "scripts" / "colab", base_repo / "scripts" / "colab", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        (base_repo / "scripts" / "colab" / "launch_judges.sh").write_bytes(base_bytes)
+        _init_clean_git_repo(base_repo)
 
     items_path, part_dir = _make_synthetic_items_with_part(tmp_path / "data")
     receipts_dir = _make_synthetic_receipts(tmp_path / "data")
 
     scenarios = [
-        ["--session-smoke", "--run-id", "parity-smoke"],
-        ["--probe", "--run-id", "parity-probe"],
-        [
-            "--time-one",
-            "--card",
-            "A100",
-            "--shape",
-            "standard",
-            "--max-rate",
-            "5",
-            "--run-id",
-            "parity-t1",
-            "--items-file",
-            _to_bash_path(items_path),
-            "--part-dir",
-            _to_bash_path(part_dir),
-            "--receipts-dir",
-            _to_bash_path(receipts_dir),
-        ],
+        ("session_smoke", ["--session-smoke", "--run-id", "parity-smoke"]),
+        ("probe", ["--probe", "--run-id", "parity-probe"]),
+        (
+            "time_one",
+            [
+                "--time-one",
+                "--card",
+                "A100",
+                "--shape",
+                "standard",
+                "--max-rate",
+                "5",
+                "--run-id",
+                "parity-t1",
+                "--items-file",
+                _to_bash_path(items_path),
+                "--part-dir",
+                _to_bash_path(part_dir),
+                "--receipts-dir",
+                _to_bash_path(receipts_dir),
+            ],
+        ),
     ]
-    for extra_args in scenarios:
-        base_out = tmp_path / "base_out"
-        head_out = tmp_path / "head_out"
+
+    def _norm_stdout(txt: str, repo_p: Path, out_p: Path) -> str:
+        s = txt.replace(_to_bash_path(repo_p), "<REPO>").replace(_to_bash_path(out_p), "<OUT>")
+        s = _re.sub(r"RDLAB_KIT_HEAD_SHA=[0-9a-f]{40}", "RDLAB_KIT_HEAD_SHA=<SHA>", s)
+        s = _re.sub(r"RDLAB_KIT_VM_JUDGES_PY_SHA256=[0-9a-f]{64}", "RDLAB_KIT_VM_JUDGES_PY_SHA256=<VM_PY_SHA>", s)
+        s = _re.sub(r"RDLAB_KIT_LAUNCH_JUDGES_SH_SHA256=[0-9a-f]{64}", "RDLAB_KIT_LAUNCH_JUDGES_SH_SHA256=<SH_SHA>", s)
+        return s
+
+    def _norm_stderr(txt: str) -> str:
+        lines = [ln for ln in txt.splitlines() if not ln.startswith("KIT_IDENTITY")]
+        return _re.sub(r"part_json_sha256=[0-9a-f]{64}", "part_json_sha256=<PART_SHA>", "\n".join(lines))
+
+    for scenario_name, extra_args in scenarios:
+        head_out = tmp_path / f"head_out_{scenario_name}"
         common_env = {
             "RDLAB_RUN_DIR_BASE": _to_bash_path(tmp_path),
         }
-        res_base = _run_bash_launcher(
-            repo_root=base_repo,
-            args=["--dry", "--out-dir", _to_bash_path(base_out), *extra_args],
-            env_vars=common_env,
-        )
         res_head = _run_bash_launcher(
             repo_root=clean_repo_root,
             args=["--dry", "--out-dir", _to_bash_path(head_out), *extra_args],
             env_vars=common_env,
         )
-        assert res_head.returncode == res_base.returncode == 0, res_head.stderr
-        def _norm(txt: str, repo_p: Path, out_p: Path) -> str:
-            import re as _re
-            s = txt.replace(_to_bash_path(repo_p), "<REPO>").replace(_to_bash_path(out_p), "<OUT>")
-            s = _re.sub(r"RDLAB_KIT_HEAD_SHA=[0-9a-f]{40}", "RDLAB_KIT_HEAD_SHA=<SHA>", s)
-            s = _re.sub(r"RDLAB_KIT_LAUNCH_JUDGES_SH_SHA256=[0-9a-f]{64}", "RDLAB_KIT_LAUNCH_JUDGES_SH_SHA256=<SH_SHA>", s)
-            return s
+        expected_golden = golden_doc["scenarios"][scenario_name]
+        assert res_head.returncode == expected_golden["returncode"] == 0, res_head.stderr
+        assert _norm_stdout(res_head.stdout, clean_repo_root, head_out) == expected_golden["stdout"]
+        assert _norm_stderr(res_head.stderr) == expected_golden["stderr"]
 
-        assert _norm(res_head.stdout, clean_repo_root, head_out) == _norm(res_base.stdout, base_repo, base_out)
-        norm_base_err = "\n".join(
-            ln for ln in res_base.stderr.splitlines() if not ln.startswith("KIT_IDENTITY")
-        )
-        norm_head_err = "\n".join(
-            ln for ln in res_head.stderr.splitlines() if not ln.startswith("KIT_IDENTITY")
-        )
-        assert norm_head_err == norm_base_err
+        if base_repo is not None:
+            base_out = tmp_path / f"base_out_{scenario_name}"
+            res_base = _run_bash_launcher(
+                repo_root=base_repo,
+                args=["--dry", "--out-dir", _to_bash_path(base_out), *extra_args],
+                env_vars=common_env,
+            )
+            assert res_base.returncode == 0, res_base.stderr
+            assert _norm_stdout(res_head.stdout, clean_repo_root, head_out) == _norm_stdout(res_base.stdout, base_repo, base_out)
+            assert _norm_stderr(res_head.stderr) == _norm_stderr(res_base.stderr)
 
 
 def test_colab_and_runpod_dry_parity_identical_bundles_and_allowlisted_env_diff(

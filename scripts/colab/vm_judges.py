@@ -14315,9 +14315,14 @@ def run_gate(args: argparse.Namespace) -> int:
         if py_report["route"] == "found" or not py_report["archive_sha256_actual"]
         else str(py_report["archive_sha256_actual"])
     )
+    items_dir_label = (
+        (Path(os.environ.get("RDLAB_VM_ROOT") or "/workspace/job") / "rdlab_items").as_posix()
+        if os.environ.get("RDLAB_HOST", "").strip().lower() == "runpod"
+        else DEFAULT_ITEMS_DIR.as_posix()
+    )
     print(
         f"VM_GATE_OK {platform.platform()} "
-        f"items_dir={items_dir.as_posix()} "
+        f"items_dir={items_dir_label} "
         f"content_free_bytes={disk_report['content_free_bytes']} "
         f"hf_home_free_bytes={disk_report['hf_home_free_bytes']} "
         f"required_bytes={disk_report['required_bytes']} "

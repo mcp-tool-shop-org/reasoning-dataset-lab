@@ -152,6 +152,8 @@ POST_SESS_RC=0
 LOCK_RC=0
 UPLOAD_RC=0
 REREAD_RESERVED_RT=""
+CLI_LOG=""
+EXEC_RC=0
 
 usage() {
   cat <<'EOF'
@@ -1430,10 +1432,10 @@ build_gate_env_args() {
   GATE_ENV_ARGS=(
     --env "RDLAB_STEP=gate"
   )
-  if [[ "$HOST" != "colab" ]]; then
+  if [[ "${HOST:-colab}" != "colab" ]]; then
     GATE_ENV_ARGS+=(
       --env "RDLAB_VM_ROOT=$VM_ROOT"
-      --env "RDLAB_HOST=$HOST"
+      --env "RDLAB_HOST=${HOST:-colab}"
     )
   fi
   if [[ -n "${HF_HOME:-}" ]]; then
@@ -1458,10 +1460,10 @@ build_probe_env_args() {
     --env "RDLAB_STEP=probe"
     --env "RDLAB_WALL_SECONDS=$VM_WALL_SECONDS"
   )
-  if [[ "$HOST" != "colab" ]]; then
+  if [[ "${HOST:-colab}" != "colab" ]]; then
     PROBE_ENV_ARGS+=(
       --env "RDLAB_VM_ROOT=$VM_ROOT"
-      --env "RDLAB_HOST=$HOST"
+      --env "RDLAB_HOST=${HOST:-colab}"
     )
   fi
 }
@@ -1503,10 +1505,10 @@ build_exec_env_args() {
     --env "RDLAB_STATUS_FILE=${VM_ROOT}/status.json"
     --env "RDLAB_RESUME=$EFFECTIVE_RESUME"
   )
-  if [[ "$HOST" != "colab" ]]; then
+  if [[ "${HOST:-colab}" != "colab" ]]; then
     EXEC_ENV_ARGS+=(
       --env "RDLAB_VM_ROOT=$VM_ROOT"
-      --env "RDLAB_HOST=$HOST"
+      --env "RDLAB_HOST=${HOST:-colab}"
       --env "RDLAB_POD_ID=${RUNPOD_POD_ID:-<pod-of-launched-plan>}"
       --env "RDLAB_RUNPOD_IMAGE=$RUNPOD_IMAGE_REF"
       --env "RDLAB_RUNPOD_IMAGE_TAG=$RUNPOD_IMAGE_TAG"
@@ -1570,7 +1572,7 @@ build_exec_env_args() {
   if [[ -n "${OPENED_SHAPE_OBS:-}" ]]; then
     EXEC_ENV_ARGS+=(--env "RDLAB_SESSION_SHAPE_OBSERVED=$OPENED_SHAPE_OBS")
   fi
-  if [[ "$HOST" == "colab" ]] && needs_opened_card_type; then
+  if [[ "${HOST:-colab}" == "colab" ]] && needs_opened_card_type; then
     EXEC_ENV_ARGS+=(
       --env "RDLAB_CARD=$CARD"
       --env "RDLAB_SHAPE=$SHAPE"
@@ -2160,16 +2162,16 @@ verify_and_close_run_outputs() {
     RUN_WHY="wall-clock timeout exceeded (${WALL_SECONDS}s)"
     exit "$EXEC_RC"
   fi
-  if [[ ! -f "$OUT_DIR/status.json" ]]; then
-    RUN_WHY="status.json missing after VM run (exec_rc=$EXEC_RC)"
-    if [[ "$EXEC_RC" -ne 0 ]]; then
-      exit "$EXEC_RC"
-    fi
-    exit 1
+if [[ ! -f "$OUT_DIR/status.json" ]]; then
+  RUN_WHY="status.json missing after VM run (exec_rc=$EXEC_RC)"
+  if [[ "$EXEC_RC" -ne 0 ]]; then
+    exit "$EXEC_RC"
   fi
-  STATUS_CHECK_OUT=""
-  STATUS_CHECK_RC=0
-  STATUS_CHECK_OUT="$("$PYTHON_BIN" - "$REPO_ROOT" "$OUT_DIR/status.json" <<'PY'
+  exit 1
+fi
+STATUS_CHECK_OUT=""
+STATUS_CHECK_RC=0
+STATUS_CHECK_OUT="$("$PYTHON_BIN" - "$REPO_ROOT" "$OUT_DIR/status.json" <<'PY'
 import sys
 from pathlib import Path
 
@@ -2185,26 +2187,27 @@ if rc != 0:
     raise SystemExit(rc)
 PY
 )" || STATUS_CHECK_RC=$?
-  if [[ "$STATUS_CHECK_RC" -ne 0 ]]; then
-    if [[ "$STATUS_CHECK_OUT" == stale_status\|* ]]; then
-      RUN_WHY="VM status.json is stale (${STATUS_CHECK_OUT})"
-    else
-      RUN_WHY="VM status.json reported failure (${STATUS_CHECK_OUT})"
-    fi
-    exit "$STATUS_CHECK_RC"
+if [[ "$STATUS_CHECK_RC" -ne 0 ]]; then
+  if [[ "$STATUS_CHECK_OUT" == stale_status\|* ]]; then
+    RUN_WHY="VM status.json is stale (${STATUS_CHECK_OUT})"
+  else
+    RUN_WHY="VM status.json reported failure (${STATUS_CHECK_OUT})"
   fi
-  if [[ "$EXEC_RC" -ne 0 ]]; then
-    if [[ "$HOST" == "colab" ]]; then
-      RUN_WHY="colab exec exited non-zero ($EXEC_RC)"
-    else
-      RUN_WHY="runpod offrig exec exited non-zero ($EXEC_RC)"
-    fi
-    exit "$EXEC_RC"
+  exit "$STATUS_CHECK_RC"
+fi
+if [[ "$EXEC_RC" -ne 0 ]]; then
+  if [[ "${HOST:-colab}" == "colab" ]]; then
+    RUN_WHY="colab exec exited non-zero ($EXEC_RC)"
+  else
+    RUN_WHY="runpod offrig exec exited non-zero ($EXEC_RC)"
   fi
-  if [[ ! -f "$OUT_DIR/result.tar.gz" ]]; then
-    RUN_WHY="result.tar.gz missing after VM run"
-    exit 1
-  fi
+  exit "$EXEC_RC"
+fi
+if [[ ! -f "$OUT_DIR/result.tar.gz" ]]; then
+  RUN_WHY="result.tar.gz missing after VM run"
+  exit 1
+fi
+# Extract result.tar.gz, run log guard on all kept logs and outputs, and write outputs-closed.json before any key read.
   if ! "$PYTHON_BIN" - "$REPO_ROOT" "$OUT_DIR" "$ITEMS_FILE" "$CLI_LOG" "$ANCHOR_ITEMS_FILE" "$P0A_ITEMS_FILE" "$COUNTED_ITEMS_FILE" <<'PY'
 import json
 import shutil
@@ -2554,7 +2557,7 @@ PY
       ITEMS_FILE="$ANCHOR_ITEMS_FILE"
     fi
     if [[ -z "$ITEMS_FILE" ]] || [[ ! -f "$ITEMS_FILE" ]]; then
-      echo "ITEMS_FILE_MISSING: --items-file is required for RDLAB_DRY_STAGE=1" >&2
+      echo "ITEMS_FILE_MISSING: --items-file is required when RDLAB_DRY_STAGE is enabled" >&2
       exit 2
     fi
     verify_lock_and_device_digests || exit $?
@@ -2619,7 +2622,8 @@ PY
       printf 'offrig_exec action=run plan_id=<plan-id> nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader,nounits\n'
       printf 'offrig_exec action=run plan_id=<plan-id> mkdir -p %s/rdlab_items %s/rdlab_run\n' "$VM_ROOT" "$VM_ROOT"
       printf 'offrig_put %s %s/vm_judges.py\n' "$STAGED_VM_SCRIPT" "$VM_ROOT"
-      printf 'offrig_exec action=start name=alive --env RDLAB_STEP=alive --env RDLAB_VM_ROOT=%s --env RDLAB_HOST=runpod %s/vm_judges.py --timeout=%s\n' "$VM_ROOT" "$VM_ROOT" "$ALIVE_PROBE_TIMEOUT_SECONDS"
+      printf 'offrig_exec action=start name=alive --env RDLAB_STEP=alive --env RDLAB_VM_ROOT=%s --env RDLAB_HOST=runpod %s/vm_judges.py --timeout=%s\n' \
+        "$VM_ROOT" "$VM_ROOT" "$ALIVE_PROBE_TIMEOUT_SECONDS"
       printf 'offrig_exec action=start name=gate %s %s/vm_judges.py --timeout=%s\n' "$DRY_GATE_ENV_STR" "$VM_ROOT" "$GATE_TIMEOUT_SECONDS"
       printf 'offrig_put %s %s/device.py\n' "$STAGED_DEVICE_PY" "$VM_ROOT"
       printf 'offrig_put %s %s/repo_bundle.tar.gz\n' "$REPO_TAR" "$VM_ROOT"
@@ -3256,7 +3260,7 @@ write_outcome_draft() {
   RDLAB_RATE_REREAD_STATE_FILE="$RATE_REREAD_STATE" \
   RDLAB_RATE_REREADS_FILE="$RATE_REREADS_FILE" \
   RDLAB_RATE_REREAD_INTERVAL="$RATE_REREAD_SECONDS" \
-  RDLAB_OUTCOME_HOST="$HOST" \
+  RDLAB_OUTCOME_HOST="${HOST:-colab}" \
   RDLAB_OUTCOME_POD_ID="${RUNPOD_POD_ID:-}" \
   RDLAB_OUTCOME_PLAN_ID="${RUNPOD_PLAN_ID:-}" \
   RDLAB_OUTCOME_OFFRIG_PROFILE="${OFFRIG_PROFILE:-}" \
@@ -4752,7 +4756,7 @@ PY
       --vm-script "${VM_ROOT}/vm_judges.py" \
       --env "RDLAB_STEP=alive" \
       --env "RDLAB_VM_ROOT=$VM_ROOT" \
-      --env "RDLAB_HOST=$HOST" \
+      --env "RDLAB_HOST=${HOST:-colab}" \
       --timeout-seconds "$ALIVE_PROBE_TIMEOUT_SECONDS" \
       --poll-interval "$RUNPOD_POLL_INTERVAL" </dev/null 2>&1 | scrub_stream | tee -a "$CLI_LOG")" || alive_rc=$?
     if [[ "$alive_rc" -eq 0 ]] && printf '%s\n' "$alive_out" | grep -q '^VM_ALIVE_OK'; then
@@ -4907,7 +4911,7 @@ stop_all() {
     scrub_stream < "$PROBE_EXEC_OUT_TMP" >> "$CLI_LOG" 2>/dev/null || true
     rm -f "$PROBE_EXEC_OUT_TMP" 2>/dev/null || true
   fi
-  if [[ "$HOST" == "runpod" ]]; then
+  if [[ "${HOST:-colab}" == "runpod" ]]; then
     if [[ "$RUNPOD_LAUNCH_STARTED" -eq 1 ]] && { [[ "$exit_code" -eq 143 ]] || [[ "$exit_code" -eq 130 ]]; }; then
       RUNPOD_POD_OPENED=1
     fi
@@ -4926,7 +4930,7 @@ stop_all() {
   elif [[ "$NEW_SUCCEEDED" -eq 1 ]] && [[ -n "$S" ]] && [[ "$STOPPED" -eq 0 ]] && [[ ! -f "$OUT_DIR/.rig_stopped" ]]; then
     fetch_results_once "$WATCHDOG_FETCH_TIMEOUT"
   fi
-  if [[ "$HOST" == "colab" ]] && [[ "$NEW_SUCCEEDED" -eq 1 ]] && [[ -n "$S" ]]; then
+  if [[ "${HOST:-colab}" == "colab" ]] && [[ "$NEW_SUCCEEDED" -eq 1 ]] && [[ -n "$S" ]]; then
     if mkdir "$STOP_CLAIM_DIR" 2>/dev/null; then
       STOP_PATH="trap"
       printf 'trap\n' > "$STOP_PATH_FILE"
