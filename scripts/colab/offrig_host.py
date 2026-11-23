@@ -606,13 +606,121 @@ def _pod_entry_name(pod: Mapping[str, Any]) -> str:
     return str(pod.get("pod") or pod.get("name") or "").strip()
 
 
-def _closed_fail(detail: str) -> dict[str, Any]:
+def _closed_fail(detail: str, *, listed_pod_id: str | None = None) -> dict[str, Any]:
     return {
         "pod_shutdown": False,
         "failure_class": "RUNPOD_SHUTDOWN_ALREADY_CLOSED",
         "may_bill": True,
+        "listed_pod_id": listed_pod_id,
         "detail": detail,
     }
+
+
+def _non_empty_note(val: Any) -> str | None:
+    if val is None:
+        return None
+    s = str(val).strip()
+    return s or None
+
+
+def _validate_usable_status_pods(
+    status_pods: Any,
+    *,
+    require_open_plans: bool,
+) -> tuple[Mapping[str, Any] | None, str | None]:
+    """Validate that `status_pods` is usable `offrig_status` evidence without errors or notes."""
+    if not isinstance(status_pods, Mapping) or status_pods.get("error"):
+        return None, "offrig_status returned an error or malformed reply"
+    if _non_empty_note(status_pods.get("note")) is not None:
+        return None, "offrig_status reported a note"
+    rp = status_pods.get("runpod")
+    if not isinstance(rp, Mapping) or rp.get("error"):
+        return None, "offrig_status missing or errored runpod block"
+    if _non_empty_note(rp.get("note")) is not None:
+        return None, "offrig_status runpod block reported a note"
+    if not isinstance(rp.get("offrig_pods"), list):
+        return None, "offrig_status runpod.offrig_pods missing or not a list"
+    if require_open_plans:
+        if "open_plans" not in status_pods or not isinstance(status_pods.get("open_plans"), list):
+            return None, "offrig_status open_plans missing or not a list"
+    elif "open_plans" in status_pods and not isinstance(status_pods.get("open_plans"), list):
+        return None, "offrig_status open_plans is not a list"
+    if rp.get("sibling_pods") is not None and not isinstance(rp.get("sibling_pods"), list):
+        return None, "offrig_status runpod.sibling_pods is not a list"
+    if rp.get("other_pod_names") is not None and not isinstance(rp.get("other_pod_names"), list):
+        return None, "offrig_status runpod.other_pod_names is not a list"
+    raw_other_cnt = rp.get("other_pods")
+    if raw_other_cnt is not None:
+        if isinstance(raw_other_cnt, bool):
+            return None, "offrig_status runpod.other_pods is invalid"
+        try:
+            int(raw_other_cnt)
+        except (ValueError, TypeError):
+            return None, "offrig_status runpod.other_pods is invalid"
+    return rp, None
+
+
+def _open_plan_pod_id(open_plans: Any, plan_str: str | None) -> str | None:
+    if not plan_str or not isinstance(open_plans, list):
+        return None
+    for pl in open_plans:
+        if isinstance(pl, Mapping) and str(pl.get("plan_id") or "").strip() == plan_str:
+            pid = str(pl.get("pod_id") or "").strip()
+            if pid:
+                return pid
+    return None
+
+
+def _find_our_listed_pod(
+    rp: Mapping[str, Any],
+    *,
+    open_plans: Any = None,
+    plan_str: str | None = None,
+    expected_pod_id: str | None = None,
+    expected_pod_name: str | None = None,
+) -> dict[str, Any] | None:
+    """Identify our plan's pod strictly by recorded `pod_id` or lane `pod_name`."""
+    open_pod_id = _open_plan_pod_id(open_plans, plan_str)
+    target_ids = tuple(dict.fromkeys(i for i in (expected_pod_id, open_pod_id) if i))
+
+    for source, container in (
+        ("offrig_pods", rp.get("offrig_pods")),
+        ("sibling_pods", rp.get("sibling_pods")),
+    ):
+        if not isinstance(container, list):
+            continue
+        for pod in container:
+            if not isinstance(pod, Mapping):
+                continue
+            entry_id = _pod_entry_id(pod) or None
+            entry_name = _pod_entry_name(pod) or None
+            id_hit = bool(target_ids and entry_id and entry_id in target_ids)
+            name_hit = bool(expected_pod_name and entry_name == expected_pod_name)
+            if id_hit or name_hit:
+                return {
+                    "matched_source": source,
+                    "listed_pod_id": entry_id,
+                    "pod_name": entry_name or expected_pod_name,
+                }
+
+    raw_other_names = rp.get("other_pod_names")
+    if expected_pod_name and isinstance(raw_other_names, list):
+        for raw_n in raw_other_names:
+            name_str = str(raw_n).strip()
+            if name_str and name_str == expected_pod_name:
+                return {
+                    "matched_source": "other_pod_names",
+                    "listed_pod_id": open_pod_id,
+                    "pod_name": name_str,
+                }
+
+    if open_pod_id:
+        return {
+            "matched_source": "open_plans",
+            "listed_pod_id": open_pod_id,
+            "pod_name": expected_pod_name,
+        }
+    return None
 
 
 def extract_status_pods(status_reply: Any) -> dict[str, Any]:
@@ -620,30 +728,28 @@ def extract_status_pods(status_reply: Any) -> dict[str, Any]:
     if not isinstance(status_reply, Mapping):
         return {
             "error": "malformed offrig_status reply",
-            "open_plans": [],
         }
     out: dict[str, Any] = {}
     if status_reply.get("error"):
         out["error"] = str(status_reply.get("error"))
-    top_note = status_reply.get("note")
-    if top_note is not None and str(top_note).strip():
-        out["note"] = str(top_note).strip()
+    top_note = _non_empty_note(status_reply.get("note"))
+    if top_note is not None:
+        out["note"] = top_note
 
-    raw_plans = status_reply.get("open_plans")
-    if "open_plans" not in status_reply:
-        out["open_plans"] = []
-    elif isinstance(raw_plans, list):
-        out["open_plans"] = [
-            {
-                k: pl.get(k)
-                for k in ("plan_id", "lane", "pod_name", "profile", "pod_id", "deadline")
-                if k in pl
-            }
-            for pl in raw_plans
-            if isinstance(pl, Mapping)
-        ]
-    else:
-        out["open_plans"] = raw_plans
+    if "open_plans" in status_reply:
+        raw_plans = status_reply.get("open_plans")
+        if isinstance(raw_plans, list):
+            out["open_plans"] = [
+                {
+                    k: pl.get(k)
+                    for k in ("plan_id", "lane", "pod_name", "profile", "pod_id", "deadline")
+                    if k in pl
+                }
+                for pl in raw_plans
+                if isinstance(pl, Mapping)
+            ]
+        else:
+            out["open_plans"] = raw_plans
 
     runpod_obj = status_reply.get("runpod")
     if not isinstance(runpod_obj, Mapping):
@@ -687,8 +793,7 @@ def extract_status_pods(status_reply: Any) -> dict[str, Any]:
     except (ValueError, TypeError):
         rp_out["other_pods"] = raw_other
 
-    raw_note = runpod_obj.get("note")
-    rp_out["note"] = str(raw_note).strip() if raw_note is not None and str(raw_note).strip() else None
+    rp_out["note"] = _non_empty_note(runpod_obj.get("note"))
 
     out["runpod"] = rp_out
     return out
@@ -701,88 +806,70 @@ def resolve_already_closed_shutdown(
     expected_pod_id: str | None = None,
     expected_pod_name: str | None = None,
 ) -> dict[str, Any]:
-    """Decide `already: closed` from `offrig_status`: `True` only with complete clean evidence."""
+    """Decide `already: closed` from `offrig_status`: `True` only when our pod is absent in clean evidence."""
     expected_pod = str(expected_pod_id or "").strip() or None
     expected_name = str(expected_pod_name or "").strip() or None
     plan_str = str(plan_id).strip() if plan_id is not None and str(plan_id).strip() else None
-    if not isinstance(status_pods, Mapping) or status_pods.get("error"):
-        return _closed_fail("offrig_status could not confirm pod absence for already-closed plan")
-    top_note = status_pods.get("note")
-    if top_note is not None and str(top_note).strip():
-        return _closed_fail("offrig_status reported a note for already-closed plan")
 
-    rp = status_pods.get("runpod")
-    if not isinstance(rp, Mapping) or rp.get("error"):
-        return _closed_fail("offrig_status missing runpod block for already-closed plan")
-    rp_note = rp.get("note")
-    if rp_note is not None and str(rp_note).strip():
-        return _closed_fail("offrig_status runpod block reported a note for already-closed plan")
-    offrig_pods = rp.get("offrig_pods")
-    if not isinstance(offrig_pods, list):
-        return _closed_fail("offrig_status runpod.offrig_pods missing or not a list")
+    rp, err_reason = _validate_usable_status_pods(status_pods, require_open_plans=True)
+    if rp is None:
+        return _closed_fail(err_reason or "offrig_status could not confirm pod absence for already-closed plan")
 
-    if "open_plans" in status_pods:
-        open_plans = status_pods.get("open_plans")
-        if not isinstance(open_plans, list):
-            return _closed_fail("offrig_status open_plans is not a list")
-        if plan_str:
-            for pl in open_plans:
-                if isinstance(pl, Mapping) and str(pl.get("plan_id") or "").strip() == plan_str:
-                    return _closed_fail(f"plan {plan_str} is still listed in offrig_status open_plans")
+    open_plans = status_pods["open_plans"]
+    if plan_str:
+        for pl in open_plans:
+            if isinstance(pl, Mapping) and str(pl.get("plan_id") or "").strip() == plan_str:
+                listed_id = str(pl.get("pod_id") or "").strip() or None
+                return _closed_fail(
+                    f"plan {plan_str} is still listed in offrig_status open_plans",
+                    listed_pod_id=listed_id,
+                )
 
-    sibling_pods = rp.get("sibling_pods")
-    if sibling_pods is not None and not isinstance(sibling_pods, list):
-        return _closed_fail("offrig_status runpod.sibling_pods is not a list")
-    other_pod_names = rp.get("other_pod_names")
-    if other_pod_names is not None and not isinstance(other_pod_names, list):
-        return _closed_fail("offrig_status runpod.other_pod_names is not a list")
-    raw_other_cnt = rp.get("other_pods")
-    try:
-        other_cnt = (
-            int(raw_other_cnt or 0)
-            if raw_other_cnt is not None and not isinstance(raw_other_cnt, bool)
-            else 0
+    if not expected_pod and not expected_name:
+        return _closed_fail(
+            "missing expected_pod_id and expected_pod_name to identify closed plan pod"
         )
-    except (ValueError, TypeError):
-        return _closed_fail("offrig_status runpod.other_pods is invalid")
 
-    ours_list = [p for p in offrig_pods if isinstance(p, Mapping)]
-    sib_list = [p for p in (sibling_pods or []) if isinstance(p, Mapping)]
-    other_names_clean = [str(n).strip() for n in (other_pod_names or []) if str(n).strip()]
-
-    if expected_pod:
-        for pod in [*ours_list, *sib_list]:
-            if _pod_entry_id(pod) == expected_pod:
-                return _closed_fail(
-                    f"pod {expected_pod!r} is still listed in offrig_status for closed plan"
-                )
-            if expected_name and not _pod_entry_id(pod) and _pod_entry_name(pod) == expected_name:
-                return _closed_fail(
-                    f"pod name {expected_name!r} is still listed in offrig_status for closed plan"
-                )
-        if expected_name and expected_name in other_names_clean:
-            return _closed_fail(
-                f"pod name {expected_name!r} is still listed in offrig_status other_pod_names"
-            )
-    else:
-        if ours_list:
-            return _closed_fail(
-                "offrig_status still lists offrig_pods while expected_pod_id is empty for closed plan"
-            )
-        if sib_list:
-            return _closed_fail(
-                "offrig_status still lists sibling_pods while expected_pod_id is empty for closed plan"
-            )
-        if other_names_clean or other_cnt > 0:
-            return _closed_fail(
-                "offrig_status still lists other_pod_names while expected_pod_id is empty for closed plan"
-            )
+    matched = _find_our_listed_pod(
+        rp,
+        open_plans=open_plans,
+        plan_str=plan_str,
+        expected_pod_id=expected_pod,
+        expected_pod_name=expected_name,
+    )
+    if matched is not None:
+        return {
+            "pod_shutdown": False,
+            "failure_class": "RUNPOD_SHUTDOWN_ALREADY_CLOSED",
+            "may_bill": True,
+            "matched_source": matched["matched_source"],
+            "listed_pod_id": matched["listed_pod_id"],
+            "pod_name": matched["pod_name"],
+            "detail": (
+                f"our pod (id={matched['listed_pod_id'] or expected_pod or 'unknown'}, "
+                f"name={matched['pod_name'] or expected_name or 'unknown'}) "
+                f"is still listed in {matched['matched_source']} for closed plan"
+            ),
+        }
 
     return {
         "pod_shutdown": True,
         "failure_class": "RUNPOD_PLAN_ALREADY_CLOSED",
         "may_bill": False,
-        "detail": "offrig_status confirmed no pod listed for already-closed plan",
+        "listed_pod_id": None,
+        "detail": "offrig_status confirmed our pod is absent for already-closed plan",
+    }
+
+
+def _no_pod_unusable(detail: str) -> dict[str, Any]:
+    return {
+        "pod_shutdown": False,
+        "failure_class": "RUNPOD_NO_POD_RENTED_STATUS_UNUSABLE",
+        "may_bill": True,
+        "matched_source": None,
+        "listed_pod_id": None,
+        "pod_name": None,
+        "detail": detail,
     }
 
 
@@ -792,110 +879,53 @@ def resolve_no_pod_rented_shutdown(
     plan_id: int | str | None = None,
     expected_pod_id: str | None = None,
     expected_pod_name: str | None = None,
-    plan_lane: str | None = None,
 ) -> dict[str, Any]:
-    """Cross-check `no_pod_rented` against `offrig_status`: fail with may_bill if an owned pod is listed."""
+    """Cross-check `no_pod_rented` against `offrig_status`: fail with may_bill if status is unusable or lists our pod."""
     exp_id = str(expected_pod_id or "").strip() or None
     exp_name = str(expected_pod_name or "").strip() or None
-    exp_lane = str(plan_lane or "").strip() or None
     plan_str = str(plan_id).strip() if plan_id is not None and str(plan_id).strip() else None
 
-    rp = (
-        status_pods.get("runpod")
-        if isinstance(status_pods, Mapping) and isinstance(status_pods.get("runpod"), Mapping)
-        else {}
+    rp, err_reason = _validate_usable_status_pods(status_pods, require_open_plans=False)
+    if rp is None:
+        return _no_pod_unusable(err_reason or "offrig_status unusable after no_pod_rented")
+
+    open_plans = status_pods.get("open_plans")
+    if not exp_id and not exp_name and _open_plan_pod_id(open_plans, plan_str) is None:
+        return _no_pod_unusable(
+            "missing expected_pod_id and expected_pod_name to cross-check no_pod_rented status"
+        )
+
+    matched = _find_our_listed_pod(
+        rp,
+        open_plans=open_plans,
+        plan_str=plan_str,
+        expected_pod_id=exp_id,
+        expected_pod_name=exp_name,
     )
-    if not rp or (isinstance(status_pods, Mapping) and status_pods.get("error")):
+    if matched is not None:
+        listed_id = matched["listed_pod_id"]
         return {
-            "pod_shutdown": None,
-            "failure_class": "RUNPOD_SHUTDOWN_NO_POD_RENTED",
-            "may_bill": False,
-            "matched_source": None,
-            "pod_id": None,
-            "pod_name": None,
-            "detail": "offrig_status did not list any owned pod after no_pod_rented",
+            "pod_shutdown": False,
+            "failure_class": "RUNPOD_NO_POD_RENTED_POD_LISTED",
+            "may_bill": True,
+            "matched_source": matched["matched_source"],
+            "listed_pod_id": listed_id,
+            "pod_name": matched["pod_name"],
+            "detail": (
+                f"offrig_shutdown reported no_pod_rented for plan {plan_str or 'unknown'}, "
+                f"but offrig_status lists our pod (id={listed_id or exp_id or 'unknown'}, "
+                f"name={matched['pod_name'] or exp_name or 'unknown'}) in {matched['matched_source']}"
+            ),
         }
-
-    offrig_pods = rp.get("offrig_pods")
-    if isinstance(offrig_pods, list):
-        ours = [p for p in offrig_pods if isinstance(p, Mapping)]
-        if ours:
-            matched = next(
-                (p for p in ours if exp_id and _pod_entry_id(p) == exp_id),
-                ours[0],
-            )
-            found_id = _pod_entry_id(matched) or exp_id or None
-            found_name = _pod_entry_name(matched) or exp_name or None
-            return {
-                "pod_shutdown": False,
-                "failure_class": "RUNPOD_NO_POD_RENTED_POD_LISTED",
-                "may_bill": True,
-                "matched_source": "offrig_pods",
-                "pod_id": found_id,
-                "pod_name": found_name,
-                "detail": (
-                    f"offrig_shutdown reported no_pod_rented for plan {plan_str or 'unknown'}, "
-                    f"but offrig_status lists pod {found_id or 'unknown'} in runpod.offrig_pods"
-                ),
-            }
-
-    other_pod_names = rp.get("other_pod_names")
-    if exp_name and isinstance(other_pod_names, list):
-        for raw_n in other_pod_names:
-            name_str = str(raw_n).strip()
-            if name_str and name_str == exp_name:
-                return {
-                    "pod_shutdown": False,
-                    "failure_class": "RUNPOD_NO_POD_RENTED_POD_LISTED",
-                    "may_bill": True,
-                    "matched_source": "other_pod_names",
-                    "pod_id": exp_id or None,
-                    "pod_name": name_str,
-                    "detail": (
-                        f"offrig_shutdown reported no_pod_rented for plan {plan_str or 'unknown'}, "
-                        f"but offrig_status lists pod_name {name_str!r} in runpod.other_pod_names"
-                    ),
-                }
-
-    sibling_pods = rp.get("sibling_pods")
-    if isinstance(sibling_pods, list):
-        for sib in sibling_pods:
-            if not isinstance(sib, Mapping):
-                continue
-            sib_id = _pod_entry_id(sib) or None
-            sib_name = _pod_entry_name(sib) or None
-            sib_lane = str(sib.get("lane") or "").strip() or None
-            sib_plan = str(sib.get("plan")).strip() if sib.get("plan") is not None else None
-            if (
-                (exp_id and sib_id == exp_id)
-                or (exp_name and sib_name == exp_name)
-                or (exp_lane and sib_lane == exp_lane)
-                or (plan_str and sib_plan == plan_str)
-            ):
-                found_id = sib_id or exp_id or None
-                found_name = sib_name or exp_name or None
-                return {
-                    "pod_shutdown": False,
-                    "failure_class": "RUNPOD_NO_POD_RENTED_POD_LISTED",
-                    "may_bill": True,
-                    "matched_source": "sibling_pods",
-                    "pod_id": found_id,
-                    "pod_name": found_name,
-                    "detail": (
-                        f"offrig_shutdown reported no_pod_rented for plan {plan_str or 'unknown'}, "
-                        f"but offrig_status lists sibling pod {found_id or 'unknown'} for lane "
-                        f"{exp_lane or sib_lane or 'unknown'}"
-                    ),
-                }
 
     return {
         "pod_shutdown": None,
         "failure_class": "RUNPOD_SHUTDOWN_NO_POD_RENTED",
         "may_bill": False,
         "matched_source": None,
-        "pod_id": None,
+        "listed_pod_id": None,
         "pod_name": None,
-        "detail": "offrig_status confirmed no owned pod listed after no_pod_rented",
+        "detail": "offrig_status confirmed our pod is absent after no_pod_rented",
     }
 
 
@@ -1478,11 +1508,19 @@ def plan_pod(
     return resp
 
 
-def _check_launch_stop(stop_event: threading.Event | None, what: str) -> None:
+def _check_launch_stop(
+    stop_event: threading.Event | None,
+    what: str,
+    *,
+    pod_id: str | None = None,
+    pod_name: str | None = None,
+) -> None:
     if stop_event is not None and stop_event.is_set():
+        extras = [f"{k}={v}" for k, v in (("pod_id", pod_id), ("pod_name", pod_name)) if v]
+        suffix = f"; {' '.join(extras)}" if extras else ""
         raise OffrigHostError(
             "OFFRIG_LAUNCH_INTERRUPTED",
-            f"launch-and-wait interrupted by signal while {what}",
+            f"launch-and-wait interrupted by signal while {what}{suffix}",
         )
 
 
@@ -1498,6 +1536,8 @@ def launch_and_wait(
     _check_launch_stop(stop_event, f"starting offrig_launch for plan {plan_id}")
     launch_timeout = min(60.0, max(0.05, float(timeout_seconds)))
     launch_res = client.call_tool("offrig_launch", {"plan_id": int(plan_id)}, timeout=launch_timeout)
+    known_pod_id = str(launch_res.get("pod_id") or "").strip() or None
+    known_pod_name = str(launch_res.get("pod_name") or "").strip() or None
     watchdog = launch_res.get("watchdog")
     if watchdog is not None and str(watchdog).strip().lower() != "started":
         try:
@@ -1512,16 +1552,41 @@ def launch_and_wait(
             "OFFRIG_WATCHDOG_START_FAILED",
             f"offrig_launch reported watchdog failure ({watchdog!r}); pod shutdown requested immediately",
         )
-    _check_launch_stop(stop_event, f"finishing offrig_launch for plan {plan_id}")
+    _check_launch_stop(
+        stop_event,
+        f"finishing offrig_launch for plan {plan_id}",
+        pod_id=known_pod_id,
+        pod_name=known_pod_name,
+    )
     job_id = launch_res.get("job_id")
     deadline = time.monotonic() + float(timeout_seconds)
     while True:
-        _check_launch_stop(stop_event, f"waiting for offrig job {job_id}")
+        _check_launch_stop(
+            stop_event,
+            f"waiting for offrig job {job_id}",
+            pod_id=known_pod_id,
+            pod_name=known_pod_name,
+        )
         job_args: dict[str, Any] = (
             {"job_id": int(job_id)} if job_id is not None else {"plan_id": int(plan_id)}
         )
         job_res = client.call_tool("offrig_job", job_args, timeout=60.0)
-        _check_launch_stop(stop_event, f"polling offrig job {job_id}")
+        prog_raw = job_res.get("progress")
+        prog_map = prog_raw if isinstance(prog_raw, Mapping) else {}
+        prog_pod_id = str(prog_map.get("pod_id") or job_res.get("pod_id") or "").strip()
+        if prog_pod_id:
+            known_pod_id = prog_pod_id
+        prog_pod_name = str(
+            prog_map.get("pod_name") or prog_map.get("pod") or job_res.get("pod_name") or ""
+        ).strip()
+        if prog_pod_name:
+            known_pod_name = prog_pod_name
+        _check_launch_stop(
+            stop_event,
+            f"polling offrig job {job_id}",
+            pod_id=known_pod_id,
+            pod_name=known_pod_name,
+        )
         state = str(job_res.get("state") or "").strip().lower()
         if state == "done":
             progress = job_res.get("progress")
@@ -1539,6 +1604,7 @@ def launch_and_wait(
                 "plan_id": int(plan_id),
                 "job_id": job_res.get("job_id", job_id),
                 "pod_id": pod_id,
+                "pod_name": prog.get("pod_name") or prog.get("pod") or known_pod_name,
                 "gpu": rented.get("gpu"),
                 "cost_per_hr": prog.get("cost_per_hr", rented.get("cost_per_hr")),
                 "cuda_version": rented.get("cuda_version"),
@@ -1560,7 +1626,12 @@ def launch_and_wait(
         sleep_s = max(0.01, float(poll_interval))
         if stop_event is not None:
             if stop_event.wait(timeout=sleep_s):
-                _check_launch_stop(stop_event, f"sleeping before next offrig job {job_id} poll")
+                _check_launch_stop(
+                    stop_event,
+                    f"sleeping before next offrig job {job_id} poll",
+                    pod_id=known_pod_id,
+                    pod_name=known_pod_name,
+                )
         else:
             time.sleep(sleep_s)
 
@@ -1830,7 +1901,6 @@ def _build_cli_parser() -> argparse.ArgumentParser:
     p_npr.add_argument("--plan-id", default="")
     p_npr.add_argument("--expected-pod-id", default="")
     p_npr.add_argument("--expected-pod-name", default="")
-    p_npr.add_argument("--plan-lane", default="")
     p_npr.add_argument("--status-json", required=True)
 
     return parser
@@ -1928,7 +1998,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 plan_id=args.plan_id or None,
                 expected_pod_id=args.expected_pod_id or None,
                 expected_pod_name=args.expected_pod_name or None,
-                plan_lane=args.plan_lane or None,
             )
             print(json.dumps(res, sort_keys=True))
             return 0
