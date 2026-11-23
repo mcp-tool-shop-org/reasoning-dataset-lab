@@ -12,6 +12,7 @@ import queue
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -37,11 +38,11 @@ DEFAULT_LAUNCH_WAIT_MINUTES = 20
 DEFAULT_IMAGE_PULL_SETUP_SECONDS = 900
 DEFAULT_FETCH_ALLOWANCE_SECONDS = 180
 DEFAULT_SHUTDOWN_RESERVE_SECONDS = 120
-# Useful-run floor defaults (sources documented in compute_useful_run_floor_seconds / README):
-# - Venv sync: 120 s allowance for `uv pip sync` of judge/d3 venvs and lazy `venv-vllm` check/sync.
-# - Weight download: `71_926_859_142` B (`Qwen__Qwen3.6-35B-A3B.sha256.json` `total_bytes`) at 100 MB/s -> 720 s.
-# - vLLM engine startup: 180 s allowance for cold `vllm.LLM` weight load into VRAM.
-# - One item generation: `QWEN36_DEFAULT_MAX_NEW_TOKENS` (4096) at 20 tok/s (floor 15 s) -> 205 s.
+# Useful-run floor defaults (assumed allowances pending first paid run receipts; see README):
+# - Venv sync: 120 s assumed allowance for `uv pip sync` of judge/d3 venvs and lazy `venv-vllm` check/sync.
+# - Weight download: `71_926_859_142` B (`Qwen__Qwen3.6-35B-A3B.sha256.json` `total_bytes`) at assumed 100 MB/s -> 720 s.
+# - vLLM engine startup: 180 s assumed allowance per selected judge for cold `vllm.LLM` weight load into VRAM.
+# - One item generation: selected judge's `max_new_tokens` cap (512 for default five judges -> 26 s; `QWEN36_DEFAULT_MAX_NEW_TOKENS` 4096 when Qwen3.6 selected -> 205 s) at assumed 20 tok/s (floor 15 s).
 DEFAULT_VENV_SYNC_ALLOWANCE_SECONDS = 120
 DEFAULT_WEIGHT_DOWNLOAD_RATE_MBPS = 100.0
 DEFAULT_RUNPOD_WEIGHT_BYTES = 71_926_859_142
@@ -50,7 +51,7 @@ DEFAULT_ONE_ITEM_MAX_NEW_TOKENS = 4096
 DEFAULT_FIVE_JUDGE_MAX_NEW_TOKENS = 512
 DEFAULT_ONE_ITEM_TOKENS_PER_SEC = 20.0
 DEFAULT_ONE_ITEM_MIN_SECONDS = 15
-DEFAULT_MIN_RUN_SECONDS = 1225
+DEFAULT_MIN_RUN_SECONDS = 1766
 DEFAULT_RUNPOD_MAX_PRICE_HR = 2.79
 DEFAULT_EXEC_STATUS_POLL_RETRIES = 3
 MIN_MAX_HOURS = 0.02
@@ -369,13 +370,13 @@ def compute_useful_run_floor_seconds(
 
     if weight_bytes is None:
         weight_bytes = DEFAULT_RUNPOD_WEIGHT_BYTES
-        default_tok = DEFAULT_ONE_ITEM_MAX_NEW_TOKENS
-    else:
-        known_toks = [_JUDGE_DEFAULT_MAX_NEW_TOKENS[j] for j in selected_ids if j in _JUDGE_DEFAULT_MAX_NEW_TOKENS]
-        default_tok = max(known_toks) if known_toks else DEFAULT_ONE_ITEM_MAX_NEW_TOKENS
+
+    qwen36_selected = "qwen3.6-35b-a3b" in selected_ids
+    known_toks = [_JUDGE_DEFAULT_MAX_NEW_TOKENS[j] for j in selected_ids if j in _JUDGE_DEFAULT_MAX_NEW_TOKENS]
+    default_tok = max(known_toks) if known_toks else DEFAULT_ONE_ITEM_MAX_NEW_TOKENS
 
     raw_tok = "" if max_new_tokens is None else str(max_new_tokens).strip()
-    if raw_tok:
+    if qwen36_selected and raw_tok:
         try:
             eff_tokens = int(raw_tok)
         except ValueError as exc:
@@ -401,6 +402,8 @@ def compute_useful_run_floor_seconds(
     weight_download_seconds = (
         int(math.ceil(weight_bytes / rate_bytes_per_sec)) if weight_bytes > 0 else 0
     )
+    selected_judge_count = max(1, len(selected_ids))
+    vllm_start_total_seconds = int(vllm_start_seconds) * selected_judge_count
     one_item_seconds = max(
         DEFAULT_ONE_ITEM_MIN_SECONDS,
         int(math.ceil(eff_tokens / float(tokens_per_sec))),
@@ -408,7 +411,7 @@ def compute_useful_run_floor_seconds(
     min_run_seconds = (
         int(venv_sync_seconds)
         + int(weight_download_seconds)
-        + int(vllm_start_seconds)
+        + int(vllm_start_total_seconds)
         + int(one_item_seconds)
     )
     return {
@@ -417,7 +420,9 @@ def compute_useful_run_floor_seconds(
         "weight_bytes_source": weight_bytes_source,
         "download_rate_mbps": float(download_rate_mbps),
         "weight_download_seconds": int(weight_download_seconds),
-        "vllm_start_seconds": int(vllm_start_seconds),
+        "selected_judge_count": int(selected_judge_count),
+        "vllm_start_per_judge_seconds": int(vllm_start_seconds),
+        "vllm_start_seconds": int(vllm_start_total_seconds),
         "max_new_tokens": int(eff_tokens),
         "max_new_tokens_source": max_new_tokens_source,
         "tokens_per_sec": float(tokens_per_sec),
@@ -487,7 +492,29 @@ def classify_shutdown_reply(
     )
 
     if "already" in reply and reply.get("already") is not None:
-        already_state = str(reply.get("already")).strip()
+        already_state = str(reply.get("already")).strip().lower()
+        if already_state in ("planned", "cancelled"):
+            return {
+                "status": "no_pod_rented",
+                "pod_shutdown": None,
+                "failure_class": "RUNPOD_NO_POD_RENTED",
+                "reported_pod_id": None,
+                "expected_pod_id": expected,
+                "spent_usd": spent_usd,
+                "outcome_text": f"already:{already_state}",
+                "detail": f"offrig_shutdown returned already={already_state!r} (no pod rented)",
+            }
+        if already_state == "closed":
+            return {
+                "status": "already_closed",
+                "pod_shutdown": None,
+                "failure_class": "RUNPOD_SHUTDOWN_ALREADY_CLOSED",
+                "reported_pod_id": None,
+                "expected_pod_id": expected,
+                "spent_usd": spent_usd,
+                "outcome_text": "already:closed",
+                "detail": "offrig_shutdown returned already='closed'; requires offrig_status verification",
+            }
         return {
             "status": "unconfirmed",
             "pod_shutdown": False,
@@ -496,7 +523,7 @@ def classify_shutdown_reply(
             "expected_pod_id": expected,
             "spent_usd": spent_usd,
             "outcome_text": f"already:{already_state}",
-            "detail": f"offrig_shutdown returned already={already_state!r} without terminating a pod",
+            "detail": f"offrig_shutdown returned unknown already={already_state!r} without terminating a pod",
         }
 
     raw_outcome = reply.get("outcome")
@@ -578,6 +605,7 @@ def extract_status_pods(status_reply: Any) -> dict[str, Any]:
             "other_pods": 0,
             "other_pod_names": [],
             "open_plans": [],
+            "note": None,
         }
     runpod_obj = status_reply.get("runpod")
     rp_map = runpod_obj if isinstance(runpod_obj, Mapping) else {}
@@ -605,12 +633,74 @@ def extract_status_pods(status_reply: Any) -> dict[str, Any]:
         if isinstance(raw_plans, list)
         else []
     )
+    raw_note = rp_map.get("note")
+    note = str(raw_note).strip() if raw_note is not None and str(raw_note).strip() else None
     return {
         "offrig_pods": offrig_pods,
         "sibling_pods": sibling_pods,
         "other_pods": int(rp_map.get("other_pods") or 0),
         "other_pod_names": other_pod_names,
         "open_plans": open_plans,
+        "note": note,
+    }
+
+
+def resolve_already_closed_shutdown(
+    status_pods: Any,
+    *,
+    plan_id: int | str | None = None,
+    expected_pod_id: str | None = None,
+) -> dict[str, Any]:
+    """Decide `already: closed` from `offrig_status`: `True` if no pod for this plan is listed, else `False`."""
+    expected_pod = str(expected_pod_id or "").strip() or None
+    plan_str = str(plan_id).strip() if plan_id is not None and str(plan_id).strip() else None
+    if not isinstance(status_pods, Mapping) or status_pods.get("error") or status_pods.get("note"):
+        return {
+            "pod_shutdown": False,
+            "failure_class": "RUNPOD_SHUTDOWN_ALREADY_CLOSED",
+            "may_bill": True,
+            "detail": "offrig_status could not confirm pod absence for already-closed plan",
+        }
+    open_plans = status_pods.get("open_plans")
+    if plan_str and isinstance(open_plans, list):
+        for pl in open_plans:
+            if isinstance(pl, Mapping) and str(pl.get("plan_id") or "").strip() == plan_str:
+                return {
+                    "pod_shutdown": False,
+                    "failure_class": "RUNPOD_SHUTDOWN_ALREADY_CLOSED",
+                    "may_bill": True,
+                    "detail": f"plan {plan_str} is still listed in offrig_status open_plans",
+                }
+    offrig_pods = status_pods.get("offrig_pods")
+    sibling_pods = status_pods.get("sibling_pods")
+    listed_pods = [
+        p
+        for container in (offrig_pods, sibling_pods)
+        if isinstance(container, list)
+        for p in container
+        if isinstance(p, Mapping)
+    ]
+    if expected_pod:
+        for pod in listed_pods:
+            if str(pod.get("id") or "").strip() == expected_pod:
+                return {
+                    "pod_shutdown": False,
+                    "failure_class": "RUNPOD_SHUTDOWN_ALREADY_CLOSED",
+                    "may_bill": True,
+                    "detail": f"pod {expected_pod!r} is still listed in offrig_status for closed plan",
+                }
+    elif isinstance(offrig_pods, list) and any(isinstance(p, Mapping) for p in offrig_pods):
+        return {
+            "pod_shutdown": False,
+            "failure_class": "RUNPOD_SHUTDOWN_ALREADY_CLOSED",
+            "may_bill": True,
+            "detail": "offrig_status still lists offrig_pods while expected_pod_id is empty for closed plan",
+        }
+    return {
+        "pod_shutdown": True,
+        "failure_class": "RUNPOD_PLAN_ALREADY_CLOSED",
+        "may_bill": False,
+        "detail": "offrig_status confirmed no pod listed for already-closed plan",
     }
 
 
@@ -903,11 +993,13 @@ class OffrigMcpClient:
         mcp_bin: str | None = None,
         environ: Mapping[str, str] | None = None,
         startup_timeout: float = 30.0,
+        start_new_session: bool = False,
     ) -> None:
         self.project_dir = str(project_dir)
         self.environ = dict(os.environ if environ is None else environ)
         self.mcp_bin = mcp_bin or resolve_offrig_mcp_bin(self.environ)
         self._startup_timeout = float(startup_timeout)
+        self._start_new_session = bool(start_new_session)
         self._proc: subprocess.Popen[str] | None = None
         self._lines: queue.Queue[str | None] = queue.Queue()
         self._stderr_lines: list[str] = []
@@ -949,6 +1041,7 @@ class OffrigMcpClient:
                 encoding="utf-8",
                 errors="replace",
                 env=self.environ,
+                start_new_session=self._start_new_session,
             )
         except OSError as exc:
             raise OffrigHostError(
@@ -1514,6 +1607,11 @@ def _build_cli_parser() -> argparse.ArgumentParser:
     p_stat = sub.add_parser("status")
     p_stat.add_argument("--project", required=True)
 
+    p_ac = sub.add_parser("resolve-already-closed")
+    p_ac.add_argument("--plan-id", default="")
+    p_ac.add_argument("--expected-pod-id", default="")
+    p_ac.add_argument("--status-json", required=True)
+
     return parser
 
 
@@ -1586,110 +1684,135 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             print(json.dumps(res, sort_keys=True))
             return 0
+        if args.subcommand == "resolve-already-closed":
+            try:
+                parsed_status = json.loads(args.status_json)
+            except json.JSONDecodeError:
+                parsed_status = {"error": "malformed status json"}
+            res = resolve_already_closed_shutdown(
+                parsed_status,
+                plan_id=args.plan_id or None,
+                expected_pod_id=args.expected_pod_id or None,
+            )
+            print(json.dumps(res, sort_keys=True))
+            return 0
         if args.subcommand == "plan":
             validate_max_price_hr(args.max_price_hr)
-        with OffrigMcpClient(project_dir=args.project) as client:
-            if args.subcommand == "plan":
-                res = plan_pod(
-                    client,
-                    profile=args.profile,
-                    wall_seconds=args.wall_seconds,
-                    max_price_hr=args.max_price_hr,
-                    launch_wait_minutes=args.launch_wait_minutes,
-                    image_pull_setup_seconds=args.image_pull_setup_seconds,
-                    fetch_allowance_seconds=args.fetch_allowance_seconds,
-                    shutdown_reserve_seconds=args.shutdown_reserve_seconds,
-                    container_disk_gb=args.container_disk_gb,
-                    note=args.note,
-                    no_fallback=not args.allow_fallback,
-                )
-                print(json.dumps(res, sort_keys=True))
-                return 0
-            if args.subcommand == "launch-and-wait":
-                res = launch_and_wait(
-                    client,
-                    plan_id=args.plan_id,
-                    poll_interval=args.poll_interval,
-                    timeout_seconds=args.timeout_seconds,
-                )
-                print(json.dumps(res, sort_keys=True))
-                return 0
-            if args.subcommand == "verify-gpu":
-                res = verify_pod_gpu(
-                    client,
-                    plan_id=args.plan_id,
-                    offrig_gpu=args.offrig_gpu,
-                )
-                print(json.dumps(res, sort_keys=True))
-                return 0
-            if args.subcommand == "put":
-                res = client.call_tool(
-                    "offrig_put",
-                    {"local": args.local, "pod": args.pod, "plan_id": args.plan_id},
-                    timeout=600.0,
-                )
-                print(json.dumps(res, sort_keys=True))
-                return 0
-            if args.subcommand == "get":
-                res = client.call_tool(
-                    "offrig_get",
-                    {"local": args.local, "pod": args.pod, "plan_id": args.plan_id},
-                    timeout=max(1.0, float(args.timeout_seconds)),
-                )
-                print(json.dumps(res, sort_keys=True))
-                return 0
-            if args.subcommand == "exec-run":
-                res = client.call_tool(
-                    "offrig_exec",
-                    {
-                        "action": "run",
-                        "command": args.command,
-                        "plan_id": args.plan_id,
-                        "timeout_secs": args.timeout_secs,
-                    },
-                    timeout=max(60.0, float(args.timeout_secs) + 30.0),
-                )
-                if res.get("stdout"):
-                    sys.stdout.write(str(res["stdout"]))
-                if res.get("stderr"):
-                    sys.stderr.write(str(res["stderr"]))
-                if res.get("timed_out"):
-                    return 124
-                code = res.get("exit_code")
-                return int(code) if isinstance(code, int) else 2
-            if args.subcommand == "exec-vm-step":
-                rc, log_tail = exec_vm_step(
-                    client,
-                    plan_id=args.plan_id,
-                    job_name=args.job_name,
-                    vm_script=args.vm_script,
-                    env_pairs=args.env,
-                    timeout_seconds=args.timeout_seconds,
-                    poll_interval=args.poll_interval,
-                    status_poll_retries=args.status_poll_retries,
-                    save_log=args.save_log,
-                )
-                if log_tail:
-                    sys.stdout.write(log_tail)
-                    if not log_tail.endswith("\n"):
-                        sys.stdout.write("\n")
-                return rc
-            if args.subcommand == "shutdown":
-                res = client.call_tool(
-                    "offrig_shutdown",
-                    {"plan_id": args.plan_id, "reason": args.reason},
-                    timeout=120.0,
-                )
-                out_doc = dict(res)
-                out_doc["classification"] = classify_shutdown_reply(
-                    res, expected_pod_id=args.expected_pod_id
-                )
-                print(json.dumps(out_doc, sort_keys=True))
-                return 0
-            if args.subcommand == "status":
-                res = client.call_tool("offrig_status", {}, timeout=30.0)
-                print(json.dumps(extract_status_pods(res), sort_keys=True))
-                return 0
+        shield_rpc = args.subcommand in ("shutdown", "status")
+        saved_handlers: dict[signal.Signals, Any] = {}
+        if shield_rpc:
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                saved_handlers[sig] = signal.getsignal(sig)
+                signal.signal(sig, signal.SIG_IGN)
+        try:
+            with OffrigMcpClient(
+                project_dir=args.project,
+                start_new_session=shield_rpc,
+            ) as client:
+                if args.subcommand == "plan":
+                    res = plan_pod(
+                        client,
+                        profile=args.profile,
+                        wall_seconds=args.wall_seconds,
+                        max_price_hr=args.max_price_hr,
+                        launch_wait_minutes=args.launch_wait_minutes,
+                        image_pull_setup_seconds=args.image_pull_setup_seconds,
+                        fetch_allowance_seconds=args.fetch_allowance_seconds,
+                        shutdown_reserve_seconds=args.shutdown_reserve_seconds,
+                        container_disk_gb=args.container_disk_gb,
+                        note=args.note,
+                        no_fallback=not args.allow_fallback,
+                    )
+                    print(json.dumps(res, sort_keys=True))
+                    return 0
+                if args.subcommand == "launch-and-wait":
+                    res = launch_and_wait(
+                        client,
+                        plan_id=args.plan_id,
+                        poll_interval=args.poll_interval,
+                        timeout_seconds=args.timeout_seconds,
+                    )
+                    print(json.dumps(res, sort_keys=True))
+                    return 0
+                if args.subcommand == "verify-gpu":
+                    res = verify_pod_gpu(
+                        client,
+                        plan_id=args.plan_id,
+                        offrig_gpu=args.offrig_gpu,
+                    )
+                    print(json.dumps(res, sort_keys=True))
+                    return 0
+                if args.subcommand == "put":
+                    res = client.call_tool(
+                        "offrig_put",
+                        {"local": args.local, "pod": args.pod, "plan_id": args.plan_id},
+                        timeout=600.0,
+                    )
+                    print(json.dumps(res, sort_keys=True))
+                    return 0
+                if args.subcommand == "get":
+                    res = client.call_tool(
+                        "offrig_get",
+                        {"local": args.local, "pod": args.pod, "plan_id": args.plan_id},
+                        timeout=max(1.0, float(args.timeout_seconds)),
+                    )
+                    print(json.dumps(res, sort_keys=True))
+                    return 0
+                if args.subcommand == "exec-run":
+                    res = client.call_tool(
+                        "offrig_exec",
+                        {
+                            "action": "run",
+                            "command": args.command,
+                            "plan_id": args.plan_id,
+                            "timeout_secs": args.timeout_secs,
+                        },
+                        timeout=max(60.0, float(args.timeout_secs) + 30.0),
+                    )
+                    if res.get("stdout"):
+                        sys.stdout.write(str(res["stdout"]))
+                    if res.get("stderr"):
+                        sys.stderr.write(str(res["stderr"]))
+                    if res.get("timed_out"):
+                        return 124
+                    code = res.get("exit_code")
+                    return int(code) if isinstance(code, int) else 2
+                if args.subcommand == "exec-vm-step":
+                    rc, log_tail = exec_vm_step(
+                        client,
+                        plan_id=args.plan_id,
+                        job_name=args.job_name,
+                        vm_script=args.vm_script,
+                        env_pairs=args.env,
+                        timeout_seconds=args.timeout_seconds,
+                        poll_interval=args.poll_interval,
+                        status_poll_retries=args.status_poll_retries,
+                        save_log=args.save_log,
+                    )
+                    if log_tail:
+                        sys.stdout.write(log_tail)
+                        if not log_tail.endswith("\n"):
+                            sys.stdout.write("\n")
+                    return rc
+                if args.subcommand == "shutdown":
+                    res = client.call_tool(
+                        "offrig_shutdown",
+                        {"plan_id": args.plan_id, "reason": args.reason},
+                        timeout=120.0,
+                    )
+                    out_doc = dict(res)
+                    out_doc["classification"] = classify_shutdown_reply(
+                        res, expected_pod_id=args.expected_pod_id
+                    )
+                    print(json.dumps(out_doc, sort_keys=True))
+                    return 0
+                if args.subcommand == "status":
+                    res = client.call_tool("offrig_status", {}, timeout=30.0)
+                    print(json.dumps(extract_status_pods(res), sort_keys=True))
+                    return 0
+        finally:
+            for sig, prev in saved_handlers.items():
+                signal.signal(sig, prev)
     except OffrigHostError as exc:
         sys.stderr.write(f"{exc.code}: {exc.detail}\n")
         return 2

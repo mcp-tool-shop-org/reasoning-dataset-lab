@@ -106,7 +106,7 @@ RUNPOD_SHUTDOWN_FINISHED=0
 RUNPOD_SHUTDOWN_DEFERRED_SIGNAL=0
 RUNPOD_SHUTDOWN_CALLS_MADE=0
 RUNPOD_SHUTDOWN_DONE=0
-RUNPOD_POD_SHUTDOWN_STATE="false"
+RUNPOD_POD_SHUTDOWN_STATE="null"
 RUNPOD_SHUTDOWN_FAILURE_CLASS=""
 RUNPOD_SHUTDOWN_REASON=""
 RUNPOD_SHUTDOWN_STATUS_PODS=""
@@ -663,10 +663,16 @@ case "$HOST" in
       fi
     fi
     floor_rc=0
+    floor_tokens_arg=""
+    case ",${RDLAB_ONLY_JUDGES:-}," in
+      *,qwen3.6-35b-a3b,*)
+        floor_tokens_arg="${RDLAB_QWEN36_MAX_NEW_TOKENS:-}"
+        ;;
+    esac
     floor_json="$("$PYTHON_BIN" "$OFFRIG_HOST_PY" compute-run-floor \
       --receipts-dir "${RECEIPTS_DIR:-}" \
       --only-judges "${RDLAB_ONLY_JUDGES:-}" \
-      --max-new-tokens "${RDLAB_QWEN36_MAX_NEW_TOKENS:-}" </dev/null 2>&1)" || floor_rc=$?
+      --max-new-tokens "$floor_tokens_arg" </dev/null 2>&1)" || floor_rc=$?
     if [[ "$floor_rc" -ne 0 ]]; then
       printf '%s\n' "$floor_json" >&2
       exit 2
@@ -680,6 +686,7 @@ print(
     f"runpod_min_run_floor min_run_seconds={d['min_run_seconds']} "
     f"venv_sync_s={d['venv_sync_seconds']} weight_bytes={d['weight_bytes']} "
     f"download_rate_mbps={d['download_rate_mbps']:.1f} weight_download_s={d['weight_download_seconds']} "
+    f"judges={d['selected_judge_count']} vllm_start_per_judge_s={d['vllm_start_per_judge_seconds']} "
     f"vllm_start_s={d['vllm_start_seconds']} max_new_tokens={d['max_new_tokens']} "
     f"tokens_per_sec={d['tokens_per_sec']:.1f} one_item_s={d['one_item_seconds']} "
     f"weight_source={d['weight_bytes_source']}"
@@ -3444,7 +3451,7 @@ write_outcome_draft() {
   RDLAB_OUTCOME_RUNPOD_COST_USD="${RUNPOD_COST_USD:-}" \
   RDLAB_OUTCOME_RUNPOD_COST_PER_HR_USD="${RUNPOD_COST_PER_HR_USD:-}" \
   RDLAB_OUTCOME_POD_OPENED="${RUNPOD_POD_OPENED:-0}" \
-  RDLAB_OUTCOME_POD_SHUTDOWN_STATE="${RUNPOD_POD_SHUTDOWN_STATE:-false}" \
+  RDLAB_OUTCOME_POD_SHUTDOWN_STATE="${RUNPOD_POD_SHUTDOWN_STATE:-null}" \
   RDLAB_OUTCOME_SHUTDOWN_DONE="${RUNPOD_SHUTDOWN_DONE:-0}" \
   RDLAB_OUTCOME_SHUTDOWN_ATTEMPTED="${RUNPOD_SHUTDOWN_ATTEMPTED:-0}" \
   RDLAB_OUTCOME_SHUTDOWN_FAILURE_CLASS="${RUNPOD_SHUTDOWN_FAILURE_CLASS:-}" \
@@ -3717,10 +3724,10 @@ if outcome_host == "runpod":
             _status_pods_doc = json.loads(_raw_status_pods)
         except Exception:
             _status_pods_doc = {"raw": _raw_status_pods}
-    _pod_sd_state = os.environ.get("RDLAB_OUTCOME_POD_SHUTDOWN_STATE", "false").strip().lower()
+    _pod_sd_state = os.environ.get("RDLAB_OUTCOME_POD_SHUTDOWN_STATE", "null").strip().lower()
     _pod_sd_val = {"true": True, "false": False, "null": None}.get(
         _pod_sd_state,
-        os.environ.get("RDLAB_OUTCOME_SHUTDOWN_DONE", "0").strip() == "1",
+        None,
     )
     payload.update(
         {
@@ -4671,7 +4678,7 @@ runpod_read_status_pods_once() {
     return 0
   fi
   st_err_f="$(mktemp "${OUT_DIR:-/tmp}/.runpod_status.XXXXXX" 2>/dev/null || mktemp)"
-  st_out="$("$PYTHON_BIN" "$OFFRIG_HOST_PY" status --project "$OFFRIG_PROJECT" </dev/null 2>"$st_err_f")" || st_rc=$?
+  st_out="$( trap '' INT TERM; exec "$PYTHON_BIN" "$OFFRIG_HOST_PY" status --project "$OFFRIG_PROJECT" </dev/null 2>"$st_err_f" )" || st_rc=$?
   st_err="$(cat "$st_err_f" 2>/dev/null || true)"
   rm -f "$st_err_f"
   if [[ -n "$st_err" ]]; then
@@ -4696,6 +4703,7 @@ PY
 runpod_shutdown_pod() {
   local req_reason="${1:-cleanup_trap}" eff_reason rc=0 out="" err_f err_txt=""
   local cls_lines=() sd_status="" sd_class="" sd_spent="" sd_detail="" sd_why="" warn_line=""
+  local ac_rc=0 ac_json="" ac_lines=() ac_closed="false" ac_class="" ac_detail=""
   if [[ -z "$RUNPOD_PLAN_ID" ]] || [[ "$RUNPOD_SHUTDOWN_FINISHED" -eq 1 ]]; then
     return 0
   fi
@@ -4716,7 +4724,7 @@ runpod_shutdown_pod() {
     out=""
     err_f="$(mktemp "${OUT_DIR:-/tmp}/.runpod_down.XXXXXX" 2>/dev/null || mktemp)"
     log_msg "RUNPOD_SHUTDOWN_ATTEMPT attempt=${RUNPOD_SHUTDOWN_CALLS_MADE}/${STOP_ATTEMPTS} plan_id=$RUNPOD_PLAN_ID pod_id=$RUNPOD_POD_ID reason=$eff_reason"
-    out="$("$PYTHON_BIN" "$OFFRIG_HOST_PY" shutdown --project "$OFFRIG_PROJECT" --plan-id "$RUNPOD_PLAN_ID" --reason "$eff_reason" --expected-pod-id "$RUNPOD_POD_ID" </dev/null 2>"$err_f")" || rc=$?
+    out="$( trap '' INT TERM; exec "$PYTHON_BIN" "$OFFRIG_HOST_PY" shutdown --project "$OFFRIG_PROJECT" --plan-id "$RUNPOD_PLAN_ID" --reason "$eff_reason" --expected-pod-id "$RUNPOD_POD_ID" </dev/null 2>"$err_f" )" || rc=$?
     err_txt="$(cat "$err_f" 2>/dev/null || true)"
     rm -f "$err_f"
     if [[ -n "$err_txt" ]]; then
@@ -4726,7 +4734,7 @@ runpod_shutdown_pod() {
       printf '%s\n' "$out" | scrub_stream >> "$CLI_LOG"
     fi
     if [[ "$rc" -eq 0 ]]; then
-      mapfile -t cls_lines < <("$PYTHON_BIN" - "$out" "$RUNPOD_POD_ID" <<'PY'
+      mapfile -t cls_lines < <( trap '' INT TERM; exec "$PYTHON_BIN" - "$out" "$RUNPOD_POD_ID" <<'PY'
 import json
 import sys
 
@@ -4784,6 +4792,59 @@ PY
           exit 143
         fi
         return 0
+      fi
+      if [[ "$sd_status" == "already_closed" ]]; then
+        runpod_read_status_pods_once
+        ac_rc=0
+        ac_json="$( trap '' INT TERM; exec "$PYTHON_BIN" "$OFFRIG_HOST_PY" resolve-already-closed --plan-id "$RUNPOD_PLAN_ID" --expected-pod-id "$RUNPOD_POD_ID" --status-json "$RUNPOD_SHUTDOWN_STATUS_PODS" </dev/null 2>/dev/null )" || ac_rc=$?
+        mapfile -t ac_lines < <( trap '' INT TERM; exec "$PYTHON_BIN" - "$ac_rc" "$ac_json" <<'PY'
+import json
+import sys
+
+rc = int(sys.argv[1])
+if rc != 0:
+    print("false")
+    print("RUNPOD_SHUTDOWN_ALREADY_CLOSED")
+    print("resolve-already-closed helper failed")
+    raise SystemExit(0)
+try:
+    d = json.loads(sys.argv[2])
+except Exception as exc:
+    print("false")
+    print("RUNPOD_SHUTDOWN_ALREADY_CLOSED")
+    print(f"malformed resolve-already-closed output: {exc}")
+    raise SystemExit(0)
+print("true" if d.get("pod_shutdown") is True else "false")
+print(str(d.get("failure_class") or "RUNPOD_SHUTDOWN_ALREADY_CLOSED"))
+print(str(d.get("detail") or ""))
+PY
+)
+        ac_closed="${ac_lines[0]:-false}"
+        ac_class="${ac_lines[1]:-RUNPOD_SHUTDOWN_ALREADY_CLOSED}"
+        ac_detail="${ac_lines[2]:-$sd_detail}"
+        if [[ "$ac_closed" == "true" ]]; then
+          RUNPOD_POD_SHUTDOWN_STATE="true"
+          RUNPOD_SHUTDOWN_DONE=1
+          RUNPOD_SHUTDOWN_FAILURE_CLASS="$ac_class"
+          RUNPOD_SHUTDOWN_REASON="$eff_reason"
+          STOPPED=1
+          touch "$OUT_DIR/.rig_stopped" "$STOP_COMPLETED_MARKER"
+          log_msg "RUNPOD_SHUTDOWN_COMPLETED attempt=${RUNPOD_SHUTDOWN_CALLS_MADE}/${STOP_ATTEMPTS} plan_id=$RUNPOD_PLAN_ID pod_id=$RUNPOD_POD_ID reason=$eff_reason class=$ac_class detail=$ac_detail"
+          RUNPOD_SHUTDOWN_FINISHED=1
+          RUNPOD_SHUTDOWN_IN_PROGRESS=0
+          if [[ "$RUNPOD_SHUTDOWN_DEFERRED_SIGNAL" -eq 1 ]] && [[ "$IN_STOP_ALL" -ne 1 ]]; then
+            if [[ -z "$RUN_WHY" ]]; then
+              RUN_WHY="interrupted by signal"
+            fi
+            log_msg "RUNPOD_SHUTDOWN_ACTING_ON_DEFERRED_SIGNAL plan_id=$RUNPOD_PLAN_ID pod_id=$RUNPOD_POD_ID exit_code=143"
+            exit 143
+          fi
+          return 0
+        fi
+        sd_class="$ac_class"
+        sd_detail="$ac_detail"
+        log_msg "RUNPOD_SHUTDOWN_UNCONFIRMED attempt=${RUNPOD_SHUTDOWN_CALLS_MADE}/${STOP_ATTEMPTS} plan_id=$RUNPOD_PLAN_ID pod_id=$RUNPOD_POD_ID class=$sd_class detail=$sd_detail"
+        break
       fi
       if [[ "$sd_status" == "no_pod_rented" ]]; then
         runpod_read_status_pods_once
@@ -4854,6 +4915,14 @@ runpod_open_pod() {
   local plan_out plan_err plan_rc=0 plan_f_err
   local launch_out_f launch_err_f launch_rc=0 launch_txt err_code
   local -a plan_args=() launch_fields=()
+
+  if [[ "$SESSION_SMOKE_FLAG" -ne 1 ]] && [[ "$MODE" != "probe" ]] && (( WALL_SECONDS < RUNPOD_MIN_RUN_SECONDS )); then
+    RUN_FAILURE_CLASS="RUNPOD_WALL_BELOW_RUN_FLOOR"
+    RUN_WHY="RUNPOD_WALL_BELOW_RUN_FLOOR: window wall (${WALL_SECONDS}s) is below useful-run floor (${RUNPOD_MIN_RUN_SECONDS}s); refusing before offrig_plan"
+    log_msg "RUNPOD_WALL_BELOW_RUN_FLOOR wall_s=$WALL_SECONDS min_run_s=$RUNPOD_MIN_RUN_SECONDS"
+    printf '%s\n' "$RUN_WHY" >&2
+    exit 2
+  fi
 
   check_err="$("$PYTHON_BIN" "$OFFRIG_HOST_PY" check-bin </dev/null 2>&1)" || check_rc=$?
   if [[ "$check_rc" -ne 0 ]]; then
