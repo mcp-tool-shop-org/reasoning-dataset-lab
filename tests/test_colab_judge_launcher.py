@@ -26997,7 +26997,7 @@ def test_e2e_fake_real_mode_time_one_synthetic_reaches_judges(tmp_path: Path) ->
 
     win_doc = json.loads((out_dir / "window.json").read_text(encoding="utf-8"))
     assert win_doc["window_id"] == "rdlab-d5c-qwen36-g4-time-01"
-    assert res["receipt"]["window_id"] == "rdlab-d5c-qwen36-g4-time-01"
+    assert res["receipt"]["boot_gatekeeper"]["window_id"] == "rdlab-d5c-qwen36-g4-time-01"
     assert win_doc["synthetic_items"] is True
     assert res["receipt"]["synthetic_items"] is True
     assert res["receipt"]["part_identity"]["part_id"] == "synthetic"
@@ -29325,7 +29325,7 @@ def test_launcher_refuses_stub_run_id_before_colab_new_and_accepts_real_run_id(
             hf_home=hf_home,
             run_id="rdlab-d5c-qwen36-runpod-time-a1",
         )
-        assert res_ok["receipt"]["window_id"] == "rdlab-d5c-qwen36-runpod-time-a1"
+        assert res_ok["receipt"]["boot_gatekeeper"]["window_id"] == "rdlab-d5c-qwen36-runpod-time-a1"
 
 
 @pytest.mark.parametrize(
