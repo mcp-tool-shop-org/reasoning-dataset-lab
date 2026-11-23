@@ -26756,7 +26756,7 @@ def _e2e_fake_real_mode_window(
     }
     assert judged_ids and judged_ids <= item_ids, sorted(judged_ids)[:5]
 
-    session_name = f"rdlab-{run_id}"
+    session_name = eff_run_id if eff_run_id.startswith("rdlab-") else f"rdlab-{eff_run_id}"
     assert_rehearsal_window_id(out_dir, shim_rows, env_paths, mode=mode, expected_window_id=session_name)
 
     if mode == "lock-check":
