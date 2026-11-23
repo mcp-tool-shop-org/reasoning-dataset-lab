@@ -272,6 +272,7 @@ def _handle_tool_call(
             "plan_id": plan_id,
             "profile": arguments.get("profile"),
             "max_hours": max_hours,
+            "max_price_hr": arguments.get("max_price_hr"),
             "wait_minutes": arguments.get("wait_minutes"),
             "no_fallback": arguments.get("no_fallback", True),
             "container_disk_gb": arguments.get("container_disk_gb") or 60,
@@ -283,12 +284,17 @@ def _handle_tool_call(
     if tool_name == "offrig_launch":
         state["launched"] = True
         _save_json(state_path, state)
+        launch_deadline = (
+            str(cfg["launch_deadline"])
+            if "launch_deadline" in cfg
+            else (state.get("deadline") or "2026-11-23 18:00 UTC")
+        )
         return False, {
             "plan_id": plan_id,
             "job_id": job_id,
             "pod_id": pod_id,
             "watchdog": str(cfg.get("watchdog") if cfg.get("watchdog") is not None else "started"),
-            "deadline": state.get("deadline") or "2026-11-23 18:00 UTC",
+            "deadline": launch_deadline,
             "worst_case": round(cost_per_hr * float((state.get("plan") or {}).get("max_hours") or 1.0), 4),
         }
 
@@ -322,6 +328,15 @@ def _handle_tool_call(
         return False, {"ok": True, "local": str(src), "pod": str(arguments["pod"])}
 
     if tool_name == "offrig_get":
+        step_sec = int(cfg.get("advance_clock_on_get") or 0)
+        if step_sec:
+            raw_clock_f = (os.environ.get("RDLAB_FAKE_CLOCK_FILE") or "").strip()
+            if raw_clock_f and Path(raw_clock_f).is_file():
+                try:
+                    cur_ep = float(Path(raw_clock_f).read_text(encoding="utf-8").strip())
+                    Path(raw_clock_f).write_text(f"{int(cur_ep + step_sec)}\n", encoding="utf-8")
+                except ValueError:
+                    pass
         src = _map_pod_path(str(arguments["pod"]), pod_vm_root, local_vm_root)
         dst = Path(str(arguments["local"]))
         if not src.is_file():

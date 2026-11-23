@@ -585,6 +585,10 @@ def test_runpod_success_receipts_cost_runtime_and_download_duration(
     assert outcome["cost"] == pytest.approx(0.42)
     assert outcome["cost_currency"] == "USD"
     assert outcome["cost_basis"] == "offrig_shutdown_spent_usd"
+    assert outcome["max_price_hr_usd"] == pytest.approx(2.79)
+    assert outcome["pod_shutdown"] is True
+    assert outcome["shutdown_attempted"] is True
+    assert outcome["shutdown_failure_class"] is None
     assert outcome["model_download_seconds"] == pytest.approx(21.0)
     assert outcome["watchdog_deadline"]
     assert (out_dir / "outputs-closed.json").is_file()
@@ -1013,6 +1017,7 @@ def test_runpod_session_smoke_and_probe(tmp_path: Path, clean_repo_root: Path) -
             repo_root=clean_repo_root,
             args=["--host", "runpod", mode_flag, "--run-id", run_id, "--out-dir", _to_bash_path(out_dir)],
             env_vars={
+                "OFFRIG_CONFIG_DIR": _to_bash_path(env_info["offrig_config_dir"]),
                 "RDLAB_OFFRIG_MCP_BIN": _to_bash_path(env_info["shim_sh"]),
                 "RDLAB_OFFRIG_PROJECT": _to_bash_path(clean_repo_root),
                 "RDLAB_FAKE_OFFRIG_CONFIG": _to_bash_path(env_info["cfg_path"]),
@@ -2342,4 +2347,528 @@ def test_offrig_host_and_vm_judges_defensive_branches(
     )
 
     assert vm_judges.card_type_from_gpu_name("NVIDIA L4", host="runpod") is None
+
+
+def test_runpod_failed_shutdown_reports_honest_receipt_preserving_earlier_error(
+    tmp_path: Path,
+    clean_repo_root: Path,
+) -> None:
+    items_path, part_dir = _make_synthetic_items_with_part(tmp_path / "data")
+    receipts_dir = _make_synthetic_receipts(tmp_path / "data")
+
+    # 1. Failing shutdown after an earlier gate error preserves original failure_class/why and emits billing warning
+    env_both = _setup_fake_offrig_env(
+        tmp_path / "sd_after_err",
+        repo_root=clean_repo_root,
+        config_overrides={
+            "plan_id": 202,
+            "pod_id": "pod-orphan-202",
+            "deadline_utc": "2026-11-23 19:30 UTC",
+            "fail_steps": {"gate": 2},
+            "fail_shutdown_attempts": 10,
+        },
+    )
+    out_both = tmp_path / "out_both"
+    res_both = _run_bash_launcher(
+        repo_root=clean_repo_root,
+        args=[
+            "--host",
+            "runpod",
+            "--time-one",
+            "--run-id",
+            "rp-sd-err-01",
+            "--items-file",
+            _to_bash_path(items_path),
+            "--part-dir",
+            _to_bash_path(part_dir),
+            "--receipts-dir",
+            _to_bash_path(receipts_dir),
+            "--out-dir",
+            _to_bash_path(out_both),
+        ],
+        env_vars={
+            "OFFRIG_CONFIG_DIR": _to_bash_path(env_both["offrig_config_dir"]),
+            "RDLAB_OFFRIG_MCP_BIN": _to_bash_path(env_both["shim_sh"]),
+            "RDLAB_OFFRIG_PROJECT": _to_bash_path(clean_repo_root),
+            "RDLAB_FAKE_OFFRIG_CONFIG": _to_bash_path(env_both["cfg_path"]),
+            "RDLAB_FAKE_OFFRIG_LOG": _to_bash_path(env_both["log_path"]),
+            "RDLAB_FAKE_OFFRIG_STATE": _to_bash_path(env_both["state_path"]),
+            "RDLAB_FAKE_OFFRIG_REPO_ROOT": _to_bash_path(clean_repo_root),
+            "RDLAB_OFFRIG_POLL_INTERVAL": "0.02",
+        },
+    )
+    assert res_both.returncode != 0
+    assert "VM_DISK_INSUFFICIENT" in res_both.stderr
+    warn_lines_both = [ln for ln in res_both.stderr.splitlines() if "RUNPOD_SHUTDOWN_FAILED_MAY_BILL" in ln]
+    assert len(warn_lines_both) == 1
+    assert "plan_id=202" in warn_lines_both[0]
+    assert "pod_id=pod-orphan-202" in warn_lines_both[0]
+    assert "2026-11-23 19:30 UTC" in warn_lines_both[0]
+    assert "may keep billing until watchdog deadline" in warn_lines_both[0]
+    out_both_doc = json.loads((out_both / "outcome.draft.json").read_text(encoding="utf-8"))
+    assert out_both_doc["outcome"] == "failed"
+    assert out_both_doc["pod_shutdown"] is False
+    assert out_both_doc["shutdown_attempted"] is True
+    assert out_both_doc["shutdown_failure_class"] == "OFFRIG_SHUTDOWN_FAILED"
+    assert out_both_doc["failure_class"] == "VM_GATE_REFUSED"
+    assert "VM_DISK_INSUFFICIENT" in out_both_doc["why"]
+
+    # 2. Failing shutdown alone on an otherwise passing run reports failed + shutdown_failure_class + billing warning
+    env_alone = _setup_fake_offrig_env(
+        tmp_path / "sd_alone",
+        repo_root=clean_repo_root,
+        config_overrides={
+            "plan_id": 203,
+            "pod_id": "pod-orphan-203",
+            "deadline_utc": "2026-11-23 20:00 UTC",
+            "fail_shutdown_attempts": 10,
+        },
+    )
+    out_alone = tmp_path / "out_alone"
+    res_alone = _run_bash_launcher(
+        repo_root=clean_repo_root,
+        args=[
+            "--host",
+            "runpod",
+            "--time-one",
+            "--run-id",
+            "rp-sd-alone-01",
+            "--items-file",
+            _to_bash_path(items_path),
+            "--part-dir",
+            _to_bash_path(part_dir),
+            "--receipts-dir",
+            _to_bash_path(receipts_dir),
+            "--out-dir",
+            _to_bash_path(out_alone),
+        ],
+        env_vars={
+            "OFFRIG_CONFIG_DIR": _to_bash_path(env_alone["offrig_config_dir"]),
+            "RDLAB_OFFRIG_MCP_BIN": _to_bash_path(env_alone["shim_sh"]),
+            "RDLAB_OFFRIG_PROJECT": _to_bash_path(clean_repo_root),
+            "RDLAB_FAKE_OFFRIG_CONFIG": _to_bash_path(env_alone["cfg_path"]),
+            "RDLAB_FAKE_OFFRIG_LOG": _to_bash_path(env_alone["log_path"]),
+            "RDLAB_FAKE_OFFRIG_STATE": _to_bash_path(env_alone["state_path"]),
+            "RDLAB_FAKE_OFFRIG_REPO_ROOT": _to_bash_path(clean_repo_root),
+            "RDLAB_OFFRIG_POLL_INTERVAL": "0.02",
+        },
+    )
+    assert res_alone.returncode != 0
+    warn_lines_alone = [ln for ln in res_alone.stderr.splitlines() if "RUNPOD_SHUTDOWN_FAILED_MAY_BILL" in ln]
+    assert len(warn_lines_alone) == 1
+    assert "plan_id=203" in warn_lines_alone[0]
+    assert "pod_id=pod-orphan-203" in warn_lines_alone[0]
+    assert "2026-11-23 20:00 UTC" in warn_lines_alone[0]
+    out_alone_doc = json.loads((out_alone / "outcome.draft.json").read_text(encoding="utf-8"))
+    assert out_alone_doc["outcome"] == "failed"
+    assert out_alone_doc["pod_shutdown"] is False
+    assert out_alone_doc["shutdown_attempted"] is True
+    assert out_alone_doc["shutdown_failure_class"] == "OFFRIG_SHUTDOWN_FAILED"
+    assert out_alone_doc["failure_class"] == "OFFRIG_SHUTDOWN_FAILED"
+
+
+def test_runpod_max_price_hr_cap_enforced_and_recorded(
+    tmp_path: Path,
+    clean_repo_root: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert offrig_host.DEFAULT_RUNPOD_MAX_PRICE_HR == pytest.approx(2.79)
+    assert offrig_host.validate_max_price_hr("2.79") == pytest.approx(2.79)
+    assert offrig_host.validate_max_price_hr(2.15) == pytest.approx(2.15)
+    for bad in (None, True, "", "  ", "0", "-1.5", "not-num", "nan", "inf"):
+        with pytest.raises(offrig_host.OffrigHostError, match="OFFRIG_MAX_PRICE_INVALID"):
+            offrig_host.validate_max_price_hr(bad)
+
+    assert offrig_host.main(["check-max-price", "--max-price-hr", "2.79"]) == 0
+    assert json.loads(capsys.readouterr().out)["max_price_hr"] == pytest.approx(2.79)
+    assert offrig_host.main(["check-max-price", "--max-price-hr", "0"]) == 2
+    assert "OFFRIG_MAX_PRICE_INVALID" in capsys.readouterr().err
+    assert (
+        offrig_host.main(
+            ["plan", "--project", str(clean_repo_root), "--profile", "rdlab-judge", "--wall-seconds", "600", "--max-price-hr", "-1"]
+        )
+        == 2
+    )
+    assert "OFFRIG_MAX_PRICE_INVALID" in capsys.readouterr().err
+
+    items_path, part_dir = _make_synthetic_items_with_part(tmp_path / "data")
+    receipts_dir = _make_synthetic_receipts(tmp_path / "data")
+
+    # Custom `--runpod-max-price-hr` passed to `offrig_plan` and recorded in `outcome.draft.json`
+    env_ok = _setup_fake_offrig_env(tmp_path / "price_ok", repo_root=clean_repo_root)
+    out_ok = tmp_path / "out_price_ok"
+    res_ok = _run_bash_launcher(
+        repo_root=clean_repo_root,
+        args=[
+            "--host",
+            "runpod",
+            "--runpod-max-price-hr",
+            "2.45",
+            "--time-one",
+            "--run-id",
+            "rp-price-ok",
+            "--items-file",
+            _to_bash_path(items_path),
+            "--part-dir",
+            _to_bash_path(part_dir),
+            "--receipts-dir",
+            _to_bash_path(receipts_dir),
+            "--out-dir",
+            _to_bash_path(out_ok),
+        ],
+        env_vars={
+            "OFFRIG_CONFIG_DIR": _to_bash_path(env_ok["offrig_config_dir"]),
+            "RDLAB_OFFRIG_MCP_BIN": _to_bash_path(env_ok["shim_sh"]),
+            "RDLAB_OFFRIG_PROJECT": _to_bash_path(clean_repo_root),
+            "RDLAB_FAKE_OFFRIG_CONFIG": _to_bash_path(env_ok["cfg_path"]),
+            "RDLAB_FAKE_OFFRIG_LOG": _to_bash_path(env_ok["log_path"]),
+            "RDLAB_FAKE_OFFRIG_STATE": _to_bash_path(env_ok["state_path"]),
+            "RDLAB_FAKE_OFFRIG_REPO_ROOT": _to_bash_path(clean_repo_root),
+            "RDLAB_OFFRIG_POLL_INTERVAL": "0.02",
+        },
+    )
+    assert res_ok.returncode == 0, res_ok.stderr
+    calls_ok = _read_call_log(env_ok["log_path"])
+    assert calls_ok[0]["tool"] == "offrig_plan"
+    assert calls_ok[0]["arguments"]["max_price_hr"] == pytest.approx(2.45)
+    assert json.loads((out_ok / "outcome.draft.json").read_text(encoding="utf-8"))["max_price_hr_usd"] == pytest.approx(2.45)
+
+    # Empty, zero, negative, or non-numeric max_price_hr refuses pre-plan before any MCP call
+    for idx, (extra_args, env_override) in enumerate(
+        (
+            ([], {"RDLAB_RUNPOD_MAX_PRICE_HR": ""}),
+            (["--runpod-max-price-hr", "0"], {}),
+            (["--runpod-max-price-hr=-2.5"], {}),
+            (["--runpod-max-price-hr", "bogus"], {}),
+        )
+    ):
+        env_bad = _setup_fake_offrig_env(tmp_path / f"price_bad_{idx}", repo_root=clean_repo_root)
+        res_bad = _run_bash_launcher(
+            repo_root=clean_repo_root,
+            args=[
+                "--host",
+                "runpod",
+                *extra_args,
+                "--time-one",
+                "--run-id",
+                f"rp-price-bad-{idx}",
+                "--items-file",
+                _to_bash_path(items_path),
+                "--part-dir",
+                _to_bash_path(part_dir),
+                "--receipts-dir",
+                _to_bash_path(receipts_dir),
+                "--out-dir",
+                _to_bash_path(tmp_path / f"out_price_bad_{idx}"),
+            ],
+            env_vars={
+                "OFFRIG_CONFIG_DIR": _to_bash_path(env_bad["offrig_config_dir"]),
+                "RDLAB_OFFRIG_MCP_BIN": _to_bash_path(env_bad["shim_sh"]),
+                "RDLAB_OFFRIG_PROJECT": _to_bash_path(clean_repo_root),
+                "RDLAB_FAKE_OFFRIG_CONFIG": _to_bash_path(env_bad["cfg_path"]),
+                "RDLAB_FAKE_OFFRIG_LOG": _to_bash_path(env_bad["log_path"]),
+                "RDLAB_FAKE_OFFRIG_STATE": _to_bash_path(env_bad["state_path"]),
+                "RDLAB_FAKE_OFFRIG_REPO_ROOT": _to_bash_path(clean_repo_root),
+                **env_override,
+            },
+        )
+        assert res_bad.returncode == 2
+        assert "OFFRIG_MAX_PRICE_INVALID" in res_bad.stderr
+        assert _read_call_log(env_bad["log_path"]) == []
+
+
+@pytest.mark.parametrize("path_kind", ["window", "probe", "session_smoke"])
+def test_runpod_profile_image_checked_on_every_pod_path(
+    path_kind: str,
+    tmp_path: Path,
+    clean_repo_root: Path,
+) -> None:
+    env_mis = _setup_fake_offrig_env(
+        tmp_path / f"img_mis_{path_kind}",
+        repo_root=clean_repo_root,
+        config_overrides={"profile_image": "vllm/vllm-openai:v0.31.0"},
+    )
+    out_mis = tmp_path / f"out_img_mis_{path_kind}"
+    if path_kind == "window":
+        items_path, part_dir = _make_synthetic_items_with_part(tmp_path / "data")
+        receipts_dir = _make_synthetic_receipts(tmp_path / "data")
+        mode_args = [
+            "--time-one",
+            "--run-id",
+            "rp-img-win-01",
+            "--items-file",
+            _to_bash_path(items_path),
+            "--part-dir",
+            _to_bash_path(part_dir),
+            "--receipts-dir",
+            _to_bash_path(receipts_dir),
+        ]
+    elif path_kind == "probe":
+        mode_args = ["--probe", "--run-id", "rp-img-probe-01"]
+    else:
+        mode_args = ["--session-smoke", "--run-id", "rp-img-smoke-01"]
+
+    res = _run_bash_launcher(
+        repo_root=clean_repo_root,
+        args=["--host", "runpod", *mode_args, "--out-dir", _to_bash_path(out_mis)],
+        env_vars={
+            "OFFRIG_CONFIG_DIR": _to_bash_path(env_mis["offrig_config_dir"]),
+            "RDLAB_OFFRIG_MCP_BIN": _to_bash_path(env_mis["shim_sh"]),
+            "RDLAB_OFFRIG_PROJECT": _to_bash_path(clean_repo_root),
+            "RDLAB_FAKE_OFFRIG_CONFIG": _to_bash_path(env_mis["cfg_path"]),
+            "RDLAB_FAKE_OFFRIG_LOG": _to_bash_path(env_mis["log_path"]),
+            "RDLAB_FAKE_OFFRIG_STATE": _to_bash_path(env_mis["state_path"]),
+            "RDLAB_FAKE_OFFRIG_REPO_ROOT": _to_bash_path(clean_repo_root),
+        },
+    )
+    assert res.returncode == 2
+    assert "OFFRIG_PROFILE_IMAGE_MISMATCH" in res.stderr
+    assert _read_call_log(env_mis["log_path"]) == []
+
+
+def test_runpod_invalid_deadline_and_min_run_seconds_refused_before_run(
+    tmp_path: Path,
+    clean_repo_root: Path,
+) -> None:
+    assert offrig_host.DEFAULT_MIN_RUN_SECONDS == 300
+    with pytest.raises(offrig_host.OffrigHostError, match="OFFRIG_MIN_RUN_INVALID"):
+        offrig_host.compute_remaining_run_budget_seconds("2026-11-23 13:05 UTC", 1795437900.0, min_run_seconds=-1)
+    rem_ok = offrig_host.compute_remaining_run_budget_seconds("2026-11-23 13:05 UTC", 1795437900.0, min_run_seconds=300)
+    assert rem_ok["min_run_seconds"] == 300 and rem_ok["below_min_run_budget"] is False
+    rem_low = offrig_host.compute_remaining_run_budget_seconds("2026-11-23 13:05 UTC", 1795438600.0, min_run_seconds=300)
+    assert rem_low["remaining_run_seconds"] == 200 and rem_low["below_min_run_budget"] is True
+
+    items_path, part_dir = _make_synthetic_items_with_part(tmp_path / "data")
+    receipts_dir = _make_synthetic_receipts(tmp_path / "data")
+
+    env_bad_min = _setup_fake_offrig_env(tmp_path / "bad_min_run", repo_root=clean_repo_root)
+    res_bad_min = _run_bash_launcher(
+        repo_root=clean_repo_root,
+        args=[
+            "--host",
+            "runpod",
+            "--time-one",
+            "--run-id",
+            "rp-bad-min-run",
+            "--items-file",
+            _to_bash_path(items_path),
+            "--part-dir",
+            _to_bash_path(part_dir),
+            "--receipts-dir",
+            _to_bash_path(receipts_dir),
+            "--out-dir",
+            _to_bash_path(tmp_path / "out_bad_min_run"),
+        ],
+        env_vars={
+            "OFFRIG_CONFIG_DIR": _to_bash_path(env_bad_min["offrig_config_dir"]),
+            "RDLAB_OFFRIG_MIN_RUN_SECONDS": "not-an-int",
+            "RDLAB_OFFRIG_MCP_BIN": _to_bash_path(env_bad_min["shim_sh"]),
+            "RDLAB_OFFRIG_PROJECT": _to_bash_path(clean_repo_root),
+            "RDLAB_FAKE_OFFRIG_CONFIG": _to_bash_path(env_bad_min["cfg_path"]),
+            "RDLAB_FAKE_OFFRIG_LOG": _to_bash_path(env_bad_min["log_path"]),
+            "RDLAB_FAKE_OFFRIG_STATE": _to_bash_path(env_bad_min["state_path"]),
+            "RDLAB_FAKE_OFFRIG_REPO_ROOT": _to_bash_path(clean_repo_root),
+        },
+    )
+    assert res_bad_min.returncode == 2
+    assert "OFFRIG_MIN_RUN_INVALID" in res_bad_min.stderr
+    assert _read_call_log(env_bad_min["log_path"]) == []
+
+    # 1. Empty or unparseable deadline after launch refuses with OFFRIG_DEADLINE_INVALID and shuts down without running
+    for label, launch_dl in (("empty_dl", ""), ("bad_dl", "not-a-date")):
+        env_dl = _setup_fake_offrig_env(
+            tmp_path / label,
+            repo_root=clean_repo_root,
+            config_overrides={"launch_deadline": launch_dl},
+        )
+        out_dl = tmp_path / f"out_{label}"
+        res_dl = _run_bash_launcher(
+            repo_root=clean_repo_root,
+            args=[
+                "--host",
+                "runpod",
+                "--time-one",
+                "--run-id",
+                f"rp-{label}",
+                "--items-file",
+                _to_bash_path(items_path),
+                "--part-dir",
+                _to_bash_path(part_dir),
+                "--receipts-dir",
+                _to_bash_path(receipts_dir),
+                "--out-dir",
+                _to_bash_path(out_dl),
+            ],
+            env_vars={
+                "OFFRIG_CONFIG_DIR": _to_bash_path(env_dl["offrig_config_dir"]),
+                "RDLAB_OFFRIG_MCP_BIN": _to_bash_path(env_dl["shim_sh"]),
+                "RDLAB_OFFRIG_PROJECT": _to_bash_path(clean_repo_root),
+                "RDLAB_FAKE_OFFRIG_CONFIG": _to_bash_path(env_dl["cfg_path"]),
+                "RDLAB_FAKE_OFFRIG_LOG": _to_bash_path(env_dl["log_path"]),
+                "RDLAB_FAKE_OFFRIG_STATE": _to_bash_path(env_dl["state_path"]),
+                "RDLAB_FAKE_OFFRIG_REPO_ROOT": _to_bash_path(clean_repo_root),
+                "RDLAB_OFFRIG_POLL_INTERVAL": "0.02",
+            },
+        )
+        assert res_dl.returncode == 2
+        assert "OFFRIG_DEADLINE_INVALID" in res_dl.stderr
+        assert not (env_dl["vm_root_dir"] / "run_window_env.json").exists()
+        assert json.loads(env_dl["state_path"].read_text(encoding="utf-8"))["shutdown"] is True
+        dl_outcome = json.loads((out_dl / "outcome.draft.json").read_text(encoding="utf-8"))
+        assert dl_outcome["failure_class"] == "OFFRIG_DEADLINE_INVALID"
+        assert dl_outcome["pod_shutdown"] is True
+
+    # 2. Remaining budget (0 < 150s < RUNPOD_MIN_RUN_SECONDS=300) refuses RUNPOD_MIN_RUN_BUDGET_REFUSED, fetches & shuts down
+    t0 = 1795435200  # 2026-11-23 12:00 UTC -> 3900s deadline = 13:05 UTC
+    clock_min = tmp_path / "clock_min.txt"
+    clock_min.write_text(f"{t0}\n", encoding="utf-8")
+    env_min = _setup_fake_offrig_env(
+        tmp_path / "min_budget",
+        repo_root=clean_repo_root,
+        config_overrides={"advance_clock_on_step": {"gate": 3450}},
+    )
+    out_min = tmp_path / "out_min"
+    res_min = _run_bash_launcher(
+        repo_root=clean_repo_root,
+        args=[
+            "--host",
+            "runpod",
+            "--time-one",
+            "--run-id",
+            "rp-min-run-01",
+            "--items-file",
+            _to_bash_path(items_path),
+            "--part-dir",
+            _to_bash_path(part_dir),
+            "--receipts-dir",
+            _to_bash_path(receipts_dir),
+            "--out-dir",
+            _to_bash_path(out_min),
+        ],
+        env_vars={
+            "OFFRIG_CONFIG_DIR": _to_bash_path(env_min["offrig_config_dir"]),
+            "RDLAB_FAKE_CLOCK_FILE": _to_bash_path(clock_min),
+            "RDLAB_OFFRIG_MCP_BIN": _to_bash_path(env_min["shim_sh"]),
+            "RDLAB_OFFRIG_PROJECT": _to_bash_path(clean_repo_root),
+            "RDLAB_FAKE_OFFRIG_CONFIG": _to_bash_path(env_min["cfg_path"]),
+            "RDLAB_FAKE_OFFRIG_LOG": _to_bash_path(env_min["log_path"]),
+            "RDLAB_FAKE_OFFRIG_STATE": _to_bash_path(env_min["state_path"]),
+            "RDLAB_FAKE_OFFRIG_REPO_ROOT": _to_bash_path(clean_repo_root),
+            "RDLAB_OFFRIG_POLL_INTERVAL": "0.02",
+        },
+    )
+    assert res_min.returncode == 2
+    assert "RUNPOD_MIN_RUN_BUDGET_REFUSED" in res_min.stderr
+    assert not (env_min["vm_root_dir"] / "run_window_env.json").exists()
+    min_calls = _read_call_log(env_min["log_path"])
+    assert any(c["tool"] == "offrig_get" for c in min_calls)
+    assert min_calls[-1]["tool"] == "offrig_shutdown"
+    assert json.loads(env_min["state_path"].read_text(encoding="utf-8"))["shutdown"] is True
+    assert json.loads((out_min / "outcome.draft.json").read_text(encoding="utf-8"))["failure_class"] == "RUNPOD_MIN_RUN_BUDGET_REFUSED"
+
+
+def test_runpod_forwards_session_name_and_bounds_fetch_calls_with_fake_clock(
+    tmp_path: Path,
+    clean_repo_root: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    f_ok = offrig_host.compute_remaining_fetch_budget_seconds(
+        "2026-11-23 13:05 UTC",
+        1795438980.0,
+        fetch_started_epoch=1795438900.0,
+        fetch_allowance_seconds=180,
+        shutdown_reserve_seconds=120,
+    )
+    # pod_fetch_cutoff = 1795439100 - 120 = 1795438980; allowance_deadline = 1795439080 -> cutoff wins -> 0 left
+    assert f_ok["remaining_fetch_seconds"] == 0
+    f_nodl = offrig_host.compute_remaining_fetch_budget_seconds(
+        "not-a-deadline",
+        1795438950.0,
+        fetch_started_epoch=1795438900.0,
+        fetch_allowance_seconds=180,
+        shutdown_reserve_seconds=120,
+    )
+    assert f_nodl["remaining_fetch_seconds"] == 130
+    assert (
+        offrig_host.main(
+            [
+                "remaining-fetch-budget",
+                "--deadline",
+                "2026-11-23 13:05 UTC",
+                "--now-epoch",
+                "1795438850",
+                "--fetch-started-epoch",
+                "1795438850",
+            ]
+        )
+        == 0
+    )
+    assert json.loads(capsys.readouterr().out)["remaining_fetch_seconds"] == 130
+
+    # E2E: verifies RDLAB_SESSION_ID is forwarded as SESSION_NAME (not pod_id) and fake-clock bounds each offrig_get call
+    t0 = 1795435200  # 2026-11-23 12:00 UTC -> deadline 13:05 UTC (t0 + 3900)
+    clock_f = tmp_path / "clock_fetch.txt"
+    clock_f.write_text(f"{t0}\n", encoding="utf-8")
+    items_path, part_dir = _make_synthetic_items_with_part(tmp_path / "data")
+    receipts_dir = _make_synthetic_receipts(tmp_path / "data")
+    env_f = _setup_fake_offrig_env(
+        tmp_path / "fetch_bound",
+        repo_root=clean_repo_root,
+        config_overrides={
+            "pod_id": "pod-custom-99",
+            "advance_clock_on_step": {"gate": 3000, "run": 600},
+            "advance_clock_on_get": 80,
+        },
+    )
+    out_f = tmp_path / "out_fetch"
+    res_f = _run_bash_launcher(
+        repo_root=clean_repo_root,
+        args=[
+            "--host",
+            "runpod",
+            "--time-one",
+            "--run-id",
+            "rp-fetch-bound-01",
+            "--items-file",
+            _to_bash_path(items_path),
+            "--part-dir",
+            _to_bash_path(part_dir),
+            "--receipts-dir",
+            _to_bash_path(receipts_dir),
+            "--out-dir",
+            _to_bash_path(out_f),
+        ],
+        env_vars={
+            "OFFRIG_CONFIG_DIR": _to_bash_path(env_f["offrig_config_dir"]),
+            "RDLAB_FAKE_CLOCK_FILE": _to_bash_path(clock_f),
+            "RDLAB_OFFRIG_MCP_BIN": _to_bash_path(env_f["shim_sh"]),
+            "RDLAB_OFFRIG_PROJECT": _to_bash_path(clean_repo_root),
+            "RDLAB_FAKE_OFFRIG_CONFIG": _to_bash_path(env_f["cfg_path"]),
+            "RDLAB_FAKE_OFFRIG_LOG": _to_bash_path(env_f["log_path"]),
+            "RDLAB_FAKE_OFFRIG_STATE": _to_bash_path(env_f["state_path"]),
+            "RDLAB_FAKE_OFFRIG_REPO_ROOT": _to_bash_path(clean_repo_root),
+            "RDLAB_OFFRIG_POLL_INTERVAL": "0.02",
+        },
+    )
+    assert res_f.returncode == 0, res_f.stderr
+    run_env = json.loads((env_f["vm_root_dir"] / "run_window_env.json").read_text(encoding="utf-8"))["env"]
+    assert run_env["RDLAB_SESSION_ID"] == "rdlab-rp-fetch-bound-01"
+    assert run_env["RDLAB_POD_ID"] == "pod-custom-99"
+    assert vm_judges.is_stub_window_id(run_env["RDLAB_SESSION_ID"]) is False
+    assert json.loads((out_f / "outcome.draft.json").read_text(encoding="utf-8"))["pod_id"] == "pod-custom-99"
+
+    get_pods = [c["arguments"]["pod"] for c in _read_call_log(env_f["log_path"]) if c["tool"] == "offrig_get"]
+    assert get_pods[:3] == [
+        "/workspace/job/result.tar.gz",
+        "/workspace/job/status.json",
+        "/workspace/job/gate_status.json",
+    ]
+    assert "/workspace/job/rdlab_run/progress.jsonl" not in get_pods
+    cli_txt = (out_f / "colab-cli.log").read_text(encoding="utf-8")
+    assert "timeout_s=180" in cli_txt
+    assert "timeout_s=100" in cli_txt
+    assert "timeout_s=20" in cli_txt
+    assert "RUNPOD_FETCH_BUDGET_EXHAUSTED" in cli_txt
+    assert json.loads(env_f["state_path"].read_text(encoding="utf-8"))["shutdown"] is True
+
 
