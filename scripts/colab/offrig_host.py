@@ -37,12 +37,60 @@ DEFAULT_LAUNCH_WAIT_MINUTES = 20
 DEFAULT_IMAGE_PULL_SETUP_SECONDS = 900
 DEFAULT_FETCH_ALLOWANCE_SECONDS = 180
 DEFAULT_SHUTDOWN_RESERVE_SECONDS = 120
-DEFAULT_MIN_RUN_SECONDS = 300
+# Useful-run floor defaults (sources documented in compute_useful_run_floor_seconds / README):
+# - Venv sync: 120 s allowance for `uv pip sync` of judge/d3 venvs and lazy `venv-vllm` check/sync.
+# - Weight download: `71_926_859_142` B (`Qwen__Qwen3.6-35B-A3B.sha256.json` `total_bytes`) at 100 MB/s -> 720 s.
+# - vLLM engine startup: 180 s allowance for cold `vllm.LLM` weight load into VRAM.
+# - One item generation: `QWEN36_DEFAULT_MAX_NEW_TOKENS` (4096) at 20 tok/s (floor 15 s) -> 205 s.
+DEFAULT_VENV_SYNC_ALLOWANCE_SECONDS = 120
+DEFAULT_WEIGHT_DOWNLOAD_RATE_MBPS = 100.0
+DEFAULT_RUNPOD_WEIGHT_BYTES = 71_926_859_142
+DEFAULT_VLLM_START_ALLOWANCE_SECONDS = 180
+DEFAULT_ONE_ITEM_MAX_NEW_TOKENS = 4096
+DEFAULT_FIVE_JUDGE_MAX_NEW_TOKENS = 512
+DEFAULT_ONE_ITEM_TOKENS_PER_SEC = 20.0
+DEFAULT_ONE_ITEM_MIN_SECONDS = 15
+DEFAULT_MIN_RUN_SECONDS = 1225
 DEFAULT_RUNPOD_MAX_PRICE_HR = 2.79
 DEFAULT_EXEC_STATUS_POLL_RETRIES = 3
 MIN_MAX_HOURS = 0.02
 
+_DEFAULT_FIVE_JUDGE_IDS: tuple[str, ...] = (
+    "d3-mini",
+    "flow-judge-v0.1",
+    "granite-guardian-4.1-8b",
+    "mu-judge",
+    "nemotron-3-nano-4b",
+)
+
+_JUDGE_RECEIPT_FILENAMES: dict[str, str] = {
+    "mu-judge": "qybaihe__mu-judge-nemotron-nano-4b.sha256.json",
+    "nemotron-3-nano-4b": "nvidia__NVIDIA-Nemotron-3-Nano-4B-BF16.sha256.json",
+    "d3-mini": "vllm-sr__d3-mini.sha256.json",
+    "granite-guardian-4.1-8b": "ibm-granite__granite-guardian-4.1-8b.sha256.json",
+    "flow-judge-v0.1": "flowaicom__Flow-Judge-v0.1.sha256.json",
+    "d3-flash": "vllm-sr__d3-flash.sha256.json",
+    "d3": "vllm-sr__d3.sha256.json",
+    "nli-deberta-v3-large": "MoritzLaurer__DeBERTa-v3-large-mnli-fever-anli-ling-wanli.sha256.json",
+    "elephant-1": "baselabs__elephant-1.sha256.json",
+    "qwen3.6-35b-a3b": "Qwen__Qwen3.6-35B-A3B.sha256.json",
+}
+
+_JUDGE_DEFAULT_MAX_NEW_TOKENS: dict[str, int] = {
+    "mu-judge": 1,
+    "nemotron-3-nano-4b": 1,
+    "d3-mini": 1,
+    "granite-guardian-4.1-8b": 32,
+    "flow-judge-v0.1": 512,
+    "d3-flash": 1,
+    "d3": 1,
+    "nli-deberta-v3-large": 0,
+    "elephant-1": 1,
+    "qwen3.6-35b-a3b": 4096,
+}
+
 _TOOL_ERROR_CODES: dict[str, str] = {
+    "offrig_status": "OFFRIG_STATUS_FAILED",
     "offrig_plan": "OFFRIG_PLAN_FAILED",
     "offrig_launch": "OFFRIG_LAUNCH_FAILED",
     "offrig_job": "OFFRIG_JOB_FAILED",
@@ -71,20 +119,22 @@ def split_image_ref(image_ref: str) -> tuple[str, str | None]:
     return raw, None
 
 
-def validate_max_price_hr(raw_value: Any) -> float:
-    """Validate and return a finite positive USD/hr RunPod price cap for `offrig_plan`."""
+def _validate_positive_usd(
+    raw_value: Any,
+    *,
+    error_code: str,
+    label: str,
+    empty_hint: str,
+) -> float:
     if isinstance(raw_value, bool) or raw_value is None:
         raise OffrigHostError(
-            "OFFRIG_MAX_PRICE_INVALID",
-            f"RunPod max_price_hr must be a finite positive USD/hr number, got {raw_value!r}",
+            error_code,
+            f"{label} must be a finite positive USD amount, got {raw_value!r}",
         )
     if isinstance(raw_value, str):
         stripped = raw_value.strip()
         if not stripped:
-            raise OffrigHostError(
-                "OFFRIG_MAX_PRICE_INVALID",
-                "RunPod max_price_hr is empty; set a positive USD/hr ceiling (default 2.79)",
-            )
+            raise OffrigHostError(error_code, f"{label} is empty; {empty_hint}")
         raw_num: Any = stripped
     else:
         raw_num = raw_value
@@ -92,15 +142,35 @@ def validate_max_price_hr(raw_value: Any) -> float:
         val = float(raw_num)
     except (TypeError, ValueError) as exc:
         raise OffrigHostError(
-            "OFFRIG_MAX_PRICE_INVALID",
-            f"RunPod max_price_hr must be numeric USD/hr, got {raw_value!r}",
+            error_code,
+            f"{label} must be numeric USD, got {raw_value!r}",
         ) from exc
     if math.isnan(val) or math.isinf(val) or val <= 0.0:
         raise OffrigHostError(
-            "OFFRIG_MAX_PRICE_INVALID",
-            f"RunPod max_price_hr must be finite and > 0 USD/hr, got {raw_value!r}",
+            error_code,
+            f"{label} must be finite and > 0 USD, got {raw_value!r}",
         )
     return val
+
+
+def validate_max_price_hr(raw_value: Any) -> float:
+    """Validate and return a finite positive USD/hr RunPod price cap for `offrig_plan`."""
+    return _validate_positive_usd(
+        raw_value,
+        error_code="OFFRIG_MAX_PRICE_INVALID",
+        label="RunPod max_price_hr",
+        empty_hint="set a positive USD/hr ceiling (default 2.79)",
+    )
+
+
+def validate_max_worst_case_usd(raw_value: Any) -> float:
+    """Validate and return a finite positive USD ceiling for `--runpod-max-worst-case-usd`."""
+    return _validate_positive_usd(
+        raw_value,
+        error_code="OFFRIG_MAX_WORST_CASE_INVALID",
+        label="RunPod max_worst_case_usd",
+        empty_hint="set a positive USD total ceiling or omit the cap",
+    )
 
 
 def compute_watchdog_max_hours(
@@ -224,6 +294,323 @@ def compute_remaining_fetch_budget_seconds(
         "pod_fetch_cutoff_epoch": pod_fetch_cutoff,
         "effective_cutoff_epoch": effective_cutoff,
         "remaining_fetch_seconds": remaining_fetch_seconds,
+    }
+
+
+def _read_receipt_weight_bytes(receipt_path: Path) -> int | None:
+    try:
+        doc = json.loads(receipt_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(doc, Mapping):
+        return None
+    total_raw = doc.get("total_bytes")
+    if isinstance(total_raw, int) and not isinstance(total_raw, bool) and total_raw >= 0:
+        return int(total_raw)
+    files_obj = doc.get("files")
+    if isinstance(files_obj, Mapping):
+        return sum(
+            int(meta.get("bytes") or 0)
+            for meta in files_obj.values()
+            if isinstance(meta, Mapping)
+        )
+    return None
+
+
+def compute_useful_run_floor_seconds(
+    *,
+    receipts_dir: str | Path | None = None,
+    only_judges: str | None = None,
+    max_new_tokens: int | str | None = None,
+    venv_sync_seconds: int = DEFAULT_VENV_SYNC_ALLOWANCE_SECONDS,
+    download_rate_mbps: float = DEFAULT_WEIGHT_DOWNLOAD_RATE_MBPS,
+    vllm_start_seconds: int = DEFAULT_VLLM_START_ALLOWANCE_SECONDS,
+    tokens_per_sec: float = DEFAULT_ONE_ITEM_TOKENS_PER_SEC,
+) -> dict[str, Any]:
+    """Build the minimum useful RunPod run floor from named, documented component allowances."""
+    if float(download_rate_mbps) <= 0.0 or float(tokens_per_sec) <= 0.0:
+        raise OffrigHostError(
+            "OFFRIG_MIN_RUN_INVALID",
+            "download_rate_mbps and tokens_per_sec must be positive",
+        )
+    if int(venv_sync_seconds) < 0 or int(vllm_start_seconds) < 0:
+        raise OffrigHostError(
+            "OFFRIG_MIN_RUN_INVALID",
+            "venv_sync_seconds and vllm_start_seconds must be non-negative",
+        )
+
+    raw_only = str(only_judges or "").strip()
+    if raw_only:
+        selected_ids = tuple(j.strip() for j in raw_only.split(",") if j.strip())
+    else:
+        selected_ids = _DEFAULT_FIVE_JUDGE_IDS
+
+    weight_bytes: int | None = None
+    weight_bytes_source = "default_qwen36_receipt_bytes"
+    used_receipts: list[str] = []
+    raw_dir = str(receipts_dir or "").strip()
+    if raw_dir:
+        rdir = Path(raw_dir)
+        if rdir.is_dir():
+            matched_sum = 0
+            for jid in selected_ids:
+                fname = _JUDGE_RECEIPT_FILENAMES.get(jid)
+                if not fname:
+                    continue
+                fpath = rdir / fname
+                if fpath.is_file():
+                    bval = _read_receipt_weight_bytes(fpath)
+                    if bval is not None:
+                        matched_sum += bval
+                        used_receipts.append(fname)
+            if used_receipts:
+                weight_bytes = matched_sum
+                weight_bytes_source = f"receipts:{','.join(used_receipts)}"
+
+    if weight_bytes is None:
+        weight_bytes = DEFAULT_RUNPOD_WEIGHT_BYTES
+        default_tok = DEFAULT_ONE_ITEM_MAX_NEW_TOKENS
+    else:
+        known_toks = [_JUDGE_DEFAULT_MAX_NEW_TOKENS[j] for j in selected_ids if j in _JUDGE_DEFAULT_MAX_NEW_TOKENS]
+        default_tok = max(known_toks) if known_toks else DEFAULT_ONE_ITEM_MAX_NEW_TOKENS
+
+    raw_tok = "" if max_new_tokens is None else str(max_new_tokens).strip()
+    if raw_tok:
+        try:
+            eff_tokens = int(raw_tok)
+        except ValueError as exc:
+            raise OffrigHostError(
+                "OFFRIG_MIN_RUN_INVALID",
+                f"max_new_tokens must be a positive integer, got {max_new_tokens!r}",
+            ) from exc
+        if eff_tokens <= 0:
+            raise OffrigHostError(
+                "OFFRIG_MIN_RUN_INVALID",
+                f"max_new_tokens must be > 0, got {max_new_tokens!r}",
+            )
+        max_new_tokens_source = "configured_max_new_tokens"
+    else:
+        eff_tokens = default_tok
+        max_new_tokens_source = (
+            "qwen36_default_max_new_tokens"
+            if default_tok == DEFAULT_ONE_ITEM_MAX_NEW_TOKENS
+            else "selected_judge_spec_max_new_tokens"
+        )
+
+    rate_bytes_per_sec = float(download_rate_mbps) * 1_000_000.0
+    weight_download_seconds = (
+        int(math.ceil(weight_bytes / rate_bytes_per_sec)) if weight_bytes > 0 else 0
+    )
+    one_item_seconds = max(
+        DEFAULT_ONE_ITEM_MIN_SECONDS,
+        int(math.ceil(eff_tokens / float(tokens_per_sec))),
+    )
+    min_run_seconds = (
+        int(venv_sync_seconds)
+        + int(weight_download_seconds)
+        + int(vllm_start_seconds)
+        + int(one_item_seconds)
+    )
+    return {
+        "venv_sync_seconds": int(venv_sync_seconds),
+        "weight_bytes": int(weight_bytes),
+        "weight_bytes_source": weight_bytes_source,
+        "download_rate_mbps": float(download_rate_mbps),
+        "weight_download_seconds": int(weight_download_seconds),
+        "vllm_start_seconds": int(vllm_start_seconds),
+        "max_new_tokens": int(eff_tokens),
+        "max_new_tokens_source": max_new_tokens_source,
+        "tokens_per_sec": float(tokens_per_sec),
+        "one_item_seconds": int(one_item_seconds),
+        "min_run_seconds": int(min_run_seconds),
+    }
+
+
+def compute_local_plan_worst_case(
+    *,
+    wall_seconds: int,
+    max_price_hr: float | str = DEFAULT_RUNPOD_MAX_PRICE_HR,
+    launch_wait_minutes: int = DEFAULT_LAUNCH_WAIT_MINUTES,
+    image_pull_setup_seconds: int = DEFAULT_IMAGE_PULL_SETUP_SECONDS,
+    fetch_allowance_seconds: int = DEFAULT_FETCH_ALLOWANCE_SECONDS,
+    shutdown_reserve_seconds: int = DEFAULT_SHUTDOWN_RESERVE_SECONDS,
+    max_worst_case_usd: Any = None,
+) -> dict[str, Any]:
+    """Compute local worst-case USD (`round(max_hours * max_price_hr, 2)`) for `--dry` and pre-launch checks."""
+    validated_price = validate_max_price_hr(max_price_hr)
+    max_hours = compute_watchdog_max_hours(
+        wall_seconds,
+        launch_wait_minutes=launch_wait_minutes,
+        image_pull_setup_seconds=image_pull_setup_seconds,
+        fetch_allowance_seconds=fetch_allowance_seconds,
+        shutdown_reserve_seconds=shutdown_reserve_seconds,
+    )
+    worst_case_usd = round(float(max_hours) * float(validated_price), 2)
+    cap_val: float | None = None
+    within_cap: bool | None = None
+    if max_worst_case_usd is not None and str(max_worst_case_usd).strip():
+        cap_val = validate_max_worst_case_usd(max_worst_case_usd)
+        within_cap = worst_case_usd <= cap_val
+    return {
+        "max_hours": float(max_hours),
+        "max_price_hr_usd": float(validated_price),
+        "worst_case_usd": float(worst_case_usd),
+        "worst_case_source": "local_estimate",
+        "max_worst_case_usd": cap_val,
+        "within_max_worst_case": within_cap,
+    }
+
+
+def classify_shutdown_reply(
+    reply: Any,
+    expected_pod_id: str | None = None,
+) -> dict[str, Any]:
+    """Classify an `offrig_shutdown` JSON reply (`ops.rs:772-774, 812-843`) honestly."""
+    expected = str(expected_pod_id or "").strip() or None
+    if not isinstance(reply, Mapping):
+        return {
+            "status": "unconfirmed",
+            "pod_shutdown": False,
+            "failure_class": "RUNPOD_SHUTDOWN_REPLY_UNREADABLE",
+            "reported_pod_id": None,
+            "expected_pod_id": expected,
+            "spent_usd": None,
+            "outcome_text": None,
+            "detail": f"non-object offrig_shutdown reply: {reply!r}",
+        }
+
+    raw_spent = reply.get("spent")
+    spent_usd = (
+        float(raw_spent)
+        if isinstance(raw_spent, (int, float)) and not isinstance(raw_spent, bool)
+        else None
+    )
+
+    if "already" in reply and reply.get("already") is not None:
+        already_state = str(reply.get("already")).strip()
+        return {
+            "status": "unconfirmed",
+            "pod_shutdown": False,
+            "failure_class": "RUNPOD_SHUTDOWN_ALREADY_CLOSED",
+            "reported_pod_id": None,
+            "expected_pod_id": expected,
+            "spent_usd": spent_usd,
+            "outcome_text": f"already:{already_state}",
+            "detail": f"offrig_shutdown returned already={already_state!r} without terminating a pod",
+        }
+
+    raw_outcome = reply.get("outcome")
+    if not isinstance(raw_outcome, str) or not raw_outcome.strip():
+        return {
+            "status": "unconfirmed",
+            "pod_shutdown": False,
+            "failure_class": "RUNPOD_SHUTDOWN_REPLY_UNREADABLE",
+            "reported_pod_id": None,
+            "expected_pod_id": expected,
+            "spent_usd": spent_usd,
+            "outcome_text": None,
+            "detail": f"offrig_shutdown reply missing outcome string: {dict(reply)!r}",
+        }
+
+    outcome = " ".join(raw_outcome.split()).strip()
+    if outcome.lower() == "no pod was rented":
+        detail = (
+            f"offrig_shutdown reported 'no pod was rented' despite recorded pod_id={expected!r}"
+            if expected
+            else "offrig_shutdown reported 'no pod was rented' for plan"
+        )
+        return {
+            "status": "no_pod_rented",
+            "pod_shutdown": None,
+            "failure_class": "RUNPOD_NO_POD_RENTED",
+            "reported_pod_id": None,
+            "expected_pod_id": expected,
+            "spent_usd": spent_usd,
+            "outcome_text": outcome,
+            "detail": detail,
+        }
+
+    m_term = re.fullmatch(r"terminated\s+([^\s]+)", outcome, flags=re.IGNORECASE)
+    m_gone = re.fullmatch(r"([^\s]+)\s+was already gone", outcome, flags=re.IGNORECASE)
+    matched = m_term or m_gone
+    if matched:
+        rep_id = matched.group(1)
+        if expected and rep_id != expected:
+            return {
+                "status": "unconfirmed",
+                "pod_shutdown": False,
+                "failure_class": "RUNPOD_SHUTDOWN_POD_MISMATCH",
+                "reported_pod_id": rep_id,
+                "expected_pod_id": expected,
+                "spent_usd": spent_usd,
+                "outcome_text": outcome,
+                "detail": f"offrig_shutdown named pod {rep_id!r}, expected {expected!r}",
+            }
+        return {
+            "status": "confirmed",
+            "pod_shutdown": True,
+            "failure_class": None,
+            "reported_pod_id": rep_id,
+            "expected_pod_id": expected,
+            "spent_usd": spent_usd,
+            "outcome_text": outcome,
+            "detail": f"confirmed termination for pod {rep_id!r}: {outcome}",
+        }
+
+    return {
+        "status": "unconfirmed",
+        "pod_shutdown": False,
+        "failure_class": "RUNPOD_SHUTDOWN_REPLY_UNREADABLE",
+        "reported_pod_id": None,
+        "expected_pod_id": expected,
+        "spent_usd": spent_usd,
+        "outcome_text": outcome,
+        "detail": f"unrecognized offrig_shutdown outcome string: {outcome!r}",
+    }
+
+
+def extract_status_pods(status_reply: Any) -> dict[str, Any]:
+    """Extract the pod list and open plans from an `offrig_status` reply (`main.rs:935-954`)."""
+    if not isinstance(status_reply, Mapping):
+        return {
+            "offrig_pods": [],
+            "sibling_pods": [],
+            "other_pods": 0,
+            "other_pod_names": [],
+            "open_plans": [],
+        }
+    runpod_obj = status_reply.get("runpod")
+    rp_map = runpod_obj if isinstance(runpod_obj, Mapping) else {}
+    raw_ours = rp_map.get("offrig_pods")
+    offrig_pods = (
+        [
+            {k: p.get(k) for k in ("id", "name", "status", "gpu", "cost_per_hr") if k in p}
+            for p in raw_ours
+            if isinstance(p, Mapping)
+        ]
+        if isinstance(raw_ours, list)
+        else []
+    )
+    raw_sibs = rp_map.get("sibling_pods")
+    sibling_pods = [dict(p) for p in raw_sibs if isinstance(p, Mapping)] if isinstance(raw_sibs, list) else []
+    raw_other_names = rp_map.get("other_pod_names")
+    other_pod_names = [str(n) for n in raw_other_names] if isinstance(raw_other_names, list) else []
+    raw_plans = status_reply.get("open_plans")
+    open_plans = (
+        [
+            {k: pl.get(k) for k in ("plan_id", "profile", "pod_id", "deadline") if k in pl}
+            for pl in raw_plans
+            if isinstance(pl, Mapping)
+        ]
+        if isinstance(raw_plans, list)
+        else []
+    )
+    return {
+        "offrig_pods": offrig_pods,
+        "sibling_pods": sibling_pods,
+        "other_pods": int(rp_map.get("other_pods") or 0),
+        "other_pod_names": other_pod_names,
+        "open_plans": open_plans,
     }
 
 
@@ -1009,6 +1396,23 @@ def _build_cli_parser() -> argparse.ArgumentParser:
     p_price = sub.add_parser("check-max-price")
     p_price.add_argument("--max-price-hr", required=True)
 
+    p_mwc = sub.add_parser("check-max-worst-case")
+    p_mwc.add_argument("--max-worst-case-usd", required=True)
+
+    p_floor = sub.add_parser("compute-run-floor")
+    p_floor.add_argument("--receipts-dir", default="")
+    p_floor.add_argument("--only-judges", default="")
+    p_floor.add_argument("--max-new-tokens", default="")
+
+    p_pbud = sub.add_parser("compute-plan-budget")
+    p_pbud.add_argument("--wall-seconds", type=int, required=True)
+    p_pbud.add_argument("--max-price-hr", default=str(DEFAULT_RUNPOD_MAX_PRICE_HR))
+    p_pbud.add_argument("--launch-wait-minutes", type=int, default=DEFAULT_LAUNCH_WAIT_MINUTES)
+    p_pbud.add_argument("--image-pull-setup-seconds", type=int, default=DEFAULT_IMAGE_PULL_SETUP_SECONDS)
+    p_pbud.add_argument("--fetch-allowance-seconds", type=int, default=DEFAULT_FETCH_ALLOWANCE_SECONDS)
+    p_pbud.add_argument("--shutdown-reserve-seconds", type=int, default=DEFAULT_SHUTDOWN_RESERVE_SECONDS)
+    p_pbud.add_argument("--max-worst-case-usd", default="")
+
     p_rem = sub.add_parser("remaining-run-budget")
     p_rem.add_argument("--deadline", required=True)
     p_rem.add_argument("--now-epoch", type=float, required=True)
@@ -1105,6 +1509,10 @@ def _build_cli_parser() -> argparse.ArgumentParser:
     p_down.add_argument("--project", required=True)
     p_down.add_argument("--plan-id", type=int, required=True)
     p_down.add_argument("--reason", default="launcher_exit")
+    p_down.add_argument("--expected-pod-id", default="")
+
+    p_stat = sub.add_parser("status")
+    p_stat.add_argument("--project", required=True)
 
     return parser
 
@@ -1133,6 +1541,30 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.subcommand == "check-max-price":
             val = validate_max_price_hr(args.max_price_hr)
             print(json.dumps({"max_price_hr": val, "ok": True}, sort_keys=True))
+            return 0
+        if args.subcommand == "check-max-worst-case":
+            val = validate_max_worst_case_usd(args.max_worst_case_usd)
+            print(json.dumps({"max_worst_case_usd": val, "ok": True}, sort_keys=True))
+            return 0
+        if args.subcommand == "compute-run-floor":
+            res = compute_useful_run_floor_seconds(
+                receipts_dir=args.receipts_dir or None,
+                only_judges=args.only_judges or None,
+                max_new_tokens=args.max_new_tokens or None,
+            )
+            print(json.dumps(res, sort_keys=True))
+            return 0
+        if args.subcommand == "compute-plan-budget":
+            res = compute_local_plan_worst_case(
+                wall_seconds=args.wall_seconds,
+                max_price_hr=args.max_price_hr,
+                launch_wait_minutes=args.launch_wait_minutes,
+                image_pull_setup_seconds=args.image_pull_setup_seconds,
+                fetch_allowance_seconds=args.fetch_allowance_seconds,
+                shutdown_reserve_seconds=args.shutdown_reserve_seconds,
+                max_worst_case_usd=args.max_worst_case_usd or None,
+            )
+            print(json.dumps(res, sort_keys=True))
             return 0
         if args.subcommand == "remaining-run-budget":
             res = compute_remaining_run_budget_seconds(
@@ -1248,7 +1680,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                     {"plan_id": args.plan_id, "reason": args.reason},
                     timeout=120.0,
                 )
-                print(json.dumps(res, sort_keys=True))
+                out_doc = dict(res)
+                out_doc["classification"] = classify_shutdown_reply(
+                    res, expected_pod_id=args.expected_pod_id
+                )
+                print(json.dumps(out_doc, sort_keys=True))
+                return 0
+            if args.subcommand == "status":
+                res = client.call_tool("offrig_status", {}, timeout=30.0)
+                print(json.dumps(extract_status_pods(res), sort_keys=True))
                 return 0
     except OffrigHostError as exc:
         sys.stderr.write(f"{exc.code}: {exc.detail}\n")

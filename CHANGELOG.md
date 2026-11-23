@@ -6,6 +6,10 @@ All notable changes to `reasoning-dataset-lab` are documented here. The format i
 
 ## Unreleased
 
+### RunPod host receipt, safety floor, and worst-case fields (`outcome.draft.json`)
+
+- **RunPod host receipt and pre-launch guard updates (`scripts/colab/launch_judges.sh`, `scripts/colab/offrig_host.py`):** added `shutdown_attempted`, `shutdown_failure_class`, `shutdown_status_pods`, `max_hours`, `max_price_hr_usd`, `worst_case_usd`, `worst_case_usd_source`, `local_worst_case_usd`, and `max_worst_case_usd` to `outcome.draft.json` on `--host runpod`; `pod_shutdown` is now `true` only when `offrig_shutdown` confirms termination of the expected pod id, `null` when `offrig_shutdown` reports no pod was rented (`RUNPOD_NO_POD_RENTED`), and `false` otherwise (`RUNPOD_SHUTDOWN_ALREADY_CLOSED`, `RUNPOD_SHUTDOWN_POD_MISMATCH`, `RUNPOD_SHUTDOWN_REPLY_UNREADABLE`, or `OFFRIG_SHUTDOWN_FAILED`) alongside one `offrig_status` pod-list read; deferred `SIGTERM`/`SIGINT` during active RunPod shutdown loops so attempts finish bounded within `STOP_ATTEMPTS`; replaced the fixed 300 s minimum run floor with a component-derived useful-run floor (`compute_useful_run_floor_seconds`); and added `--runpod-max-worst-case-usd` plus pre-launch worst-case reporting.
+
 ### Receipt image provenance and runtime Python fields (`vm_receipt.json`, `outcome.draft.json`)
 
 - **Shared Colab and RunPod receipt field updates (`scripts/colab/vm_judges.py`, `scripts/colab/launch_judges.sh`):** replaced top-level `image` in `vm_receipt.json` and `outcome.draft.json` with `image_requested` (`ref`, `tag`, `digest`) paired with `image_source` (`"offrig profile"` on RunPod, `None` when unset on Colab); updated `collect_runtime_environment` so `runtime_environment.python_version` reports the `venv-vllm` Python interpreter that executes the judge when synced and added `runtime_environment.system_python_version` for the host Python interpreter.

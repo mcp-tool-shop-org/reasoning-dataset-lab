@@ -80,23 +80,37 @@ RUNPOD_IMAGE_REF="${RDLAB_RUNPOD_IMAGE:-vllm/vllm-openai:v0.34.0@sha256:20fdb089
 RUNPOD_IMAGE_TAG=""
 RUNPOD_IMAGE_DIGEST=""
 RUNPOD_MAX_PRICE_HR="${RDLAB_RUNPOD_MAX_PRICE_HR-2.79}"
+RUNPOD_MAX_WORST_CASE_USD="${RDLAB_RUNPOD_MAX_WORST_CASE_USD:-}"
 RUNPOD_LAUNCH_WAIT_MINUTES="${RDLAB_OFFRIG_LAUNCH_WAIT_MINUTES:-20}"
 RUNPOD_IMAGE_PULL_SETUP_SECONDS="${RDLAB_OFFRIG_IMAGE_PULL_SETUP_SECONDS:-900}"
 RUNPOD_FETCH_ALLOWANCE_SECONDS="${RDLAB_OFFRIG_FETCH_ALLOWANCE_SECONDS:-180}"
 RUNPOD_SHUTDOWN_RESERVE_SECONDS="${RDLAB_OFFRIG_SHUTDOWN_RESERVE_SECONDS:-120}"
-RUNPOD_MIN_RUN_SECONDS="${RDLAB_OFFRIG_MIN_RUN_SECONDS:-300}"
+RUNPOD_MIN_RUN_SECONDS="${RDLAB_OFFRIG_MIN_RUN_SECONDS:-}"
+RUNPOD_MIN_RUN_FLOOR_SUMMARY=""
 RUNPOD_STATUS_POLL_RETRIES="${RDLAB_OFFRIG_STATUS_POLL_RETRIES:-3}"
 OFFRIG_HOST_PY="${RDLAB_OFFRIG_HOST_PY:-$SCRIPT_DIR/offrig_host.py}"
 VM_ROOT="/content"
 RUNPOD_PLAN_ID=""
 RUNPOD_POD_ID=""
+RUNPOD_MAX_HOURS=""
+RUNPOD_PLAN_MAX_PRICE_HR=""
+RUNPOD_WORST_CASE_USD=""
+RUNPOD_WORST_CASE_SOURCE=""
+RUNPOD_LOCAL_WORST_CASE_USD=""
 RUNPOD_LAUNCH_STARTED=0
 RUNPOD_LAUNCH_ATTEMPTED=0
 RUNPOD_POD_OPENED=0
 RUNPOD_SHUTDOWN_ATTEMPTED=0
+RUNPOD_SHUTDOWN_IN_PROGRESS=0
+RUNPOD_SHUTDOWN_FINISHED=0
+RUNPOD_SHUTDOWN_DEFERRED_SIGNAL=0
+RUNPOD_SHUTDOWN_CALLS_MADE=0
 RUNPOD_SHUTDOWN_DONE=0
+RUNPOD_POD_SHUTDOWN_STATE="false"
 RUNPOD_SHUTDOWN_FAILURE_CLASS=""
 RUNPOD_SHUTDOWN_REASON=""
+RUNPOD_SHUTDOWN_STATUS_PODS=""
+IN_STOP_ALL=0
 RUNPOD_FETCH_STARTED_EPOCH=""
 RUNPOD_FETCH_EXHAUSTED=0
 RUNPOD_COST_USD=""
@@ -168,7 +182,7 @@ EXEC_RC=0
 
 usage() {
   cat <<'EOF'
-Usage: scripts/colab/launch_judges.sh [--host colab|runpod] [--offrig-profile NAME] [--offrig-project DIR] [--container-disk-gb GB] [--runpod-image REF] [--runpod-max-price-hr USD] [--session-smoke] [--probe] [--stub] [--time-one] [--lock-check] [--lock-check-stub] [--lock-check-phase anchors|p0a|all] [--counted] [--counted-stub] [--card A100|G4|L4|T4] [--shape standard|high-mem] [--until STEP] [--dry] [--resume] [--run-id ID] [--out-dir DIR] [--items-file FILE] [--part-dir DIR] [--synthetic-items] [--anchor-items FILE] [--p0a-items FILE] [--p0a-part-dir DIR] [--counted-items FILE] [--counted-manifest FILE] [--receipts-dir DIR] [--cap UNITS] [--max-rate UNITS_PER_H] [--pass-mode binary|three_way|three_way_contradicted|three_way_two_question|three_way_symmetric|three_way_nli|three_way_schedules|per_judge]
+Usage: scripts/colab/launch_judges.sh [--host colab|runpod] [--offrig-profile NAME] [--offrig-project DIR] [--container-disk-gb GB] [--runpod-image REF] [--runpod-max-price-hr USD] [--runpod-max-worst-case-usd USD] [--session-smoke] [--probe] [--stub] [--time-one] [--lock-check] [--lock-check-stub] [--lock-check-phase anchors|p0a|all] [--counted] [--counted-stub] [--card A100|G4|L4|T4] [--shape standard|high-mem] [--until STEP] [--dry] [--resume] [--run-id ID] [--out-dir DIR] [--items-file FILE] [--part-dir DIR] [--synthetic-items] [--anchor-items FILE] [--p0a-items FILE] [--p0a-part-dir DIR] [--counted-items FILE] [--counted-manifest FILE] [--receipts-dir DIR] [--cap UNITS] [--max-rate UNITS_PER_H] [--pass-mode binary|three_way|three_way_contradicted|three_way_two_question|three_way_symmetric|three_way_nli|three_way_schedules|per_judge]
 
 Options:
   --host HOST          Execution host: colab (default) or runpod (or set RDLAB_HOST)
@@ -177,6 +191,7 @@ Options:
   --container-disk-gb N  For --host runpod: optional container disk size override in GB passed to offrig_plan
   --runpod-image REF   For --host runpod: pinned image reference (tag@digest; default vllm/vllm-openai:v0.34.0@sha256:20fdb089454afbb324efa4110a2c025ff7b27cc1a086e07aa580b18df8ad1ce1)
   --runpod-max-price-hr USD  For --host runpod: hourly USD price cap passed to offrig_plan (default 2.79; or set RDLAB_RUNPOD_MAX_PRICE_HR)
+  --runpod-max-worst-case-usd USD  For --host runpod: optional maximum worst-case total USD from offrig_plan before offrig_launch (or set RDLAB_RUNPOD_MAX_WORST_CASE_USD)
   --session-smoke      Run the CPU session smoke check only (open, verify row, stop, verify gone)
   --probe              Run the read-only CPU VM environment probe (CPU; default wall 300s, cap 0.01)
   --stub               Run the CPU stub pipeline (CPU; CPython 3.15 pyyaml sdist build)
@@ -593,6 +608,20 @@ while [[ $# -gt 0 ]]; do
       RUNPOD_MAX_PRICE_HR="${1#*=}"
       shift
       ;;
+    --runpod-max-worst-case-usd)
+      if [[ $# -lt 2 ]]; then
+        echo "OFFRIG_MAX_WORST_CASE_INVALID: --runpod-max-worst-case-usd requires a value" >&2
+        exit 2
+      fi
+      RUNPOD_MAX_WORST_CASE_USD="$2"
+      RUNPOD_MAX_WORST_CASE_SET=1
+      shift 2
+      ;;
+    --runpod-max-worst-case-usd=*)
+      RUNPOD_MAX_WORST_CASE_USD="${1#*=}"
+      RUNPOD_MAX_WORST_CASE_SET=1
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -623,12 +652,50 @@ case "$HOST" in
       echo "CONTAINER_DISK_INVALID: --container-disk-gb must be a positive integer, got '$CONTAINER_DISK_GB'" >&2
       exit 2
     fi
-    if ! [[ "$RUNPOD_MIN_RUN_SECONDS" =~ ^[0-9]+$ ]]; then
-      echo "OFFRIG_MIN_RUN_INVALID: RDLAB_OFFRIG_MIN_RUN_SECONDS must be a non-negative integer, got '$RUNPOD_MIN_RUN_SECONDS'" >&2
-      exit 2
-    fi
     if ! price_err="$("$PYTHON_BIN" "$OFFRIG_HOST_PY" check-max-price --max-price-hr "$RUNPOD_MAX_PRICE_HR" </dev/null 2>&1)"; then
       printf '%s\n' "$price_err" >&2
+      exit 2
+    fi
+    if [[ -n "$RUNPOD_MAX_WORST_CASE_USD" ]] || [[ "${RUNPOD_MAX_WORST_CASE_SET:-0}" -eq 1 ]]; then
+      if ! mwc_err="$("$PYTHON_BIN" "$OFFRIG_HOST_PY" check-max-worst-case --max-worst-case-usd "$RUNPOD_MAX_WORST_CASE_USD" </dev/null 2>&1)"; then
+        printf '%s\n' "$mwc_err" >&2
+        exit 2
+      fi
+    fi
+    floor_rc=0
+    floor_json="$("$PYTHON_BIN" "$OFFRIG_HOST_PY" compute-run-floor \
+      --receipts-dir "${RECEIPTS_DIR:-}" \
+      --only-judges "${RDLAB_ONLY_JUDGES:-}" \
+      --max-new-tokens "${RDLAB_QWEN36_MAX_NEW_TOKENS:-}" </dev/null 2>&1)" || floor_rc=$?
+    if [[ "$floor_rc" -ne 0 ]]; then
+      printf '%s\n' "$floor_json" >&2
+      exit 2
+    fi
+    RUNPOD_MIN_RUN_FLOOR_SUMMARY="$("$PYTHON_BIN" - "$floor_json" <<'PY'
+import json
+import sys
+
+d = json.loads(sys.argv[1])
+print(
+    f"runpod_min_run_floor min_run_seconds={d['min_run_seconds']} "
+    f"venv_sync_s={d['venv_sync_seconds']} weight_bytes={d['weight_bytes']} "
+    f"download_rate_mbps={d['download_rate_mbps']:.1f} weight_download_s={d['weight_download_seconds']} "
+    f"vllm_start_s={d['vllm_start_seconds']} max_new_tokens={d['max_new_tokens']} "
+    f"tokens_per_sec={d['tokens_per_sec']:.1f} one_item_s={d['one_item_seconds']} "
+    f"weight_source={d['weight_bytes_source']}"
+)
+PY
+)"
+    if [[ -z "$RUNPOD_MIN_RUN_SECONDS" ]]; then
+      RUNPOD_MIN_RUN_SECONDS="$("$PYTHON_BIN" - "$floor_json" <<'PY'
+import json
+import sys
+
+print(int(json.loads(sys.argv[1])["min_run_seconds"]))
+PY
+)"
+    elif ! [[ "$RUNPOD_MIN_RUN_SECONDS" =~ ^[0-9]+$ ]]; then
+      echo "OFFRIG_MIN_RUN_INVALID: RDLAB_OFFRIG_MIN_RUN_SECONDS must be a non-negative integer, got '$RUNPOD_MIN_RUN_SECONDS'" >&2
       exit 2
     fi
     ;;
@@ -2633,8 +2700,38 @@ PY
     stage_window_artifacts || exit $?
   fi
   if [[ "$HOST" == "runpod" ]]; then
+    dry_pbud_args=(
+      compute-plan-budget
+      --wall-seconds "$WALL_SECONDS"
+      --max-price-hr "$RUNPOD_MAX_PRICE_HR"
+      --launch-wait-minutes "$RUNPOD_LAUNCH_WAIT_MINUTES"
+      --image-pull-setup-seconds "$RUNPOD_IMAGE_PULL_SETUP_SECONDS"
+      --fetch-allowance-seconds "$RUNPOD_FETCH_ALLOWANCE_SECONDS"
+      --shutdown-reserve-seconds "$RUNPOD_SHUTDOWN_RESERVE_SECONDS"
+    )
+    if [[ -n "$RUNPOD_MAX_WORST_CASE_USD" ]]; then
+      dry_pbud_args+=(--max-worst-case-usd "$RUNPOD_MAX_WORST_CASE_USD")
+    fi
+    dry_pbud_json="$("$PYTHON_BIN" "$OFFRIG_HOST_PY" "${dry_pbud_args[@]}" </dev/null)"
+    DRY_WORST_CASE_LINE="$("$PYTHON_BIN" - "$dry_pbud_json" <<'PY'
+import json
+import sys
+
+d = json.loads(sys.argv[1])
+line = (
+    f"runpod_worst_case_local max_hours={d['max_hours']:.4f} "
+    f"max_price_hr={d['max_price_hr_usd']:.2f} "
+    f"worst_case_usd={d['worst_case_usd']:.2f} source={d['worst_case_source']}"
+)
+if d.get("max_worst_case_usd") is not None:
+    within = "true" if d.get("within_max_worst_case") else "false"
+    line += f" max_worst_case_usd={float(d['max_worst_case_usd']):.2f} within_max_worst_case={within}"
+print(line)
+PY
+)"
     if [[ "$SESSION_SMOKE_FLAG" -eq 1 ]]; then
       printf 'offrig_plan profile=%s wall_seconds=%s max_price_hr=%s no_fallback=true\n' "$OFFRIG_PROFILE" "$WALL_SECONDS" "$RUNPOD_MAX_PRICE_HR"
+      printf '%s\n' "$DRY_WORST_CASE_LINE"
       printf 'offrig_launch plan_id=<plan-id>\n'
       printf 'offrig_job plan_id=<plan-id>\n'
       printf 'offrig_shutdown plan_id=<plan-id> reason=session_smoke_ok\n'
@@ -2645,6 +2742,7 @@ PY
       DRY_PROBE_ENV_STR="${PROBE_ENV_ARGS[*]}"
       {
         printf 'offrig_plan profile=%s wall_seconds=%s max_price_hr=%s no_fallback=true\n' "$OFFRIG_PROFILE" "$WALL_SECONDS" "$RUNPOD_MAX_PRICE_HR"
+        printf '%s\n' "$DRY_WORST_CASE_LINE"
         printf 'offrig_launch plan_id=<plan-id>\n'
         printf 'offrig_job plan_id=<plan-id>\n'
         printf 'offrig_put %s %s/vm_judges.py\n' "$STAGED_VM_SCRIPT" "$VM_ROOT"
@@ -2683,6 +2781,8 @@ PY
         printf 'offrig_plan profile=%s wall_seconds=%s max_price_hr=%s wait_minutes=%s image_pull_setup_seconds=%s fetch_allowance_seconds=%s shutdown_reserve_seconds=%s no_fallback=true image=%s\n' \
           "$OFFRIG_PROFILE" "$WALL_SECONDS" "$RUNPOD_MAX_PRICE_HR" "$RUNPOD_LAUNCH_WAIT_MINUTES" "$RUNPOD_IMAGE_PULL_SETUP_SECONDS" "$RUNPOD_FETCH_ALLOWANCE_SECONDS" "$RUNPOD_SHUTDOWN_RESERVE_SECONDS" "$RUNPOD_IMAGE_REF"
       fi
+      printf '%s\n' "$DRY_WORST_CASE_LINE"
+      printf '%s effective_min_run_seconds=%s\n' "$RUNPOD_MIN_RUN_FLOOR_SUMMARY" "$RUNPOD_MIN_RUN_SECONDS"
       printf 'offrig_launch plan_id=<plan-id>\n'
       printf 'offrig_job plan_id=<plan-id>\n'
       printf 'offrig_exec action=run plan_id=<plan-id> nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader,nounits\n'
@@ -3335,14 +3435,21 @@ write_outcome_draft() {
   RDLAB_OUTCOME_RUNPOD_IMAGE_TAG="${RUNPOD_IMAGE_TAG:-}" \
   RDLAB_OUTCOME_RUNPOD_IMAGE_DIGEST="${RUNPOD_IMAGE_DIGEST:-}" \
   RDLAB_OUTCOME_RUNPOD_GPU="${RUNPOD_OFFRIG_GPU:-}" \
-  RDLAB_OUTCOME_RUNPOD_MAX_PRICE_HR="${RUNPOD_MAX_PRICE_HR:-}" \
+  RDLAB_OUTCOME_RUNPOD_MAX_HOURS="${RUNPOD_MAX_HOURS:-}" \
+  RDLAB_OUTCOME_RUNPOD_MAX_PRICE_HR="${RUNPOD_PLAN_MAX_PRICE_HR:-${RUNPOD_MAX_PRICE_HR:-}}" \
+  RDLAB_OUTCOME_RUNPOD_WORST_CASE_USD="${RUNPOD_WORST_CASE_USD:-}" \
+  RDLAB_OUTCOME_RUNPOD_WORST_CASE_SOURCE="${RUNPOD_WORST_CASE_SOURCE:-}" \
+  RDLAB_OUTCOME_RUNPOD_LOCAL_WORST_CASE_USD="${RUNPOD_LOCAL_WORST_CASE_USD:-}" \
+  RDLAB_OUTCOME_RUNPOD_MAX_WORST_CASE_USD="${RUNPOD_MAX_WORST_CASE_USD:-}" \
   RDLAB_OUTCOME_RUNPOD_COST_USD="${RUNPOD_COST_USD:-}" \
   RDLAB_OUTCOME_RUNPOD_COST_PER_HR_USD="${RUNPOD_COST_PER_HR_USD:-}" \
   RDLAB_OUTCOME_POD_OPENED="${RUNPOD_POD_OPENED:-0}" \
+  RDLAB_OUTCOME_POD_SHUTDOWN_STATE="${RUNPOD_POD_SHUTDOWN_STATE:-false}" \
   RDLAB_OUTCOME_SHUTDOWN_DONE="${RUNPOD_SHUTDOWN_DONE:-0}" \
   RDLAB_OUTCOME_SHUTDOWN_ATTEMPTED="${RUNPOD_SHUTDOWN_ATTEMPTED:-0}" \
   RDLAB_OUTCOME_SHUTDOWN_FAILURE_CLASS="${RUNPOD_SHUTDOWN_FAILURE_CLASS:-}" \
   RDLAB_OUTCOME_SHUTDOWN_REASON="${RUNPOD_SHUTDOWN_REASON:-}" \
+  RDLAB_OUTCOME_SHUTDOWN_STATUS_PODS="${RUNPOD_SHUTDOWN_STATUS_PODS:-}" \
   "$PYTHON_BIN" - "$OUTCOME_FILE" "$RUN_ID" "${OPENED_CARD_TYPE:-$CARD}" "$CAP_UNITS" "$RATE_UNITS_PER_HOUR" "$WALL_SECONDS" "$EXPLICIT_CAP" "$runtime_s" "$RUN_OUTCOME" "$RUN_WHY" "$CARD" "$SHAPE" "$EXPECTED_SESSION_SHAPE" "$OPENED_SHAPE_OBS" "$stop_path_rec" "$CAP_MARGIN_UNITS" "$CLEANUP_STOP_ATTEMPTED_BY_SECONDS" "$CLEANUP_BOUND_SECONDS" "${REPO_ROOT:-}" <<'PY'
 import datetime
 import json
@@ -3603,6 +3710,18 @@ payload: dict[str, object] = {
 }
 if outcome_host == "runpod":
     _raw_plan_id = os.environ.get("RDLAB_OUTCOME_PLAN_ID", "").strip()
+    _raw_status_pods = os.environ.get("RDLAB_OUTCOME_SHUTDOWN_STATUS_PODS", "").strip()
+    _status_pods_doc = None
+    if _raw_status_pods:
+        try:
+            _status_pods_doc = json.loads(_raw_status_pods)
+        except Exception:
+            _status_pods_doc = {"raw": _raw_status_pods}
+    _pod_sd_state = os.environ.get("RDLAB_OUTCOME_POD_SHUTDOWN_STATE", "false").strip().lower()
+    _pod_sd_val = {"true": True, "false": False, "null": None}.get(
+        _pod_sd_state,
+        os.environ.get("RDLAB_OUTCOME_SHUTDOWN_DONE", "0").strip() == "1",
+    )
     payload.update(
         {
             "venue": "runpod",
@@ -3618,14 +3737,20 @@ if outcome_host == "runpod":
             },
             "image_source": "offrig profile",
             "gpu_reported": os.environ.get("RDLAB_OUTCOME_RUNPOD_GPU", "").strip() or None,
+            "max_hours": _env_float("RDLAB_OUTCOME_RUNPOD_MAX_HOURS"),
             "max_price_hr_usd": _env_float("RDLAB_OUTCOME_RUNPOD_MAX_PRICE_HR"),
+            "worst_case_usd": _env_float("RDLAB_OUTCOME_RUNPOD_WORST_CASE_USD"),
+            "worst_case_usd_source": os.environ.get("RDLAB_OUTCOME_RUNPOD_WORST_CASE_SOURCE", "").strip() or None,
+            "local_worst_case_usd": _env_float("RDLAB_OUTCOME_RUNPOD_LOCAL_WORST_CASE_USD"),
+            "max_worst_case_usd": _env_float("RDLAB_OUTCOME_RUNPOD_MAX_WORST_CASE_USD"),
             "cost_usd": runpod_cost_usd_val,
             "cost_currency": "USD",
             "cost_per_hr_usd": runpod_cost_per_hr_usd,
-            "pod_shutdown": os.environ.get("RDLAB_OUTCOME_SHUTDOWN_DONE", "0").strip() == "1",
+            "pod_shutdown": _pod_sd_val,
             "shutdown_attempted": os.environ.get("RDLAB_OUTCOME_SHUTDOWN_ATTEMPTED", "0").strip() == "1",
             "shutdown_failure_class": os.environ.get("RDLAB_OUTCOME_SHUTDOWN_FAILURE_CLASS", "").strip() or None,
             "shutdown_reason": os.environ.get("RDLAB_OUTCOME_SHUTDOWN_REASON", "").strip() or None,
+            "shutdown_status_pods": _status_pods_doc,
             "rate_scope": None,
             "rate_source": None,
             "cap": None,
@@ -4094,6 +4219,11 @@ on_interrupt_signal() {
   if [[ -n "$TRIP_STARTED_FILE" ]] && [[ ! -f "$TRIP_STARTED_FILE" ]]; then
     date +%s > "$TRIP_STARTED_FILE" 2>/dev/null || true
   fi
+  if [[ "${RUNPOD_SHUTDOWN_IN_PROGRESS:-0}" -eq 1 ]]; then
+    RUNPOD_SHUTDOWN_DEFERRED_SIGNAL=1
+    log_msg "RUNPOD_SHUTDOWN_SIGNAL_DEFERRED plan_id=${RUNPOD_PLAN_ID:-unknown} pod_id=${RUNPOD_POD_ID:-unknown}"
+    return 0
+  fi
   RUN_WHY="interrupted by signal"
   exit 143
 }
@@ -4436,7 +4566,7 @@ runpod_put_file() {
 }
 
 runpod_get_file_best_effort() {
-  local pod_path="$1" local_path="$2" rem_json="" rem_rc=0 rem_s="$RUNPOD_FETCH_ALLOWANCE_SECONDS" now_ep
+  local pod_path="$1" local_path="$2" rem_json="" rem_rc=0 rem_s="" now_ep elapsed_fetch=0 allowance_rem=0 dl_ep="" dl_rem=0
   if [[ "${RUNPOD_FETCH_EXHAUSTED:-0}" -eq 1 ]]; then
     return 0
   fi
@@ -4449,7 +4579,7 @@ runpod_get_file_best_effort() {
       --fetch-allowance-seconds "$RUNPOD_FETCH_ALLOWANCE_SECONDS" \
       --shutdown-reserve-seconds "$RUNPOD_SHUTDOWN_RESERVE_SECONDS" </dev/null 2>/dev/null)" || rem_rc=$?
     if [[ "$rem_rc" -eq 0 ]] && [[ -n "$rem_json" ]]; then
-      rem_s="$("$PYTHON_BIN" - "$rem_json" <<'PY' 2>/dev/null || printf '%s\n' "$RUNPOD_FETCH_ALLOWANCE_SECONDS"
+      rem_s="$("$PYTHON_BIN" - "$rem_json" <<'PY' 2>/dev/null || true
 import json
 import sys
 
@@ -4457,11 +4587,34 @@ print(int(json.loads(sys.argv[1])["remaining_fetch_seconds"]))
 PY
 )"
     fi
+    if [[ "$rem_rc" -ne 0 ]] || ! [[ "$rem_s" =~ ^-?[0-9]+$ ]]; then
+      log_msg "RUNPOD_FETCH_BUDGET_HELPER_FAILED plan_id=$RUNPOD_PLAN_ID pod_id=$RUNPOD_POD_ID rc=$rem_rc"
+      if [[ "$RUNPOD_FETCH_STARTED_EPOCH" =~ ^[0-9]+$ ]] && [[ "$now_ep" =~ ^[0-9]+$ ]]; then
+        elapsed_fetch=$(( now_ep - RUNPOD_FETCH_STARTED_EPOCH ))
+        if (( elapsed_fetch < 0 )); then
+          elapsed_fetch=0
+        fi
+      fi
+      allowance_rem=$(( RUNPOD_FETCH_ALLOWANCE_SECONDS - elapsed_fetch ))
+      rem_s="$allowance_rem"
+      if [[ -n "${RUNPOD_WATCHDOG_DEADLINE:-}" ]] && [[ "$now_ep" =~ ^[0-9]+$ ]]; then
+        dl_ep="$(date -u -d "$RUNPOD_WATCHDOG_DEADLINE" +%s 2>/dev/null || true)"
+        if [[ "$dl_ep" =~ ^[0-9]+$ ]]; then
+          dl_rem=$(( dl_ep - RUNPOD_SHUTDOWN_RESERVE_SECONDS - now_ep ))
+          if (( dl_rem < rem_s )); then
+            rem_s="$dl_rem"
+          fi
+        fi
+      fi
+      log_msg "RUNPOD_FETCH_BUDGET_FALLBACK plan_id=$RUNPOD_PLAN_ID pod_id=$RUNPOD_POD_ID remaining_s=$rem_s"
+    fi
     if [[ "$rem_s" -le 0 ]]; then
       RUNPOD_FETCH_EXHAUSTED=1
       log_msg "RUNPOD_FETCH_BUDGET_EXHAUSTED plan_id=$RUNPOD_PLAN_ID pod_id=$RUNPOD_POD_ID skipped_pod_path=$pod_path remaining_s=$rem_s"
       return 0
     fi
+  else
+    rem_s="$RUNPOD_FETCH_ALLOWANCE_SECONDS"
   fi
   log_msg "RUNPOD_GET_BOUNDED plan_id=$RUNPOD_PLAN_ID pod_id=$RUNPOD_POD_ID pod_path=$pod_path timeout_s=$rem_s"
   "$PYTHON_BIN" "$OFFRIG_HOST_PY" get --project "$OFFRIG_PROJECT" --plan-id "$RUNPOD_PLAN_ID" \
@@ -4512,24 +4665,58 @@ PY
   touch "$FETCH_DONE_MARKER"
 }
 
+runpod_read_status_pods_once() {
+  local st_out="" st_err_f="" st_err="" st_rc=0
+  if [[ -n "$RUNPOD_SHUTDOWN_STATUS_PODS" ]]; then
+    return 0
+  fi
+  st_err_f="$(mktemp "${OUT_DIR:-/tmp}/.runpod_status.XXXXXX" 2>/dev/null || mktemp)"
+  st_out="$("$PYTHON_BIN" "$OFFRIG_HOST_PY" status --project "$OFFRIG_PROJECT" </dev/null 2>"$st_err_f")" || st_rc=$?
+  st_err="$(cat "$st_err_f" 2>/dev/null || true)"
+  rm -f "$st_err_f"
+  if [[ -n "$st_err" ]]; then
+    printf '%s\n' "$st_err" | scrub_stream >> "$CLI_LOG"
+  fi
+  if [[ "$st_rc" -eq 0 ]] && [[ -n "$st_out" ]]; then
+    printf '%s\n' "$st_out" | scrub_stream >> "$CLI_LOG"
+    RUNPOD_SHUTDOWN_STATUS_PODS="$st_out"
+    log_msg "RUNPOD_SHUTDOWN_STATUS_READ ok=true plan_id=${RUNPOD_PLAN_ID:-unknown} pod_id=${RUNPOD_POD_ID:-unknown}"
+  else
+    RUNPOD_SHUTDOWN_STATUS_PODS="$("$PYTHON_BIN" - "$st_rc" "$st_err" <<'PY' 2>/dev/null || printf '{}'
+import json
+import sys
+
+print(json.dumps({"error": sys.argv[2].strip() or f"offrig_status_rc_{sys.argv[1]}"}))
+PY
+)"
+    log_msg "RUNPOD_SHUTDOWN_STATUS_READ ok=false plan_id=${RUNPOD_PLAN_ID:-unknown} pod_id=${RUNPOD_POD_ID:-unknown} rc=$st_rc"
+  fi
+}
+
 runpod_shutdown_pod() {
-  local req_reason="${1:-cleanup_trap}" eff_reason attempt=1 rc=0 out="" err_f err_txt="" spent="" sd_class="" sd_why="" warn_line=""
-  if [[ -z "$RUNPOD_PLAN_ID" ]] || [[ "$RUNPOD_SHUTDOWN_DONE" -eq 1 ]] || [[ "$RUNPOD_SHUTDOWN_ATTEMPTED" -eq 1 ]]; then
+  local req_reason="${1:-cleanup_trap}" eff_reason rc=0 out="" err_f err_txt=""
+  local cls_lines=() sd_status="" sd_class="" sd_spent="" sd_detail="" sd_why="" warn_line=""
+  if [[ -z "$RUNPOD_PLAN_ID" ]] || [[ "$RUNPOD_SHUTDOWN_FINISHED" -eq 1 ]]; then
+    return 0
+  fi
+  if [[ "$RUNPOD_SHUTDOWN_IN_PROGRESS" -eq 1 ]]; then
     return 0
   fi
   RUNPOD_SHUTDOWN_ATTEMPTED=1
+  RUNPOD_SHUTDOWN_IN_PROGRESS=1
   eff_reason="$req_reason"
   if [[ -n "$DEADLINE_MARKER" ]] && [[ -f "$DEADLINE_MARKER" ]]; then
     eff_reason="wall_timeout"
   elif [[ "$RUN_WHY" == *"interrupted by signal"* ]]; then
     eff_reason="sigterm_interrupt"
   fi
-  while (( attempt <= STOP_ATTEMPTS )); do
+  while (( RUNPOD_SHUTDOWN_CALLS_MADE < STOP_ATTEMPTS )); do
+    RUNPOD_SHUTDOWN_CALLS_MADE=$(( RUNPOD_SHUTDOWN_CALLS_MADE + 1 ))
     rc=0
     out=""
     err_f="$(mktemp "${OUT_DIR:-/tmp}/.runpod_down.XXXXXX" 2>/dev/null || mktemp)"
-    log_msg "RUNPOD_SHUTDOWN_ATTEMPT attempt=${attempt}/${STOP_ATTEMPTS} plan_id=$RUNPOD_PLAN_ID pod_id=$RUNPOD_POD_ID reason=$eff_reason"
-    out="$("$PYTHON_BIN" "$OFFRIG_HOST_PY" shutdown --project "$OFFRIG_PROJECT" --plan-id "$RUNPOD_PLAN_ID" --reason "$eff_reason" </dev/null 2>"$err_f")" || rc=$?
+    log_msg "RUNPOD_SHUTDOWN_ATTEMPT attempt=${RUNPOD_SHUTDOWN_CALLS_MADE}/${STOP_ATTEMPTS} plan_id=$RUNPOD_PLAN_ID pod_id=$RUNPOD_POD_ID reason=$eff_reason"
+    out="$("$PYTHON_BIN" "$OFFRIG_HOST_PY" shutdown --project "$OFFRIG_PROJECT" --plan-id "$RUNPOD_PLAN_ID" --reason "$eff_reason" --expected-pod-id "$RUNPOD_POD_ID" </dev/null 2>"$err_f")" || rc=$?
     err_txt="$(cat "$err_f" 2>/dev/null || true)"
     rm -f "$err_f"
     if [[ -n "$err_txt" ]]; then
@@ -4539,50 +4726,126 @@ runpod_shutdown_pod() {
       printf '%s\n' "$out" | scrub_stream >> "$CLI_LOG"
     fi
     if [[ "$rc" -eq 0 ]]; then
-      spent="$("$PYTHON_BIN" - "$out" <<'PY' 2>/dev/null || true
+      mapfile -t cls_lines < <("$PYTHON_BIN" - "$out" "$RUNPOD_POD_ID" <<'PY'
 import json
 import sys
 
+expected = sys.argv[2].strip() or None
 try:
     doc = json.loads(sys.argv[1])
-except Exception:
+except Exception as exc:
+    print("unconfirmed")
+    print("RUNPOD_SHUTDOWN_REPLY_UNREADABLE")
+    print("")
+    print(f"malformed JSON from offrig_host shutdown: {exc}")
     raise SystemExit(0)
-val = doc.get("spent") if isinstance(doc, dict) else None
-if isinstance(val, (int, float)):
-    print(f"{float(val):.6f}")
+
+cls = doc.get("classification") if isinstance(doc, dict) else None
+if not isinstance(cls, dict):
+    print("unconfirmed")
+    print("RUNPOD_SHUTDOWN_REPLY_UNREADABLE")
+    print("")
+    print(f"missing classification object in shutdown reply: {doc!r}")
+    raise SystemExit(0)
+
+spent = cls.get("spent_usd")
+if spent is None and isinstance(doc, dict):
+    raw_sp = doc.get("spent")
+    if isinstance(raw_sp, (int, float)) and not isinstance(raw_sp, bool):
+        spent = float(raw_sp)
+print(str(cls.get("status") or "unconfirmed"))
+print(str(cls.get("failure_class") or ""))
+print("" if spent is None else f"{float(spent):.6f}")
+print(str(cls.get("detail") or ""))
 PY
-)"
-      if [[ -n "$spent" ]]; then
-        RUNPOD_COST_USD="$spent"
+)
+      sd_status="${cls_lines[0]:-unconfirmed}"
+      sd_class="${cls_lines[1]:-RUNPOD_SHUTDOWN_REPLY_UNREADABLE}"
+      sd_spent="${cls_lines[2]:-}"
+      sd_detail="${cls_lines[3]:-}"
+      if [[ -n "$sd_spent" ]]; then
+        RUNPOD_COST_USD="$sd_spent"
       fi
-      RUNPOD_SHUTDOWN_DONE=1
-      RUNPOD_SHUTDOWN_FAILURE_CLASS=""
-      RUNPOD_SHUTDOWN_REASON="$eff_reason"
-      STOPPED=1
-      touch "$OUT_DIR/.rig_stopped" "$STOP_COMPLETED_MARKER"
-      log_msg "RUNPOD_SHUTDOWN_COMPLETED attempt=${attempt}/${STOP_ATTEMPTS} plan_id=$RUNPOD_PLAN_ID pod_id=$RUNPOD_POD_ID reason=$eff_reason spent_usd=${RUNPOD_COST_USD:-unknown}"
-      return 0
+      if [[ "$sd_status" == "confirmed" ]]; then
+        RUNPOD_POD_SHUTDOWN_STATE="true"
+        RUNPOD_SHUTDOWN_DONE=1
+        RUNPOD_SHUTDOWN_FAILURE_CLASS=""
+        RUNPOD_SHUTDOWN_REASON="$eff_reason"
+        STOPPED=1
+        touch "$OUT_DIR/.rig_stopped" "$STOP_COMPLETED_MARKER"
+        log_msg "RUNPOD_SHUTDOWN_COMPLETED attempt=${RUNPOD_SHUTDOWN_CALLS_MADE}/${STOP_ATTEMPTS} plan_id=$RUNPOD_PLAN_ID pod_id=$RUNPOD_POD_ID reason=$eff_reason spent_usd=${RUNPOD_COST_USD:-unknown}"
+        RUNPOD_SHUTDOWN_FINISHED=1
+        RUNPOD_SHUTDOWN_IN_PROGRESS=0
+        if [[ "$RUNPOD_SHUTDOWN_DEFERRED_SIGNAL" -eq 1 ]] && [[ "$IN_STOP_ALL" -ne 1 ]]; then
+          if [[ -z "$RUN_WHY" ]]; then
+            RUN_WHY="interrupted by signal"
+          fi
+          log_msg "RUNPOD_SHUTDOWN_ACTING_ON_DEFERRED_SIGNAL plan_id=$RUNPOD_PLAN_ID pod_id=$RUNPOD_POD_ID exit_code=143"
+          exit 143
+        fi
+        return 0
+      fi
+      if [[ "$sd_status" == "no_pod_rented" ]]; then
+        runpod_read_status_pods_once
+        RUNPOD_POD_SHUTDOWN_STATE="null"
+        RUNPOD_SHUTDOWN_DONE=0
+        RUNPOD_SHUTDOWN_FAILURE_CLASS="${sd_class:-RUNPOD_NO_POD_RENTED}"
+        RUNPOD_SHUTDOWN_REASON="$eff_reason"
+        STOPPED=1
+        touch "$OUT_DIR/.rig_stopped" "$STOP_COMPLETED_MARKER"
+        if [[ -n "$RUNPOD_POD_ID" ]]; then
+          warn_line="RUNPOD_NO_POD_RENTED plan_id=${RUNPOD_PLAN_ID:-unknown} pod_id=${RUNPOD_POD_ID}: offrig_shutdown reported no pod was rented despite recorded pod_id"
+          log_msg "$warn_line"
+          printf '%s\n' "$warn_line" >&2
+        else
+          log_msg "RUNPOD_NO_POD_RENTED plan_id=${RUNPOD_PLAN_ID:-unknown} pod_id=none detail=$sd_detail"
+        fi
+        RUNPOD_SHUTDOWN_FINISHED=1
+        RUNPOD_SHUTDOWN_IN_PROGRESS=0
+        if [[ "$RUNPOD_SHUTDOWN_DEFERRED_SIGNAL" -eq 1 ]] && [[ "$IN_STOP_ALL" -ne 1 ]]; then
+          if [[ -z "$RUN_WHY" ]]; then
+            RUN_WHY="interrupted by signal"
+          fi
+          log_msg "RUNPOD_SHUTDOWN_ACTING_ON_DEFERRED_SIGNAL plan_id=$RUNPOD_PLAN_ID pod_id=$RUNPOD_POD_ID exit_code=143"
+          exit 143
+        fi
+        return 0
+      fi
+      log_msg "RUNPOD_SHUTDOWN_UNCONFIRMED attempt=${RUNPOD_SHUTDOWN_CALLS_MADE}/${STOP_ATTEMPTS} plan_id=$RUNPOD_PLAN_ID pod_id=$RUNPOD_POD_ID class=$sd_class detail=$sd_detail"
+      break
     fi
-    log_msg "RUNPOD_SHUTDOWN_FAILED attempt=${attempt}/${STOP_ATTEMPTS} plan_id=$RUNPOD_PLAN_ID pod_id=$RUNPOD_POD_ID rc=$rc"
-    attempt=$(( attempt + 1 ))
+    log_msg "RUNPOD_SHUTDOWN_FAILED attempt=${RUNPOD_SHUTDOWN_CALLS_MADE}/${STOP_ATTEMPTS} plan_id=$RUNPOD_PLAN_ID pod_id=$RUNPOD_POD_ID rc=$rc"
   done
+  RUNPOD_POD_SHUTDOWN_STATE="false"
   RUNPOD_SHUTDOWN_DONE=0
   RUNPOD_SHUTDOWN_REASON="$eff_reason"
   STOPPED=1
   touch "$OUT_DIR/.rig_stopped" "$STOP_EXHAUSTED_MARKER"
   RUN_OUTCOME="failed"
-  sd_class="$(runpod_extract_error_class "$err_txt" "OFFRIG_SHUTDOWN_FAILED")"
+  if [[ -z "$sd_class" ]]; then
+    sd_class="$(runpod_extract_error_class "$err_txt" "OFFRIG_SHUTDOWN_FAILED")"
+  fi
   RUNPOD_SHUTDOWN_FAILURE_CLASS="$sd_class"
+  runpod_read_status_pods_once
   if [[ -z "$RUN_FAILURE_CLASS" ]]; then
     RUN_FAILURE_CLASS="$sd_class"
   fi
-  sd_why="${err_txt:-offrig shutdown failed after ${STOP_ATTEMPTS} attempts on plan $RUNPOD_PLAN_ID (rc=$rc)}"
+  sd_why="${sd_detail:-${err_txt:-offrig shutdown failed or unconfirmed after ${RUNPOD_SHUTDOWN_CALLS_MADE} attempts on plan $RUNPOD_PLAN_ID (rc=$rc)}}"
   if [[ -z "$RUN_WHY" ]]; then
     RUN_WHY="$sd_why"
   fi
-  warn_line="RUNPOD_SHUTDOWN_FAILED_MAY_BILL plan_id=${RUNPOD_PLAN_ID:-unknown} pod_id=${RUNPOD_POD_ID:-unknown} watchdog_deadline=${RUNPOD_WATCHDOG_DEADLINE:-unknown} shutdown_failure_class=${RUNPOD_SHUTDOWN_FAILURE_CLASS}: offrig shutdown failed after ${STOP_ATTEMPTS} attempts; pod ${RUNPOD_POD_ID:-unknown} may keep billing until watchdog deadline ${RUNPOD_WATCHDOG_DEADLINE:-unknown}"
+  warn_line="RUNPOD_SHUTDOWN_FAILED_MAY_BILL plan_id=${RUNPOD_PLAN_ID:-unknown} pod_id=${RUNPOD_POD_ID:-unknown} watchdog_deadline=${RUNPOD_WATCHDOG_DEADLINE:-unknown} shutdown_failure_class=${RUNPOD_SHUTDOWN_FAILURE_CLASS}: offrig shutdown failed or unconfirmed (${RUNPOD_SHUTDOWN_CALLS_MADE}/${STOP_ATTEMPTS} attempts); pod ${RUNPOD_POD_ID:-unknown} may keep billing until watchdog deadline ${RUNPOD_WATCHDOG_DEADLINE:-unknown}"
   log_msg "$warn_line"
   printf '%s\n' "$warn_line" >&2
+  RUNPOD_SHUTDOWN_FINISHED=1
+  RUNPOD_SHUTDOWN_IN_PROGRESS=0
+  if [[ "$RUNPOD_SHUTDOWN_DEFERRED_SIGNAL" -eq 1 ]] && [[ "$IN_STOP_ALL" -ne 1 ]]; then
+    if [[ -z "$RUN_WHY" ]]; then
+      RUN_WHY="interrupted by signal"
+    fi
+    log_msg "RUNPOD_SHUTDOWN_ACTING_ON_DEFERRED_SIGNAL plan_id=$RUNPOD_PLAN_ID pod_id=$RUNPOD_POD_ID exit_code=143"
+    exit 143
+  fi
   return 1
 }
 
@@ -4652,15 +4915,83 @@ runpod_open_pod() {
     exit 2
   fi
   printf '%s\n' "$plan_out" | scrub_stream >> "$CLI_LOG"
-  RUNPOD_PLAN_ID="$("$PYTHON_BIN" - "$plan_out" <<'PY'
+  mapfile -t plan_fields < <("$PYTHON_BIN" - "$plan_out" <<'PY'
 import json
 import sys
 
 doc = json.loads(sys.argv[1])
 print(doc["plan_id"])
+mh = doc.get("max_hours")
+print("" if mh is None else f"{float(mh):.4f}")
+mp = doc.get("max_price_hr")
+print("" if mp is None else f"{float(mp):.2f}")
+wc = doc.get("worst_case")
+print("" if wc is None else f"{float(wc):.2f}")
+PY
+)
+  RUNPOD_PLAN_ID="${plan_fields[0]:-}"
+  RUNPOD_MAX_HOURS="${plan_fields[1]:-}"
+  RUNPOD_PLAN_MAX_PRICE_HR="${plan_fields[2]:-$RUNPOD_MAX_PRICE_HR}"
+  RUNPOD_WORST_CASE_USD="${plan_fields[3]:-}"
+  if [[ -n "$RUNPOD_WORST_CASE_USD" ]]; then
+    RUNPOD_WORST_CASE_SOURCE="offrig_plan"
+  else
+    RUNPOD_WORST_CASE_SOURCE=""
+  fi
+  local_pbud_json="$("$PYTHON_BIN" "$OFFRIG_HOST_PY" compute-plan-budget \
+    --wall-seconds "$WALL_SECONDS" \
+    --max-price-hr "$RUNPOD_MAX_PRICE_HR" \
+    --launch-wait-minutes "$RUNPOD_LAUNCH_WAIT_MINUTES" \
+    --image-pull-setup-seconds "$RUNPOD_IMAGE_PULL_SETUP_SECONDS" \
+    --fetch-allowance-seconds "$RUNPOD_FETCH_ALLOWANCE_SECONDS" \
+    --shutdown-reserve-seconds "$RUNPOD_SHUTDOWN_RESERVE_SECONDS" </dev/null 2>/dev/null || true)"
+  if [[ -n "$local_pbud_json" ]]; then
+    RUNPOD_LOCAL_WORST_CASE_USD="$("$PYTHON_BIN" - "$local_pbud_json" <<'PY' 2>/dev/null || true
+import json
+import sys
+
+print(f"{float(json.loads(sys.argv[1])['worst_case_usd']):.2f}")
 PY
 )"
-  log_msg "RUNPOD_PLAN_CREATED plan_id=$RUNPOD_PLAN_ID profile=$OFFRIG_PROFILE wall_s=$WALL_SECONDS wait_m=$RUNPOD_LAUNCH_WAIT_MINUTES setup_s=$RUNPOD_IMAGE_PULL_SETUP_SECONDS fetch_s=$RUNPOD_FETCH_ALLOWANCE_SECONDS shutdown_s=$RUNPOD_SHUTDOWN_RESERVE_SECONDS"
+    if [[ -z "$RUNPOD_MAX_HOURS" ]]; then
+      RUNPOD_MAX_HOURS="$("$PYTHON_BIN" - "$local_pbud_json" <<'PY' 2>/dev/null || true
+import json
+import sys
+
+print(f"{float(json.loads(sys.argv[1])['max_hours']):.4f}")
+PY
+)"
+    fi
+  fi
+  worst_line="RUNPOD_PLAN_WORST_CASE plan_id=$RUNPOD_PLAN_ID max_hours=${RUNPOD_MAX_HOURS:-unknown} max_price_hr_usd=${RUNPOD_PLAN_MAX_PRICE_HR:-$RUNPOD_MAX_PRICE_HR} worst_case_usd=${RUNPOD_WORST_CASE_USD:-unknown} worst_case_source=${RUNPOD_WORST_CASE_SOURCE:-missing} local_worst_case_usd=${RUNPOD_LOCAL_WORST_CASE_USD:-unknown}"
+  if [[ -n "$RUNPOD_MAX_WORST_CASE_USD" ]]; then
+    worst_line="${worst_line} max_worst_case_usd=${RUNPOD_MAX_WORST_CASE_USD}"
+  fi
+  log_msg "$worst_line"
+  printf '%s\n' "$worst_line" >&2
+  if [[ -n "$RUNPOD_MAX_WORST_CASE_USD" ]]; then
+    if ! mwc_check_err="$("$PYTHON_BIN" - "${RUNPOD_WORST_CASE_USD:-}" "$RUNPOD_MAX_WORST_CASE_USD" <<'PY' 2>&1
+import sys
+
+raw_wc = sys.argv[1].strip()
+cap = float(sys.argv[2].strip())
+if not raw_wc:
+    print(f"RUNPOD_WORST_CASE_EXCEEDED: offrig_plan omitted worst_case while --runpod-max-worst-case-usd={cap:.2f} is enforced")
+    raise SystemExit(2)
+wc = float(raw_wc)
+if wc > cap:
+    print(f"RUNPOD_WORST_CASE_EXCEEDED: offrig_plan worst_case_usd={wc:.2f} exceeds --runpod-max-worst-case-usd={cap:.2f}")
+    raise SystemExit(2)
+PY
+)"; then
+      RUN_FAILURE_CLASS="RUNPOD_WORST_CASE_EXCEEDED"
+      RUN_WHY="$mwc_check_err"
+      log_msg "RUNPOD_WORST_CASE_REFUSED plan_id=$RUNPOD_PLAN_ID detail=$RUN_WHY"
+      printf '%s\n' "$RUN_WHY" >&2
+      exit 2
+    fi
+  fi
+  log_msg "RUNPOD_PLAN_CREATED plan_id=$RUNPOD_PLAN_ID profile=$OFFRIG_PROFILE wall_s=$WALL_SECONDS wait_m=$RUNPOD_LAUNCH_WAIT_MINUTES setup_s=$RUNPOD_IMAGE_PULL_SETUP_SECONDS fetch_s=$RUNPOD_FETCH_ALLOWANCE_SECONDS shutdown_s=$RUNPOD_SHUTDOWN_RESERVE_SECONDS max_hours=${RUNPOD_MAX_HOURS:-unknown} max_price_hr_usd=${RUNPOD_PLAN_MAX_PRICE_HR:-$RUNPOD_MAX_PRICE_HR} worst_case_usd=${RUNPOD_WORST_CASE_USD:-unknown}"
 
   launch_out_f="$(mktemp "${OUT_DIR:-/tmp}/.runpod_launch.XXXXXX" 2>/dev/null || mktemp)"
   launch_err_f="$(mktemp "${OUT_DIR:-/tmp}/.runpod_launch_err.XXXXXX" 2>/dev/null || mktemp)"
@@ -5083,6 +5414,8 @@ PY
 stop_all() {
   local exit_code=$? ep_from_file="" stop_rc=0 verify_rc=0 wait_w=0 max_wait_w=0
   set +e
+  IN_STOP_ALL=1
+  RUNPOD_SHUTDOWN_IN_PROGRESS=0
   enter_cleanup_trap
   if [[ -n "$COST_CAP_PID" ]]; then
     pkill -P "$COST_CAP_PID" 2>/dev/null || true
@@ -5125,7 +5458,7 @@ stop_all() {
       if [[ "$RUNPOD_POD_OPENED" -eq 1 ]] && [[ "$FETCHED" -ne 1 ]] && [[ "$SESSION_SMOKE_FLAG" -ne 1 ]]; then
         runpod_fetch_results_once || true
       fi
-      if [[ "$RUNPOD_SHUTDOWN_DONE" -ne 1 ]] && [[ "$RUNPOD_SHUTDOWN_ATTEMPTED" -ne 1 ]]; then
+      if [[ "$RUNPOD_SHUTDOWN_FINISHED" -ne 1 ]]; then
         STOP_PATH="trap"
         printf 'trap\n' > "$STOP_PATH_FILE"
         if ! runpod_shutdown_pod "${RUNPOD_SHUTDOWN_REASON:-cleanup_trap}"; then
