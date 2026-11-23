@@ -3087,6 +3087,8 @@ def test_runpod_shutdown_reply_shapes_and_status_pods_recorded(
     assert c_mis["status"] == "unconfirmed" and c_mis["pod_shutdown"] is False and c_mis["failure_class"] == "RUNPOD_SHUTDOWN_POD_MISMATCH"
     c_bad = offrig_host.classify_shutdown_reply("not-a-dict", expected_pod_id="pod-a")
     assert c_bad["status"] == "unconfirmed" and c_bad["pod_shutdown"] is False and c_bad["failure_class"] == "RUNPOD_SHUTDOWN_REPLY_UNREADABLE"
+    c_no_out = offrig_host.classify_shutdown_reply({"plan_id": 1}, expected_pod_id="pod-a")
+    assert c_no_out["status"] == "unconfirmed" and c_no_out["pod_shutdown"] is False and c_no_out["failure_class"] == "RUNPOD_SHUTDOWN_REPLY_UNREADABLE"
     c_weird = offrig_host.classify_shutdown_reply({"plan_id": 1, "outcome": "mystery status"}, expected_pod_id="pod-a")
     assert c_weird["failure_class"] == "RUNPOD_SHUTDOWN_REPLY_UNREADABLE"
     assert offrig_host.extract_status_pods("bad")["offrig_pods"] == []
@@ -3292,6 +3294,21 @@ def test_runpod_useful_run_floor_components_dry_and_enforcement(
     fl_five = json.loads(capsys.readouterr().out)
     assert fl_five["min_run_seconds"] == 821 and fl_five["weight_download_seconds"] == 495
 
+    edge_rdir = tmp_path / "edge_receipts"
+    edge_rdir.mkdir()
+    (edge_rdir / "flowaicom__Flow-Judge-v0.1.sha256.json").write_text(
+        json.dumps({"files": {"model.safetensors": {"bytes": 1000}}}),
+        encoding="utf-8",
+    )
+    (edge_rdir / "qybaihe__mu-judge-nemotron-nano-4b.sha256.json").write_text("{bad json", encoding="utf-8")
+    (edge_rdir / "vllm-sr__d3-mini.sha256.json").write_text("[]", encoding="utf-8")
+    (edge_rdir / "nvidia__NVIDIA-Nemotron-3-Nano-4B-BF16.sha256.json").write_text("{}", encoding="utf-8")
+    fl_edge = offrig_host.compute_useful_run_floor_seconds(
+        receipts_dir=edge_rdir,
+        only_judges="unknown-judge,flow-judge-v0.1,mu-judge,d3-mini,nemotron-3-nano-4b",
+    )
+    assert fl_edge["weight_bytes"] == 1000 and fl_edge["weight_download_seconds"] == 1
+
     with pytest.raises(offrig_host.OffrigHostError, match="OFFRIG_MIN_RUN_INVALID"):
         offrig_host.compute_useful_run_floor_seconds(download_rate_mbps=0)
     with pytest.raises(offrig_host.OffrigHostError, match="OFFRIG_MIN_RUN_INVALID"):
@@ -3352,6 +3369,32 @@ def test_runpod_worst_case_dry_pre_launch_and_max_cap_enforcement(
         offrig_host.validate_max_worst_case_usd("0")
     assert offrig_host.main(["check-max-worst-case", "--max-worst-case-usd", "5.5"]) == 0
     assert json.loads(capsys.readouterr().out)["max_worst_case_usd"] == pytest.approx(5.5)
+    loc_no_cap = offrig_host.compute_local_plan_worst_case(wall_seconds=1500, max_price_hr=2.50)
+    assert loc_no_cap["max_hours"] == pytest.approx(1.0834)
+    assert loc_no_cap["worst_case_usd"] == pytest.approx(2.71)
+    assert loc_no_cap["within_max_worst_case"] is None
+    loc_cap = offrig_host.compute_local_plan_worst_case(
+        wall_seconds=1500,
+        max_price_hr=2.50,
+        max_worst_case_usd="5.00",
+    )
+    assert loc_cap["within_max_worst_case"] is True
+    assert (
+        offrig_host.main(
+            [
+                "compute-plan-budget",
+                "--wall-seconds",
+                "1500",
+                "--max-price-hr",
+                "2.50",
+                "--max-worst-case-usd",
+                "5.00",
+            ]
+        )
+        == 0
+    )
+    cli_budget = json.loads(capsys.readouterr().out)
+    assert cli_budget["worst_case_usd"] == pytest.approx(2.71) and cli_budget["within_max_worst_case"] is True
 
     items_path, part_dir = _make_synthetic_items_with_part(tmp_path / "data")
     receipts_dir = _make_synthetic_receipts(tmp_path / "data")
