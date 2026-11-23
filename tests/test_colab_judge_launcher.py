@@ -26970,7 +26970,7 @@ def test_e2e_fake_real_mode_time_one_synthetic_reaches_judges(tmp_path: Path) ->
     assert win_doc["synthetic_items"] is True
     assert res["receipt"]["synthetic_items"] is True
     assert res["receipt"]["part_identity"]["part_id"] == "synthetic"
-    receipt_json = out_dir / "receipt.json"
+    receipt_json = out_dir / "extracted" / "receipt.json"
     assert receipt_json.is_file()
     assert json.loads(receipt_json.read_text(encoding="utf-8"))["synthetic_items"] is True
     outcome_doc = json.loads((out_dir / "outcome.draft.json").read_text(encoding="utf-8"))
