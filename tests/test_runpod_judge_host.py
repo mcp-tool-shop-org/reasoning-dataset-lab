@@ -812,6 +812,7 @@ def test_runpod_shutdown_on_failed_step_with_retry_and_timeout_and_sigterm(
         env_vars={
             "OFFRIG_CONFIG_DIR": _to_bash_path(env_to["offrig_config_dir"]),
             "RDLAB_WALL_SECONDS": "2",
+            "RDLAB_OFFRIG_MIN_RUN_SECONDS": "1",
             "RDLAB_OFFRIG_MCP_BIN": _to_bash_path(env_to["shim_sh"]),
             "RDLAB_OFFRIG_PROJECT": _to_bash_path(clean_repo_root),
             "RDLAB_FAKE_OFFRIG_CONFIG": _to_bash_path(env_to["cfg_path"]),
@@ -841,6 +842,7 @@ def test_runpod_shutdown_on_failed_step_with_retry_and_timeout_and_sigterm(
     sig_env = {
         "OFFRIG_CONFIG_DIR": _to_bash_path(env_sig["offrig_config_dir"]),
         "RDLAB_WALL_SECONDS": "300",
+        "RDLAB_OFFRIG_MIN_RUN_SECONDS": "1",
         "RDLAB_JUDGE_LOCK_SHA256": vm_judges.EXPECTED_JUDGE_LOCK_SHA256,
         "RDLAB_D3_LOCK_SHA256": vm_judges.EXPECTED_D3_LOCK_SHA256,
         "RDLAB_OFFRIG_MCP_BIN": _to_bash_path(env_sig["shim_sh"]),
@@ -2480,6 +2482,7 @@ def test_runpod_failed_shutdown_reports_honest_receipt_preserving_earlier_error(
         "other_pod_names": [],
         "other_pods": 0,
         "sibling_pods": [],
+        "note": None,
     }
 
     # 2. Failing shutdown alone on an otherwise passing run reports failed + shutdown_failure_class + billing warning
@@ -2652,9 +2655,7 @@ def test_runpod_max_price_hr_cap_enforced_and_recorded(
         assert res_bad.returncode == 2
         assert "OFFRIG_MAX_PRICE_INVALID" in res_bad.stderr
         assert _read_call_log(env_bad["log_path"]) == []
-        out_bad_doc = json.loads((tmp_path / f"out_price_bad_{idx}" / "outcome.draft.json").read_text(encoding="utf-8"))
-        assert out_bad_doc["pod_shutdown"] is None
-        assert out_bad_doc["shutdown_attempted"] is False
+        assert not (tmp_path / f"out_price_bad_{idx}" / "outcome.draft.json").exists()
 
 
 @pytest.mark.parametrize("path_kind", ["window", "probe", "session_smoke"])
