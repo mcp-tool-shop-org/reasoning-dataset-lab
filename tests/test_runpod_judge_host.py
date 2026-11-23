@@ -8,6 +8,7 @@ import json
 import os
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -226,14 +227,14 @@ def _read_call_log(log_path: Path) -> list[dict[str, Any]]:
     return [json.loads(ln) for ln in log_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
 
 
-def _run_bash_launcher(
+def _build_bash_cmd(
     *,
     repo_root: Path,
     args: list[str],
     env_vars: dict[str, str],
-    timeout: int = 60,
     include_lock_envs: bool = True,
-) -> subprocess.CompletedProcess[str]:
+    use_exec: bool = False,
+) -> str:
     launch_sh = repo_root / "scripts" / "colab" / "launch_judges.sh"
     merged_env = dict(env_vars)
     if include_lock_envs:
@@ -242,7 +243,25 @@ def _run_bash_launcher(
     exports = " ".join(f"{k}={shlex.quote(v)}" for k, v in sorted(merged_env.items()))
     cmd_args = " ".join(shlex.quote(a) for a in args)
     clean_path = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-    bash_cmd = f"export PATH={shlex.quote(clean_path)}; {exports} bash {shlex.quote(_to_bash_path(launch_sh))} {cmd_args}"
+    prefix = "exec bash" if use_exec else "bash"
+    return f"export PATH={shlex.quote(clean_path)}; {exports} {prefix} {shlex.quote(_to_bash_path(launch_sh))} {cmd_args}"
+
+
+def _run_bash_launcher(
+    *,
+    repo_root: Path,
+    args: list[str],
+    env_vars: dict[str, str],
+    timeout: int = 60,
+    include_lock_envs: bool = True,
+) -> subprocess.CompletedProcess[str]:
+    bash_cmd = _build_bash_cmd(
+        repo_root=repo_root,
+        args=args,
+        env_vars=env_vars,
+        include_lock_envs=include_lock_envs,
+        use_exec=False,
+    )
     return subprocess.run(
         ["bash", "-c", bash_cmd],
         stdin=subprocess.DEVNULL,
@@ -250,6 +269,29 @@ def _run_bash_launcher(
         text=True,
         timeout=timeout,
         check=False,
+    )
+
+
+def _popen_bash_launcher(
+    *,
+    repo_root: Path,
+    args: list[str],
+    env_vars: dict[str, str],
+    include_lock_envs: bool = True,
+) -> subprocess.Popen[str]:
+    bash_cmd = _build_bash_cmd(
+        repo_root=repo_root,
+        args=args,
+        env_vars=env_vars,
+        include_lock_envs=include_lock_envs,
+        use_exec=True,
+    )
+    return subprocess.Popen(
+        ["bash", "-c", bash_cmd],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
     )
 
 
@@ -2418,6 +2460,16 @@ def test_runpod_failed_shutdown_reports_honest_receipt_preserving_earlier_error(
     assert out_both_doc["shutdown_failure_class"] == "OFFRIG_SHUTDOWN_FAILED"
     assert out_both_doc["failure_class"] == "VM_GATE_REFUSED"
     assert "VM_DISK_INSUFFICIENT" in out_both_doc["why"]
+    calls_both = _read_call_log(env_both["log_path"])
+    assert sum(1 for c in calls_both if c["tool"] == "offrig_shutdown") == 2
+    assert sum(1 for c in calls_both if c["tool"] == "offrig_status") == 1
+    assert out_both_doc["shutdown_status_pods"] == {
+        "offrig_pods": [],
+        "open_plans": [],
+        "other_pod_names": [],
+        "other_pods": 0,
+        "sibling_pods": [],
+    }
 
     # 2. Failing shutdown alone on an otherwise passing run reports failed + shutdown_failure_class + billing warning
     env_alone = _setup_fake_offrig_env(
@@ -2428,6 +2480,7 @@ def test_runpod_failed_shutdown_reports_honest_receipt_preserving_earlier_error(
             "pod_id": "pod-orphan-203",
             "deadline_utc": "2026-11-23 20:00 UTC",
             "fail_shutdown_attempts": 10,
+            "status_pods": [{"id": "pod-orphan-203", "name": "offrig-main-job", "status": "RUNNING"}],
         },
     )
     out_alone = tmp_path / "out_alone"
@@ -2472,6 +2525,12 @@ def test_runpod_failed_shutdown_reports_honest_receipt_preserving_earlier_error(
     assert out_alone_doc["shutdown_attempted"] is True
     assert out_alone_doc["shutdown_failure_class"] == "OFFRIG_SHUTDOWN_FAILED"
     assert out_alone_doc["failure_class"] == "OFFRIG_SHUTDOWN_FAILED"
+    calls_alone = _read_call_log(env_alone["log_path"])
+    assert sum(1 for c in calls_alone if c["tool"] == "offrig_shutdown") == 2
+    assert sum(1 for c in calls_alone if c["tool"] == "offrig_status") == 1
+    assert out_alone_doc["shutdown_status_pods"]["offrig_pods"] == [
+        {"id": "pod-orphan-203", "name": "offrig-main-job", "status": "RUNNING"}
+    ]
 
 
 def test_runpod_max_price_hr_cap_enforced_and_recorded(
@@ -2637,7 +2696,7 @@ def test_runpod_invalid_deadline_and_min_run_seconds_refused_before_run(
     tmp_path: Path,
     clean_repo_root: Path,
 ) -> None:
-    assert offrig_host.DEFAULT_MIN_RUN_SECONDS == 300
+    assert offrig_host.DEFAULT_MIN_RUN_SECONDS == 1225
     with pytest.raises(offrig_host.OffrigHostError, match="OFFRIG_MIN_RUN_INVALID"):
         offrig_host.compute_remaining_run_budget_seconds("2026-11-23 13:05 UTC", 1795437900.0, min_run_seconds=-1)
     rem_ok = offrig_host.compute_remaining_run_budget_seconds("2026-11-23 13:05 UTC", 1795437900.0, min_run_seconds=300)
@@ -2877,5 +2936,592 @@ def test_runpod_forwards_session_name_and_bounds_fetch_calls_with_fake_clock(
     assert "timeout_s=20" in cli_txt
     assert "RUNPOD_FETCH_BUDGET_EXHAUSTED" in cli_txt
     assert json.loads(env_f["state_path"].read_text(encoding="utf-8"))["shutdown"] is True
+
+
+def test_runpod_signal_during_shutdown_succeeds_and_fails_bounded_by_stop_attempts(
+    tmp_path: Path,
+    clean_repo_root: Path,
+) -> None:
+    items_path, part_dir = _make_synthetic_items_with_part(tmp_path / "data")
+    receipts_dir = _make_synthetic_receipts(tmp_path / "data")
+    clock_file = tmp_path / "fake_clock.txt"
+    clock_file.write_text(
+        f"{int(offrig_host.parse_offrig_deadline_utc('2026-11-23 18:00 UTC'))}\n",
+        encoding="utf-8",
+    )
+
+    # 1. SIGTERM arriving during succeeding main-body shutdown finishes shutdown, records pod_shutdown=True, and exits 143
+    marker_ok = tmp_path / "sd_ok_started.txt"
+    env_ok = _setup_fake_offrig_env(
+        tmp_path / "sig_ok",
+        repo_root=clean_repo_root,
+        config_overrides={
+            "plan_id": 301,
+            "pod_id": "pod-sig-ok-301",
+            "shutdown_started_marker": _to_bash_path(marker_ok),
+            "shutdown_delay_seconds": 0.6,
+        },
+    )
+    out_ok = tmp_path / "out_sig_ok"
+    proc_ok = _popen_bash_launcher(
+        repo_root=clean_repo_root,
+        args=[
+            "--host",
+            "runpod",
+            "--time-one",
+            "--run-id",
+            "rp-sig-ok-01",
+            "--items-file",
+            _to_bash_path(items_path),
+            "--part-dir",
+            _to_bash_path(part_dir),
+            "--receipts-dir",
+            _to_bash_path(receipts_dir),
+            "--out-dir",
+            _to_bash_path(out_ok),
+        ],
+        env_vars={
+            "OFFRIG_CONFIG_DIR": _to_bash_path(env_ok["offrig_config_dir"]),
+            "RDLAB_FAKE_CLOCK_FILE": _to_bash_path(clock_file),
+            "RDLAB_OFFRIG_MCP_BIN": _to_bash_path(env_ok["shim_sh"]),
+            "RDLAB_OFFRIG_PROJECT": _to_bash_path(clean_repo_root),
+            "RDLAB_FAKE_OFFRIG_CONFIG": _to_bash_path(env_ok["cfg_path"]),
+            "RDLAB_FAKE_OFFRIG_LOG": _to_bash_path(env_ok["log_path"]),
+            "RDLAB_FAKE_OFFRIG_STATE": _to_bash_path(env_ok["state_path"]),
+            "RDLAB_FAKE_OFFRIG_REPO_ROOT": _to_bash_path(clean_repo_root),
+            "RDLAB_OFFRIG_POLL_INTERVAL": "0.02",
+        },
+    )
+    deadline_wait = time.monotonic() + 25.0
+    while not marker_ok.is_file() and time.monotonic() < deadline_wait:
+        time.sleep(0.02)
+    assert marker_ok.is_file(), "shutdown did not start before timeout"
+    os.kill(proc_ok.pid, signal.SIGTERM)
+    _out_ok_stdout, _out_ok_stderr = proc_ok.communicate(timeout=30)
+    assert proc_ok.returncode == 143
+    out_ok_doc = json.loads((out_ok / "outcome.draft.json").read_text(encoding="utf-8"))
+    assert out_ok_doc["pod_shutdown"] is True
+    assert out_ok_doc["shutdown_attempted"] is True
+    assert out_ok_doc["shutdown_failure_class"] is None
+    calls_ok = _read_call_log(env_ok["log_path"])
+    assert sum(1 for c in calls_ok if c["tool"] == "offrig_shutdown") == 1
+    assert "RUNPOD_SHUTDOWN_SIGNAL_DEFERRED" in (out_ok / "colab-cli.log").read_text(encoding="utf-8")
+
+    # 2. SIGTERM during an all-failing main-body shutdown finishes remaining STOP_ATTEMPTS, preserves billing warning & class, and exits 143
+    marker_fail = tmp_path / "sd_fail_started.txt"
+    env_fail = _setup_fake_offrig_env(
+        tmp_path / "sig_fail",
+        repo_root=clean_repo_root,
+        config_overrides={
+            "plan_id": 302,
+            "pod_id": "pod-sig-fail-302",
+            "deadline_utc": "2026-11-23 20:30 UTC",
+            "shutdown_started_marker": _to_bash_path(marker_fail),
+            "shutdown_delay_seconds": 0.4,
+            "fail_shutdown_attempts": 10,
+        },
+    )
+    out_fail = tmp_path / "out_sig_fail"
+    proc_fail = _popen_bash_launcher(
+        repo_root=clean_repo_root,
+        args=[
+            "--host",
+            "runpod",
+            "--time-one",
+            "--run-id",
+            "rp-sig-fail-01",
+            "--items-file",
+            _to_bash_path(items_path),
+            "--part-dir",
+            _to_bash_path(part_dir),
+            "--receipts-dir",
+            _to_bash_path(receipts_dir),
+            "--out-dir",
+            _to_bash_path(out_fail),
+        ],
+        env_vars={
+            "OFFRIG_CONFIG_DIR": _to_bash_path(env_fail["offrig_config_dir"]),
+            "RDLAB_FAKE_CLOCK_FILE": _to_bash_path(clock_file),
+            "RDLAB_OFFRIG_MCP_BIN": _to_bash_path(env_fail["shim_sh"]),
+            "RDLAB_OFFRIG_PROJECT": _to_bash_path(clean_repo_root),
+            "RDLAB_FAKE_OFFRIG_CONFIG": _to_bash_path(env_fail["cfg_path"]),
+            "RDLAB_FAKE_OFFRIG_LOG": _to_bash_path(env_fail["log_path"]),
+            "RDLAB_FAKE_OFFRIG_STATE": _to_bash_path(env_fail["state_path"]),
+            "RDLAB_FAKE_OFFRIG_REPO_ROOT": _to_bash_path(clean_repo_root),
+            "RDLAB_OFFRIG_POLL_INTERVAL": "0.02",
+        },
+    )
+    deadline_wait_f = time.monotonic() + 25.0
+    while not marker_fail.is_file() and time.monotonic() < deadline_wait_f:
+        time.sleep(0.02)
+    assert marker_fail.is_file(), "failing shutdown did not start before timeout"
+    os.kill(proc_fail.pid, signal.SIGTERM)
+    _out_f_stdout, out_f_stderr = proc_fail.communicate(timeout=30)
+    assert proc_fail.returncode == 143
+    assert "RUNPOD_SHUTDOWN_FAILED_MAY_BILL" in out_f_stderr
+    out_fail_doc = json.loads((out_fail / "outcome.draft.json").read_text(encoding="utf-8"))
+    assert out_fail_doc["pod_shutdown"] is False
+    assert out_fail_doc["shutdown_attempted"] is True
+    assert out_fail_doc["shutdown_failure_class"] == "OFFRIG_SHUTDOWN_FAILED"
+    calls_fail = _read_call_log(env_fail["log_path"])
+    assert sum(1 for c in calls_fail if c["tool"] == "offrig_shutdown") == 2
+    assert sum(1 for c in calls_fail if c["tool"] == "offrig_status") == 1
+
+
+def test_runpod_shutdown_reply_shapes_and_status_pods_recorded(
+    tmp_path: Path,
+    clean_repo_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Unit checks for classify_shutdown_reply & extract_status_pods
+    c_term = offrig_host.classify_shutdown_reply({"plan_id": 1, "outcome": "terminated pod-a", "spent": 0.5}, expected_pod_id="pod-a")
+    assert c_term["status"] == "confirmed" and c_term["pod_shutdown"] is True and c_term["failure_class"] is None
+    c_gone = offrig_host.classify_shutdown_reply({"plan_id": 1, "outcome": "pod-a was already gone", "spent": 0.25}, expected_pod_id="pod-a")
+    assert c_gone["status"] == "confirmed" and c_gone["pod_shutdown"] is True
+    c_none = offrig_host.classify_shutdown_reply({"plan_id": 1, "outcome": "no pod was rented", "spent": 0.0}, expected_pod_id=None)
+    assert c_none["status"] == "no_pod_rented" and c_none["pod_shutdown"] is None and c_none["failure_class"] == "RUNPOD_NO_POD_RENTED"
+    c_alr = offrig_host.classify_shutdown_reply({"plan_id": 1, "already": "closed"})
+    assert c_alr["status"] == "unconfirmed" and c_alr["pod_shutdown"] is False and c_alr["failure_class"] == "RUNPOD_SHUTDOWN_ALREADY_CLOSED"
+    c_mis = offrig_host.classify_shutdown_reply({"plan_id": 1, "outcome": "terminated pod-b"}, expected_pod_id="pod-a")
+    assert c_mis["status"] == "unconfirmed" and c_mis["pod_shutdown"] is False and c_mis["failure_class"] == "RUNPOD_SHUTDOWN_POD_MISMATCH"
+    c_bad = offrig_host.classify_shutdown_reply("not-a-dict", expected_pod_id="pod-a")
+    assert c_bad["status"] == "unconfirmed" and c_bad["pod_shutdown"] is False and c_bad["failure_class"] == "RUNPOD_SHUTDOWN_REPLY_UNREADABLE"
+    c_weird = offrig_host.classify_shutdown_reply({"plan_id": 1, "outcome": "mystery status"}, expected_pod_id="pod-a")
+    assert c_weird["failure_class"] == "RUNPOD_SHUTDOWN_REPLY_UNREADABLE"
+    assert offrig_host.extract_status_pods("bad")["offrig_pods"] == []
+    st_extracted = offrig_host.extract_status_pods(
+        {
+            "runpod": {
+                "offrig_pods": [{"id": "p1", "name": "n1", "status": "RUNNING", "gpu": "RTX PRO 6000", "cost_per_hr": 1.89}],
+                "sibling_pods": [{"id": "s1"}],
+                "other_pods": 1,
+                "other_pod_names": ["ext-1"],
+            },
+            "open_plans": [{"plan_id": 5, "profile": "rdlab-judge", "pod_id": "p1", "deadline": "2026-11-23 18:00 UTC"}],
+        }
+    )
+    assert st_extracted["offrig_pods"][0]["id"] == "p1"
+    assert st_extracted["open_plans"][0]["plan_id"] == 5
+    env_st_cli = _setup_fake_offrig_env(
+        tmp_path / "status_cli",
+        repo_root=clean_repo_root,
+        config_overrides={"status_pods": [{"id": "p-cli", "name": "offrig-job", "status": "EXITED"}]},
+    )
+    monkeypatch.setenv("RDLAB_OFFRIG_MCP_BIN", str(env_st_cli["shim_sh"]))
+    monkeypatch.setenv("RDLAB_FAKE_OFFRIG_CONFIG", str(env_st_cli["cfg_path"]))
+    monkeypatch.setenv("RDLAB_FAKE_OFFRIG_LOG", str(env_st_cli["log_path"]))
+    monkeypatch.setenv("RDLAB_FAKE_OFFRIG_STATE", str(env_st_cli["state_path"]))
+    monkeypatch.setenv("RDLAB_FAKE_OFFRIG_REPO_ROOT", str(clean_repo_root))
+    assert offrig_host.main(["status", "--project", str(clean_repo_root)]) == 0
+    assert json.loads(capsys.readouterr().out)["offrig_pods"][0]["id"] == "p-cli"
+    assert offrig_host.main(["shutdown", "--project", str(clean_repo_root), "--plan-id", "101", "--expected-pod-id", "pod-other"]) == 0
+    assert json.loads(capsys.readouterr().out)["classification"]["failure_class"] == "RUNPOD_SHUTDOWN_POD_MISMATCH"
+
+    items_path, part_dir = _make_synthetic_items_with_part(tmp_path / "data")
+    receipts_dir = _make_synthetic_receipts(tmp_path / "data")
+    clock_file = tmp_path / "fake_clock.txt"
+    clock_file.write_text(
+        f"{int(offrig_host.parse_offrig_deadline_utc('2026-11-23 18:00 UTC'))}\n",
+        encoding="utf-8",
+    )
+
+    # 1. "<pod_id> was already gone" -> confirmed pod_shutdown=True, no offrig_status read needed
+    env_gone = _setup_fake_offrig_env(
+        tmp_path / "gone",
+        repo_root=clean_repo_root,
+        config_overrides={"shutdown_reply_override": {"plan_id": 101, "outcome": "pod-fake-6000-01 was already gone", "spent": 0.31}},
+    )
+    out_gone = tmp_path / "out_gone"
+    res_gone = _run_bash_launcher(
+        repo_root=clean_repo_root,
+        args=["--host", "runpod", "--time-one", "--run-id", "rp-gone-01", "--items-file", _to_bash_path(items_path), "--part-dir", _to_bash_path(part_dir), "--receipts-dir", _to_bash_path(receipts_dir), "--out-dir", _to_bash_path(out_gone)],
+        env_vars={
+            "OFFRIG_CONFIG_DIR": _to_bash_path(env_gone["offrig_config_dir"]),
+            "RDLAB_FAKE_CLOCK_FILE": _to_bash_path(clock_file),
+            "RDLAB_OFFRIG_MCP_BIN": _to_bash_path(env_gone["shim_sh"]),
+            "RDLAB_OFFRIG_PROJECT": _to_bash_path(clean_repo_root),
+            "RDLAB_FAKE_OFFRIG_CONFIG": _to_bash_path(env_gone["cfg_path"]),
+            "RDLAB_FAKE_OFFRIG_LOG": _to_bash_path(env_gone["log_path"]),
+            "RDLAB_FAKE_OFFRIG_STATE": _to_bash_path(env_gone["state_path"]),
+            "RDLAB_FAKE_OFFRIG_REPO_ROOT": _to_bash_path(clean_repo_root),
+            "RDLAB_OFFRIG_POLL_INTERVAL": "0.02",
+        },
+    )
+    assert res_gone.returncode == 0, res_gone.stderr
+    gone_doc = json.loads((out_gone / "outcome.draft.json").read_text(encoding="utf-8"))
+    assert gone_doc["pod_shutdown"] is True
+    assert gone_doc["shutdown_failure_class"] is None
+    assert gone_doc["shutdown_status_pods"] is None
+
+    # 2a. "no pod was rented" when no pod_id recorded (offrig_job failed before pod_id) -> pod_shutdown=None, RUNPOD_NO_POD_RENTED, no billing warning, 1 offrig_status read
+    env_no_pod = _setup_fake_offrig_env(
+        tmp_path / "no_pod",
+        repo_root=clean_repo_root,
+        config_overrides={
+            "plan_id": 401,
+            "job_state": "failed",
+            "job_error": "no capacity",
+            "shutdown_reply_override": {"plan_id": 401, "outcome": "no pod was rented", "spent": 0.0},
+            "status_open_plans": [{"plan_id": 401, "profile": "rdlab-judge", "pod_id": None}],
+        },
+    )
+    out_no_pod = tmp_path / "out_no_pod"
+    res_no_pod = _run_bash_launcher(
+        repo_root=clean_repo_root,
+        args=["--host", "runpod", "--time-one", "--run-id", "rp-nopod-01", "--items-file", _to_bash_path(items_path), "--part-dir", _to_bash_path(part_dir), "--receipts-dir", _to_bash_path(receipts_dir), "--out-dir", _to_bash_path(out_no_pod)],
+        env_vars={
+            "OFFRIG_CONFIG_DIR": _to_bash_path(env_no_pod["offrig_config_dir"]),
+            "RDLAB_FAKE_CLOCK_FILE": _to_bash_path(clock_file),
+            "RDLAB_OFFRIG_MCP_BIN": _to_bash_path(env_no_pod["shim_sh"]),
+            "RDLAB_OFFRIG_PROJECT": _to_bash_path(clean_repo_root),
+            "RDLAB_FAKE_OFFRIG_CONFIG": _to_bash_path(env_no_pod["cfg_path"]),
+            "RDLAB_FAKE_OFFRIG_LOG": _to_bash_path(env_no_pod["log_path"]),
+            "RDLAB_FAKE_OFFRIG_STATE": _to_bash_path(env_no_pod["state_path"]),
+            "RDLAB_FAKE_OFFRIG_REPO_ROOT": _to_bash_path(clean_repo_root),
+            "RDLAB_OFFRIG_POLL_INTERVAL": "0.02",
+        },
+    )
+    assert res_no_pod.returncode == 2
+    assert "RUNPOD_SHUTDOWN_FAILED_MAY_BILL" not in res_no_pod.stderr
+    assert "RUNPOD_NO_POD_RENTED plan_id=401" not in res_no_pod.stderr
+    no_pod_doc = json.loads((out_no_pod / "outcome.draft.json").read_text(encoding="utf-8"))
+    assert no_pod_doc["pod_shutdown"] is None
+    assert no_pod_doc["shutdown_failure_class"] == "RUNPOD_NO_POD_RENTED"
+    assert no_pod_doc["failure_class"] == "OFFRIG_JOB_FAILED"
+    assert no_pod_doc["shutdown_status_pods"]["open_plans"] == [{"plan_id": 401, "profile": "rdlab-judge", "pod_id": None}]
+    assert sum(1 for c in _read_call_log(env_no_pod["log_path"]) if c["tool"] == "offrig_status") == 1
+
+    # 2b. "no pod was rented" even though launcher recorded pod_id -> pod_shutdown=None, RUNPOD_NO_POD_RENTED, no billing warning, both ids logged on stderr, 1 status read
+    env_no_pod_id = _setup_fake_offrig_env(
+        tmp_path / "no_pod_id",
+        repo_root=clean_repo_root,
+        config_overrides={
+            "plan_id": 402,
+            "pod_id": "pod-recorded-402",
+            "shutdown_reply_override": {"plan_id": 402, "outcome": "no pod was rented", "spent": 0.0},
+            "status_pods": [{"id": "pod-recorded-402", "name": "offrig-job", "status": "EXITED"}],
+        },
+    )
+    out_no_pod_id = tmp_path / "out_no_pod_id"
+    res_no_pod_id = _run_bash_launcher(
+        repo_root=clean_repo_root,
+        args=["--host", "runpod", "--time-one", "--run-id", "rp-nopod-id-01", "--items-file", _to_bash_path(items_path), "--part-dir", _to_bash_path(part_dir), "--receipts-dir", _to_bash_path(receipts_dir), "--out-dir", _to_bash_path(out_no_pod_id)],
+        env_vars={
+            "OFFRIG_CONFIG_DIR": _to_bash_path(env_no_pod_id["offrig_config_dir"]),
+            "RDLAB_FAKE_CLOCK_FILE": _to_bash_path(clock_file),
+            "RDLAB_OFFRIG_MCP_BIN": _to_bash_path(env_no_pod_id["shim_sh"]),
+            "RDLAB_OFFRIG_PROJECT": _to_bash_path(clean_repo_root),
+            "RDLAB_FAKE_OFFRIG_CONFIG": _to_bash_path(env_no_pod_id["cfg_path"]),
+            "RDLAB_FAKE_OFFRIG_LOG": _to_bash_path(env_no_pod_id["log_path"]),
+            "RDLAB_FAKE_OFFRIG_STATE": _to_bash_path(env_no_pod_id["state_path"]),
+            "RDLAB_FAKE_OFFRIG_REPO_ROOT": _to_bash_path(clean_repo_root),
+            "RDLAB_OFFRIG_POLL_INTERVAL": "0.02",
+        },
+    )
+    assert "RUNPOD_SHUTDOWN_FAILED_MAY_BILL" not in res_no_pod_id.stderr
+    both_id_lines = [ln for ln in res_no_pod_id.stderr.splitlines() if "RUNPOD_NO_POD_RENTED" in ln]
+    assert len(both_id_lines) == 1
+    assert "plan_id=402" in both_id_lines[0] and "pod_id=pod-recorded-402" in both_id_lines[0]
+    no_pod_id_doc = json.loads((out_no_pod_id / "outcome.draft.json").read_text(encoding="utf-8"))
+    assert no_pod_id_doc["pod_shutdown"] is None
+    assert no_pod_id_doc["shutdown_failure_class"] == "RUNPOD_NO_POD_RENTED"
+    assert no_pod_id_doc["shutdown_status_pods"]["offrig_pods"] == [{"id": "pod-recorded-402", "name": "offrig-job", "status": "EXITED"}]
+
+    # 3. Unconfirmed shapes ("already", different pod_id, unreadable) -> pod_shutdown=False, named failure class, warning, 1 offrig_status read
+    for label, reply_override, exp_class in (
+        ("already_closed", {"plan_id": 403, "already": "closed"}, "RUNPOD_SHUTDOWN_ALREADY_CLOSED"),
+        ("pod_mismatch", {"plan_id": 404, "outcome": "terminated wrong-pod-999", "spent": 0.1}, "RUNPOD_SHUTDOWN_POD_MISMATCH"),
+        ("unreadable_reply", {"plan_id": 405, "unexpected": "blob"}, "RUNPOD_SHUTDOWN_REPLY_UNREADABLE"),
+    ):
+        env_u = _setup_fake_offrig_env(
+            tmp_path / label,
+            repo_root=clean_repo_root,
+            config_overrides={
+                "plan_id": 405,
+                "pod_id": f"pod-{label}",
+                "shutdown_reply_override": reply_override,
+                "status_pods": [{"id": f"pod-{label}", "name": "offrig-job", "status": "RUNNING"}],
+            },
+        )
+        out_u = tmp_path / f"out_{label}"
+        res_u = _run_bash_launcher(
+            repo_root=clean_repo_root,
+            args=["--host", "runpod", "--time-one", "--run-id", f"rp-{label}", "--items-file", _to_bash_path(items_path), "--part-dir", _to_bash_path(part_dir), "--receipts-dir", _to_bash_path(receipts_dir), "--out-dir", _to_bash_path(out_u)],
+            env_vars={
+                "OFFRIG_CONFIG_DIR": _to_bash_path(env_u["offrig_config_dir"]),
+                "RDLAB_FAKE_CLOCK_FILE": _to_bash_path(clock_file),
+                "RDLAB_OFFRIG_MCP_BIN": _to_bash_path(env_u["shim_sh"]),
+                "RDLAB_OFFRIG_PROJECT": _to_bash_path(clean_repo_root),
+                "RDLAB_FAKE_OFFRIG_CONFIG": _to_bash_path(env_u["cfg_path"]),
+                "RDLAB_FAKE_OFFRIG_LOG": _to_bash_path(env_u["log_path"]),
+                "RDLAB_FAKE_OFFRIG_STATE": _to_bash_path(env_u["state_path"]),
+                "RDLAB_FAKE_OFFRIG_REPO_ROOT": _to_bash_path(clean_repo_root),
+                "RDLAB_OFFRIG_POLL_INTERVAL": "0.02",
+            },
+        )
+        assert res_u.returncode != 0
+        assert "RUNPOD_SHUTDOWN_FAILED_MAY_BILL" in res_u.stderr
+        u_doc = json.loads((out_u / "outcome.draft.json").read_text(encoding="utf-8"))
+        assert u_doc["pod_shutdown"] is False
+        assert u_doc["shutdown_failure_class"] == exp_class
+        assert u_doc["shutdown_status_pods"]["offrig_pods"] == [{"id": f"pod-{label}", "name": "offrig-job", "status": "RUNNING"}]
+        assert sum(1 for c in _read_call_log(env_u["log_path"]) if c["tool"] == "offrig_status") == 1
+
+
+def test_runpod_useful_run_floor_components_dry_and_enforcement(
+    tmp_path: Path,
+    clean_repo_root: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    real_receipts = REPO_ROOT / "scripts" / "colab" / "receipts"
+    assert offrig_host.DEFAULT_MIN_RUN_SECONDS == 1225
+    fl_default = offrig_host.compute_useful_run_floor_seconds()
+    assert fl_default["venv_sync_seconds"] == 120
+    assert fl_default["weight_bytes"] == 71_926_859_142
+    assert fl_default["weight_download_seconds"] == 720
+    assert fl_default["vllm_start_seconds"] == 180
+    assert fl_default["one_item_seconds"] == 205
+    assert fl_default["min_run_seconds"] == 1225
+
+    fl_qwen = offrig_host.compute_useful_run_floor_seconds(receipts_dir=real_receipts, only_judges="qwen3.6-35b-a3b")
+    assert fl_qwen["min_run_seconds"] == 1225
+    fl_qwen_512 = offrig_host.compute_useful_run_floor_seconds(receipts_dir=real_receipts, only_judges="qwen3.6-35b-a3b", max_new_tokens=512)
+    assert fl_qwen_512["min_run_seconds"] == 1046
+    assert offrig_host.main(["compute-run-floor", "--receipts-dir", str(real_receipts)]) == 0
+    fl_five = json.loads(capsys.readouterr().out)
+    assert fl_five["min_run_seconds"] == 821 and fl_five["weight_download_seconds"] == 495
+
+    with pytest.raises(offrig_host.OffrigHostError, match="OFFRIG_MIN_RUN_INVALID"):
+        offrig_host.compute_useful_run_floor_seconds(download_rate_mbps=0)
+    with pytest.raises(offrig_host.OffrigHostError, match="OFFRIG_MIN_RUN_INVALID"):
+        offrig_host.compute_useful_run_floor_seconds(venv_sync_seconds=-1)
+    with pytest.raises(offrig_host.OffrigHostError, match="OFFRIG_MIN_RUN_INVALID"):
+        offrig_host.compute_useful_run_floor_seconds(max_new_tokens="bad")
+    with pytest.raises(offrig_host.OffrigHostError, match="OFFRIG_MIN_RUN_INVALID"):
+        offrig_host.compute_useful_run_floor_seconds(max_new_tokens=0)
+
+    items_path, part_dir = _make_synthetic_items_with_part(tmp_path / "data")
+    res_dry = _run_bash_launcher(
+        repo_root=clean_repo_root,
+        args=["--host", "runpod", "--dry", "--time-one", "--run-id", "rp-floor-dry", "--items-file", _to_bash_path(items_path), "--part-dir", _to_bash_path(part_dir), "--receipts-dir", _to_bash_path(real_receipts), "--out-dir", _to_bash_path(tmp_path / "out_floor_dry")],
+        env_vars={"RDLAB_OFFRIG_PROFILE": "rdlab-judge"},
+    )
+    assert res_dry.returncode == 0, res_dry.stderr
+    assert "runpod_min_run_floor min_run_seconds=821 venv_sync_s=120" in res_dry.stdout
+    assert "weight_download_s=495" in res_dry.stdout
+
+    # Live window with 600s left (< 821s floor derived from real receipts) is refused before `run`
+    t0 = 1795435200
+    clock_f = tmp_path / "clock_floor.txt"
+    clock_f.write_text(f"{t0}\n", encoding="utf-8")
+    env_fl = _setup_fake_offrig_env(
+        tmp_path / "floor_refuse",
+        repo_root=clean_repo_root,
+        config_overrides={"advance_clock_on_step": {"gate": 3000}},
+    )
+    out_fl = tmp_path / "out_floor_refuse"
+    res_fl = _run_bash_launcher(
+        repo_root=clean_repo_root,
+        args=["--host", "runpod", "--time-one", "--run-id", "rp-floor-refuse", "--items-file", _to_bash_path(items_path), "--part-dir", _to_bash_path(part_dir), "--receipts-dir", _to_bash_path(real_receipts), "--out-dir", _to_bash_path(out_fl)],
+        env_vars={
+            "OFFRIG_CONFIG_DIR": _to_bash_path(env_fl["offrig_config_dir"]),
+            "RDLAB_FAKE_CLOCK_FILE": _to_bash_path(clock_f),
+            "RDLAB_OFFRIG_MCP_BIN": _to_bash_path(env_fl["shim_sh"]),
+            "RDLAB_OFFRIG_PROJECT": _to_bash_path(clean_repo_root),
+            "RDLAB_FAKE_OFFRIG_CONFIG": _to_bash_path(env_fl["cfg_path"]),
+            "RDLAB_FAKE_OFFRIG_LOG": _to_bash_path(env_fl["log_path"]),
+            "RDLAB_FAKE_OFFRIG_STATE": _to_bash_path(env_fl["state_path"]),
+            "RDLAB_FAKE_OFFRIG_REPO_ROOT": _to_bash_path(clean_repo_root),
+            "RDLAB_OFFRIG_POLL_INTERVAL": "0.02",
+        },
+    )
+    assert res_fl.returncode == 2
+    assert "RUNPOD_MIN_RUN_BUDGET_REFUSED" in res_fl.stderr
+    assert not (env_fl["vm_root_dir"] / "run_window_env.json").exists()
+    assert json.loads((out_fl / "outcome.draft.json").read_text(encoding="utf-8"))["pod_shutdown"] is True
+
+
+def test_runpod_worst_case_dry_pre_launch_and_max_cap_enforcement(
+    tmp_path: Path,
+    clean_repo_root: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert offrig_host.validate_max_worst_case_usd("12.50") == pytest.approx(12.50)
+    with pytest.raises(offrig_host.OffrigHostError, match="OFFRIG_MAX_WORST_CASE_INVALID"):
+        offrig_host.validate_max_worst_case_usd("0")
+    assert offrig_host.main(["check-max-worst-case", "--max-worst-case-usd", "5.5"]) == 0
+    assert json.loads(capsys.readouterr().out)["max_worst_case_usd"] == pytest.approx(5.5)
+
+    items_path, part_dir = _make_synthetic_items_with_part(tmp_path / "data")
+    receipts_dir = _make_synthetic_receipts(tmp_path / "data")
+
+    # 1. Invalid --runpod-max-worst-case-usd refuses pre-plan
+    env_bad = _setup_fake_offrig_env(tmp_path / "wc_bad", repo_root=clean_repo_root)
+    res_bad = _run_bash_launcher(
+        repo_root=clean_repo_root,
+        args=["--host", "runpod", "--runpod-max-worst-case-usd", "0", "--time-one", "--run-id", "rp-wc-bad", "--items-file", _to_bash_path(items_path), "--part-dir", _to_bash_path(part_dir), "--receipts-dir", _to_bash_path(receipts_dir), "--out-dir", _to_bash_path(tmp_path / "out_wc_bad")],
+        env_vars={"OFFRIG_CONFIG_DIR": _to_bash_path(env_bad["offrig_config_dir"]), "RDLAB_FAKE_OFFRIG_LOG": _to_bash_path(env_bad["log_path"])},
+    )
+    assert res_bad.returncode == 2
+    assert "OFFRIG_MAX_WORST_CASE_INVALID" in res_bad.stderr
+    assert _read_call_log(env_bad["log_path"]) == []
+
+    # 2. `--dry` prints local max_hours, max_price_hr, worst_case_usd, and within_max_worst_case (zero offrig calls)
+    res_dry_ok = _run_bash_launcher(
+        repo_root=clean_repo_root,
+        args=["--host", "runpod", "--dry", "--runpod-max-price-hr", "2.50", "--runpod-max-worst-case-usd", "5.00", "--time-one", "--run-id", "rp-wc-dry-ok", "--items-file", _to_bash_path(items_path), "--part-dir", _to_bash_path(part_dir), "--receipts-dir", _to_bash_path(receipts_dir), "--out-dir", _to_bash_path(tmp_path / "out_wc_dry_ok")],
+        env_vars={},
+    )
+    assert res_dry_ok.returncode == 0, res_dry_ok.stderr
+    assert "runpod_worst_case_local max_hours=1.0834 max_price_hr=2.50 worst_case_usd=2.71 source=local_estimate max_worst_case_usd=5.00 within_max_worst_case=true" in res_dry_ok.stdout
+
+    res_dry_no = _run_bash_launcher(
+        repo_root=clean_repo_root,
+        args=["--host", "runpod", "--dry", "--runpod-max-price-hr", "2.50", "--runpod-max-worst-case-usd", "2.00", "--time-one", "--run-id", "rp-wc-dry-no", "--items-file", _to_bash_path(items_path), "--part-dir", _to_bash_path(part_dir), "--receipts-dir", _to_bash_path(receipts_dir), "--out-dir", _to_bash_path(tmp_path / "out_wc_dry_no")],
+        env_vars={},
+    )
+    assert res_dry_no.returncode == 0, res_dry_no.stderr
+    assert "within_max_worst_case=false" in res_dry_no.stdout
+
+    # 3. Live run logs RUNPOD_PLAN_WORST_CASE before offrig_launch and records offrig + local worst case in outcome
+    clock_file = tmp_path / "clock_wc.txt"
+    clock_file.write_text(
+        f"{int(offrig_host.parse_offrig_deadline_utc('2026-11-23 18:00 UTC'))}\n",
+        encoding="utf-8",
+    )
+    env_ok = _setup_fake_offrig_env(
+        tmp_path / "wc_live_ok",
+        repo_root=clean_repo_root,
+        config_overrides={"plan_worst_case": 2.85},
+    )
+    out_ok = tmp_path / "out_wc_live_ok"
+    res_ok = _run_bash_launcher(
+        repo_root=clean_repo_root,
+        args=["--host", "runpod", "--runpod-max-price-hr", "2.40", "--runpod-max-worst-case-usd", "5.00", "--time-one", "--run-id", "rp-wc-ok", "--items-file", _to_bash_path(items_path), "--part-dir", _to_bash_path(part_dir), "--receipts-dir", _to_bash_path(receipts_dir), "--out-dir", _to_bash_path(out_ok)],
+        env_vars={
+            "OFFRIG_CONFIG_DIR": _to_bash_path(env_ok["offrig_config_dir"]),
+            "RDLAB_FAKE_CLOCK_FILE": _to_bash_path(clock_file),
+            "RDLAB_OFFRIG_MCP_BIN": _to_bash_path(env_ok["shim_sh"]),
+            "RDLAB_OFFRIG_PROJECT": _to_bash_path(clean_repo_root),
+            "RDLAB_FAKE_OFFRIG_CONFIG": _to_bash_path(env_ok["cfg_path"]),
+            "RDLAB_FAKE_OFFRIG_LOG": _to_bash_path(env_ok["log_path"]),
+            "RDLAB_FAKE_OFFRIG_STATE": _to_bash_path(env_ok["state_path"]),
+            "RDLAB_FAKE_OFFRIG_REPO_ROOT": _to_bash_path(clean_repo_root),
+            "RDLAB_OFFRIG_POLL_INTERVAL": "0.02",
+        },
+    )
+    assert res_ok.returncode == 0, res_ok.stderr
+    assert "RUNPOD_PLAN_WORST_CASE" in res_ok.stderr and "worst_case_usd=2.85" in res_ok.stderr
+    wc_doc = json.loads((out_ok / "outcome.draft.json").read_text(encoding="utf-8"))
+    assert wc_doc["max_hours"] == pytest.approx(1.0834)
+    assert wc_doc["max_price_hr_usd"] == pytest.approx(2.40)
+    assert wc_doc["worst_case_usd"] == pytest.approx(2.85)
+    assert wc_doc["worst_case_usd_source"] == "offrig_plan"
+    assert wc_doc["local_worst_case_usd"] == pytest.approx(2.60)
+    assert wc_doc["max_worst_case_usd"] == pytest.approx(5.00)
+
+    # 4. Live run where offrig's plan worst_case (9.50) exceeds --runpod-max-worst-case-usd (5.00) refuses BEFORE offrig_launch
+    env_over = _setup_fake_offrig_env(
+        tmp_path / "wc_over",
+        repo_root=clean_repo_root,
+        config_overrides={"plan_worst_case": 9.50},
+    )
+    out_over = tmp_path / "out_wc_over"
+    res_over = _run_bash_launcher(
+        repo_root=clean_repo_root,
+        args=["--host", "runpod", "--runpod-max-price-hr", "2.40", "--runpod-max-worst-case-usd", "5.00", "--time-one", "--run-id", "rp-wc-over", "--items-file", _to_bash_path(items_path), "--part-dir", _to_bash_path(part_dir), "--receipts-dir", _to_bash_path(receipts_dir), "--out-dir", _to_bash_path(out_over)],
+        env_vars={
+            "OFFRIG_CONFIG_DIR": _to_bash_path(env_over["offrig_config_dir"]),
+            "RDLAB_FAKE_CLOCK_FILE": _to_bash_path(clock_file),
+            "RDLAB_OFFRIG_MCP_BIN": _to_bash_path(env_over["shim_sh"]),
+            "RDLAB_OFFRIG_PROJECT": _to_bash_path(clean_repo_root),
+            "RDLAB_FAKE_OFFRIG_CONFIG": _to_bash_path(env_over["cfg_path"]),
+            "RDLAB_FAKE_OFFRIG_LOG": _to_bash_path(env_over["log_path"]),
+            "RDLAB_FAKE_OFFRIG_STATE": _to_bash_path(env_over["state_path"]),
+            "RDLAB_FAKE_OFFRIG_REPO_ROOT": _to_bash_path(clean_repo_root),
+            "RDLAB_OFFRIG_POLL_INTERVAL": "0.02",
+        },
+    )
+    assert res_over.returncode == 2
+    assert "RUNPOD_WORST_CASE_EXCEEDED" in res_over.stderr
+    over_tools = [c["tool"] for c in _read_call_log(env_over["log_path"])]
+    assert over_tools == ["offrig_plan"]
+    over_doc = json.loads((out_over / "outcome.draft.json").read_text(encoding="utf-8"))
+    assert over_doc["failure_class"] == "RUNPOD_WORST_CASE_EXCEEDED"
+    assert over_doc["worst_case_usd"] == pytest.approx(9.50)
+    assert over_doc["worst_case_usd_source"] == "offrig_plan"
+
+
+def test_runpod_fetch_budget_helper_failure_bounds_to_min_allowance_and_deadline(
+    tmp_path: Path,
+    clean_repo_root: Path,
+) -> None:
+    real_host_py = clean_repo_root / "scripts" / "colab" / "offrig_host.py"
+    wrap_py = tmp_path / "wrap_offrig_host.py"
+    wrap_py.write_text(
+        "import runpy, sys\n"
+        "if len(sys.argv) > 1 and sys.argv[1] == 'remaining-fetch-budget':\n"
+        "    sys.stderr.write('injected helper failure\\n')\n"
+        "    raise SystemExit(2)\n"
+        f"sys.argv[0] = {str(real_host_py)!r}\n"
+        "runpy.run_path(sys.argv[0], run_name='__main__')\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    items_path, part_dir = _make_synthetic_items_with_part(tmp_path / "data")
+    receipts_dir = _make_synthetic_receipts(tmp_path / "data")
+    t0 = 1795435200  # 2026-11-23 12:00 UTC -> 3900s deadline = 13:05 UTC
+    clock_fb = tmp_path / "clock_fb.txt"
+    clock_fb.write_text(f"{t0}\n", encoding="utf-8")
+    env_fb = _setup_fake_offrig_env(
+        tmp_path / "fb",
+        repo_root=clean_repo_root,
+        config_overrides={
+            "advance_clock_on_step": {"gate": 3000, "run": 740},
+            "advance_clock_on_get": 25,
+        },
+    )
+    out_fb = tmp_path / "out_fb"
+    res_fb = _run_bash_launcher(
+        repo_root=clean_repo_root,
+        args=[
+            "--host",
+            "runpod",
+            "--time-one",
+            "--run-id",
+            "rp-fb-help-01",
+            "--items-file",
+            _to_bash_path(items_path),
+            "--part-dir",
+            _to_bash_path(part_dir),
+            "--receipts-dir",
+            _to_bash_path(receipts_dir),
+            "--out-dir",
+            _to_bash_path(out_fb),
+        ],
+        env_vars={
+            "OFFRIG_CONFIG_DIR": _to_bash_path(env_fb["offrig_config_dir"]),
+            "RDLAB_FAKE_CLOCK_FILE": _to_bash_path(clock_fb),
+            "RDLAB_OFFRIG_HOST_PY": _to_bash_path(wrap_py),
+            "RDLAB_OFFRIG_MCP_BIN": _to_bash_path(env_fb["shim_sh"]),
+            "RDLAB_OFFRIG_PROJECT": _to_bash_path(clean_repo_root),
+            "RDLAB_FAKE_OFFRIG_CONFIG": _to_bash_path(env_fb["cfg_path"]),
+            "RDLAB_FAKE_OFFRIG_LOG": _to_bash_path(env_fb["log_path"]),
+            "RDLAB_FAKE_OFFRIG_STATE": _to_bash_path(env_fb["state_path"]),
+            "RDLAB_FAKE_OFFRIG_REPO_ROOT": _to_bash_path(clean_repo_root),
+            "RDLAB_OFFRIG_POLL_INTERVAL": "0.02",
+        },
+    )
+    assert res_fb.returncode == 0, res_fb.stderr
+    cli_txt = (out_fb / "colab-cli.log").read_text(encoding="utf-8")
+    assert "RUNPOD_FETCH_BUDGET_HELPER_FAILED" in cli_txt
+    assert "RUNPOD_FETCH_BUDGET_FALLBACK" in cli_txt
+    assert "remaining_s=40" in cli_txt
+    assert "timeout_s=40" in cli_txt
+    assert "timeout_s=15" in cli_txt
+    assert "RUNPOD_FETCH_BUDGET_EXHAUSTED" in cli_txt
+    assert "timeout_s=180" not in cli_txt
+
 
 

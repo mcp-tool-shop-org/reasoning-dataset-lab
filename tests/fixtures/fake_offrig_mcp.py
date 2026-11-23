@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -268,11 +269,17 @@ def _handle_tool_call(
             state["deadline"] = deadline_dt.strftime("%Y-%m-%d %H:%M UTC")
         state["plan"] = dict(arguments)
         _save_json(state_path, state)
+        worst_case_val = (
+            float(cfg["plan_worst_case"])
+            if cfg.get("plan_worst_case") is not None
+            else round(float(max_hours) * float(arguments.get("max_price_hr") or cost_per_hr), 2)
+        )
         return False, {
             "plan_id": plan_id,
             "profile": arguments.get("profile"),
             "max_hours": max_hours,
             "max_price_hr": arguments.get("max_price_hr"),
+            "worst_case": worst_case_val,
             "wait_minutes": arguments.get("wait_minutes"),
             "no_fallback": arguments.get("no_fallback", True),
             "container_disk_gb": arguments.get("container_disk_gb") or 60,
@@ -428,7 +435,26 @@ def _handle_tool_call(
             _save_json(state_path, state)
             return False, {"name": job_name, "stopped": True}
 
+    if tool_name == "offrig_status":
+        return False, {
+            "runpod": {
+                "offrig_pods": list(cfg.get("status_pods") or []),
+                "sibling_pods": list(cfg.get("status_sibling_pods") or []),
+                "other_pods": int(cfg.get("status_other_pods") or 0),
+                "other_pod_names": list(cfg.get("status_other_pod_names") or []),
+            },
+            "open_plans": list(cfg.get("status_open_plans") or []),
+        }
+
     if tool_name == "offrig_shutdown":
+        marker = str(cfg.get("shutdown_started_marker") or "").strip()
+        if marker:
+            mp = Path(marker)
+            mp.parent.mkdir(parents=True, exist_ok=True)
+            mp.write_text("started\n", encoding="utf-8", newline="\n")
+        delay = float(cfg.get("shutdown_delay_seconds") or 0.0)
+        if delay > 0.0:
+            time.sleep(delay)
         attempts = int(state.get("shutdown_attempts") or 0) + 1
         state["shutdown_attempts"] = attempts
         _save_json(state_path, state)
@@ -440,11 +466,12 @@ def _handle_tool_call(
         state["shutdown"] = True
         state["shutdown_reason"] = reason
         _save_json(state_path, state)
+        if isinstance(cfg.get("shutdown_reply_override"), dict):
+            return False, dict(cfg["shutdown_reply_override"])
         return False, {
             "plan_id": plan_id,
-            "pod_id": pod_id,
-            "reason": reason,
-            "shutdown": True,
+            "outcome": f"terminated {pod_id}",
+            "ssh_block_removed": True,
             "spent": spent,
         }
 
