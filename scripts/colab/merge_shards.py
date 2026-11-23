@@ -43,6 +43,7 @@ from reasoning_dataset_lab.pilot_b.run_records import (
     REVERIFY_HINT_TEMPLATE,
     UNVERIFIED_JUDGE_DONE_FILENAME,
     collect_run_unverified_passes,
+    find_synthetic_in_run_dir,
     format_unverified_or_incomplete_refusal,
     read_excluded_incomplete_passes,
 )
@@ -1213,6 +1214,14 @@ def merge_shards(
             "MERGE_MANIFEST_PIN_REQUIRED",
             "real-mode merge requires --expected-manifest-sha256 (<64-hex> pre-registered rig manifest body sha256)",
         )
+    for sdir in (*shard_dirs, *raw_replacement_dirs):
+        synth_reason = find_synthetic_in_run_dir(sdir)
+        if synth_reason is not None:
+            raise MergeRefusalError(
+                "MERGE_SYNTHETIC_ITEMS",
+                f"shard directory {sdir} contains declared synthetic items or outputs ({synth_reason}); "
+                "synthetic --time-one windows are for timing only and can never enter shard merge.",
+            )
 
     manifest_doc = _load_json_dict(
         manifest_path, "MERGE_BIJECTION_FAILED", "shard_manifest.json"

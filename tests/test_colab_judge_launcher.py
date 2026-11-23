@@ -14399,6 +14399,7 @@ RIG_ONLY_AND_VM_INTERNAL_RDLAB_ENV_ALLOWLIST: dict[str, str] = {
     "RDLAB_PRICING_RATE": "rig-only: write_outcome_draft's cap pricing rate, max(--max-rate, window rate)",
     "RDLAB_OUTCOME_LOCK_CHECK_PHASE": "rig-only: write_outcome_draft's copy of the lock-check phase (the VM gets RDLAB_LOCK_CHECK_PHASE)",
     "RDLAB_OUTCOME_PASS_MODE": "rig-only: write_outcome_draft's copy of the pass mode (the VM gets RDLAB_PASS_MODE)",
+    "RDLAB_OUTCOME_SYNTHETIC_ITEMS": "rig-only: write_outcome_draft's copy of the declared synthetic-items flag (the VM gets RDLAB_SYNTHETIC_ITEMS)",
     "RDLAB_OUTCOME_KIT_HEAD_SHA": "rig-only: write_outcome_draft's copy of the kit commit (the VM gets RDLAB_KIT_HEAD_SHA)",
     "RDLAB_OUTCOME_KIT_TREE_CLEAN": "rig-only: write_outcome_draft's copy of kit_tree_clean (the VM gets RDLAB_KIT_TREE_CLEAN)",
     "RDLAB_OUTCOME_KIT_VM_JUDGES_PY_SHA256": "rig-only: write_outcome_draft's copy of the vm_judges.py sha256 sent",

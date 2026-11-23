@@ -362,7 +362,9 @@ def test_stop_rule_on_injected_key_class_or_triad_id_and_sealed_store_path(tmp_p
         assert exc_inj.value.code == "BAKEOFF_JUDGE_FORBIDDEN_INPUT_FIELD"
 
 
-def test_end_to_end_cpu_validation_10_items_mock_part_sealing_and_tamper_refusal(tmp_path: Path) -> None:
+def test_end_to_end_cpu_validation_10_items_mock_part_sealing_and_tamper_refusal(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     """Requirement 7: Full CPU validation on 10 items of a mock part (`rdlab bakeoff-part --stub 4 --mock-writer`).
 
     Checks:
@@ -578,6 +580,7 @@ def test_end_to_end_cpu_validation_10_items_mock_part_sealing_and_tamper_refusal
         verify_outputs_closed(judge_out_dir)
     assert exc_tampered.value.code == "BAKEOFF_SCORE_OUTPUTS_MODIFIED"
 
+    capsys.readouterr()
     rc_tampered = run_cli(
         [
             "bakeoff-judge-score",
@@ -592,7 +595,9 @@ def test_end_to_end_cpu_validation_10_items_mock_part_sealing_and_tamper_refusal
             "--no-count-all-non-canary",
         ]
     )
+    err_tampered = capsys.readouterr().err
     assert rc_tampered == 1
+    assert json.loads(err_tampered)["code"] == "BAKEOFF_SCORE_OUTPUTS_MODIFIED"
 
 
 def test_error_rate_stop_rule_halts_above_20_percent(tmp_path: Path) -> None:

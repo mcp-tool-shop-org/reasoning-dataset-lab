@@ -75,8 +75,11 @@ from reasoning_dataset_lab.pilot_b.anchored_two_hop import ANCHORED_ELIGIBLE_DOM
 from reasoning_dataset_lab.pilot_b.run_records import (
     OUTCOME_DRAFT_FILENAME,
     REVERIFY_HINT_TEMPLATE,
+    SYNTHETIC_ITEM_ID_PREFIX,
     UNVERIFIED_JUDGE_DONE_FILENAME,
     collect_run_unverified_passes,
+    find_synthetic_in_rows,
+    find_synthetic_in_run_dir,
     format_unverified_or_incomplete_refusal,
     read_excluded_incomplete_passes,
 )
@@ -199,6 +202,47 @@ def _canonical_json_line(obj: Mapping[str, Any]) -> str:
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
+def _refuse_synthetic_scoring(reason: str) -> RdlabError:
+    return refused_error(
+        "BAKEOFF_SCORE_SYNTHETIC_ITEMS",
+        f"Scoring refuses declared synthetic items or outputs ({reason}).",
+        "Synthetic --time-one windows are for timing and length measurement only and can never be scored.",
+    )
+
+
+def _refuse_if_synthetic_run_dir(judge_output_dir: Path) -> None:
+    reason = find_synthetic_in_run_dir(judge_output_dir)
+    if reason is not None:
+        raise _refuse_synthetic_scoring(reason)
+
+
+def _refuse_if_synthetic_rows(rows: Sequence[Mapping[str, Any]], *, source: str) -> None:
+    reason = find_synthetic_in_rows(rows, source=source)
+    if reason is not None:
+        raise _refuse_synthetic_scoring(reason)
+
+
+def _refuse_if_synthetic_item_ids(item_ids: Sequence[str], *, source: str) -> None:
+    for iid in item_ids:
+        if str(iid).strip().startswith(SYNTHETIC_ITEM_ID_PREFIX):
+            raise _refuse_synthetic_scoring(
+                f"{source} item_id={str(iid).strip()!r} starting with {SYNTHETIC_ITEM_ID_PREFIX!r}"
+            )
+
+
+def _refuse_if_synthetic_scored(
+    scored: Sequence[tuple[SealedKeyRecord, Mapping[str, Any], Mapping[str, Any]]],
+    *,
+    source: str,
+) -> None:
+    _refuse_if_synthetic_item_ids([rec.item_id for rec, _, _ in scored], source=source)
+    rows: list[Mapping[str, Any]] = []
+    for _, r_ab, r_ba in scored:
+        rows.append(r_ab)
+        rows.append(r_ba)
+    _refuse_if_synthetic_rows(rows, source=source)
+
+
 def _infer_domain_from_key_obj(obj: Mapping[str, Any]) -> str:
     explicit = str(obj.get("domain") or "").strip()
     if explicit:
@@ -295,6 +339,7 @@ def verify_outputs_closed(judge_output_dir: Path) -> dict[str, Any]:
                 "Scoring refuses to run when any output byte has changed after outputs-closed.",
             )
 
+    _refuse_if_synthetic_run_dir(resolved_dir)
     return dict(closed_doc)
 
 
@@ -451,6 +496,8 @@ def fit_dev_threshold_youden(
 
     Ties are broken at the midpoint of the maximizing interval closest to `0.5`.
     """
+    _refuse_if_synthetic_rows(dev_rows, source="fit_dev_threshold_youden")
+    _refuse_if_synthetic_item_ids(list(keys_by_id), source="fit_dev_threshold_youden")
     samples: list[tuple[float, int]] = []
     for row in dev_rows:
         item_id = str(row["item_id"])
@@ -744,6 +791,7 @@ def compute_trivial_baselines(
     keys_by_id: Mapping[str, SealedKeyRecord],
 ) -> dict[str, Any]:
     """Compute trivial `always_no` and `always_yes` baselines for class-balanced strict, plain strict, and all-3-of-triad."""
+    _refuse_if_synthetic_item_ids(list(item_ids), source="compute_trivial_baselines")
     valid_ids = [iid for iid in item_ids if iid in keys_by_id]
     if not valid_ids:
         return {
@@ -803,6 +851,7 @@ def compute_all_pairs_statistics(
     bootstrap_seed: int = DEFAULT_BOOTSTRAP_SEED,
 ) -> list[dict[str, Any]]:
     """Compute pairwise superiority, TOST equivalence, d(A,B), and domain-stratified triad bootstrap CIs across all judge pairs."""
+    _refuse_if_synthetic_item_ids(list(keys_by_id), source="compute_all_pairs_statistics")
     judges_sorted = sorted(item_outcomes_by_judge.keys())
     pair_keys: list[tuple[str, str]] = list(itertools.combinations(judges_sorted, 2))
     if not pair_keys:
@@ -1010,6 +1059,9 @@ def select_bakeoff_winner(
        removed by each condition (`lcb_precision`, `lcb_recall`, `per_class_precision_unsupported`,
        `per_class_precision_cannot_tell`, `domain_coverage`, `failed_to_run`).
     """
+    for j_entry in judges:
+        if isinstance(j_entry, Mapping) and j_entry.get("synthetic_items") is True:
+            raise _refuse_synthetic_scoring(f"select_bakeoff_winner judge={j_entry.get('judge_id')!r}")
     if (
         registered_domains is _MISSING_REGISTERED_DOMAINS
         or not isinstance(registered_domains, Sequence)
@@ -1489,6 +1541,11 @@ def _evaluate_judge_at_rule(
       `P(yes) = 0.5` for `mean_order_auroc`, and scores wrong (`0`) for accuracy.
     - The two orders are never pooled as `2n` rows.
     """
+    _refuse_if_synthetic_item_ids(list(rows_by_item_order), source="_evaluate_judge_at_rule")
+    _refuse_if_synthetic_rows(
+        [r for omap in rows_by_item_order.values() for r in omap.values()],
+        source="_evaluate_judge_at_rule",
+    )
     item_ids = sorted(
         iid
         for iid in rows_by_item_order.keys()
@@ -1833,7 +1890,23 @@ def check_sealed_out_targets_free(sealed_jsonl_path: Path, sealed_csv_path: Path
 
 
 def _load_rows_file(path: Path) -> list[dict[str, Any]]:
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    _refuse_if_synthetic_rows(rows, source=path.name)
+    jdone_dir = path.parent.parent / "judge_done" if path.parent.name == ROWS_DIRNAME else None
+    if jdone_dir is not None and jdone_dir.is_dir():
+        rel_rows = f"{ROWS_DIRNAME}/{path.name}"
+        for jf in sorted(jdone_dir.glob("*.json")):
+            if jf.is_symlink() or not jf.is_file():
+                continue
+            try:
+                jdoc = json.loads(jf.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, ValueError):
+                continue
+            if not isinstance(jdoc, Mapping) or jdoc.get("synthetic_items") is not True:
+                continue
+            if jdoc.get("rows_file") == rel_rows or jf.stem == path.stem or jf.name.startswith(f"{path.stem}."):
+                raise _refuse_synthetic_scoring(f"judge_done/{jf.name} records synthetic_items=true")
+    return rows
 
 
 def _refuse_zero_scored(rows_file: Path, *, judge_id: str | None, keys_n: int) -> RdlabError:
@@ -1855,6 +1928,8 @@ def _three_way_sealed_rows(
     """One sealed row per order for a 3-way item. `pass_mode` (`three_way` or `three_way_contradicted`) tells it from a
     binary row, which has no `pass_mode`; `key` and `verdict` are the internal three-class values (the readout maps an
     arm's shown labels back to them) and `three_way_label` repeats the judge's label."""
+    _refuse_if_synthetic_item_ids([rec.item_id], source="_three_way_sealed_rows")
+    _refuse_if_synthetic_rows(list(order_map.values()), source="_three_way_sealed_rows")
     out: list[dict[str, Any]] = []
     for ord_name in ("AB", "BA"):
         r = order_map[ord_name]
@@ -1932,6 +2007,7 @@ def _three_way_breakdown(
     binary-collapsed strict accuracy, the all-3-of-triad rate, the order-flip and invalid rates, the 3 x 5 strict
     outcome counts (true class x strict label / order_flip / invalid) and the top-2 margin quantiles. Counts and rates
     only: no item id, triad id, key, claim or text."""
+    _refuse_if_synthetic_scored(scored, source="_three_way_breakdown")
     per_class = {c: {"n": 0, "strict_correct": 0} for c in THREE_WAY_LABELS}
     confusion = {c: {col: 0 for col in THREE_WAY_OUTCOME_COLUMNS} for c in THREE_WAY_LABELS}
     strict_correct = 0
@@ -2042,6 +2118,7 @@ def rule_b_verdict(r_ab: Mapping[str, Any], r_ba: Mapping[str, Any], pass_mode: 
     the argmax (ties go to the earlier class in supported, unsupported, cannot_tell); in the two-question arm, average
     p_t and p_f over the orders and apply the same mapping (an inconsistent average is `inconsistent`, scored wrong).
     None when either order has no valid probabilities (an invalid item)."""
+    _refuse_if_synthetic_rows((r_ab, r_ba), source="rule_b_verdict")
     if pass_mode in TWO_QUESTION_PASS_MODES:
         ab, ba = _row_two_question_probs(r_ab), _row_two_question_probs(r_ba)
         if ab is None or ba is None:
@@ -2060,6 +2137,7 @@ def _rule_b_breakdown(
 ) -> dict[str, Any]:
     """Aggregate-only Rule B results: one verdict per item, its accuracy, per-class recall, the binary-collapsed
     accuracy, and the invalid and inconsistent item counts."""
+    _refuse_if_synthetic_scored(scored, source="_rule_b_breakdown")
     per_class = {c: {"n": 0, "correct": 0} for c in THREE_WAY_LABELS}
     correct = collapsed = invalid = inconsistent = 0
     for rec, r_ab, r_ba in scored:
@@ -2093,6 +2171,7 @@ def _two_question_report(
 ) -> dict[str, Any]:
     """Arm 2's own report (aggregates only): the inconsistent count and rate per gold class and order, and the AUROC
     of the order-mean p_t for gold supported vs not and of the order-mean p_f for gold unsupported vs not."""
+    _refuse_if_synthetic_scored(scored, source="_two_question_report")
     by_class: dict[str, dict[str, Any]] = {}
     for c in THREE_WAY_LABELS:
         members = [(r_ab, r_ba) for rec, r_ab, r_ba in scored if rec.key == c]
@@ -2129,6 +2208,7 @@ def _outside_mass_report(
 ) -> dict[str, Any]:
     """Arm 4 (elephant-1): the probability put outside the three named options, per gold class and order (mean, max,
     calls), from rows that carry it. Reported only; the verdict is the argmax over the three renormalised options."""
+    _refuse_if_synthetic_scored(scored, source="_outside_mass_report")
     out: dict[str, Any] = {}
     for c in THREE_WAY_LABELS:
         out[c] = {}
@@ -2150,6 +2230,7 @@ def _write_sealed_scored_rows(
     sealed_csv_path: Path,
     rows: Sequence[Mapping[str, Any]],
 ) -> None:
+    _refuse_if_synthetic_rows(rows, source="_write_sealed_scored_rows")
     if not rows:
         raise refused_error(
             "BAKEOFF_SCORE_EMPTY_SEALED_ROWS",
