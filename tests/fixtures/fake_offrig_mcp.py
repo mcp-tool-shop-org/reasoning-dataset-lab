@@ -268,6 +268,7 @@ def _handle_tool_call(
             deadline_dt = now_dt + datetime.timedelta(hours=max_hours)
             state["deadline"] = deadline_dt.strftime("%Y-%m-%d %H:%M UTC")
         state["plan"] = dict(arguments)
+        state["plan_state"] = "planned"
         _save_json(state_path, state)
         worst_case_val = (
             float(cfg["plan_worst_case"])
@@ -289,6 +290,16 @@ def _handle_tool_call(
         }
 
     if tool_name == "offrig_launch":
+        if cfg.get("fail_launch_at_commit"):
+            state["plan_state"] = "planned"
+            _save_json(state_path, state)
+            return True, {
+                "error": str(
+                    cfg.get("launch_commit_error")
+                    or "budget exceeded at commit; nothing was spent"
+                )
+            }
+        state["plan_state"] = "committed"
         state["launched"] = True
         _save_json(state_path, state)
         launch_deadline = (
@@ -307,6 +318,9 @@ def _handle_tool_call(
 
     if tool_name == "offrig_job":
         if cfg.get("job_state") == "failed":
+            if cfg.get("launch_job_closes_plan"):
+                state["plan_state"] = "closed"
+                _save_json(state_path, state)
             return False, {
                 "job_id": job_id,
                 "state": "failed",
@@ -442,6 +456,7 @@ def _handle_tool_call(
                 "sibling_pods": list(cfg.get("status_sibling_pods") or []),
                 "other_pods": int(cfg.get("status_other_pods") or 0),
                 "other_pod_names": list(cfg.get("status_other_pod_names") or []),
+                "note": cfg.get("status_note"),
             },
             "open_plans": list(cfg.get("status_open_plans") or []),
         }
@@ -463,11 +478,25 @@ def _handle_tool_call(
             return True, {"error": f"transient shutdown failure #{attempts}"}
         reason = str(arguments.get("reason") or "")
         spent = float(cfg.get("spent_usd") if cfg.get("spent_usd") is not None else 0.42)
+        if isinstance(cfg.get("shutdown_reply_override"), dict):
+            state["shutdown"] = True
+            state["shutdown_reason"] = reason
+            _save_json(state_path, state)
+            return False, dict(cfg["shutdown_reply_override"])
+        eff_state = str(cfg.get("plan_state_override") or state.get("plan_state") or "committed")
+        if eff_state != "committed":
+            state["shutdown"] = True
+            state["shutdown_reason"] = reason
+            _save_json(state_path, state)
+            return False, {
+                "plan_id": plan_id,
+                "already": eff_state,
+                "budget": {"cap": 50.0, "committed": 0.0, "spent": 0.0, "remaining": 50.0},
+            }
+        state["plan_state"] = "closed"
         state["shutdown"] = True
         state["shutdown_reason"] = reason
         _save_json(state_path, state)
-        if isinstance(cfg.get("shutdown_reply_override"), dict):
-            return False, dict(cfg["shutdown_reply_override"])
         return False, {
             "plan_id": plan_id,
             "outcome": f"terminated {pod_id}",
@@ -513,6 +542,9 @@ def main() -> int:
             tool_name = str(params.get("name") or "")
             tool_args = params.get("arguments") or {}
             state = _load_json(state_path, {})
+            if tool_name == "offrig_launch" and not cfg.get("fail_launch_at_commit"):
+                state["plan_state"] = "committed"
+                _save_json(state_path, state)
             if cfg.get("crash_on_tool") == tool_name:
                 _append_call_log(log_path, tool_name, dict(tool_args))
                 return 1
