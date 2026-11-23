@@ -14464,6 +14464,7 @@ RIG_ONLY_AND_VM_INTERNAL_RDLAB_ENV_ALLOWLIST: dict[str, str] = {
     "RDLAB_OFFRIG_SHUTDOWN_RESERVE_SECONDS": "rig-only: shutdown safety reserve subtracted before RunPod watchdog deadline",
     "RDLAB_OFFRIG_STATUS_POLL_RETRIES": "rig-only: bounded retry count for transient transport errors on `offrig_exec` status polls",
     "RDLAB_OUTCOME_HOST": "rig-only: internal env var passed to `write_outcome_draft` on the rig",
+    "RDLAB_OUTCOME_LISTED_POD_ID": "rig-only: internal env var passed to `write_outcome_draft` on the rig",
     "RDLAB_OUTCOME_OFFRIG_PROFILE": "rig-only: internal env var passed to `write_outcome_draft` on the rig",
     "RDLAB_OUTCOME_PLAN_ID": "rig-only: internal env var passed to `write_outcome_draft` on the rig",
     "RDLAB_OUTCOME_POD_ID": "rig-only: internal env var passed to `write_outcome_draft` on the rig",
