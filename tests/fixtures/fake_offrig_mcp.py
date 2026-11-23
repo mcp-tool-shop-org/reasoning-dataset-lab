@@ -275,10 +275,15 @@ def _handle_tool_call(
             if cfg.get("plan_worst_case") is not None
             else round(float(max_hours) * float(arguments.get("max_price_hr") or cost_per_hr), 2)
         )
+        plan_lane = str(cfg.get("plan_lane") or "rdlab-judge").strip()
+        plan_prof = str(arguments.get("profile") or "rdlab-judge").strip()
+        default_pod_name = f"offrig-{plan_lane}-{plan_prof}" if plan_lane else f"offrig-{plan_prof}"
+        plan_pod_name = str(cfg.get("plan_pod_name") or default_pod_name)
+        state["pod_name"] = plan_pod_name
         return False, {
             "plan_id": plan_id,
-            "lane": str(cfg.get("plan_lane") or "rdlab-judge"),
-            "pod_name": str(cfg.get("plan_pod_name") or f"offrig-job-{plan_id}"),
+            "lane": plan_lane,
+            "pod_name": plan_pod_name,
             "profile": arguments.get("profile"),
             "max_hours": max_hours,
             "max_price_hr": arguments.get("max_price_hr"),
@@ -322,14 +327,17 @@ def _handle_tool_call(
             if "launch_deadline" in cfg
             else (state.get("deadline") or "2026-11-23 18:00 UTC")
         )
-        return False, {
+        launch_reply: dict[str, Any] = {
             "plan_id": plan_id,
             "job_id": job_id,
-            "pod_id": pod_id,
+            "pod_name": str(cfg.get("launch_pod_name") or state.get("pod_name") or f"offrig-job-{plan_id}"),
             "watchdog": str(cfg.get("watchdog") if cfg.get("watchdog") is not None else "started"),
             "deadline": launch_deadline,
             "worst_case": round(cost_per_hr * float((state.get("plan") or {}).get("max_hours") or 1.0), 4),
         }
+        if not cfg.get("launch_omit_pod_id"):
+            launch_reply["pod_id"] = pod_id
+        return False, launch_reply
 
     if tool_name == "offrig_job":
         if cfg.get("job_state") == "failed":
@@ -342,10 +350,15 @@ def _handle_tool_call(
                 "error": cfg.get("job_error", "simulated offrig_job failure"),
             }
         if cfg.get("job_state") == "running":
+            run_prog: dict[str, Any] = {}
+            if not cfg.get("launch_omit_pod_id"):
+                run_prog["pod_id"] = pod_id
+            if cfg.get("job_running_pod_name"):
+                run_prog["pod_name"] = cfg["job_running_pod_name"]
             return False, {
                 "job_id": job_id,
                 "state": "running",
-                "progress": {"pod_id": pod_id},
+                "progress": run_prog,
             }
         return False, {
             "job_id": job_id,

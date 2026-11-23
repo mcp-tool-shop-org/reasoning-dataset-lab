@@ -3157,6 +3157,13 @@ def test_runpod_shutdown_reply_shapes_and_status_pods_recorded(
         expected_pod_id=None,
     )
     assert res_ac_empty_exp["pod_shutdown"] is False
+    res_ac_name_only_clean = offrig_host.resolve_already_closed_shutdown(
+        {"runpod": {"offrig_pods": [{"id": "pod-other", "name": "offrig-other-profile"}], "sibling_pods": []}, "open_plans": []},
+        plan_id=1,
+        expected_pod_id=None,
+        expected_pod_name="offrig-rdlab-rdlab-judge",
+    )
+    assert res_ac_name_only_clean["pod_shutdown"] is True and res_ac_name_only_clean["failure_class"] == "RUNPOD_PLAN_ALREADY_CLOSED"
     res_ac_open = offrig_host.resolve_already_closed_shutdown(
         {"runpod": {"offrig_pods": [], "sibling_pods": []}, "open_plans": [{"plan_id": 1}]},
         plan_id=1,
@@ -3946,11 +3953,12 @@ def test_runpod_already_closed_real_offrig_keys_and_strict_evidence(
         encoding="utf-8",
     )
 
-    # Strict evidence required for True: {}, missing runpod, missing/non-list offrig_pods, error, note, non-list siblings -> False + may_bill
+    # Strict evidence required for True: {}, missing runpod, missing/non-list offrig_pods, missing open_plans, error, note, non-list siblings -> False + may_bill
     for bad_status in (
         {},
         {"offrig_pods": [], "open_plans": []},
         {"open_plans": []},
+        {"runpod": {"offrig_pods": []}},
         {"runpod": {}, "open_plans": []},
         {"runpod": {"offrig_pods": None}, "open_plans": []},
         {"runpod": {"offrig_pods": "bad"}, "open_plans": []},
@@ -3966,14 +3974,17 @@ def test_runpod_already_closed_real_offrig_keys_and_strict_evidence(
         res_bad = offrig_host.resolve_already_closed_shutdown(bad_status, plan_id=10, expected_pod_id="pod-10")
         assert res_bad["pod_shutdown"] is False and res_bad["may_bill"] is True
 
-    # Direct extract_status_pods malformed/partial/edge shapes preserve structure without fabricating runpod/offrig_pods
-    assert offrig_host.extract_status_pods({})["error"]
+    # Direct extract_status_pods malformed/partial/edge shapes preserve structure without fabricating runpod/offrig_pods/open_plans
+    raw_bad_ext = offrig_host.extract_status_pods("bad")
+    assert raw_bad_ext["error"] and "open_plans" not in raw_bad_ext
+    empty_ext = offrig_host.extract_status_pods({})
+    assert empty_ext["error"] and "open_plans" not in empty_ext
     ext_err = offrig_host.extract_status_pods(
         {"error": "top err", "note": "top note", "open_plans": "not-list"}
     )
     assert ext_err["error"] == "top err" and ext_err["note"] == "top note" and ext_err["open_plans"] == "not-list"
     ext_min = offrig_host.extract_status_pods({"runpod": {"error": "rp err", "offrig_pods": []}})
-    assert ext_min["runpod"]["error"] == "rp err" and ext_min["runpod"]["sibling_pods"] == []
+    assert ext_min["runpod"]["error"] == "rp err" and ext_min["runpod"]["sibling_pods"] == [] and "open_plans" not in ext_min
     ext_bad_inner = offrig_host.extract_status_pods(
         {
             "runpod": {
@@ -3995,44 +4006,71 @@ def test_runpod_already_closed_real_offrig_keys_and_strict_evidence(
         expected_pod_name="job-name-10",
     )["pod_shutdown"] is False
 
-    # No pod_id recorded: checks sibling_pods, other_pod_names, and other_pods
-    res_unrec_sib = offrig_host.resolve_already_closed_shutdown(
+    # Missing both pod_id and pod_name -> False; unrelated foreign pods / unrelated siblings / unrelated profile -> True
+    res_neither = offrig_host.resolve_already_closed_shutdown(
+        {"runpod": {"offrig_pods": [], "sibling_pods": [], "other_pods": 0, "other_pod_names": []}, "open_plans": []},
+        plan_id=10,
+        expected_pod_id=None,
+        expected_pod_name=None,
+    )
+    assert res_neither["pod_shutdown"] is False and res_neither["may_bill"] is True
+    res_unrelated_pods = offrig_host.resolve_already_closed_shutdown(
         {
             "runpod": {
-                "offrig_pods": [],
-                "sibling_pods": [{"lane": "other", "project": "rdlab", "pod": "p-x", "pod_id": "pod-x", "status": "RUNNING"}],
-                "other_pods": 0,
-                "other_pod_names": [],
+                "offrig_pods": [{"id": "pod-other-prof", "name": "offrig-rdlab-other-profile", "status": "RUNNING"}],
+                "sibling_pods": [
+                    {
+                        "lane": "other",
+                        "project": "other-proj",
+                        "pod": "offrig-other-rdlab-judge",
+                        "pod_id": "pod-sib-unrelated",
+                        "status": "RUNNING",
+                        "plan": {"plan_id": 10, "profile": "rdlab-judge"},
+                    }
+                ],
+                "other_pods": 2,
+                "other_pod_names": ["foreign-a", "foreign-b"],
+                "note": None,
             },
             "open_plans": [],
         },
         plan_id=10,
         expected_pod_id=None,
+        expected_pod_name="offrig-rdlab-rdlab-judge",
     )
-    assert res_unrec_sib["pod_shutdown"] is False and res_unrec_sib["may_bill"] is True
-    res_unrec_other = offrig_host.resolve_already_closed_shutdown(
+    assert res_unrelated_pods["pod_shutdown"] is True and res_unrelated_pods["failure_class"] == "RUNPOD_PLAN_ALREADY_CLOSED" and res_unrelated_pods["may_bill"] is False
+
+    # No pod_id recorded, lane pod_name listed in offrig_pods / sibling_pods / other_pod_names -> False
+    res_name_in_ours = offrig_host.resolve_already_closed_shutdown(
         {
-            "runpod": {
-                "offrig_pods": [],
-                "sibling_pods": [],
-                "other_pods": 1,
-                "other_pod_names": ["orphan-name"],
-            },
+            "runpod": {"offrig_pods": [{"id": "pod-ours-by-name", "name": "offrig-rdlab-rdlab-judge", "status": "RUNNING"}], "sibling_pods": [], "other_pod_names": []},
             "open_plans": [],
         },
         plan_id=10,
         expected_pod_id=None,
+        expected_pod_name="offrig-rdlab-rdlab-judge",
     )
-    assert res_unrec_other["pod_shutdown"] is False and res_unrec_other["may_bill"] is True
-    res_unrec_clean = offrig_host.resolve_already_closed_shutdown(
+    assert res_name_in_ours["pod_shutdown"] is False and res_name_in_ours["listed_pod_id"] == "pod-ours-by-name"
+    res_name_in_sib = offrig_host.resolve_already_closed_shutdown(
         {
-            "runpod": {"offrig_pods": [], "sibling_pods": [], "other_pods": 0, "other_pod_names": [], "note": None},
+            "runpod": {"offrig_pods": [], "sibling_pods": [{"pod": "offrig-rdlab-rdlab-judge", "pod_id": "pod-sib-by-name"}], "other_pod_names": []},
             "open_plans": [],
         },
         plan_id=10,
         expected_pod_id=None,
+        expected_pod_name="offrig-rdlab-rdlab-judge",
     )
-    assert res_unrec_clean["pod_shutdown"] is True and res_unrec_clean["may_bill"] is False
+    assert res_name_in_sib["pod_shutdown"] is False and res_name_in_sib["listed_pod_id"] == "pod-sib-by-name"
+    res_name_in_other = offrig_host.resolve_already_closed_shutdown(
+        {
+            "runpod": {"offrig_pods": [], "sibling_pods": [], "other_pods": 1, "other_pod_names": ["offrig-rdlab-rdlab-judge"]},
+            "open_plans": [],
+        },
+        plan_id=10,
+        expected_pod_id=None,
+        expected_pod_name="offrig-rdlab-rdlab-judge",
+    )
+    assert res_name_in_other["pod_shutdown"] is False and res_name_in_other["listed_pod_id"] is None
 
     # Pod recorded and appears in sibling_pods via real offrig sibling key pod_id (and id fallback) or in other_pod_names -> False
     res_sib_pod_id = offrig_host.resolve_already_closed_shutdown(
@@ -4047,7 +4085,7 @@ def test_runpod_already_closed_real_offrig_keys_and_strict_evidence(
         plan_id=10,
         expected_pod_id="pod-sib-1",
     )
-    assert res_sib_pod_id["pod_shutdown"] is False and res_sib_pod_id["may_bill"] is True
+    assert res_sib_pod_id["pod_shutdown"] is False and res_sib_pod_id["may_bill"] is True and res_sib_pod_id["listed_pod_id"] == "pod-sib-1"
     res_sib_id_fallback = offrig_host.resolve_already_closed_shutdown(
         {"runpod": {"offrig_pods": [], "sibling_pods": [{"id": "pod-sib-2"}]}, "open_plans": []},
         plan_id=10,
@@ -4062,10 +4100,60 @@ def test_runpod_already_closed_real_offrig_keys_and_strict_evidence(
     )
     assert res_other_name["pod_shutdown"] is False and res_other_name["may_bill"] is True
 
-    # End-to-end bash: closed plan whose pod is only listed in sibling_pods (real siblings.rs keys) -> False + MAY_BILL
-    for case_name, cfg_extra in (
+    # End-to-end bash: closed plan with unrelated pods -> True; closed plan with our pod only in sibling_pods or matched by name -> False + MAY_BILL
+    env_ac_unrel = _setup_fake_offrig_env(
+        tmp_path / "ac_unrel_true",
+        repo_root=clean_repo_root,
+        config_overrides={
+            "plan_id": 709,
+            "plan_lane": "rdlab",
+            "launch_omit_pod_id": True,
+            "job_state": "failed",
+            "launch_job_closes_plan": True,
+            "shutdown_reply_override": {"plan_id": 709, "already": "closed"},
+            "status_pods": [],
+            "status_other_pods": 2,
+            "status_other_pod_names": ["foreign-a", "foreign-b"],
+            "status_sibling_pods": [
+                {
+                    "lane": "other",
+                    "project": "other-proj",
+                    "pod": "offrig-other-rdlab-judge",
+                    "pod_id": "pod-sib-unrel-709",
+                    "status": "RUNNING",
+                    "plan": {"plan_id": 709, "profile": "rdlab-judge"},
+                }
+            ],
+        },
+    )
+    out_ac_unrel = tmp_path / "out_ac_unrel_true"
+    res_ac_unrel = _run_bash_launcher(
+        repo_root=clean_repo_root,
+        args=["--host", "runpod", "--time-one", "--run-id", "rp-ac-unrel", "--items-file", _to_bash_path(items_path), "--part-dir", _to_bash_path(part_dir), "--receipts-dir", _to_bash_path(receipts_dir), "--out-dir", _to_bash_path(out_ac_unrel)],
+        env_vars={
+            "OFFRIG_CONFIG_DIR": _to_bash_path(env_ac_unrel["offrig_config_dir"]),
+            "RDLAB_FAKE_CLOCK_FILE": _to_bash_path(clock_file),
+            "RDLAB_OFFRIG_MCP_BIN": _to_bash_path(env_ac_unrel["shim_sh"]),
+            "RDLAB_OFFRIG_PROJECT": _to_bash_path(clean_repo_root),
+            "RDLAB_FAKE_OFFRIG_CONFIG": _to_bash_path(env_ac_unrel["cfg_path"]),
+            "RDLAB_FAKE_OFFRIG_LOG": _to_bash_path(env_ac_unrel["log_path"]),
+            "RDLAB_FAKE_OFFRIG_STATE": _to_bash_path(env_ac_unrel["state_path"]),
+            "RDLAB_FAKE_OFFRIG_REPO_ROOT": _to_bash_path(clean_repo_root),
+            "RDLAB_OFFRIG_POLL_INTERVAL": "0.02",
+        },
+    )
+    assert res_ac_unrel.returncode == 2
+    assert "RUNPOD_SHUTDOWN_FAILED_MAY_BILL" not in res_ac_unrel.stderr
+    doc_ac_unrel = json.loads((out_ac_unrel / "outcome.draft.json").read_text(encoding="utf-8"))
+    assert doc_ac_unrel["pod_shutdown"] is True
+    assert doc_ac_unrel["shutdown_failure_class"] == "RUNPOD_PLAN_ALREADY_CLOSED"
+    assert doc_ac_unrel["listed_pod_id"] is None
+
+    for case_name, exp_pod_id_val, exp_listed_id, cfg_extra in (
         (
             "ac_sib_only",
+            "pod-sib-only-710",
+            None,
             {
                 "plan_id": 710,
                 "pod_id": "pod-sib-only-710",
@@ -4087,11 +4175,27 @@ def test_runpod_already_closed_real_offrig_keys_and_strict_evidence(
         ),
         (
             "ac_empty_raw_status",
+            "pod-empty-st-711",
+            None,
             {
                 "plan_id": 711,
                 "pod_id": "pod-empty-st-711",
                 "plan_state_override": "closed",
                 "status_raw_override": {},
+            },
+        ),
+        (
+            "ac_name_only_listed",
+            None,
+            "pod-listed-ac-712",
+            {
+                "plan_id": 712,
+                "plan_lane": "rdlab",
+                "launch_omit_pod_id": True,
+                "job_state": "failed",
+                "launch_job_closes_plan": True,
+                "shutdown_reply_override": {"plan_id": 712, "already": "closed"},
+                "status_pods": [{"id": "pod-listed-ac-712", "name": "offrig-rdlab-rdlab-judge", "status": "RUNNING"}],
             },
         ),
     ):
@@ -4117,6 +4221,8 @@ def test_runpod_already_closed_real_offrig_keys_and_strict_evidence(
         doc_case = json.loads((out_case / "outcome.draft.json").read_text(encoding="utf-8"))
         assert doc_case["pod_shutdown"] is False
         assert doc_case["shutdown_failure_class"] == "RUNPOD_SHUTDOWN_ALREADY_CLOSED"
+        assert doc_case["pod_id"] == exp_pod_id_val
+        assert doc_case["listed_pod_id"] == exp_listed_id
 
 
 def test_runpod_no_pod_rented_crosscheck_lists_owned_pod(
@@ -4133,32 +4239,74 @@ def test_runpod_no_pod_rented_crosscheck_lists_owned_pod(
     )
 
     assert offrig_host.main(["resolve-no-pod-rented", "--plan-id", "1", "--status-json", "{bad-json"]) == 0
-    assert json.loads(capsys.readouterr().out)["pod_shutdown"] is None
+    bad_npr_cli = json.loads(capsys.readouterr().out)
+    assert bad_npr_cli["pod_shutdown"] is False and bad_npr_cli["failure_class"] == "RUNPOD_NO_POD_RENTED_STATUS_UNUSABLE" and bad_npr_cli["may_bill"] is True
 
-    # Different lane sibling or unrelated other_pod_names stays null
+    # Unusable shapes in resolve_no_pod_rented_shutdown -> False + RUNPOD_NO_POD_RENTED_STATUS_UNUSABLE + may_bill
+    for bad_st in (
+        "bad",
+        {},
+        {"error": "mcp failed"},
+        {"note": "top note", "runpod": {"offrig_pods": []}},
+        {"runpod": {"error": "rp failed", "offrig_pods": []}},
+        {"runpod": {"offrig_pods": [], "note": "RunPod API timed out"}},
+        {"runpod": {}},
+        {"runpod": {"offrig_pods": "bad"}},
+        {"runpod": {"offrig_pods": []}, "open_plans": "bad"},
+        {"runpod": {"offrig_pods": [], "sibling_pods": "bad"}},
+        {"runpod": {"offrig_pods": [], "other_pod_names": "bad"}},
+        {"runpod": {"offrig_pods": [], "other_pods": True}},
+        {"runpod": {"offrig_pods": [], "other_pods": "bad"}},
+    ):
+        u_npr = offrig_host.resolve_no_pod_rented_shutdown(
+            bad_st,
+            plan_id=700,
+            expected_pod_id="pod-700",
+            expected_pod_name="offrig-rdlab-rdlab-judge",
+        )
+        assert u_npr["pod_shutdown"] is False and u_npr["failure_class"] == "RUNPOD_NO_POD_RENTED_STATUS_UNUSABLE" and u_npr["may_bill"] is True
+
+    # Missing both expected_pod_id and expected_pod_name (and no open_plans pod_id) -> unusable
+    assert (
+        offrig_host.resolve_no_pod_rented_shutdown(
+            {"runpod": {"offrig_pods": []}},
+            plan_id=700,
+        )["failure_class"]
+        == "RUNPOD_NO_POD_RENTED_STATUS_UNUSABLE"
+    )
+
+    # Unrelated pods (other profile, other lane sibling even with plan object, unrelated foreign pod_names) stay null
     unrelated = offrig_host.resolve_no_pod_rented_shutdown(
         {
             "runpod": {
-                "offrig_pods": [],
+                "offrig_pods": [{"id": "pod-other-prof", "name": "offrig-rdlab-other-profile", "status": "RUNNING"}],
+                "other_pods": 1,
                 "other_pod_names": ["someone-elses-pod"],
-                "sibling_pods": [{"lane": "other-lane", "pod": "other-job", "pod_id": "pod-other", "status": "RUNNING"}],
+                "sibling_pods": [
+                    "skip-non-mapping",
+                    {
+                        "lane": "my-lane",
+                        "pod": "offrig-other-lane-job",
+                        "pod_id": "pod-other",
+                        "status": "RUNNING",
+                        "plan": {"plan_id": 700},
+                    },
+                ],
             }
         },
         plan_id=700,
         expected_pod_id="",
-        expected_pod_name="offrig-job-700",
-        plan_lane="my-lane",
+        expected_pod_name="offrig-rdlab-rdlab-judge",
     )
     assert unrelated["pod_shutdown"] is None and unrelated["may_bill"] is False
 
-    # Direct unit checks for all three owned-pod match sources in resolve_no_pod_rented_shutdown
-    assert (
-        offrig_host.resolve_no_pod_rented_shutdown(
-            {"runpod": {"offrig_pods": [{"id": "pod-npr-direct", "name": "npr-job", "status": "RUNNING"}]}},
-            plan_id=701,
-        )["matched_source"]
-        == "offrig_pods"
+    # Direct unit checks for owned-pod matches by recorded pod_id or lane pod_name across all containers
+    m_ours_name = offrig_host.resolve_no_pod_rented_shutdown(
+        {"runpod": {"offrig_pods": [{"id": "pod-npr-direct", "name": "offrig-rdlab-rdlab-judge", "status": "RUNNING"}]}},
+        plan_id=701,
+        expected_pod_name="offrig-rdlab-rdlab-judge",
     )
+    assert m_ours_name["matched_source"] == "offrig_pods" and m_ours_name["listed_pod_id"] == "pod-npr-direct"
     assert (
         offrig_host.resolve_no_pod_rented_shutdown(
             {"runpod": {"offrig_pods": [], "other_pod_names": ["owned-name-702"]}},
@@ -4167,35 +4315,46 @@ def test_runpod_no_pod_rented_crosscheck_lists_owned_pod(
         )["matched_source"]
         == "other_pod_names"
     )
-    assert (
-        offrig_host.resolve_no_pod_rented_shutdown(
-            {
-                "runpod": {
-                    "offrig_pods": [],
-                    "sibling_pods": ["skip-non-mapping", {"lane": "lane-703", "pod": "job-703", "pod_id": "pod-sib-703"}],
-                }
-            },
-            plan_id=703,
-            plan_lane="lane-703",
-        )["pod_id"]
-        == "pod-sib-703"
+    m_sib_name = offrig_host.resolve_no_pod_rented_shutdown(
+        {
+            "runpod": {
+                "offrig_pods": [],
+                "sibling_pods": ["skip-non-mapping", {"lane": "other", "pod": "offrig-rdlab-rdlab-judge", "pod_id": "pod-sib-703"}],
+            }
+        },
+        plan_id=703,
+        expected_pod_name="offrig-rdlab-rdlab-judge",
     )
+    assert m_sib_name["listed_pod_id"] == "pod-sib-703" and m_sib_name["matched_source"] == "sibling_pods"
+    m_open = offrig_host.resolve_no_pod_rented_shutdown(
+        {
+            "runpod": {"offrig_pods": []},
+            "open_plans": [{"plan_id": 704, "pod_id": "pod-open-704"}],
+        },
+        plan_id=704,
+    )
+    assert m_open["matched_source"] == "open_plans" and m_open["listed_pod_id"] == "pod-open-704"
 
-    for case_name, pid, exp_pod_id, cfg_extra in (
+    for case_name, pid, exp_class, exp_pod_stderr, exp_listed_id, cfg_extra in (
         (
             "npr_offrig_pods",
             721,
+            "RUNPOD_NO_POD_RENTED_POD_LISTED",
+            "pod-npr-ours-721",
             "pod-npr-ours-721",
             {
                 "job_state": "failed",
+                "plan_lane": "rdlab",
                 "shutdown_reply_override": {"plan_id": 721, "outcome": "no pod was rented", "spent": 0.0},
-                "status_pods": [{"id": "pod-npr-ours-721", "name": "offrig-job-721", "status": "RUNNING"}],
+                "status_pods": [{"id": "pod-npr-ours-721", "name": "offrig-rdlab-rdlab-judge", "status": "RUNNING"}],
             },
         ),
         (
             "npr_other_names",
             722,
+            "RUNPOD_NO_POD_RENTED_POD_LISTED",
             "unknown",
+            None,
             {
                 "job_state": "failed",
                 "plan_pod_name": "owned-job-722",
@@ -4205,24 +4364,65 @@ def test_runpod_no_pod_rented_crosscheck_lists_owned_pod(
             },
         ),
         (
-            "npr_sibling_lane",
+            "npr_sibling_name",
             723,
+            "RUNPOD_NO_POD_RENTED_POD_LISTED",
+            "pod-npr-sib-723",
             "pod-npr-sib-723",
             {
                 "job_state": "failed",
-                "plan_lane": "lane-npr-723",
-                "plan_pod_name": "rdlab-npr-723",
+                "plan_lane": "rdlab",
+                "plan_pod_name": "offrig-rdlab-rdlab-judge",
                 "shutdown_reply_override": {"plan_id": 723, "outcome": "no pod was rented", "spent": 0.0},
                 "status_sibling_pods": [
                     {
-                        "lane": "lane-npr-723",
+                        "lane": "other-lane",
                         "project": "rdlab",
-                        "pod": "rdlab-npr-723",
+                        "pod": "offrig-rdlab-rdlab-judge",
                         "pod_id": "pod-npr-sib-723",
                         "status": "RUNNING",
-                        "plan": 723,
+                        "plan": {"plan_id": 723},
                     }
                 ],
+            },
+        ),
+        (
+            "npr_note_unusable",
+            724,
+            "RUNPOD_NO_POD_RENTED_STATUS_UNUSABLE",
+            "unknown",
+            None,
+            {
+                "job_state": "failed",
+                "shutdown_reply_override": {"plan_id": 724, "outcome": "no pod was rented", "spent": 0.0},
+                "status_pods": [],
+                "status_note": "RunPod API unreachable",
+                "status_other_pods": 1,
+                "status_other_pod_names": ["stranger-pod"],
+            },
+        ),
+        (
+            "npr_missing_runpod",
+            725,
+            "RUNPOD_NO_POD_RENTED_STATUS_UNUSABLE",
+            "unknown",
+            None,
+            {
+                "job_state": "failed",
+                "shutdown_reply_override": {"plan_id": 725, "outcome": "no pod was rented", "spent": 0.0},
+                "status_raw_override": {"open_plans": []},
+            },
+        ),
+        (
+            "npr_nonlist_offrig_pods",
+            726,
+            "RUNPOD_NO_POD_RENTED_STATUS_UNUSABLE",
+            "unknown",
+            None,
+            {
+                "job_state": "failed",
+                "shutdown_reply_override": {"plan_id": 726, "outcome": "no pod was rented", "spent": 0.0},
+                "status_raw_override": {"runpod": {"offrig_pods": "bad"}, "open_plans": []},
             },
         ),
     ):
@@ -4251,11 +4451,13 @@ def test_runpod_no_pod_rented_crosscheck_lists_owned_pod(
         may_bill_lines = [ln for ln in res_c.stderr.splitlines() if "RUNPOD_SHUTDOWN_FAILED_MAY_BILL" in ln]
         assert len(may_bill_lines) == 1
         assert f"plan_id={pid}" in may_bill_lines[0]
-        assert f"pod_id={exp_pod_id}" in may_bill_lines[0]
-        assert "RUNPOD_NO_POD_RENTED_POD_LISTED" in may_bill_lines[0]
+        assert f"pod_id={exp_pod_stderr}" in may_bill_lines[0]
+        assert exp_class in may_bill_lines[0]
         doc_c = json.loads((out_c / "outcome.draft.json").read_text(encoding="utf-8"))
         assert doc_c["pod_shutdown"] is False
-        assert doc_c["shutdown_failure_class"] == "RUNPOD_NO_POD_RENTED_POD_LISTED"
+        assert doc_c["shutdown_failure_class"] == exp_class
+        assert doc_c["pod_id"] is None
+        assert doc_c["listed_pod_id"] == exp_listed_id
         assert sum(1 for c in _read_call_log(env_c["log_path"]) if c["tool"] == "offrig_status") == 1
 
 
@@ -4322,15 +4524,80 @@ def test_runpod_launch_and_wait_shielded_during_group_signals(
         doc_l = json.loads((out_l / "outcome.draft.json").read_text(encoding="utf-8"))
         assert doc_l["pod_shutdown"] is True
         assert doc_l["shutdown_attempted"] is True
+        assert doc_l["pod_id"] == f"pod-{label}"
+        assert doc_l["listed_pod_id"] is None
         cli_log_txt = (out_l / "colab-cli.log").read_text(encoding="utf-8")
         assert "RUNPOD_LAUNCH_SIGNAL_DEFERRED" in cli_log_txt
         assert "OFFRIG_LAUNCH_INTERRUPTED" in cli_log_txt
 
-    # Direct unit test + in-process CLI test: stop_event / SIGTERM wakes sleep immediately with OFFRIG_LAUNCH_INTERRUPTED
+    # Interrupted launch retains pod_id when plan is closed and pod appears in sibling_pods under another name
+    started_m = tmp_path / "launch_closed_sib.started"
+    done_m = tmp_path / "launch_closed_sib.done"
+    env_lsib = _setup_fake_offrig_env(
+        tmp_path / "launch_closed_sib",
+        repo_root=clean_repo_root,
+        config_overrides={
+            "plan_id": 803,
+            "pod_id": "pod-launch-closed-803",
+            "launch_started_marker": _to_bash_path(started_m),
+            "launch_completed_marker": _to_bash_path(done_m),
+            "launch_delay_seconds": 0.6,
+            "job_state": "running",
+            "plan_state_override": "closed",
+            "status_pods": [],
+            "status_sibling_pods": [
+                {
+                    "lane": "other",
+                    "project": "p",
+                    "pod": "renamed-pod-803",
+                    "pod_id": "pod-launch-closed-803",
+                    "status": "RUNNING",
+                }
+            ],
+        },
+    )
+    out_lsib = tmp_path / "out_launch_closed_sib"
+    proc_lsib = _popen_bash_launcher(
+        repo_root=clean_repo_root,
+        args=["--host", "runpod", "--time-one", "--run-id", "rp-lsib-803", "--items-file", _to_bash_path(items_path), "--part-dir", _to_bash_path(part_dir), "--receipts-dir", _to_bash_path(receipts_dir), "--out-dir", _to_bash_path(out_lsib)],
+        env_vars={
+            "OFFRIG_CONFIG_DIR": _to_bash_path(env_lsib["offrig_config_dir"]),
+            "RDLAB_FAKE_CLOCK_FILE": _to_bash_path(clock_file),
+            "RDLAB_OFFRIG_MCP_BIN": _to_bash_path(env_lsib["shim_sh"]),
+            "RDLAB_OFFRIG_PROJECT": _to_bash_path(clean_repo_root),
+            "RDLAB_FAKE_OFFRIG_CONFIG": _to_bash_path(env_lsib["cfg_path"]),
+            "RDLAB_FAKE_OFFRIG_LOG": _to_bash_path(env_lsib["log_path"]),
+            "RDLAB_FAKE_OFFRIG_STATE": _to_bash_path(env_lsib["state_path"]),
+            "RDLAB_FAKE_OFFRIG_REPO_ROOT": _to_bash_path(clean_repo_root),
+            "RDLAB_OFFRIG_POLL_INTERVAL": "0.02",
+        },
+        start_new_session=True,
+    )
+    dl_lsib = time.monotonic() + 25.0
+    while not started_m.is_file() and time.monotonic() < dl_lsib:
+        time.sleep(0.02)
+    assert started_m.is_file()
+    os.killpg(proc_lsib.pid, signal.SIGTERM)
+    _o_lsib, e_lsib = proc_lsib.communicate(timeout=20)
+    assert proc_lsib.returncode == 143, e_lsib
+    doc_lsib = json.loads((out_lsib / "outcome.draft.json").read_text(encoding="utf-8"))
+    assert doc_lsib["pod_id"] == "pod-launch-closed-803"
+    assert doc_lsib["listed_pod_id"] is None
+    assert doc_lsib["pod_shutdown"] is False
+    assert doc_lsib["shutdown_failure_class"] == "RUNPOD_SHUTDOWN_ALREADY_CLOSED"
+    assert "RUNPOD_SHUTDOWN_FAILED_MAY_BILL" in e_lsib and "pod_id=pod-launch-closed-803" in e_lsib
+
+    # Direct unit test + in-process CLI test: stop_event / SIGTERM carries progress pod_id/pod_name and wakes sleep immediately
     env_poll_stop = _setup_fake_offrig_env(
         tmp_path / "poll_stop",
         repo_root=clean_repo_root,
-        config_overrides={"plan_id": 802, "job_state": "running"},
+        config_overrides={
+            "plan_id": 802,
+            "pod_id": "pod-prog-802",
+            "launch_omit_pod_id": False,
+            "job_running_pod_name": "offrig-prog-802",
+            "job_state": "running",
+        },
     )
     monkeypatch.setenv("RDLAB_OFFRIG_MCP_BIN", str(env_poll_stop["shim_sh"]))
     monkeypatch.setenv("RDLAB_FAKE_OFFRIG_CONFIG", str(env_poll_stop["cfg_path"]))
@@ -4342,7 +4609,7 @@ def test_runpod_launch_and_wait_shielded_during_group_signals(
     timer.start()
     try:
         with offrig_host.OffrigMcpClient(project_dir=clean_repo_root, start_new_session=True) as cl:
-            with pytest.raises(offrig_host.OffrigHostError, match="OFFRIG_LAUNCH_INTERRUPTED"):
+            with pytest.raises(offrig_host.OffrigHostError, match="pod_id=pod-prog-802 pod_name=offrig-prog-802"):
                 offrig_host.launch_and_wait(
                     cl,
                     plan_id=802,
@@ -4372,6 +4639,76 @@ def test_runpod_launch_and_wait_shielded_during_group_signals(
         assert rc_sig == 2
     finally:
         timer_sig.cancel()
+
+
+def test_runpod_pre_exec_pid_signal_forwarded_to_launch_and_wait(
+    tmp_path: Path,
+    clean_repo_root: Path,
+) -> None:
+    """A SIGTERM arriving while RUNPOD_LAUNCH_IN_PROGRESS=1 before EXEC_PID is recorded is forwarded right after $!."""
+    items_path, part_dir = _make_synthetic_items_with_part(tmp_path / "data")
+    receipts_dir = _make_synthetic_receipts(tmp_path / "data")
+    clock_file = tmp_path / "clock_pre_pid.txt"
+    clock_file.write_text(
+        f"{int(offrig_host.parse_offrig_deadline_utc('2026-11-23 18:00 UTC'))}\n",
+        encoding="utf-8",
+    )
+    env_p = _setup_fake_offrig_env(
+        tmp_path / "pre_exec_pid",
+        repo_root=clean_repo_root,
+        config_overrides={"plan_id": 804, "pod_id": "pod-pre-pid-804", "job_state": "running"},
+    )
+    shim_bin = tmp_path / "pre_pid_bin"
+    shim_bin.mkdir(parents=True, exist_ok=True)
+    sig_marker = tmp_path / "pre_pid_sent.marker"
+    out_p = tmp_path / "out_pre_pid"
+    launcher_pid_file = out_p / ".rig_launcher.pid"
+    mktemp_wrap = shim_bin / "mktemp"
+    mktemp_wrap.write_text(
+        f"""#!/usr/bin/env bash
+out="$(/usr/bin/mktemp "$@")"
+rc=$?
+if [[ "$*" == *".runpod_launch_err."* ]] && [[ ! -f {_to_bash_path(sig_marker)!r} ]] && [[ -f {_to_bash_path(launcher_pid_file)!r} ]]; then
+  touch {_to_bash_path(sig_marker)!r}
+  main_pid="$(tr -d '[:space:]' < {_to_bash_path(launcher_pid_file)!r})"
+  if [[ "$main_pid" =~ ^[0-9]+$ ]]; then
+    kill -TERM "$main_pid" 2>/dev/null || true
+  fi
+fi
+printf '%s\\n' "$out"
+exit "$rc"
+""",
+        encoding="utf-8",
+        newline="\n",
+    )
+    mktemp_wrap.chmod(0o755)
+    t0 = time.monotonic()
+    res_p = _run_bash_launcher(
+        repo_root=clean_repo_root,
+        args=["--host", "runpod", "--time-one", "--run-id", "rp-pre-pid-804", "--items-file", _to_bash_path(items_path), "--part-dir", _to_bash_path(part_dir), "--receipts-dir", _to_bash_path(receipts_dir), "--out-dir", _to_bash_path(out_p)],
+        env_vars={
+            "PATH": f"{_to_bash_path(shim_bin)}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            "OFFRIG_CONFIG_DIR": _to_bash_path(env_p["offrig_config_dir"]),
+            "RDLAB_FAKE_CLOCK_FILE": _to_bash_path(clock_file),
+            "RDLAB_OFFRIG_MCP_BIN": _to_bash_path(env_p["shim_sh"]),
+            "RDLAB_OFFRIG_PROJECT": _to_bash_path(clean_repo_root),
+            "RDLAB_FAKE_OFFRIG_CONFIG": _to_bash_path(env_p["cfg_path"]),
+            "RDLAB_FAKE_OFFRIG_LOG": _to_bash_path(env_p["log_path"]),
+            "RDLAB_FAKE_OFFRIG_STATE": _to_bash_path(env_p["state_path"]),
+            "RDLAB_FAKE_OFFRIG_REPO_ROOT": _to_bash_path(clean_repo_root),
+            "RDLAB_OFFRIG_POLL_INTERVAL": "0.02",
+        },
+    )
+    elapsed_s = time.monotonic() - t0
+    assert res_p.returncode == 143, res_p.stderr
+    assert elapsed_s < 15.0
+    assert sig_marker.is_file()
+    calls_p = _read_call_log(env_p["log_path"])
+    assert sum(1 for c in calls_p if c["tool"] == "offrig_job") == 0
+    assert sum(1 for c in calls_p if c["tool"] == "offrig_shutdown") == 1
+    doc_p = json.loads((out_p / "outcome.draft.json").read_text(encoding="utf-8"))
+    assert doc_p["shutdown_attempted"] is True
+    assert "RUNPOD_LAUNCH_SIGNAL_DEFERRED" in (out_p / "colab-cli.log").read_text(encoding="utf-8")
 
 
 def test_runpod_only_judges_whitespace_and_deduplication(
