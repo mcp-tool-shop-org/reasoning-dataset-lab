@@ -248,6 +248,21 @@ def install(ns: dict[str, Any], *, state_dir: str, vm_root: str) -> None:
     for step_name in _DRYRUN_STEPS:
         ns[step_name] = _as_dryrun(step_name)
 
+    if "ensure_vllm_venv" in ns:
+        orig_vllm_venv = ns["ensure_vllm_venv"]
+
+        def _shim_ensure_vllm_venv(*, work_dir: Path, repo_dir: Path, run_dir: Path, real: bool) -> dict[str, Any]:
+            rec = orig_vllm_venv(work_dir=work_dir, repo_dir=repo_dir, run_dir=run_dir, real=False)
+            if rec.get("status") != "failed":
+                vllm_py = Path(work_dir) / ns["VLLM_VENV_NAME"] / "bin" / "python"
+                ns["_ensure_dryrun_venv_python_wrapper"](vllm_py)
+                rec["status"] = "ok"
+                ns["_LAST_VLLM_INSTALL"] = dict(rec)
+            _record(state_dir, {"call": "ensure_vllm_venv", "status": rec.get("status"), "real": real})
+            return rec
+
+        ns["ensure_vllm_venv"] = _shim_ensure_vllm_venv
+
     orig_child = ns["_run_child_with_group_timeout"]
     runner_module = ns["JUDGE_RUNNER_MODULE"]
 
@@ -261,7 +276,10 @@ def install(ns: dict[str, Any], *, state_dir: str, vm_root: str) -> None:
         if "--device" in cmd:
             cmd[cmd.index("--device") + 1] = "cpu"
         if "--window-mode" in cmd:
-            cmd[cmd.index("--window-mode") + 1] = _STUB_WINDOW_MODE.get(window_mode, window_mode)
+            if "--synthetic-items" in cmd and window_mode in ("time-one", "time_one"):
+                cmd[cmd.index("--window-mode") + 1] = "dryrun"
+            else:
+                cmd[cmd.index("--window-mode") + 1] = _STUB_WINDOW_MODE.get(window_mode, window_mode)
         if "--stub" not in cmd:
             cmd.append("--stub")
         res = orig_child(cmd, *args, **kwargs)

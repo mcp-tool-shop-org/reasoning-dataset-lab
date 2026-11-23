@@ -38,6 +38,7 @@ from reasoning_dataset_lab.pilot_b import bakeoff_judge_score  # noqa: E402
 from reasoning_dataset_lab.pilot_b.bakeoff_judge import (  # noqa: E402
     BAKEOFF_JUDGE_SPECS,
     D3_MINI_REVIEWED_REVISION,
+    close_bakeoff_outputs,
 )
 from tests.fixtures import fake_colab  # noqa: E402
 
@@ -26618,6 +26619,7 @@ def _e2e_fake_real_mode_window(
     vm_gpu_name: str | None = None,
     expect_fail: bool = False,
     double_space_rows: bool = False,
+    synthetic_items: bool = False,
 ) -> dict[str, Any]:
     """Drive the REAL `launch_judges.sh` live path (not `--dry`) in a real mode (no stub mode, no VM_DRYRUN) against the
     fake `colab` CLI, with the VM cell run through `tests/fixtures/fake_vm_real_mode_shim.py`, on a part made by the real
@@ -26675,6 +26677,8 @@ def _e2e_fake_real_mode_window(
     if vm_gpu_name is not None:
         (env_paths["state_dir"] / "nvidia_smi_gpu_name.txt").write_text(vm_gpu_name + "\n", encoding="utf-8")
     mode_cli = f"--{mode}"
+    if synthetic_items:
+        mode_cli += " --synthetic-items"
     if mode == "lock-check":
         assert p0a_items is not None and p0a_part_dir is not None and counted_items is not None
         mode_cli += (
@@ -26756,6 +26760,21 @@ def _e2e_fake_real_mode_window(
         assert p0a_bind["checked_by"] == "rig" and p0a_bind["projection_checked"] is True
         assert p0a_launcher_bind["checked_by"] == "launcher" and p0a_launcher_bind["binding"]["projection_checked"] is True
         assert outcome["launcher_part_binding"]["p0a_part"] == p0a_launcher_bind
+    elif synthetic_items:
+        assert part_dir is None
+        assert (kept / "items.jsonl").read_bytes() == items_file.read_bytes()
+        for absent_up in ("part.json", "checksums.txt", "launcher_part_binding.json", "manifest.json"):
+            assert not (kept / absent_up).exists(), absent_up
+        vm_items_dir = env_paths["state_dir"] / "vm_fs" / "rdlab_items"
+        assert not any(
+            (vm_items_dir / n).exists()
+            for n in ("items.jsonl", "part.json", "checksums.txt", "launcher_part_binding.json", "manifest.json")
+        )
+        deleted = {Path(f["path"]).name: f["absent"] for f in receipt["deleted_items_receipt"]["files"]}
+        assert deleted.get("items.jsonl") is True and all(deleted.values()), receipt["deleted_items_receipt"]
+        assert receipt["deleted_items_receipt"]["all_absent"] is True
+        ident = receipt["part_identity"]
+        assert ident["part_id"] == "synthetic" and ident.get("synthetic_items") is True, ident
     else:
         assert part_dir is not None
         # Uploads: the part's own part.json and checksums.txt went up byte-identical beside the projected items.jsonl;
@@ -26828,7 +26847,7 @@ def _e2e_fake_real_mode_window(
     assert session_name in stopped
     live_sessions = json.loads(env_paths["sessions_file"].read_text(encoding="utf-8"))
     assert session_name not in {s.get("session_id") for s in live_sessions}
-    return {"out_dir": out_dir, "receipt": receipt, "shim_rows": shim_rows, "env_paths": env_paths}
+    return {"out_dir": out_dir, "receipt": receipt, "shim_rows": shim_rows, "env_paths": env_paths, "kept": kept}
 
 
 def _e2e_time_one_inputs(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
@@ -26836,6 +26855,70 @@ def _e2e_time_one_inputs(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     part = _make_builder_part(tmp_path / "e2e_t1_build")
     items = _project_part_items(part, tmp_path / "e2e_t1_inputs" / "part-items-projected.jsonl")
     return receipts_dir, hf_home, part, items
+
+
+def _e2e_seed_qwen36_snapshot_and_receipt(receipts_dir: Path, hf_home: Path) -> None:
+    spec = vm_judges.JUDGE_SPECS["qwen3.6-35b-a3b"]
+    owner, repo = spec.repo_id.split("/", 1)
+    snap = hf_home / "hub" / f"models--{owner}--{repo}" / "snapshots" / spec.revision
+    snap.mkdir(parents=True, exist_ok=True)
+    files = {
+        "config.json": b'{"model_type": "qwen3_5_moe"}',
+        "model-00001-of-00026.safetensors": b"synthetic-qwen36-weights",
+    }
+    rec_files: dict[str, dict[str, Any]] = {}
+    for rel, body in files.items():
+        (snap / rel).write_bytes(body)
+        rec_files[rel] = {"bytes": len(body), "sha256": hashlib.sha256(body).hexdigest()}
+    (receipts_dir / f"{owner}__{repo}.sha256.json").write_text(
+        json.dumps(
+            {
+                "repo": spec.repo_id,
+                "revision": spec.revision,
+                "source": "hf-api-metadata",
+                "seconds": None,
+                "files": rec_files,
+                "total_bytes": sum(v["bytes"] for v in rec_files.values()),
+            },
+            indent=1,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+
+def _e2e_write_synthetic_only_items(items_path: Path, item_ids: list[str]) -> Path:
+    items_path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [
+        json.dumps(
+            {
+                "id": iid,
+                "material": f"1. First premise for {iid}.\n2. Second premise for {iid}.",
+                "claim": f"Synthetic claim for {iid}.",
+            }
+        )
+        for iid in item_ids
+    ]
+    items_path.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
+    return items_path
+
+
+def _e2e_synthetic_time_one_inputs(
+    tmp_path: Path, *, item_ids: list[str]
+) -> tuple[Path, Path, Path, str]:
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "e2e_t1_synth_rec")
+    _e2e_seed_qwen36_snapshot_and_receipt(receipts_dir, hf_home)
+    items = _e2e_write_synthetic_only_items(tmp_path / "e2e_t1_synth_inputs" / "items.jsonl", item_ids)
+    assert not (items.parent / "part.json").exists()
+    exports = (
+        "export RDLAB_ONLY_JUDGES=qwen3.6-35b-a3b; "
+        "export RDLAB_PASS_MODE=three_way_contradicted; "
+        "export RDLAB_QWEN36_MAX_NEW_TOKENS=2048; "
+        "export FAKE_COLAB_DISK_FREE_BYTES=220000000000; "
+    )
+    return receipts_dir, hf_home, items, exports
 
 
 def test_e2e_fake_real_mode_time_one_reaches_judges(tmp_path: Path) -> None:
@@ -26854,6 +26937,137 @@ def test_e2e_fake_real_mode_time_one_reaches_judges(tmp_path: Path) -> None:
     assert any(r["call"] == "run_gpu_gate" for r in res["shim_rows"])
     t1 = res["receipt"]["time_one_summary"]
     assert t1["harness_readouts"]["pilot_mass_check"]["status"] == "not_applicable"
+
+
+def test_e2e_fake_real_mode_time_one_synthetic_reaches_judges(tmp_path: Path) -> None:
+    """The free gate for declared synthetic `--time-one --synthetic-items`: no `--part-dir`, no `part.json` beside the
+    standalone `synth-`-id (`id`, `material`, `claim` only) items file, `RDLAB_QWEN36_MAX_NEW_TOKENS` set with
+    `qwen3.6-35b-a3b` on `three_way_contradicted`, reaches GPU gate and judge children, marks `synthetic_items: true`
+    across outputs and `part_id: "synthetic"`, uploads no part files or binding, and is refused by the scorer."""
+    item_ids = ["synth-001", "synth-002", "synth-003", "synth-004"]
+    receipts_dir, hf_home, items, q36_exports = _e2e_synthetic_time_one_inputs(tmp_path, item_ids=item_ids)
+    res = _e2e_fake_real_mode_window(
+        tmp_path,
+        mode="time-one",
+        items_file=items,
+        part_dir=None,
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        extra_exports=q36_exports,
+        synthetic_items=True,
+        tag="_synth",
+    )
+    out_dir = res["out_dir"]
+    kept = res["kept"]
+
+    assert any(r["call"] == "run_gpu_gate" for r in res["shim_rows"])
+    judge_calls = [r for r in res["shim_rows"] if r["call"] == "judge_child"]
+    assert [r["judge_id"] for r in judge_calls] == ["qwen3.6-35b-a3b"] and judge_calls[0]["returncode"] == 0
+
+    for absent_up in ("part.json", "checksums.txt", "launcher_part_binding.json", "manifest.json"):
+        assert not (kept / absent_up).exists(), absent_up
+
+    win_doc = json.loads((out_dir / "window.json").read_text(encoding="utf-8"))
+    assert win_doc["synthetic_items"] is True
+    assert res["receipt"]["synthetic_items"] is True
+    assert res["receipt"]["part_identity"]["part_id"] == "synthetic"
+    receipt_json = out_dir / "extracted" / "receipt.json"
+    assert receipt_json.is_file()
+    assert json.loads(receipt_json.read_text(encoding="utf-8"))["synthetic_items"] is True
+    outcome_doc = json.loads((out_dir / "outcome.draft.json").read_text(encoding="utf-8"))
+    assert outcome_doc["synthetic_items"] is True
+    t1_file = out_dir / "time_one_summary.json"
+    assert t1_file.is_file()
+    t1_doc = json.loads(t1_file.read_text(encoding="utf-8"))
+    assert t1_doc["synthetic_items"] is True
+    assert res["receipt"]["time_one_summary"]["synthetic_items"] is True
+    assert t1_doc["part_identity"]["part_id"] == "synthetic"
+    assert res["receipt"]["time_one_summary"]["part_identity"]["part_id"] == "synthetic"
+
+    rows_files = sorted((out_dir / "rows").glob("*.jsonl"))
+    assert rows_files
+    all_rows = [
+        json.loads(ln)
+        for rf in rows_files
+        for ln in rf.read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    assert all_rows
+    assert all(r.get("synthetic_items") is True for r in all_rows)
+
+    done_files = sorted((out_dir / "judge_done").glob("*.json"))
+    assert done_files
+    assert all(json.loads(dp.read_text(encoding="utf-8")).get("synthetic_items") is True for dp in done_files)
+
+    keys_file = tmp_path / "synth_keys.sealed.jsonl"
+    keys_file.write_text(
+        json.dumps(
+            {
+                "id": item_ids[0],
+                "triad_id": "T1",
+                "triad_handle": "h1",
+                "key": "supported",
+                "class": "supported",
+                "key_source": "construction",
+                "value_set_id": "vs1",
+                "closure": "open",
+                "split": "test",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    score_dir = tmp_path / "synth_score_dir"
+    (score_dir / "rows").mkdir(parents=True, exist_ok=True)
+    for rel in ("schedule.json", "generations.jsonl"):
+        (score_dir / rel).write_bytes((out_dir / rel).read_bytes())
+    for rf in rows_files:
+        (score_dir / "rows" / rf.name).write_bytes(rf.read_bytes())
+    close_bakeoff_outputs(score_dir)
+
+    with pytest.raises(RdlabError) as exc_rows:
+        bakeoff_judge_score._load_rows_file(rows_files[0])
+    assert exc_rows.value.code == "BAKEOFF_SCORE_SYNTHETIC_ITEMS"
+    with pytest.raises(RdlabError) as exc_closed:
+        bakeoff_judge_score.verify_outputs_closed(score_dir)
+    assert exc_closed.value.code == "BAKEOFF_SCORE_SYNTHETIC_ITEMS"
+    with pytest.raises(RdlabError) as exc_score:
+        bakeoff_judge_score.score_bakeoff_outputs(
+            judge_output_dir=score_dir,
+            keys_path=keys_file,
+            public_out_path=tmp_path / "pub_synth.json",
+            sealed_rows_out_path=tmp_path / "sealed_synth",
+            count_all_non_canary=False,
+        )
+    assert exc_score.value.code == "BAKEOFF_SCORE_SYNTHETIC_ITEMS"
+
+
+def test_e2e_fake_real_mode_time_one_synthetic_refuses_non_synth_item_before_upload(tmp_path: Path) -> None:
+    """Negative control: a declared `--time-one --synthetic-items` run whose items include one non-`synth-` id
+    is refused before any `colab new` call or upload."""
+    receipts_dir, hf_home, items, q36_exports = _e2e_synthetic_time_one_inputs(
+        tmp_path, item_ids=["synth-001", "item-002", "synth-003"]
+    )
+    res = _e2e_fake_real_mode_window(
+        tmp_path,
+        mode="time-one",
+        items_file=items,
+        part_dir=None,
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        extra_exports=q36_exports,
+        synthetic_items=True,
+        tag="_synth_bad_id",
+        expect_fail=True,
+    )
+    proc = res["proc"]
+    assert proc.returncode != 0, proc.stdout
+    assert "SYNTHETIC_ITEMS_" in proc.stderr, proc.stderr
+    calls_log = res["env_paths"]["calls_log"]
+    if calls_log.is_file():
+        calls = [json.loads(ln) for ln in calls_log.read_text(encoding="utf-8").splitlines() if ln.strip()]
+        assert not any(c.get("subcmd") == "new" for c in calls), calls
 
 
 def test_e2e_time_one_summary_carries_the_launch_limits_and_the_rigs_projection_check(tmp_path: Path) -> None:
