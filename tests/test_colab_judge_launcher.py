@@ -38,6 +38,7 @@ from reasoning_dataset_lab.pilot_b import bakeoff_judge_score  # noqa: E402
 from reasoning_dataset_lab.pilot_b.bakeoff_judge import (  # noqa: E402
     BAKEOFF_JUDGE_SPECS,
     D3_MINI_REVIEWED_REVISION,
+    close_bakeoff_outputs,
 )
 from tests.fixtures import fake_colab  # noqa: E402
 
@@ -27017,12 +27018,23 @@ def test_e2e_fake_real_mode_time_one_synthetic_reaches_judges(tmp_path: Path) ->
         encoding="utf-8",
         newline="\n",
     )
+    score_dir = tmp_path / "synth_score_dir"
+    (score_dir / "rows").mkdir(parents=True, exist_ok=True)
+    for rel in ("schedule.json", "generations.jsonl"):
+        (score_dir / rel).write_bytes((out_dir / rel).read_bytes())
+    for rf in rows_files:
+        (score_dir / "rows" / rf.name).write_bytes(rf.read_bytes())
+    close_bakeoff_outputs(score_dir)
+
+    with pytest.raises(RdlabError) as exc_rows:
+        bakeoff_judge_score._load_rows_file(rows_files[0])
+    assert exc_rows.value.code == "BAKEOFF_SCORE_SYNTHETIC_ITEMS"
     with pytest.raises(RdlabError) as exc_closed:
-        bakeoff_judge_score.verify_outputs_closed(out_dir)
+        bakeoff_judge_score.verify_outputs_closed(score_dir)
     assert exc_closed.value.code == "BAKEOFF_SCORE_SYNTHETIC_ITEMS"
     with pytest.raises(RdlabError) as exc_score:
         bakeoff_judge_score.score_bakeoff_outputs(
-            judge_output_dir=out_dir,
+            judge_output_dir=score_dir,
             keys_path=keys_file,
             public_out_path=tmp_path / "pub_synth.json",
             sealed_rows_out_path=tmp_path / "sealed_synth",
