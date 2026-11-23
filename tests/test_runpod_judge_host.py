@@ -2355,6 +2355,11 @@ def test_runpod_failed_shutdown_reports_honest_receipt_preserving_earlier_error(
 ) -> None:
     items_path, part_dir = _make_synthetic_items_with_part(tmp_path / "data")
     receipts_dir = _make_synthetic_receipts(tmp_path / "data")
+    clock_file = tmp_path / "fake_clock.txt"
+    clock_file.write_text(
+        f"{int(offrig_host.parse_offrig_deadline_utc('2026-11-23 18:00 UTC'))}\n",
+        encoding="utf-8",
+    )
 
     # 1. Failing shutdown after an earlier gate error preserves original failure_class/why and emits billing warning
     env_both = _setup_fake_offrig_env(
@@ -2388,6 +2393,7 @@ def test_runpod_failed_shutdown_reports_honest_receipt_preserving_earlier_error(
         ],
         env_vars={
             "OFFRIG_CONFIG_DIR": _to_bash_path(env_both["offrig_config_dir"]),
+            "RDLAB_FAKE_CLOCK_FILE": _to_bash_path(clock_file),
             "RDLAB_OFFRIG_MCP_BIN": _to_bash_path(env_both["shim_sh"]),
             "RDLAB_OFFRIG_PROJECT": _to_bash_path(clean_repo_root),
             "RDLAB_FAKE_OFFRIG_CONFIG": _to_bash_path(env_both["cfg_path"]),
@@ -2444,6 +2450,7 @@ def test_runpod_failed_shutdown_reports_honest_receipt_preserving_earlier_error(
         ],
         env_vars={
             "OFFRIG_CONFIG_DIR": _to_bash_path(env_alone["offrig_config_dir"]),
+            "RDLAB_FAKE_CLOCK_FILE": _to_bash_path(clock_file),
             "RDLAB_OFFRIG_MCP_BIN": _to_bash_path(env_alone["shim_sh"]),
             "RDLAB_OFFRIG_PROJECT": _to_bash_path(clean_repo_root),
             "RDLAB_FAKE_OFFRIG_CONFIG": _to_bash_path(env_alone["cfg_path"]),
