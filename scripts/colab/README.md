@@ -196,10 +196,36 @@ bash scripts/colab/launch_judges.sh \
   --receipts-dir /path/to/receipts < /dev/null
 ```
 
-- **Profile, container disk, and workspace root:** Uses `--offrig-profile` (`RDLAB_OFFRIG_PROFILE`, default `rdlab-judge`), `--offrig-project` (`RDLAB_OFFRIG_PROJECT`), and `--runpod-image` (`RDLAB_RUNPOD_IMAGE`, default `vllm/vllm-openai:v0.34.0@sha256:20fdb089454afbb324efa4110a2c025ff7b27cc1a086e07aa580b18df8ad1ce1` matching `scripts/colab/locks/vllm.lock.txt`). The VM working root defaults to `/workspace/job` (`RDLAB_VM_ROOT`). Model weights (~70 GB) download directly on the pod under `HF_HOME` (default `/workspace/hf` from `offrig` job env or `<VM_ROOT>/hf_home`); no network volume is created automatically, so size `container_disk_gb >= 60` (`--container-disk-gb`) for the unpacked image and `/tmp` and `volume_gb >= 200` on the offrig profile for `/workspace`.
-- **Strict GPU gate (`no_fallback=true`):** Immediately after launch, `offrig_host.py verify-gpu` checks that both `offrig` pod metadata and in-pod `nvidia-smi` report `NVIDIA RTX PRO 6000 Blackwell Server Edition` with `>= 90,000` MiB VRAM. Any wrong GPU, Workstation Edition, low VRAM, unreadable `nvidia-smi`, or cross-source disagreement refuses (`RUNPOD_GPU_*` / `RUNPOD_VRAM_INSUFFICIENT`) before file upload and shuts down the pod.
-- **Shutdown and watchdog backstop:** `offrig_plan` sets `max_hours` with a safety margin past `WALL_SECONDS` (`RDLAB_OFFRIG_BACKSTOP_MARGIN_SECONDS`, default `300` s) so RunPod/offrig's watchdog terminates the pod even on `SIGKILL`. On every handled exit (success, gate refusal, failed step, timeout, `SIGTERM`/`SIGINT`), the launcher fetches outputs and calls `offrig_shutdown` (retrying once on error). Missing `offrig-mcp` (`OFFRIG_NOT_FOUND`) or failing pre-launch `offrig` calls refuse before any pod is started.
-- **Receipts and USD spend:** `vm_receipt.json` records `host: "runpod"`, `pod_id`, `image` (`ref`, `tag`, `digest`), `runtime_environment` (`host_gpu_name`, `driver_version`, `cuda_version`, `python_version`, `vllm_version`), `model_download_seconds`, and `model_download_seconds_by_judge`. `outcome.draft.json` records `host: "runpod"`, `venue: "runpod"`, `pod_id`, `offrig_plan_id`, `watchdog_deadline`, `cost_usd`, `cost_currency: "USD"`, `cost_per_hr_usd`, `cost_basis` (from `offrig_shutdown` `spent` USD), and `model_download_seconds`.
+- **Profile, container disk, image verification, and workspace root:** Uses `--offrig-profile` (`RDLAB_OFFRIG_PROFILE`, default `rdlab-judge`), `--offrig-project` (`RDLAB_OFFRIG_PROJECT`), and `--runpod-image` (`RDLAB_RUNPOD_IMAGE`, default `vllm/vllm-openai:v0.34.0@sha256:20fdb089454afbb324efa4110a2c025ff7b27cc1a086e07aa580b18df8ad1ce1` matching `scripts/colab/locks/vllm.lock.txt`). Because `offrig` executes the named profile's `[profiles.job].image` without exposing the image string on `offrig_plan`, `offrig_job`, or `offrig_status`, `offrig_host.py check-profile-image` reads `offrig`'s own `config.toml` (`OFFRIG_CONFIG_DIR/config.toml` or OS config dir `offrig/config.toml`) before `offrig_plan` and refuses unless `[profiles.job].image` equals the requested pinned image (`OFFRIG_PROFILE_IMAGE_MISMATCH` / `OFFRIG_PROFILE_NOT_FOUND` / `OFFRIG_CONFIG_UNREADABLE`). The VM working root defaults to `/workspace/job` (`RDLAB_VM_ROOT`). Model weights (~70 GB) download directly on the pod under `HF_HOME` (default `/workspace/hf` from `offrig` job env or `<VM_ROOT>/hf_home`); no network volume is created automatically, so configure `container_disk_gb >= 60` (`--container-disk-gb`), `volume_gb >= 200`, `min_vram_gb = 90`, `gpu_type_ids` restricted to `"NVIDIA RTX PRO 6000 Blackwell Server Edition"` (Server Edition only), `hf_token_secret` if downloading gated models, and initialize the project budget in `RDLAB_OFFRIG_PROJECT` via `offrig budget --provider runpod <USD>`. Example `config.toml` profile block:
+
+```toml
+[[profiles]]
+name = "rdlab-judge"
+tier = "medium"
+gpu_type_ids = ["NVIDIA RTX PRO 6000 Blackwell Server Edition"]
+gpu_count = 1
+volume_gb = 200
+container_disk_gb = 60
+context_length = 0
+models = []
+wait_for_gpu_minutes = 20
+parallel = 1
+min_cuda = "13.0"
+min_vram_gb = 90
+
+[profiles.job]
+image = "vllm/vllm-openai:v0.34.0@sha256:20fdb089454afbb324efa4110a2c025ff7b27cc1a086e07aa580b18df8ad1ce1"
+min_cuda = "12.8"
+hf_token_secret = "HF_TOKEN"
+```
+
+- **Pre-plan gates and strict Server Edition check (`no_fallback=true`):** Before `offrig_plan`, the host refuses incompatible binary/path combinations (`OFFRIG_PATH_INCOMPATIBLE`), verifies the profile `job.image`, and on `--counted` / `--lock-check` refuses unless promoted goldens exist for RunPod's own `card_type` (`RUNPOD-RTX-PRO-6000-SERVER`, never reusing Colab `G4` goldens). `offrig_host.py plan_pod` verifies the returned plan GPU list refuses Workstation Edition (`RUNPOD_PLAN_WORKSTATION_REFUSED`). Immediately after launch, `offrig_host.py verify-gpu` checks in both `--time-one`/`--counted`/`--lock-check` and `--probe` that both `offrig` pod metadata and in-pod `nvidia-smi` report `NVIDIA RTX PRO 6000 Blackwell Server Edition` with `>= 90,000` MiB VRAM, and VM `verify_vm_card_type` binds `RUNPOD-RTX-PRO-6000-SERVER` against Server Edition on the pod.
+- **Full-window watchdog deadline and shutdown:** `offrig_plan` receives explicit `wait_minutes` (`DEFAULT_LAUNCH_WAIT_MINUTES = 20`, `RDLAB_OFFRIG_LAUNCH_WAIT_MINUTES`; launcher readiness timeout defaults to `wait_minutes * 60 + image_pull_setup_seconds`) and computes:
+  - `max_hours = ceil((launch_wait_minutes * 60 + image_pull_setup_seconds + wall_seconds + fetch_allowance_seconds + shutdown_reserve_seconds) / 3600.0, 4)`
+  - Named defaults in `scripts/colab/offrig_host.py`: `DEFAULT_LAUNCH_WAIT_MINUTES = 20` (`RDLAB_OFFRIG_LAUNCH_WAIT_MINUTES`), `DEFAULT_IMAGE_PULL_SETUP_SECONDS = 900` (`RDLAB_OFFRIG_IMAGE_PULL_SETUP_SECONDS`), `DEFAULT_FETCH_ALLOWANCE_SECONDS = 180` (`RDLAB_OFFRIG_FETCH_ALLOWANCE_SECONDS`), and `DEFAULT_SHUTDOWN_RESERVE_SECONDS = 120` (`RDLAB_OFFRIG_SHUTDOWN_RESERVE_SECONDS`).
+  - Right before the `run` step starts, the launcher checks `offrig`'s UTC `deadline` against the current clock minus `fetch_allowance_seconds + shutdown_reserve_seconds` (`compute_remaining_run_budget_seconds`) and shortens the `run` wall/timeout if setup took longer than planned (or skips `run` if no margin remains) so artifact fetch and shutdown always run before the watchdog terminates the pod.
+  - Once `offrig_launch` is attempted for a plan id, every exit path calls `offrig_shutdown` (up to `STOP_ATTEMPTS` attempts via `RDLAB_STOP_ATTEMPTS`, default `2`), including client timeouts, side-car crashes, malformed JSON, job poll failures, and watchdog startup failures (`OFFRIG_WATCHDOG_START_FAILED`, which triggers immediate shutdown).
+- **Receipts and USD spend:** `vm_receipt.json` records `host: "runpod"`, `pod_id`, `image_requested` (`ref`, `tag`, `digest`), `image_source: "offrig profile"`, `runtime_environment` (`host_gpu_name`, `driver_version`, `cuda_version`, `python_version` from `venv-vllm`, `system_python_version` from host interpreter, `vllm_version`), `model_download_seconds`, and `model_download_seconds_by_judge`. `outcome.draft.json` records `host: "runpod"`, `venue: "runpod"`, `pod_id`, `offrig_plan_id`, `image_requested`, `image_source: "offrig profile"`, `watchdog_deadline`, `cost_usd`, `cost_currency: "USD"`, `cost_per_hr_usd`, `cost_basis` (from `offrig_shutdown` `spent` USD), and `model_download_seconds`.
 
 ---
 

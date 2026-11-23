@@ -79,12 +79,17 @@ CONTAINER_DISK_GB="${RDLAB_CONTAINER_DISK_GB:-}"
 RUNPOD_IMAGE_REF="${RDLAB_RUNPOD_IMAGE:-vllm/vllm-openai:v0.34.0@sha256:20fdb089454afbb324efa4110a2c025ff7b27cc1a086e07aa580b18df8ad1ce1}"
 RUNPOD_IMAGE_TAG=""
 RUNPOD_IMAGE_DIGEST=""
-RUNPOD_BACKSTOP_MARGIN_SECONDS="${RDLAB_OFFRIG_BACKSTOP_MARGIN_SECONDS:-300}"
+RUNPOD_LAUNCH_WAIT_MINUTES="${RDLAB_OFFRIG_LAUNCH_WAIT_MINUTES:-20}"
+RUNPOD_IMAGE_PULL_SETUP_SECONDS="${RDLAB_OFFRIG_IMAGE_PULL_SETUP_SECONDS:-900}"
+RUNPOD_FETCH_ALLOWANCE_SECONDS="${RDLAB_OFFRIG_FETCH_ALLOWANCE_SECONDS:-180}"
+RUNPOD_SHUTDOWN_RESERVE_SECONDS="${RDLAB_OFFRIG_SHUTDOWN_RESERVE_SECONDS:-120}"
+RUNPOD_STATUS_POLL_RETRIES="${RDLAB_OFFRIG_STATUS_POLL_RETRIES:-3}"
 OFFRIG_HOST_PY="${RDLAB_OFFRIG_HOST_PY:-$SCRIPT_DIR/offrig_host.py}"
 VM_ROOT="/content"
 RUNPOD_PLAN_ID=""
 RUNPOD_POD_ID=""
 RUNPOD_LAUNCH_STARTED=0
+RUNPOD_LAUNCH_ATTEMPTED=0
 RUNPOD_POD_OPENED=0
 RUNPOD_SHUTDOWN_DONE=0
 RUNPOD_SHUTDOWN_REASON=""
@@ -95,7 +100,7 @@ RUNPOD_OFFRIG_GPU=""
 RUNPOD_GPU_GATE_JSON=""
 RUNPOD_LAUNCH_INFO_JSON=""
 RUNPOD_POLL_INTERVAL="${RDLAB_OFFRIG_POLL_INTERVAL:-2}"
-RUNPOD_LAUNCH_TIMEOUT_SECONDS="${RDLAB_OFFRIG_LAUNCH_TIMEOUT_SECONDS:-900}"
+RUNPOD_LAUNCH_TIMEOUT_SECONDS="${RDLAB_OFFRIG_LAUNCH_TIMEOUT_SECONDS:-$(( RUNPOD_LAUNCH_WAIT_MINUTES * 60 + RUNPOD_IMAGE_PULL_SETUP_SECONDS ))}"
 
 EXPECTED_JUDGE_LOCK_SHA256="608f56ab8eae6852718438366ff0ce74ef6aafb66db75faef034ae0bb5bdcf10"
 EXPECTED_D3_LOCK_SHA256="08801f9ac5e3cfb14ce819b051aeef388bea3e564e7b99bddc10d91537ab78e2"
@@ -696,11 +701,11 @@ PY
       exit 2
     fi
   else
-    # RunPod host uses the offrig profile + RTX PRO 6000 Blackwell Server Edition gate instead of Colab --card/--shape.
-    CARD="${CARD:-G4}"
+    # RunPod host uses the offrig profile + RTX PRO 6000 Blackwell Server Edition card type instead of Colab --card/--shape.
+    CARD="${CARD:-RUNPOD-RTX-PRO-6000-SERVER}"
     SHAPE=""
     EXPECTED_SESSION_SHAPE=""
-    REQUESTED_CARD_TYPE="G4"
+    REQUESTED_CARD_TYPE="RUNPOD-RTX-PRO-6000-SERVER"
     COLAB_NEW_FLAGS=()
   fi
   if [[ "$MODE" == "time-one" ]]; then
@@ -1044,46 +1049,56 @@ require_p0a_part_dir_for_mode() {
   fi
 }
 
-# A real time-one / counted / lock-check window forwards its window id to the VM as RDLAB_SESSION_ID, and the VM's boot
-# gatekeeper refuses an empty or stub id only after open, upload, venv sync and weight download. Refuse an explicit
-# --window-id, or an ambient RDLAB_SESSION_ID, that is empty or stub here, before `colab new` (--dry and live alike).
-# "Stub" is vm_judges.is_stub_window_id, the same rule the VM applies.
+# A real window forwards its window id (or opened session name) to the VM as RDLAB_SESSION_ID, and the VM's boot
+# gatekeeper refuses an empty or stub id only after open, upload, venv sync and weight download. Refuse any empty
+# or stub window id, run id, or session name here before `colab new` or `offrig_plan` (--dry and live alike).
+# Uses vm_judges.is_real_mode and vm_judges.is_stub_window_id directly so host and VM share the exact rule.
 require_real_window_id() {
-  if [[ "${VM_DRYRUN:-0}" == "1" ]] || [[ "$SESSION_SMOKE_FLAG" == "1" ]]; then
+  if [[ "$SESSION_SMOKE_FLAG" == "1" ]] || [[ "$MODE" == "probe" ]] || [[ -n "${UNTIL_STEP:-}" ]]; then
     return 0
   fi
-  if [[ "$MODE" != "time-one" && "$MODE" != "counted" && "$MODE" != "lock-check" ]]; then
-    return 0
-  fi
-  local src="" val=""
+  local wid_set="0" wid_src="" wid_val=""
   if [[ "${WINDOW_ID_FLAG:-0}" -eq 1 ]]; then
-    src="--window-id"
-    val="$WINDOW_ID"
+    wid_set="1"
+    wid_src="--window-id"
+    wid_val="$WINDOW_ID"
   elif [[ -n "${RDLAB_SESSION_ID+x}" ]]; then
-    src="RDLAB_SESSION_ID"
-    val="$RDLAB_SESSION_ID"
-  else
-    return 0
+    wid_set="1"
+    wid_src="RDLAB_SESSION_ID"
+    wid_val="$RDLAB_SESSION_ID"
   fi
-  if ! "$PYTHON_BIN" - "$REPO_ROOT" "$MODE" "$src" "$val" <<'PY'
+  if ! "$PYTHON_BIN" - "$REPO_ROOT" "$MODE" "${VM_DRYRUN:-0}" "$wid_set" "$wid_src" "$wid_val" "$RUN_ID" "$SESSION_NAME" <<'PY'
 import sys
 from pathlib import Path
 
-repo_root, mode, src, val = Path(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
+repo_root = Path(sys.argv[1])
+mode, vm_dryrun = sys.argv[2], sys.argv[3]
+wid_set, wid_src, wid_val = (sys.argv[4] == "1"), sys.argv[5], sys.argv[6]
+run_id, session_name = sys.argv[7], sys.argv[8]
 sys.path.insert(0, str(repo_root / "src"))
 sys.path.insert(0, str(repo_root / "scripts" / "colab"))
 import vm_judges
 
-if vm_judges.is_stub_window_id(val):
-    sys.stderr.write(
-        f"WINDOW_ID_STUB_REFUSED: real mode ({mode!r}) refuses an empty or stub window id from {src} "
-        f"(got {val.strip()!r}); omit {src} to use the session this launcher opens, or pass the opened "
-        "Colab session's name\n"
-    )
-    raise SystemExit(2)
+if not vm_judges.is_real_mode(mode, dryrun=(vm_dryrun == "1")):
+    raise SystemExit(0)
+
+checks = []
+if wid_set:
+    checks.append((wid_src, wid_val))
+checks.append(("--run-id", run_id))
+checks.append(("session_name", session_name))
+
+for src, val in checks:
+    if vm_judges.is_stub_window_id(val):
+        sys.stderr.write(
+            f"WINDOW_ID_STUB_REFUSED: real mode ({mode!r}) refuses an empty or stub id from {src} "
+            f"(got {val.strip()!r}); pass a non-stub id before opening a session or pod\n"
+        )
+        raise SystemExit(2)
 PY
   then
-    RUN_WHY="WINDOW_ID_STUB_REFUSED: empty or stub window id from $src"
+    RUN_FAILURE_CLASS="WINDOW_ID_STUB_REFUSED"
+    RUN_WHY="WINDOW_ID_STUB_REFUSED: empty or stub window or run id refused before opening a session or pod"
     exit 2
   fi
 }
@@ -1108,7 +1123,7 @@ if [[ -z "$PASS_MODE" ]]; then
   if [[ -n "${RDLAB_JUDGE_PASS_MODES:-}" ]]; then PASS_MODE="per_judge"; else PASS_MODE="binary"; fi
 fi
 
-if ! "$PYTHON_BIN" - "$REPO_ROOT" "$MODE" "$UNTIL_STEP" "$SESSION_SMOKE_FLAG" "$RECEIPTS_DIR" "${REQUESTED_CARD_TYPE:-}" "$PASS_MODE" <<'PY'
+if ! "$PYTHON_BIN" - "$REPO_ROOT" "$MODE" "$UNTIL_STEP" "$SESSION_SMOKE_FLAG" "$RECEIPTS_DIR" "${REQUESTED_CARD_TYPE:-}" "$PASS_MODE" "${HOST:-colab}" <<'PY'
 import os
 import sys
 from pathlib import Path
@@ -1120,6 +1135,7 @@ is_smoke = (len(sys.argv) > 4 and sys.argv[4] == "1")
 receipts_arg = sys.argv[5] if len(sys.argv) > 5 and sys.argv[5].strip() else None
 requested_card_type = sys.argv[6].strip() if len(sys.argv) > 6 and sys.argv[6].strip() else None
 pass_mode_arg = sys.argv[7] if len(sys.argv) > 7 else "binary"
+host_arg = (sys.argv[8] if len(sys.argv) > 8 else "colab").strip().lower()
 sys.path.insert(0, str(repo_root / "src"))
 sys.path.insert(0, str(repo_root / "scripts" / "colab"))
 import vm_judges
@@ -1212,14 +1228,30 @@ try:
             until=until_step,
             goldens_path=Path(raw_goldens) if raw_goldens else None,
             receipts_dir=Path(receipts_arg) if receipts_arg else None,
-            # For counted mode, check that the requested (card, shape) card_type has promoted goldens before `colab new`,
-            # and re-verify the opened card after `colab new`.
+            # For counted mode, check that the requested (card, shape) card_type has promoted goldens before open,
+            # and re-verify the opened card after open.
             card_type=(
                 requested_card_type
                 if mode == "counted" and requested_card_type and requested_card_type != "CPU"
                 else None
             ),
         )
+        if (
+            host_arg == "runpod"
+            and mode == "lock-check"
+            and requested_card_type
+            and vm_judges.runs_real_boot_gatekeeper(
+                mode, dryrun=(os.environ.get("VM_DRYRUN") == "1"), until=until_step
+            )
+        ):
+            vm_judges.preflight_boot_gatekeeper_goldens(
+                mode="counted",
+                repo_root=repo_root,
+                dryrun=(os.environ.get("VM_DRYRUN") == "1"),
+                until=until_step,
+                goldens_path=Path(raw_goldens) if raw_goldens else None,
+                card_type=requested_card_type,
+            )
     if gk_plan is not None:
         print(
             f"[judges] timed={','.join(gk_plan['timed_judge_ids'])} boot_gatekeeper={gk_plan['judge_id']} "
@@ -1860,7 +1892,7 @@ stage_window_artifacts() {
   mkdir -p "$STAGE_DIR"
   # Part files left in the stage dir by an earlier, interrupted launch must never be uploaded for this one.
   rm -f "$STAGED_PART_JSON_FILE" "$STAGED_PART_CHECKSUMS_FILE" "$STAGED_P0A_PART_JSON_FILE" "$STAGED_P0A_CHECKSUMS_FILE" "$STAGED_BINDING_FILE" "$RIG_BINDING_FILE"
-  if ! "$PYTHON_BIN" - "$REPO_ROOT" "$ITEMS_FILE" "$STAGED_ITEMS_FILE" "$RECEIPTS_DIR" "$RECEIPTS_TAR" "$REPO_TAR" "$STAGED_DEVICE_PY" "$GOLDEN_ANCHOR_MANIFEST" "$ANCHOR_ITEMS_FILE" "$STAGED_ANCHOR_ITEMS_FILE" "$P0A_ITEMS_FILE" "$STAGED_P0A_ITEMS_FILE" "$COUNTED_ITEMS_FILE" "$COUNTED_MANIFEST_FILE" "$STAGED_BINDING_FILE" "$MODE" "${VM_DRYRUN:-0}" "$STAGED_PART_JSON_FILE" "$STAGED_PART_CHECKSUMS_FILE" "$(effective_part_dir "$ITEMS_FILE")" "$P0A_PART_DIR" "$STAGED_P0A_PART_JSON_FILE" "$STAGED_P0A_CHECKSUMS_FILE" "$STAGED_VM_SCRIPT" "$PASS_MODE" "$SYNTHETIC_ITEMS_FLAG" "$VM_ROOT" <<'PY'
+  if ! "$PYTHON_BIN" - "$REPO_ROOT" "$ITEMS_FILE" "$STAGED_ITEMS_FILE" "$RECEIPTS_DIR" "$RECEIPTS_TAR" "$REPO_TAR" "$STAGED_DEVICE_PY" "$GOLDEN_ANCHOR_MANIFEST" "$ANCHOR_ITEMS_FILE" "$STAGED_ANCHOR_ITEMS_FILE" "$P0A_ITEMS_FILE" "$STAGED_P0A_ITEMS_FILE" "$COUNTED_ITEMS_FILE" "$COUNTED_MANIFEST_FILE" "$STAGED_BINDING_FILE" "$MODE" "${VM_DRYRUN:-0}" "$STAGED_PART_JSON_FILE" "$STAGED_PART_CHECKSUMS_FILE" "$(effective_part_dir "$ITEMS_FILE")" "$P0A_PART_DIR" "$STAGED_P0A_PART_JSON_FILE" "$STAGED_P0A_CHECKSUMS_FILE" "$STAGED_VM_SCRIPT" "$PASS_MODE" "$SYNTHETIC_ITEMS_FLAG" "$VM_ROOT" "$DRY_FLAG" <<'PY'
 import contextlib
 import datetime
 import gzip
@@ -1898,11 +1930,13 @@ raw_sent_vm_script = sys.argv[24].strip() if len(sys.argv) > 24 else ""
 raw_pass_mode = sys.argv[25].strip() if len(sys.argv) > 25 else ""
 stage_synthetic_items = (sys.argv[26].strip() == "1") if len(sys.argv) > 26 else False
 vm_root = (sys.argv[27].strip() if len(sys.argv) > 27 else "/content").rstrip("/") or "/content"
+dry_mode_flag = (sys.argv[28].strip() == "1") if len(sys.argv) > 28 else False
 
 fixed_mtime: int | None = None
-raw_sde = (os.environ.get("SOURCE_DATE_EPOCH") or "").strip()
-if raw_sde.isdigit():
-    fixed_mtime = int(raw_sde)
+if dry_mode_flag and (os.environ.get("RDLAB_DRY_STAGE") or "").strip() == "1":
+    raw_sde = (os.environ.get("SOURCE_DATE_EPOCH") or "").strip()
+    if raw_sde.isdigit():
+        fixed_mtime = int(raw_sde)
 
 
 @contextlib.contextmanager
@@ -2095,7 +2129,7 @@ PY
     fi
   fi
   if [[ "$EFFECTIVE_RESUME" -eq 1 ]] && [[ -f "$OUT_DIR/schedule.json" ]]; then
-    "$PYTHON_BIN" - "$OUT_DIR" "$RESUME_TAR" <<'PY'
+    "$PYTHON_BIN" - "$OUT_DIR" "$RESUME_TAR" "$DRY_FLAG" <<'PY'
 import contextlib
 import gzip
 import os
@@ -2105,7 +2139,12 @@ from pathlib import Path
 
 out_dir = Path(sys.argv[1])
 tar_path = Path(sys.argv[2])
-raw_sde = (os.environ.get("SOURCE_DATE_EPOCH") or "").strip()
+dry_mode_flag = (sys.argv[3].strip() == "1") if len(sys.argv) > 3 else False
+raw_sde = (
+    (os.environ.get("SOURCE_DATE_EPOCH") or "").strip()
+    if dry_mode_flag and (os.environ.get("RDLAB_DRY_STAGE") or "").strip() == "1"
+    else ""
+)
 fixed_mtime = int(raw_sde) if raw_sde.isdigit() else None
 
 
@@ -2592,7 +2631,7 @@ PY
     build_gate_env_args
     DRY_GATE_ENV_STR="${GATE_ENV_ARGS[*]}"
     if needs_opened_card_type; then
-      OPENED_CARD_TYPE="G4"
+      OPENED_CARD_TYPE="RUNPOD-RTX-PRO-6000-SERVER"
     fi
     OPENED_SESSION_ID="$SESSION_NAME"
     build_exec_env_args
@@ -2611,11 +2650,11 @@ PY
 
     {
       if [[ -n "$CONTAINER_DISK_GB" ]]; then
-        printf 'offrig_plan profile=%s wall_seconds=%s backstop_margin_seconds=%s container_disk_gb=%s no_fallback=true image=%s\n' \
-          "$OFFRIG_PROFILE" "$WALL_SECONDS" "$RUNPOD_BACKSTOP_MARGIN_SECONDS" "$CONTAINER_DISK_GB" "$RUNPOD_IMAGE_REF"
+        printf 'offrig_plan profile=%s wall_seconds=%s wait_minutes=%s image_pull_setup_seconds=%s fetch_allowance_seconds=%s shutdown_reserve_seconds=%s container_disk_gb=%s no_fallback=true image=%s\n' \
+          "$OFFRIG_PROFILE" "$WALL_SECONDS" "$RUNPOD_LAUNCH_WAIT_MINUTES" "$RUNPOD_IMAGE_PULL_SETUP_SECONDS" "$RUNPOD_FETCH_ALLOWANCE_SECONDS" "$RUNPOD_SHUTDOWN_RESERVE_SECONDS" "$CONTAINER_DISK_GB" "$RUNPOD_IMAGE_REF"
       else
-        printf 'offrig_plan profile=%s wall_seconds=%s backstop_margin_seconds=%s no_fallback=true image=%s\n' \
-          "$OFFRIG_PROFILE" "$WALL_SECONDS" "$RUNPOD_BACKSTOP_MARGIN_SECONDS" "$RUNPOD_IMAGE_REF"
+        printf 'offrig_plan profile=%s wall_seconds=%s wait_minutes=%s image_pull_setup_seconds=%s fetch_allowance_seconds=%s shutdown_reserve_seconds=%s no_fallback=true image=%s\n' \
+          "$OFFRIG_PROFILE" "$WALL_SECONDS" "$RUNPOD_LAUNCH_WAIT_MINUTES" "$RUNPOD_IMAGE_PULL_SETUP_SECONDS" "$RUNPOD_FETCH_ALLOWANCE_SECONDS" "$RUNPOD_SHUTDOWN_RESERVE_SECONDS" "$RUNPOD_IMAGE_REF"
       fi
       printf 'offrig_launch plan_id=<plan-id>\n'
       printf 'offrig_job plan_id=<plan-id>\n'
@@ -3542,11 +3581,12 @@ if outcome_host == "runpod":
             "offrig_plan_id": int(_raw_plan_id) if _raw_plan_id.isdigit() else (_raw_plan_id or None),
             "offrig_profile": os.environ.get("RDLAB_OUTCOME_OFFRIG_PROFILE", "").strip() or None,
             "watchdog_deadline": os.environ.get("RDLAB_OUTCOME_WATCHDOG_DEADLINE", "").strip() or None,
-            "image": {
+            "image_requested": {
                 "ref": os.environ.get("RDLAB_OUTCOME_RUNPOD_IMAGE", "").strip() or None,
                 "tag": os.environ.get("RDLAB_OUTCOME_RUNPOD_IMAGE_TAG", "").strip() or None,
                 "digest": os.environ.get("RDLAB_OUTCOME_RUNPOD_IMAGE_DIGEST", "").strip() or None,
             },
+            "image_source": "offrig profile",
             "gpu_reported": os.environ.get("RDLAB_OUTCOME_RUNPOD_GPU", "").strip() or None,
             "cost_usd": runpod_cost_usd_val,
             "cost_currency": "USD",
@@ -4476,7 +4516,8 @@ PY
 }
 
 runpod_open_pod() {
-  local note_text="$1" check_err check_rc=0 plan_out plan_err plan_rc=0 plan_f_err
+  local note_text="$1" check_err check_rc=0 vis_err vis_rc=0 img_err img_rc=0
+  local plan_out plan_err plan_rc=0 plan_f_err
   local launch_out_f launch_err_f launch_rc=0 launch_txt err_code
   local -a plan_args=() launch_fields=()
 
@@ -4490,12 +4531,36 @@ runpod_open_pod() {
   fi
   log_msg "RUNPOD_BIN_OK bin=$check_err"
 
+  vis_err="$("$PYTHON_BIN" "$OFFRIG_HOST_PY" check-path-visibility --bin "$check_err" --path "$REPO_ROOT" </dev/null 2>&1)" || vis_rc=$?
+  if [[ "$vis_rc" -ne 0 ]]; then
+    RUN_FAILURE_CLASS="$(runpod_extract_error_class "$vis_err" "OFFRIG_PATH_INCOMPATIBLE")"
+    RUN_WHY="${vis_err:-OFFRIG_PATH_INCOMPATIBLE: offrig-mcp binary cannot read launcher local paths}"
+    log_msg "RUNPOD_PATH_INCOMPATIBLE class=$RUN_FAILURE_CLASS detail=$RUN_WHY"
+    printf '%s\n' "$RUN_WHY" >&2
+    exit 2
+  fi
+
+  if [[ "$SESSION_SMOKE_FLAG" -ne 1 ]] && [[ "$MODE" != "probe" ]]; then
+    img_err="$("$PYTHON_BIN" "$OFFRIG_HOST_PY" check-profile-image --profile "$OFFRIG_PROFILE" --image "$RUNPOD_IMAGE_REF" </dev/null 2>&1)" || img_rc=$?
+    if [[ "$img_rc" -ne 0 ]]; then
+      RUN_FAILURE_CLASS="$(runpod_extract_error_class "$img_err" "OFFRIG_PROFILE_IMAGE_MISMATCH")"
+      RUN_WHY="${img_err:-OFFRIG_PROFILE_IMAGE_MISMATCH: offrig profile job.image mismatch}"
+      log_msg "RUNPOD_PROFILE_IMAGE_REFUSED class=$RUN_FAILURE_CLASS profile=$OFFRIG_PROFILE detail=$RUN_WHY"
+      printf '%s\n' "$RUN_WHY" >&2
+      exit 2
+    fi
+    log_msg "RUNPOD_PROFILE_IMAGE_OK profile=$OFFRIG_PROFILE image=$RUNPOD_IMAGE_REF source=offrig_profile"
+  fi
+
   plan_args=(
     plan
     --project "$OFFRIG_PROJECT"
     --profile "$OFFRIG_PROFILE"
     --wall-seconds "$WALL_SECONDS"
-    --backstop-margin-seconds "$RUNPOD_BACKSTOP_MARGIN_SECONDS"
+    --launch-wait-minutes "$RUNPOD_LAUNCH_WAIT_MINUTES"
+    --image-pull-setup-seconds "$RUNPOD_IMAGE_PULL_SETUP_SECONDS"
+    --fetch-allowance-seconds "$RUNPOD_FETCH_ALLOWANCE_SECONDS"
+    --shutdown-reserve-seconds "$RUNPOD_SHUTDOWN_RESERVE_SECONDS"
     --note "$note_text"
   )
   if [[ -n "$CONTAINER_DISK_GB" ]]; then
@@ -4525,11 +4590,12 @@ doc = json.loads(sys.argv[1])
 print(doc["plan_id"])
 PY
 )"
-  log_msg "RUNPOD_PLAN_CREATED plan_id=$RUNPOD_PLAN_ID profile=$OFFRIG_PROFILE wall_s=$WALL_SECONDS backstop_margin_s=$RUNPOD_BACKSTOP_MARGIN_SECONDS"
+  log_msg "RUNPOD_PLAN_CREATED plan_id=$RUNPOD_PLAN_ID profile=$OFFRIG_PROFILE wall_s=$WALL_SECONDS wait_m=$RUNPOD_LAUNCH_WAIT_MINUTES setup_s=$RUNPOD_IMAGE_PULL_SETUP_SECONDS fetch_s=$RUNPOD_FETCH_ALLOWANCE_SECONDS shutdown_s=$RUNPOD_SHUTDOWN_RESERVE_SECONDS"
 
   launch_out_f="$(mktemp "${OUT_DIR:-/tmp}/.runpod_launch.XXXXXX" 2>/dev/null || mktemp)"
   launch_err_f="$(mktemp "${OUT_DIR:-/tmp}/.runpod_launch_err.XXXXXX" 2>/dev/null || mktemp)"
   RUNPOD_LAUNCH_STARTED=1
+  RUNPOD_LAUNCH_ATTEMPTED=1
   "$PYTHON_BIN" "$OFFRIG_HOST_PY" launch-and-wait \
     --project "$OFFRIG_PROJECT" \
     --plan-id "$RUNPOD_PLAN_ID" \
@@ -4586,6 +4652,31 @@ PY
   log_msg "RUNPOD_POD_OPENED plan_id=$RUNPOD_PLAN_ID pod_id=$RUNPOD_POD_ID gpu=${RUNPOD_OFFRIG_GPU:-unknown} cost_per_hr_usd=${RUNPOD_COST_PER_HR_USD:-unknown} deadline=${RUNPOD_WATCHDOG_DEADLINE:-none}"
 }
 
+runpod_verify_gpu_gate() {
+  local vgpu_json vgpu_err vgpu_rc=0 err_code err_txt
+  vgpu_err="$(mktemp "${OUT_DIR:-/tmp}/.runpod_vgpu_err.XXXXXX" 2>/dev/null || mktemp)"
+  vgpu_json="$("$PYTHON_BIN" "$OFFRIG_HOST_PY" verify-gpu \
+    --project "$OFFRIG_PROJECT" \
+    --plan-id "$RUNPOD_PLAN_ID" \
+    --offrig-gpu "$RUNPOD_OFFRIG_GPU" </dev/null 2>"$vgpu_err")" || vgpu_rc=$?
+  err_txt="$(cat "$vgpu_err" 2>/dev/null || true)"
+  rm -f "$vgpu_err"
+  if [[ -n "$err_txt" ]]; then
+    printf '%s\n' "$err_txt" | scrub_stream >> "$CLI_LOG"
+  fi
+  if [[ "$vgpu_rc" -ne 0 ]]; then
+    err_code="$(runpod_extract_error_class "$err_txt" "RUNPOD_GPU_MISMATCH")"
+    RUN_FAILURE_CLASS="$err_code"
+    RUN_WHY="${err_txt:-RunPod GPU card gate refused pod $RUNPOD_POD_ID (rc=$vgpu_rc)}"
+    log_msg "RUNPOD_GPU_GATE_REFUSED plan_id=$RUNPOD_PLAN_ID pod_id=$RUNPOD_POD_ID class=$err_code detail=$RUN_WHY"
+    printf '%s\n' "$RUN_WHY" >&2
+    exit 2
+  fi
+  RUNPOD_GPU_GATE_JSON="$vgpu_json"
+  printf '%s\n' "$vgpu_json" | scrub_stream >> "$CLI_LOG"
+  log_msg "RUNPOD_GPU_VERIFIED plan_id=$RUNPOD_PLAN_ID pod_id=$RUNPOD_POD_ID gpu=$RUNPOD_OFFRIG_GPU"
+}
+
 run_runpod_session_smoke() {
   log_msg "RUNPOD_SESSION_SMOKE_START id=$RUN_ID profile=$OFFRIG_PROFILE"
   runpod_open_pod "rdlab-$RUN_ID-session-smoke"
@@ -4600,6 +4691,7 @@ run_runpod_probe() {
   local probe_rc=0
   log_msg "RUNPOD_PROBE_START id=$RUN_ID profile=$OFFRIG_PROFILE wall_s=$WALL_SECONDS"
   runpod_open_pod "rdlab-$RUN_ID-probe"
+  runpod_verify_gpu_gate
   local mkdir_cmd
   mkdir_cmd="$("$PYTHON_BIN" -c 'import shlex, sys; r = sys.argv[1]; print("mkdir -p", shlex.quote(r), shlex.quote(r + "/rdlab_items"), shlex.quote(r + "/rdlab_run"))' "$VM_ROOT")"
   "$PYTHON_BIN" "$OFFRIG_HOST_PY" exec-run --project "$OFFRIG_PROJECT" --plan-id "$RUNPOD_PLAN_ID" --command "$mkdir_cmd" --timeout-secs 30 </dev/null >>"$CLI_LOG" 2>>"$CLI_LOG" || {
@@ -4618,7 +4710,8 @@ run_runpod_probe() {
     --vm-script "${VM_ROOT}/vm_judges.py" \
     "${PROBE_ENV_ARGS[@]}" \
     --timeout-seconds "$EXEC_TIMEOUT_SECONDS" \
-    --poll-interval "$RUNPOD_POLL_INTERVAL" </dev/null >"$PROBE_EXEC_OUT_TMP" 2>&1 9>&- &
+    --poll-interval "$RUNPOD_POLL_INTERVAL" \
+    --status-poll-retries "$RUNPOD_STATUS_POLL_RETRIES" </dev/null >"$PROBE_EXEC_OUT_TMP" 2>&1 9>&- &
   EXEC_PID="$!"
   printf '%s\n' "$EXEC_PID" > "$EXEC_PID_FILE"
   wait "$EXEC_PID" 2>/dev/null || probe_rc=$?
@@ -4676,39 +4769,20 @@ PY
 }
 
 run_runpod_window() {
-  local vgpu_json vgpu_err vgpu_rc=0 err_code err_txt mkdir_cmd
+  local err_code err_txt mkdir_cmd
   local alive_ok=0 alive_attempt=0 alive_rc=0 alive_out=""
   local gate_rc=0 gate_out="" gate_reason="" shutdown_r="run_completed"
+  local now_ep rem_json rem_rc=0 rem_run_s bounded_vm_wall
 
   log_msg "RUNPOD_WINDOW_START id=$RUN_ID mode=$MODE profile=$OFFRIG_PROFILE image=$RUNPOD_IMAGE_REF wall_s=$WALL_SECONDS vm_root=$VM_ROOT"
   runpod_open_pod "rdlab-$RUN_ID-$MODE"
 
-  vgpu_err="$(mktemp "${OUT_DIR:-/tmp}/.runpod_vgpu_err.XXXXXX" 2>/dev/null || mktemp)"
-  vgpu_json="$("$PYTHON_BIN" "$OFFRIG_HOST_PY" verify-gpu \
-    --project "$OFFRIG_PROJECT" \
-    --plan-id "$RUNPOD_PLAN_ID" \
-    --offrig-gpu "$RUNPOD_OFFRIG_GPU" </dev/null 2>"$vgpu_err")" || vgpu_rc=$?
-  err_txt="$(cat "$vgpu_err" 2>/dev/null || true)"
-  rm -f "$vgpu_err"
-  if [[ -n "$err_txt" ]]; then
-    printf '%s\n' "$err_txt" | scrub_stream >> "$CLI_LOG"
-  fi
-  if [[ "$vgpu_rc" -ne 0 ]]; then
-    err_code="$(runpod_extract_error_class "$err_txt" "RUNPOD_GPU_MISMATCH")"
-    RUN_FAILURE_CLASS="$err_code"
-    RUN_WHY="${err_txt:-RunPod GPU card gate refused pod $RUNPOD_POD_ID (rc=$vgpu_rc)}"
-    log_msg "RUNPOD_GPU_GATE_REFUSED plan_id=$RUNPOD_PLAN_ID pod_id=$RUNPOD_POD_ID class=$err_code detail=$RUN_WHY"
-    printf '%s\n' "$RUN_WHY" >&2
-    exit 2
-  fi
-  RUNPOD_GPU_GATE_JSON="$vgpu_json"
-  printf '%s\n' "$vgpu_json" | scrub_stream >> "$CLI_LOG"
-  log_msg "RUNPOD_GPU_VERIFIED plan_id=$RUNPOD_PLAN_ID pod_id=$RUNPOD_POD_ID gpu=$RUNPOD_OFFRIG_GPU"
+  runpod_verify_gpu_gate
 
   if needs_opened_card_type; then
-    OPENED_CARD_TYPE="G4"
+    OPENED_CARD_TYPE="RUNPOD-RTX-PRO-6000-SERVER"
     log_msg "CARD_TYPE pod_id=$RUNPOD_POD_ID card_type=$OPENED_CARD_TYPE hardware=$RUNPOD_OFFRIG_GPU"
-    if [[ "$MODE" == "counted" ]]; then
+    if [[ "$MODE" == "counted" || "$MODE" == "lock-check" ]]; then
       GOLD_ERR="$("$PYTHON_BIN" - "$REPO_ROOT" "$OPENED_CARD_TYPE" <<'PY' 2>&1 >/dev/null
 import os
 import sys
@@ -4758,7 +4832,8 @@ PY
       --env "RDLAB_VM_ROOT=$VM_ROOT" \
       --env "RDLAB_HOST=${HOST:-colab}" \
       --timeout-seconds "$ALIVE_PROBE_TIMEOUT_SECONDS" \
-      --poll-interval "$RUNPOD_POLL_INTERVAL" </dev/null 2>&1 | scrub_stream | tee -a "$CLI_LOG")" || alive_rc=$?
+      --poll-interval "$RUNPOD_POLL_INTERVAL" \
+      --status-poll-retries "$RUNPOD_STATUS_POLL_RETRIES" </dev/null 2>&1 | scrub_stream | tee -a "$CLI_LOG")" || alive_rc=$?
     if [[ "$alive_rc" -eq 0 ]] && printf '%s\n' "$alive_out" | grep -q '^VM_ALIVE_OK'; then
       alive_ok=1
       log_msg "ALIVE_PROBE_OK host=runpod pod_id=$RUNPOD_POD_ID attempt=${alive_attempt}/${ALIVE_PROBE_MAX_TRIES}"
@@ -4784,7 +4859,8 @@ PY
     --vm-script "${VM_ROOT}/vm_judges.py" \
     "${GATE_ENV_ARGS[@]}" \
     --timeout-seconds "$GATE_TIMEOUT_SECONDS" \
-    --poll-interval "$RUNPOD_POLL_INTERVAL" </dev/null 2>&1 | scrub_stream | tee -a "$CLI_LOG")" || gate_rc=$?
+    --poll-interval "$RUNPOD_POLL_INTERVAL" \
+    --status-poll-retries "$RUNPOD_STATUS_POLL_RETRIES" </dev/null 2>&1 | scrub_stream | tee -a "$CLI_LOG")" || gate_rc=$?
   if [[ "$gate_rc" -ne 0 ]] || ! printf '%s\n' "$gate_out" | grep -q '^VM_GATE_OK'; then
     if printf '%s\n' "$gate_out" | grep -Eq 'VM_DISK_INSUFFICIENT|VM_PYTHON_UNAVAILABLE|VM_PYTHON_INSTALL_FAILED|PYTHON_ARCHIVE_TOO_LARGE|PYTHON_INSTALL_TIMEOUT|PYTHON_ARCHIVE_SHA256_MISMATCH|PYTHON_BUILD_CHANGED|UV_VERSION_CHANGED|PINNED_UV_DOWNLOAD_FAILED|PINNED_UV_SIZE_MISMATCH|PINNED_UV_SHA256_MISMATCH|PINNED_UV_BAD_MEMBER|PINNED_UV_VERSION_MISMATCH|FORCE_PINNED_UV_INVALID|VM_ITEMS_DIR_UNAVAILABLE|FORBIDDEN_STORAGE_PATH|DEVICE_INDEX_CHECK_FAILED|BAKEOFF_JUDGE_DEVICE_INVALID'; then
       gate_reason="$(printf '%s\n' "$gate_out" | grep -m1 -E 'VM_DISK_INSUFFICIENT|VM_PYTHON_UNAVAILABLE|VM_PYTHON_INSTALL_FAILED|PYTHON_ARCHIVE_TOO_LARGE|PYTHON_INSTALL_TIMEOUT|PYTHON_ARCHIVE_SHA256_MISMATCH|PYTHON_BUILD_CHANGED|UV_VERSION_CHANGED|PINNED_UV_DOWNLOAD_FAILED|PINNED_UV_SIZE_MISMATCH|PINNED_UV_SHA256_MISMATCH|PINNED_UV_BAD_MEMBER|PINNED_UV_VERSION_MISMATCH|FORCE_PINNED_UV_INVALID|VM_ITEMS_DIR_UNAVAILABLE|FORBIDDEN_STORAGE_PATH|DEVICE_INDEX_CHECK_FAILED|BAKEOFF_JUDGE_DEVICE_INVALID' || true)"
@@ -4829,6 +4905,45 @@ PY
     runpod_put_file "$RESUME_TAR" "${VM_ROOT}/resume_state.tar.gz"
   fi
 
+  if [[ -n "$RUNPOD_WATCHDOG_DEADLINE" ]]; then
+    now_ep="$(now_epoch_seconds)"
+    rem_json="$("$PYTHON_BIN" "$OFFRIG_HOST_PY" remaining-run-budget \
+      --deadline "$RUNPOD_WATCHDOG_DEADLINE" \
+      --now-epoch "$now_ep" \
+      --fetch-allowance-seconds "$RUNPOD_FETCH_ALLOWANCE_SECONDS" \
+      --shutdown-reserve-seconds "$RUNPOD_SHUTDOWN_RESERVE_SECONDS" </dev/null 2>/dev/null)" || rem_rc=$?
+    if [[ "$rem_rc" -eq 0 ]] && [[ -n "$rem_json" ]]; then
+      rem_run_s="$("$PYTHON_BIN" - "$rem_json" <<'PY'
+import json
+import sys
+
+print(int(json.loads(sys.argv[1])["remaining_run_seconds"]))
+PY
+)"
+      if [[ "$rem_run_s" -le 0 ]]; then
+        log_msg "RUNPOD_DEADLINE_EXHAUSTED_BEFORE_RUN plan_id=$RUNPOD_PLAN_ID pod_id=$RUNPOD_POD_ID deadline=$RUNPOD_WATCHDOG_DEADLINE now_epoch=$now_ep remaining_run_s=$rem_run_s"
+        RUN_FAILURE_CLASS="RUNPOD_DEADLINE_EXHAUSTED"
+        RUN_WHY="offrig watchdog deadline reserve exhausted before run step (remaining_run_s=$rem_run_s)"
+        printf '%s\n' "$RUN_WHY" >&2
+        runpod_fetch_results_once
+        runpod_shutdown_pod "deadline_exhausted" || exit 1
+        exit 2
+      fi
+      if [[ "$rem_run_s" -lt "$EXEC_TIMEOUT_SECONDS" ]]; then
+        EXEC_TIMEOUT_SECONDS="$rem_run_s"
+        if [[ "$EXEC_TIMEOUT_SECONDS" -gt "$VM_SELF_STOP_MARGIN" ]]; then
+          bounded_vm_wall=$(( EXEC_TIMEOUT_SECONDS - VM_SELF_STOP_MARGIN ))
+        else
+          bounded_vm_wall=$(( EXEC_TIMEOUT_SECONDS > 1 ? EXEC_TIMEOUT_SECONDS - 1 : 1 ))
+        fi
+        if [[ "$bounded_vm_wall" -lt "$VM_WALL_SECONDS" ]]; then
+          VM_WALL_SECONDS="$bounded_vm_wall"
+        fi
+        log_msg "RUNPOD_RUN_BOUNDED_BY_DEADLINE plan_id=$RUNPOD_PLAN_ID pod_id=$RUNPOD_POD_ID deadline=$RUNPOD_WATCHDOG_DEADLINE now_epoch=$now_ep remaining_run_s=$rem_run_s exec_timeout_s=$EXEC_TIMEOUT_SECONDS vm_wall_s=$VM_WALL_SECONDS"
+      fi
+    fi
+  fi
+
   build_exec_env_args
   EXEC_RC=0
   : > "$EXEC_OUT_TMP"
@@ -4839,7 +4954,8 @@ PY
     --vm-script "${VM_ROOT}/vm_judges.py" \
     "${EXEC_ENV_ARGS[@]}" \
     --timeout-seconds "$EXEC_TIMEOUT_SECONDS" \
-    --poll-interval "$RUNPOD_POLL_INTERVAL" </dev/null >"$EXEC_OUT_TMP" 2>&1 9>&- &
+    --poll-interval "$RUNPOD_POLL_INTERVAL" \
+    --status-poll-retries "$RUNPOD_STATUS_POLL_RETRIES" </dev/null >"$EXEC_OUT_TMP" 2>&1 9>&- &
   EXEC_PID="$!"
   printf '%s\n' "$EXEC_PID" > "$EXEC_PID_FILE"
   wait "$EXEC_PID" 2>/dev/null || EXEC_RC=$?
@@ -4915,8 +5031,8 @@ stop_all() {
     if [[ "$RUNPOD_LAUNCH_STARTED" -eq 1 ]] && { [[ "$exit_code" -eq 143 ]] || [[ "$exit_code" -eq 130 ]]; }; then
       RUNPOD_POD_OPENED=1
     fi
-    if [[ -n "$RUNPOD_PLAN_ID" ]] && [[ "$RUNPOD_POD_OPENED" -eq 1 ]]; then
-      if [[ "$FETCHED" -ne 1 ]] && [[ "$SESSION_SMOKE_FLAG" -ne 1 ]]; then
+    if [[ -n "$RUNPOD_PLAN_ID" ]] && { [[ "$RUNPOD_POD_OPENED" -eq 1 ]] || [[ "$RUNPOD_LAUNCH_ATTEMPTED" -eq 1 ]]; }; then
+      if [[ "$RUNPOD_POD_OPENED" -eq 1 ]] && [[ "$FETCHED" -ne 1 ]] && [[ "$SESSION_SMOKE_FLAG" -ne 1 ]]; then
         runpod_fetch_results_once || true
       fi
       if [[ "$RUNPOD_SHUTDOWN_DONE" -ne 1 ]]; then

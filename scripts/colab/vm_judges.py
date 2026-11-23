@@ -12777,6 +12777,7 @@ GPU_NAME_CARD_TYPES: tuple[tuple[str, str], ...] = (
     (r"(?<![A-Z0-9])L4(?![0-9A-Z])", "L4"),
     (r"(?<![A-Z0-9])T4(?![0-9A-Z])", "T4"),
 )
+RUNPOD_SERVER_CARD_TYPE = "RUNPOD-RTX-PRO-6000-SERVER"
 
 
 def card_type_from_session_fields(hardware: str | None, shape: str | None) -> str | None:
@@ -12828,9 +12829,19 @@ def card_type_from_sessions_output(text: str | None, session: str) -> tuple[str 
     return card, seen
 
 
-def card_type_from_gpu_name(name: str | None) -> str | None:
-    """Map an `nvidia-smi --query-gpu=name` value to a card type (`GPU_NAME_CARD_TYPES`), or None."""
+def card_type_from_gpu_name(
+    name: str | None,
+    *,
+    host: str | None = None,
+) -> str | None:
+    """Map an `nvidia-smi --query-gpu=name` value to a card type, or None."""
     up = " ".join(str(name or "").split()).upper()
+    if (host or "").strip().lower() == "runpod":
+        if "WORKSTATION" in up:
+            return None
+        if re.search(r"RTX PRO 6000\b.*\bSERVER EDITION\b", up):
+            return RUNPOD_SERVER_CARD_TYPE
+        return None
     for pattern, card in GPU_NAME_CARD_TYPES:
         if re.search(pattern, up):
             return card
@@ -12873,9 +12884,15 @@ def verify_vm_card_type(
             CARD_TYPE_UNKNOWN,
             "RDLAB_CARD_TYPE was not forwarded: a real window needs the card type of the session the launcher opened",
         )
+    host = os.environ.get("RDLAB_HOST", "").strip().lower()
     gpu_name, detail = read_vm_gpu_name()
-    measured = card_type_from_gpu_name(gpu_name)
+    measured = card_type_from_gpu_name(gpu_name, host=host or None)
     if measured is None:
+        if host == "runpod" and "WORKSTATION" in " ".join(str(gpu_name or "").split()).upper():
+            raise RefusalError(
+                CARD_TYPE_MISMATCH,
+                f"Workstation Edition GPU is refused on RunPod (nvidia-smi: {gpu_name!r}, expected Server Edition / {forwarded!r})",
+            )
         raise RefusalError(
             CARD_TYPE_UNKNOWN,
             f"cannot read this VM's card type: GPU name {gpu_name!r} ({detail}); forwarded card type {forwarded!r}",
@@ -12888,7 +12905,7 @@ def verify_vm_card_type(
         )
     req_card = os.environ.get("RDLAB_CARD", "").strip()
     req_shape = os.environ.get("RDLAB_SHAPE", "").strip().lower()
-    if req_card or req_shape:
+    if host != "runpod" and (req_card or req_shape):
         if req_card not in ALLOWED_REQUESTED_CARDS:
             raise RefusalError(
                 CARD_INVALID if req_card else CARD_REQUIRED,
@@ -14739,7 +14756,7 @@ def finalize_filled_goldens_with_session_env(
 def resolve_host_receipt_fields(
     environ: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Resolve host, pod id, and container image metadata for receipts."""
+    """Resolve host, pod id, and requested image provenance metadata for receipts."""
     env = os.environ if environ is None else environ
     host = str(env.get("RDLAB_HOST") or "colab").strip().lower() or "colab"
     pod_id = str(env.get("RDLAB_POD_ID") or "").strip() or None
@@ -14753,14 +14770,14 @@ def resolve_host_receipt_fields(
             )
         else:
             image_tag = image_ref
-    image: dict[str, Any] | None = None
+    image_requested: dict[str, Any] | None = None
     if any((image_ref, image_tag, image_digest)):
         eff_ref = image_ref or (
             f"{image_tag}@{image_digest}"
             if image_tag and image_digest
             else image_tag or image_digest
         )
-        image = {
+        image_requested = {
             "ref": eff_ref,
             "tag": image_tag,
             "digest": image_digest,
@@ -14768,8 +14785,29 @@ def resolve_host_receipt_fields(
     return {
         "host": host,
         "pod_id": pod_id,
-        "image": image,
+        "image_requested": image_requested,
+        "image_source": "offrig profile" if image_requested is not None else None,
     }
+
+
+def _read_vllm_python_version(work_dir: Path | None = None) -> str | None:
+    """Read the Python version of `venv-vllm` that runs the judge, or None when absent."""
+    if work_dir is not None:
+        vllm_py = Path(work_dir) / VLLM_VENV_NAME / "bin" / "python"
+        if vllm_py.is_file():
+            res = run_vm_subprocess(
+                [
+                    str(vllm_py),
+                    "-c",
+                    "import platform; print(platform.python_version())",
+                ],
+                timeout=30,
+                check=False,
+            )
+            ver = (res.stdout or "").strip().splitlines()
+            if res.returncode == 0 and ver and ver[-1].strip():
+                return ver[-1].strip()
+    return None
 
 
 def _read_vllm_version(work_dir: Path | None = None) -> str | None:
@@ -14803,7 +14841,7 @@ def collect_runtime_environment(
     *,
     work_dir: Path | None = None,
 ) -> dict[str, Any]:
-    """Read live host GPU name, driver version, CUDA version, Python version, and vLLM version."""
+    """Read live host GPU name, driver version, CUDA version, vLLM venv Python version, system Python, and vLLM version."""
     import platform
 
     _ = environ  # reserved for callers passing explicit env context
@@ -14835,7 +14873,8 @@ def collect_runtime_environment(
         "host_gpu_name": host_gpu_name,
         "driver_version": driver_version,
         "cuda_version": cuda_version,
-        "python_version": platform.python_version(),
+        "python_version": _read_vllm_python_version(work_dir=work_dir),
+        "system_python_version": platform.python_version(),
         "vllm_version": _read_vllm_version(work_dir=work_dir),
     }
 
