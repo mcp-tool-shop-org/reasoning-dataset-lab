@@ -277,6 +277,8 @@ def _handle_tool_call(
         )
         return False, {
             "plan_id": plan_id,
+            "lane": str(cfg.get("plan_lane") or "rdlab-judge"),
+            "pod_name": str(cfg.get("plan_pod_name") or f"offrig-job-{plan_id}"),
             "profile": arguments.get("profile"),
             "max_hours": max_hours,
             "max_price_hr": arguments.get("max_price_hr"),
@@ -290,6 +292,14 @@ def _handle_tool_call(
         }
 
     if tool_name == "offrig_launch":
+        launch_marker = str(cfg.get("launch_started_marker") or "").strip()
+        if launch_marker:
+            mp = Path(launch_marker)
+            mp.parent.mkdir(parents=True, exist_ok=True)
+            mp.write_text("started\n", encoding="utf-8", newline="\n")
+        launch_delay = float(cfg.get("launch_delay_seconds") or 0.0)
+        if launch_delay > 0.0:
+            time.sleep(launch_delay)
         if cfg.get("fail_launch_at_commit"):
             state["plan_state"] = "planned"
             _save_json(state_path, state)
@@ -302,6 +312,11 @@ def _handle_tool_call(
         state["plan_state"] = "committed"
         state["launched"] = True
         _save_json(state_path, state)
+        done_marker = str(cfg.get("launch_completed_marker") or "").strip()
+        if done_marker:
+            dp = Path(done_marker)
+            dp.parent.mkdir(parents=True, exist_ok=True)
+            dp.write_text("completed\n", encoding="utf-8", newline="\n")
         launch_deadline = (
             str(cfg["launch_deadline"])
             if "launch_deadline" in cfg
@@ -325,6 +340,12 @@ def _handle_tool_call(
                 "job_id": job_id,
                 "state": "failed",
                 "error": cfg.get("job_error", "simulated offrig_job failure"),
+            }
+        if cfg.get("job_state") == "running":
+            return False, {
+                "job_id": job_id,
+                "state": "running",
+                "progress": {"pod_id": pod_id},
             }
         return False, {
             "job_id": job_id,
@@ -450,6 +471,8 @@ def _handle_tool_call(
             return False, {"name": job_name, "stopped": True}
 
     if tool_name == "offrig_status":
+        if "status_raw_override" in cfg:
+            return False, cfg["status_raw_override"]
         return False, {
             "runpod": {
                 "offrig_pods": list(cfg.get("status_pods") or []),
