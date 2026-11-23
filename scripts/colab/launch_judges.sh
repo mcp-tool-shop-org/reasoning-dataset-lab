@@ -91,6 +91,8 @@ RUNPOD_STATUS_POLL_RETRIES="${RDLAB_OFFRIG_STATUS_POLL_RETRIES:-3}"
 OFFRIG_HOST_PY="${RDLAB_OFFRIG_HOST_PY:-$SCRIPT_DIR/offrig_host.py}"
 VM_ROOT="/content"
 RUNPOD_PLAN_ID=""
+RUNPOD_PLAN_LANE=""
+RUNPOD_PLAN_POD_NAME=""
 RUNPOD_POD_ID=""
 RUNPOD_MAX_HOURS=""
 RUNPOD_PLAN_MAX_PRICE_HR=""
@@ -99,6 +101,9 @@ RUNPOD_WORST_CASE_SOURCE=""
 RUNPOD_LOCAL_WORST_CASE_USD=""
 RUNPOD_LAUNCH_STARTED=0
 RUNPOD_LAUNCH_ATTEMPTED=0
+RUNPOD_LAUNCH_IN_PROGRESS=0
+RUNPOD_LAUNCH_DEFERRED_SIGNAL=0
+RUNPOD_LAUNCH_SIGNAL_COUNT=0
 RUNPOD_POD_OPENED=0
 RUNPOD_SHUTDOWN_ATTEMPTED=0
 RUNPOD_SHUTDOWN_IN_PROGRESS=0
@@ -664,7 +669,9 @@ case "$HOST" in
     fi
     floor_rc=0
     floor_tokens_arg=""
-    case ",${RDLAB_ONLY_JUDGES:-}," in
+    _normalized_only_judges="${RDLAB_ONLY_JUDGES:-}"
+    _normalized_only_judges="${_normalized_only_judges//[[:space:]]/}"
+    case ",${_normalized_only_judges}," in
       *,qwen3.6-35b-a3b,*)
         floor_tokens_arg="${RDLAB_QWEN36_MAX_NEW_TOKENS:-}"
         ;;
@@ -4231,6 +4238,15 @@ on_interrupt_signal() {
     log_msg "RUNPOD_SHUTDOWN_SIGNAL_DEFERRED plan_id=${RUNPOD_PLAN_ID:-unknown} pod_id=${RUNPOD_POD_ID:-unknown}"
     return 0
   fi
+  if [[ "${RUNPOD_LAUNCH_IN_PROGRESS:-0}" -eq 1 ]]; then
+    RUNPOD_LAUNCH_DEFERRED_SIGNAL=1
+    RUNPOD_LAUNCH_SIGNAL_COUNT=$(( ${RUNPOD_LAUNCH_SIGNAL_COUNT:-0} + 1 ))
+    log_msg "RUNPOD_LAUNCH_SIGNAL_DEFERRED plan_id=${RUNPOD_PLAN_ID:-unknown}"
+    if [[ -n "${EXEC_PID:-}" ]] && kill -0 "$EXEC_PID" 2>/dev/null; then
+      kill -TERM "$EXEC_PID" 2>/dev/null || true
+    fi
+    return 0
+  fi
   RUN_WHY="interrupted by signal"
   exit 143
 }
@@ -4796,7 +4812,7 @@ PY
       if [[ "$sd_status" == "already_closed" ]]; then
         runpod_read_status_pods_once
         ac_rc=0
-        ac_json="$( trap '' INT TERM; exec "$PYTHON_BIN" "$OFFRIG_HOST_PY" resolve-already-closed --plan-id "$RUNPOD_PLAN_ID" --expected-pod-id "$RUNPOD_POD_ID" --status-json "$RUNPOD_SHUTDOWN_STATUS_PODS" </dev/null 2>/dev/null )" || ac_rc=$?
+        ac_json="$( trap '' INT TERM; exec "$PYTHON_BIN" "$OFFRIG_HOST_PY" resolve-already-closed --plan-id "$RUNPOD_PLAN_ID" --expected-pod-id "$RUNPOD_POD_ID" --expected-pod-name "$RUNPOD_PLAN_POD_NAME" --status-json "$RUNPOD_SHUTDOWN_STATUS_PODS" </dev/null 2>/dev/null )" || ac_rc=$?
         mapfile -t ac_lines < <( trap '' INT TERM; exec "$PYTHON_BIN" - "$ac_rc" "$ac_json" <<'PY'
 import json
 import sys
@@ -4848,6 +4864,46 @@ PY
       fi
       if [[ "$sd_status" == "no_pod_rented" ]]; then
         runpod_read_status_pods_once
+        npr_rc=0
+        npr_json="$( trap '' INT TERM; exec "$PYTHON_BIN" "$OFFRIG_HOST_PY" resolve-no-pod-rented --plan-id "$RUNPOD_PLAN_ID" --expected-pod-id "$RUNPOD_POD_ID" --expected-pod-name "$RUNPOD_PLAN_POD_NAME" --plan-lane "$RUNPOD_PLAN_LANE" --status-json "$RUNPOD_SHUTDOWN_STATUS_PODS" </dev/null 2>/dev/null )" || npr_rc=$?
+        mapfile -t npr_lines < <( trap '' INT TERM; exec "$PYTHON_BIN" - "$npr_rc" "$npr_json" <<'PY'
+import json
+import sys
+
+rc = int(sys.argv[1])
+if rc != 0:
+    print("null")
+    print("RUNPOD_SHUTDOWN_NO_POD_RENTED")
+    print("")
+    print("")
+    raise SystemExit(0)
+try:
+    d = json.loads(sys.argv[2])
+except Exception:
+    print("null")
+    print("RUNPOD_SHUTDOWN_NO_POD_RENTED")
+    print("")
+    print("")
+    raise SystemExit(0)
+print("false" if (d.get("pod_shutdown") is False or d.get("may_bill") is True) else "null")
+print(str(d.get("failure_class") or "RUNPOD_SHUTDOWN_NO_POD_RENTED"))
+print(str(d.get("pod_id") or ""))
+print(str(d.get("detail") or ""))
+PY
+)
+        npr_state="${npr_lines[0]:-null}"
+        npr_class="${npr_lines[1]:-RUNPOD_SHUTDOWN_NO_POD_RENTED}"
+        npr_pod_id="${npr_lines[2]:-}"
+        npr_detail="${npr_lines[3]:-}"
+        if [[ "$npr_state" == "false" ]]; then
+          if [[ -z "$RUNPOD_POD_ID" ]] && [[ -n "$npr_pod_id" ]]; then
+            RUNPOD_POD_ID="$npr_pod_id"
+          fi
+          sd_class="${npr_class:-RUNPOD_NO_POD_RENTED_POD_LISTED}"
+          sd_detail="${npr_detail:-$sd_detail}"
+          log_msg "RUNPOD_SHUTDOWN_UNCONFIRMED attempt=${RUNPOD_SHUTDOWN_CALLS_MADE}/${STOP_ATTEMPTS} plan_id=$RUNPOD_PLAN_ID pod_id=${RUNPOD_POD_ID:-unknown} class=$sd_class detail=$sd_detail"
+          break
+        fi
         RUNPOD_POD_SHUTDOWN_STATE="null"
         RUNPOD_SHUTDOWN_DONE=0
         RUNPOD_SHUTDOWN_FAILURE_CLASS="${sd_class:-RUNPOD_NO_POD_RENTED}"
@@ -4996,12 +5052,16 @@ mp = doc.get("max_price_hr")
 print("" if mp is None else f"{float(mp):.2f}")
 wc = doc.get("worst_case")
 print("" if wc is None else f"{float(wc):.2f}")
+print(doc.get("lane") or "")
+print(doc.get("pod_name") or "")
 PY
 )
   RUNPOD_PLAN_ID="${plan_fields[0]:-}"
   RUNPOD_MAX_HOURS="${plan_fields[1]:-}"
   RUNPOD_PLAN_MAX_PRICE_HR="${plan_fields[2]:-$RUNPOD_MAX_PRICE_HR}"
   RUNPOD_WORST_CASE_USD="${plan_fields[3]:-}"
+  RUNPOD_PLAN_LANE="${plan_fields[4]:-}"
+  RUNPOD_PLAN_POD_NAME="${plan_fields[5]:-}"
   if [[ -n "$RUNPOD_WORST_CASE_USD" ]]; then
     RUNPOD_WORST_CASE_SOURCE="offrig_plan"
   else
@@ -5066,6 +5126,8 @@ PY
   launch_err_f="$(mktemp "${OUT_DIR:-/tmp}/.runpod_launch_err.XXXXXX" 2>/dev/null || mktemp)"
   RUNPOD_LAUNCH_STARTED=1
   RUNPOD_LAUNCH_ATTEMPTED=1
+  RUNPOD_LAUNCH_IN_PROGRESS=1
+  RUNPOD_LAUNCH_DEFERRED_SIGNAL=0
   "$PYTHON_BIN" "$OFFRIG_HOST_PY" launch-and-wait \
     --project "$OFFRIG_PROJECT" \
     --plan-id "$RUNPOD_PLAN_ID" \
@@ -5073,7 +5135,18 @@ PY
     --timeout-seconds "$RUNPOD_LAUNCH_TIMEOUT_SECONDS" </dev/null >"$launch_out_f" 2>"$launch_err_f" &
   EXEC_PID="$!"
   printf '%s\n' "$EXEC_PID" > "$EXEC_PID_FILE"
-  wait "$EXEC_PID" 2>/dev/null || launch_rc=$?
+  while true; do
+    prev_launch_sig="${RUNPOD_LAUNCH_SIGNAL_COUNT:-0}"
+    launch_rc=0
+    wait "$EXEC_PID" 2>/dev/null || launch_rc=$?
+    if (( ${RUNPOD_LAUNCH_SIGNAL_COUNT:-0} == prev_launch_sig )); then
+      break
+    fi
+    if ! kill -0 "$EXEC_PID" 2>/dev/null; then
+      break
+    fi
+  done
+  RUNPOD_LAUNCH_IN_PROGRESS=0
   EXEC_PID=""
   rm -f "$EXEC_PID_FILE"
   launch_txt="$(cat "$launch_out_f" 2>/dev/null || true)"
@@ -5085,10 +5158,15 @@ PY
   if [[ -n "$launch_txt" ]]; then
     printf '%s\n' "$launch_txt" | scrub_stream >> "$CLI_LOG"
   fi
+  if [[ "$RUNPOD_LAUNCH_DEFERRED_SIGNAL" -eq 1 ]]; then
+    RUN_WHY="interrupted by signal"
+    log_msg "RUNPOD_LAUNCH_ACTING_ON_DEFERRED_SIGNAL plan_id=$RUNPOD_PLAN_ID exit_code=143"
+    exit 143
+  fi
   if [[ "$launch_rc" -ne 0 ]]; then
     RUNPOD_LAUNCH_STARTED=0
     err_code="$(runpod_extract_error_class "$plan_err" "OFFRIG_LAUNCH_FAILED")"
-    if [[ "$err_code" == "OFFRIG_JOB_FAILED" ]]; then
+    if [[ "$err_code" == "OFFRIG_JOB_FAILED" ]] || [[ "$err_code" == "OFFRIG_LAUNCH_INTERRUPTED" ]]; then
       RUNPOD_POD_OPENED=1
     fi
     RUN_FAILURE_CLASS="$err_code"
