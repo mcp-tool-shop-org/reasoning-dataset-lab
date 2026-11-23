@@ -14452,12 +14452,16 @@ RIG_ONLY_AND_VM_INTERNAL_RDLAB_ENV_ALLOWLIST: dict[str, str] = {
     "RDLAB_WATCHDOG_FETCH_TIMEOUT_SECONDS": "rig-only: timeout for pre-stop fetch on the rig",
     "RDLAB_CONTAINER_DISK_GB": "rig-only: optional container disk size passed from the rig to `offrig_plan`",
     "RDLAB_DRY_STAGE": "rig-only: enables dry-run bundle staging on the rig",
-    "RDLAB_OFFRIG_BACKSTOP_MARGIN_SECONDS": "rig-only: backstop margin added to wall seconds on the rig for `offrig_plan`",
+    "RDLAB_OFFRIG_FETCH_ALLOWANCE_SECONDS": "rig-only: artifact fetch time reserved in RunPod watchdog deadline and run budget",
     "RDLAB_OFFRIG_HOST_PY": "rig-only: path to `offrig_host.py` helper script on the rig",
+    "RDLAB_OFFRIG_IMAGE_PULL_SETUP_SECONDS": "rig-only: image pull and pod setup time included in RunPod watchdog deadline",
     "RDLAB_OFFRIG_LAUNCH_TIMEOUT_SECONDS": "rig-only: readiness wait timeout on the rig for RunPod launch",
+    "RDLAB_OFFRIG_LAUNCH_WAIT_MINUTES": "rig-only: capacity wait limit passed to `offrig_plan` and sized into launch timeout",
     "RDLAB_OFFRIG_POLL_INTERVAL": "rig-only: poll interval in seconds on the rig for offrig status",
     "RDLAB_OFFRIG_PROFILE": "rig-only: offrig profile name passed from the rig to `offrig_plan`",
     "RDLAB_OFFRIG_PROJECT": "rig-only: project path passed from the rig to offrig MCP",
+    "RDLAB_OFFRIG_SHUTDOWN_RESERVE_SECONDS": "rig-only: shutdown safety reserve subtracted before RunPod watchdog deadline",
+    "RDLAB_OFFRIG_STATUS_POLL_RETRIES": "rig-only: bounded retry count for transient transport errors on `offrig_exec` status polls",
     "RDLAB_OUTCOME_HOST": "rig-only: internal env var passed to `write_outcome_draft` on the rig",
     "RDLAB_OUTCOME_OFFRIG_PROFILE": "rig-only: internal env var passed to `write_outcome_draft` on the rig",
     "RDLAB_OUTCOME_PLAN_ID": "rig-only: internal env var passed to `write_outcome_draft` on the rig",
@@ -26642,6 +26646,7 @@ def _e2e_fake_real_mode_window(
     expect_fail: bool = False,
     double_space_rows: bool = False,
     synthetic_items: bool = False,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
     """Drive the REAL `launch_judges.sh` live path (not `--dry`) in a real mode (no stub mode, no VM_DRYRUN) against the
     fake `colab` CLI, with the VM cell run through `tests/fixtures/fake_vm_real_mode_shim.py`, on a part made by the real
@@ -26661,7 +26666,7 @@ def _e2e_fake_real_mode_window(
     env_paths = fake_colab.setup_fake_colab_environment(tmp_path / f"e2e_{name}_env", uv_python_315_found=True)
     kept = tmp_path / f"e2e_{name}_kept_uploads"
     out_dir = tmp_path / f"e2e_{name}_out"
-    run_id = f"e2e-{mode}-01"
+    eff_run_id = run_id if run_id is not None else f"e2e-{mode}-01"
     pilot_pin_exports = ""
     if mode == "lock-check" and p0a_part_dir is not None:
         p0a_hashes = _part_pin_hashes(p0a_part_dir)
@@ -26711,7 +26716,7 @@ def _e2e_fake_real_mode_window(
             f" --counted-items '{_to_wsl_path(counted_items)}'"
         )
     proc = _pm_run_launcher(
-        exports, f"{mode_cli} {extra_args} --out-dir '{_to_wsl_path(out_dir)}' --run-id {run_id}", timeout=300
+        exports, f"{mode_cli} {extra_args} --out-dir '{_to_wsl_path(out_dir)}' --run-id {eff_run_id}", timeout=300
     )
     if exec_env_extra or expect_fail:
         return {"proc": proc, "out_dir": out_dir, "env_paths": env_paths}
@@ -26978,6 +26983,7 @@ def test_e2e_fake_real_mode_time_one_synthetic_reaches_judges(tmp_path: Path) ->
         extra_exports=q36_exports,
         synthetic_items=True,
         tag="_synth",
+        run_id="rdlab-d5c-qwen36-g4-time-01",
     )
     out_dir = res["out_dir"]
     kept = res["kept"]
@@ -26990,6 +26996,8 @@ def test_e2e_fake_real_mode_time_one_synthetic_reaches_judges(tmp_path: Path) ->
         assert not (kept / absent_up).exists(), absent_up
 
     win_doc = json.loads((out_dir / "window.json").read_text(encoding="utf-8"))
+    assert win_doc["window_id"] == "rdlab-d5c-qwen36-g4-time-01"
+    assert res["receipt"]["window_id"] == "rdlab-d5c-qwen36-g4-time-01"
     assert win_doc["synthetic_items"] is True
     assert res["receipt"]["synthetic_items"] is True
     assert res["receipt"]["part_identity"]["part_id"] == "synthetic"
@@ -29260,12 +29268,64 @@ def test_launcher_window_id_check_spares_stub_modes_and_real_ids(
         )
         + extra_exports
     )
+    run_id_case = case.replace("stub", "alt") if case == "flag_over_stub_env" else case
     proc = _pm_run_launcher(
-        exports, f"{mode_cli} --dry {extra_args} --out-dir '{_to_wsl_path(tmp_path / 'out')}' --run-id wid-{case}"
+        exports, f"{mode_cli} --dry {extra_args} --out-dir '{_to_wsl_path(tmp_path / 'out')}' --run-id wid-{run_id_case}"
     )
     assert "WINDOW_ID_STUB_REFUSED" not in proc.stderr, proc.stderr
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert "colab new" in proc.stdout
+
+
+@pytest.mark.parametrize("dry", [False, True], ids=["live", "dry"])
+def test_launcher_refuses_stub_run_id_before_colab_new_and_accepts_real_run_id(
+    tmp_path: Path, dry: bool
+) -> None:
+    """Real mode refuses a stub-token `--run-id` (such as `rdlab-d5c-qwen36-g4-stub-a4-23`) before `colab new`
+    in both live and `--dry`, while accepting a non-stub real-shaped id (`rdlab-d5c-qwen36-runpod-time-a1`)."""
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "rec")
+    part = _make_builder_part(tmp_path / "build")
+    items = _project_part_items(part, tmp_path / "inputs" / "part-items-projected.jsonl")
+    env_paths = fake_colab.setup_fake_colab_environment(tmp_path / "env", uv_python_315_found=True)
+    exports = _pm_real_mode_exports(
+        env_paths,
+        open_lock=tmp_path / "w.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=items,
+        part_dir=part,
+    )
+    bad_proc = _pm_run_launcher(
+        exports,
+        f"--time-one {'--dry ' if dry else ''}--out-dir '{_to_wsl_path(tmp_path / 'out_bad')}' "
+        "--run-id rdlab-d5c-qwen36-g4-stub-a4-23",
+    )
+    assert bad_proc.returncode == 2, bad_proc.stdout + bad_proc.stderr
+    assert "WINDOW_ID_STUB_REFUSED" in bad_proc.stderr, bad_proc.stderr
+    assert "colab new" not in bad_proc.stdout
+    assert not env_paths["calls_log"].exists()
+    assert not env_paths["sentinel_called"].exists()
+
+    if dry:
+        ok_proc = _pm_run_launcher(
+            exports,
+            f"--time-one --dry --out-dir '{_to_wsl_path(tmp_path / 'out_ok')}' "
+            "--run-id rdlab-d5c-qwen36-runpod-time-a1",
+        )
+        assert ok_proc.returncode == 0, ok_proc.stdout + ok_proc.stderr
+        assert "WINDOW_ID_STUB_REFUSED" not in ok_proc.stderr
+        assert "colab new --gpu A100 -s rdlab-d5c-qwen36-runpod-time-a1" in ok_proc.stdout
+    else:
+        res_ok = _e2e_fake_real_mode_window(
+            tmp_path / "live_ok",
+            mode="time-one",
+            items_file=items,
+            part_dir=part,
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+            run_id="rdlab-d5c-qwen36-runpod-time-a1",
+        )
+        assert res_ok["receipt"]["window_id"] == "rdlab-d5c-qwen36-runpod-time-a1"
 
 
 @pytest.mark.parametrize(

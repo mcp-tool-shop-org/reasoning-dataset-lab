@@ -127,6 +127,43 @@ def clean_repo_root(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return clone_dir
 
 
+def _write_offrig_config_toml(
+    config_dir: Path,
+    *,
+    profile: str = "rdlab-judge",
+    image: str = offrig_host.DEFAULT_RUNPOD_IMAGE_REF,
+    include_job: bool = True,
+) -> Path:
+    config_dir.mkdir(parents=True, exist_ok=True)
+    cfg_toml = config_dir / "config.toml"
+    lines = [
+        "[[profiles]]",
+        f'name = "{profile}"',
+        'tier = "medium"',
+        'gpu_type_ids = ["NVIDIA RTX PRO 6000 Blackwell Server Edition"]',
+        "gpu_count = 1",
+        "volume_gb = 200",
+        "container_disk_gb = 60",
+        "context_length = 0",
+        "models = []",
+        "wait_for_gpu_minutes = 20",
+        "parallel = 1",
+        'min_cuda = "13.0"',
+        "min_vram_gb = 90",
+    ]
+    if include_job:
+        lines.extend(
+            [
+                "",
+                "[profiles.job]",
+                f'image = "{image}"',
+                'min_cuda = "12.8"',
+            ]
+        )
+    cfg_toml.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
+    return cfg_toml
+
+
 def _setup_fake_offrig_env(
     root: Path,
     *,
@@ -139,6 +176,11 @@ def _setup_fake_offrig_env(
     cfg_path = root / "fake_offrig_cfg.json"
     log_path = root / "fake_offrig_calls.jsonl"
     state_path = root / "fake_offrig_state.json"
+    offrig_cfg_dir = root / "offrig_cfg"
+    _write_offrig_config_toml(
+        offrig_cfg_dir,
+        image=str((config_overrides or {}).get("profile_image") or offrig_host.DEFAULT_RUNPOD_IMAGE_REF),
+    )
 
     cfg: dict[str, Any] = {
         "gpu": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
@@ -172,6 +214,7 @@ def _setup_fake_offrig_env(
         "log_path": log_path,
         "state_path": state_path,
         "vm_root_dir": vm_root_dir,
+        "offrig_config_dir": offrig_cfg_dir,
         "shim_sh": shim_sh,
         "open_lock": root / "open.lock",
     }
@@ -454,7 +497,7 @@ def test_colab_and_runpod_dry_parity_identical_bundles_and_allowlisted_env_diff(
 
     assert runpod_steps["run"][1]["RDLAB_HOST"] == "runpod"
     assert runpod_steps["run"][1]["RDLAB_VM_ROOT"] == "/workspace/job"
-    assert runpod_steps["run"][1]["RDLAB_CARD_TYPE"] == "G4"
+    assert runpod_steps["run"][1]["RDLAB_CARD_TYPE"] == "RUNPOD-RTX-PRO-6000-SERVER"
     assert runpod_steps["run"][1]["RDLAB_RUNPOD_IMAGE_TAG"] == offrig_host.DEFAULT_RUNPOD_IMAGE_TAG
     assert runpod_steps["run"][1]["RDLAB_RUNPOD_IMAGE_DIGEST"] == offrig_host.DEFAULT_RUNPOD_IMAGE_DIGEST
 
@@ -488,6 +531,7 @@ def test_runpod_success_receipts_cost_runtime_and_download_duration(
             _to_bash_path(out_dir),
         ],
         env_vars={
+            "OFFRIG_CONFIG_DIR": _to_bash_path(env_info["offrig_config_dir"]),
             "RDLAB_OFFRIG_MCP_BIN": _to_bash_path(env_info["shim_sh"]),
             "RDLAB_OFFRIG_PROJECT": _to_bash_path(clean_repo_root),
             "RDLAB_FAKE_OFFRIG_CONFIG": _to_bash_path(env_info["cfg_path"]),
@@ -504,7 +548,8 @@ def test_runpod_success_receipts_cost_runtime_and_download_duration(
     assert tools[0] == "offrig_plan"
     assert calls[0]["arguments"]["no_fallback"] is True
     assert calls[0]["arguments"]["container_disk_gb"] == 80
-    assert calls[0]["arguments"]["max_hours"] > 1500 / 3600.0
+    assert calls[0]["arguments"]["wait_minutes"] == offrig_host.DEFAULT_LAUNCH_WAIT_MINUTES
+    assert calls[0]["arguments"]["max_hours"] == pytest.approx(offrig_host.compute_watchdog_max_hours(1500))
     assert "offrig_launch" in tools
     assert "offrig_job" in tools
     assert "offrig_shutdown" in tools
@@ -513,15 +558,19 @@ def test_runpod_success_receipts_cost_runtime_and_download_duration(
     vm_receipt = json.loads((out_dir / "vm_receipt.json").read_text(encoding="utf-8"))
     assert vm_receipt["host"] == "runpod"
     assert vm_receipt["pod_id"] == "pod-fake-6000-01"
-    assert vm_receipt["image"]["tag"] == offrig_host.DEFAULT_RUNPOD_IMAGE_TAG
-    assert vm_receipt["image"]["digest"] == offrig_host.DEFAULT_RUNPOD_IMAGE_DIGEST
+    assert vm_receipt["hardware"] == "RUNPOD-RTX-PRO-6000-SERVER"
+    assert "image" not in vm_receipt
+    assert vm_receipt["image_requested"]["tag"] == offrig_host.DEFAULT_RUNPOD_IMAGE_TAG
+    assert vm_receipt["image_requested"]["digest"] == offrig_host.DEFAULT_RUNPOD_IMAGE_DIGEST
+    assert vm_receipt["image_source"] == "offrig profile"
     assert vm_receipt["model_download_seconds"] == pytest.approx(21.0)
     assert vm_receipt["model_download_seconds_by_judge"] == {"flow-judge-v0.1": 12.4, "mu-judge": 8.6}
     rt = vm_receipt["runtime_environment"]
     assert rt["host_gpu_name"] == "NVIDIA RTX PRO 6000 Blackwell Server Edition"
     assert rt["driver_version"] == "580.95.05"
     assert rt["cuda_version"] == "13.0"
-    assert rt["python_version"]
+    assert rt["python_version"] == "3.12.11"
+    assert rt["system_python_version"]
     assert rt["vllm_version"] == "0.34.0"
 
     outcome = json.loads((out_dir / "outcome.draft.json").read_text(encoding="utf-8"))
@@ -529,6 +578,9 @@ def test_runpod_success_receipts_cost_runtime_and_download_duration(
     assert outcome["host"] == "runpod"
     assert outcome["venue"] == "runpod"
     assert outcome["pod_id"] == "pod-fake-6000-01"
+    assert "image" not in outcome
+    assert outcome["image_requested"]["tag"] == offrig_host.DEFAULT_RUNPOD_IMAGE_TAG
+    assert outcome["image_source"] == "offrig profile"
     assert outcome["cost_usd"] == pytest.approx(0.42)
     assert outcome["cost"] == pytest.approx(0.42)
     assert outcome["cost_currency"] == "USD"
@@ -544,6 +596,7 @@ def test_runpod_success_receipts_cost_runtime_and_download_duration(
         (
             "wrong_gpu",
             {
+                "plan_gpus": "1x NVIDIA RTX PRO 6000 Blackwell Server Edition",
                 "gpu": "NVIDIA A100-SXM4-80GB",
                 "nvidia_smi_stdout": "NVIDIA A100-SXM4-80GB, 81920, 580.95.05\n",
             },
@@ -552,6 +605,7 @@ def test_runpod_success_receipts_cost_runtime_and_download_duration(
         (
             "workstation_edition",
             {
+                "plan_gpus": "1x NVIDIA RTX PRO 6000 Blackwell Server Edition",
                 "gpu": "NVIDIA RTX PRO 6000 Blackwell Workstation Edition",
                 "nvidia_smi_stdout": "NVIDIA RTX PRO 6000 Blackwell Workstation Edition, 97887, 580.95.05\n",
             },
@@ -609,6 +663,7 @@ def test_runpod_card_gate_refusals_shut_down_pod(
             _to_bash_path(out_dir),
         ],
         env_vars={
+            "OFFRIG_CONFIG_DIR": _to_bash_path(env_info["offrig_config_dir"]),
             "RDLAB_OFFRIG_MCP_BIN": _to_bash_path(env_info["shim_sh"]),
             "RDLAB_OFFRIG_PROJECT": _to_bash_path(clean_repo_root),
             "RDLAB_FAKE_OFFRIG_CONFIG": _to_bash_path(env_info["cfg_path"]),
@@ -665,6 +720,7 @@ def test_runpod_shutdown_on_failed_step_with_retry_and_timeout_and_sigterm(
             _to_bash_path(out_fail),
         ],
         env_vars={
+            "OFFRIG_CONFIG_DIR": _to_bash_path(env_fail["offrig_config_dir"]),
             "RDLAB_OFFRIG_MCP_BIN": _to_bash_path(env_fail["shim_sh"]),
             "RDLAB_OFFRIG_PROJECT": _to_bash_path(clean_repo_root),
             "RDLAB_FAKE_OFFRIG_CONFIG": _to_bash_path(env_fail["cfg_path"]),
@@ -706,6 +762,7 @@ def test_runpod_shutdown_on_failed_step_with_retry_and_timeout_and_sigterm(
             _to_bash_path(out_to),
         ],
         env_vars={
+            "OFFRIG_CONFIG_DIR": _to_bash_path(env_to["offrig_config_dir"]),
             "RDLAB_WALL_SECONDS": "2",
             "RDLAB_OFFRIG_MCP_BIN": _to_bash_path(env_to["shim_sh"]),
             "RDLAB_OFFRIG_PROJECT": _to_bash_path(clean_repo_root),
@@ -734,6 +791,7 @@ def test_runpod_shutdown_on_failed_step_with_retry_and_timeout_and_sigterm(
     out_sig = tmp_path / "out_sig"
     launch_sh = clean_repo_root / "scripts" / "colab" / "launch_judges.sh"
     sig_env = {
+        "OFFRIG_CONFIG_DIR": _to_bash_path(env_sig["offrig_config_dir"]),
         "RDLAB_WALL_SECONDS": "300",
         "RDLAB_JUDGE_LOCK_SHA256": vm_judges.EXPECTED_JUDGE_LOCK_SHA256,
         "RDLAB_D3_LOCK_SHA256": vm_judges.EXPECTED_D3_LOCK_SHA256,
@@ -888,6 +946,7 @@ def test_runpod_refuses_missing_offrig_or_failing_commands_before_paid_launch(
             _to_bash_path(out_plan_fail),
         ],
         env_vars={
+            "OFFRIG_CONFIG_DIR": _to_bash_path(env_plan_fail["offrig_config_dir"]),
             "RDLAB_OFFRIG_MCP_BIN": _to_bash_path(env_plan_fail["shim_sh"]),
             "RDLAB_OFFRIG_PROJECT": _to_bash_path(clean_repo_root),
             "RDLAB_FAKE_OFFRIG_CONFIG": _to_bash_path(env_plan_fail["cfg_path"]),
@@ -902,7 +961,7 @@ def test_runpod_refuses_missing_offrig_or_failing_commands_before_paid_launch(
     assert plan_tools == ["offrig_plan"]
     assert json.loads((out_plan_fail / "outcome.draft.json").read_text(encoding="utf-8"))["cost_usd"] == 0.0
 
-    # 4. Failing `offrig_launch` refuses before any exec/put/shutdown
+    # 4. Failing `offrig_launch` triggers `offrig_shutdown` once launch was attempted for a plan id
     env_launch_fail = _setup_fake_offrig_env(
         tmp_path / "launch_fail",
         repo_root=clean_repo_root,
@@ -927,6 +986,7 @@ def test_runpod_refuses_missing_offrig_or_failing_commands_before_paid_launch(
             _to_bash_path(out_launch_fail),
         ],
         env_vars={
+            "OFFRIG_CONFIG_DIR": _to_bash_path(env_launch_fail["offrig_config_dir"]),
             "RDLAB_OFFRIG_MCP_BIN": _to_bash_path(env_launch_fail["shim_sh"]),
             "RDLAB_OFFRIG_PROJECT": _to_bash_path(clean_repo_root),
             "RDLAB_FAKE_OFFRIG_CONFIG": _to_bash_path(env_launch_fail["cfg_path"]),
@@ -938,7 +998,8 @@ def test_runpod_refuses_missing_offrig_or_failing_commands_before_paid_launch(
     assert res_launch_fail.returncode == 2
     assert "OFFRIG_LAUNCH_FAILED" in res_launch_fail.stderr
     launch_tools = [c["tool"] for c in _read_call_log(env_launch_fail["log_path"])]
-    assert launch_tools == ["offrig_plan", "offrig_launch"]
+    assert launch_tools == ["offrig_plan", "offrig_launch", "offrig_shutdown"]
+    assert json.loads((out_launch_fail / "outcome.draft.json").read_text(encoding="utf-8"))["pod_shutdown"] is True
 
 
 def test_runpod_session_smoke_and_probe(tmp_path: Path, clean_repo_root: Path) -> None:
@@ -989,11 +1050,21 @@ def test_offrig_host_unit_and_cli_paths(tmp_path: Path, monkeypatch: pytest.Monk
         "sha256:" + "a" * 64,
     )
     assert offrig_host.split_image_ref("vllm/vllm-openai:v0.34.0") == ("vllm/vllm-openai:v0.34.0", None)
-    assert offrig_host.compute_watchdog_max_hours(3600, backstop_margin_seconds=300) == pytest.approx(1.0833)
+    assert offrig_host.compute_watchdog_max_hours(1500) == pytest.approx(1.0834)
     with pytest.raises(offrig_host.OffrigHostError, match="OFFRIG_PLAN_FAILED"):
         offrig_host.compute_watchdog_max_hours(0)
     with pytest.raises(offrig_host.OffrigHostError, match="OFFRIG_PLAN_FAILED"):
-        offrig_host.compute_watchdog_max_hours(60, backstop_margin_seconds=-1)
+        offrig_host.compute_watchdog_max_hours(60, launch_wait_minutes=-1)
+    with pytest.raises(offrig_host.OffrigHostError, match="OFFRIG_DEADLINE_INVALID"):
+        offrig_host.parse_offrig_deadline_utc("not-a-deadline")
+    assert offrig_host.parse_offrig_deadline_utc("2026-11-23 13:05 UTC") == pytest.approx(1795439100.0)
+    rem_budget = offrig_host.compute_remaining_run_budget_seconds(
+        "2026-11-23 13:05 UTC",
+        1795437900.0,
+    )
+    assert rem_budget["remaining_before_deadline_seconds"] == 1200
+    assert rem_budget["reserve_seconds"] == 300
+    assert rem_budget["remaining_run_seconds"] == 900
 
     with pytest.raises(offrig_host.OffrigHostError, match="RUNPOD_GPU_UNREADABLE"):
         offrig_host.parse_nvidia_smi_gpu_csv("")
@@ -1047,7 +1118,7 @@ def test_offrig_host_unit_and_cli_paths(tmp_path: Path, monkeypatch: pytest.Monk
                 "cost_per_hr": 2.0,
                 "spent_usd": 0.15,
                 "pod_vm_root": "/workspace/job",
-                "vm_root_dir": str(vm_root),
+                "vm_root_dir": _to_bash_path(vm_root) if os.name == "posix" else str(vm_root),
             }
         ),
         encoding="utf-8",
@@ -1057,9 +1128,25 @@ def test_offrig_host_unit_and_cli_paths(tmp_path: Path, monkeypatch: pytest.Monk
     monkeypatch.setenv("RDLAB_FAKE_OFFRIG_STATE", str(state_p))
     monkeypatch.setenv("RDLAB_FAKE_OFFRIG_LOG", str(log_p))
     monkeypatch.setenv("RDLAB_FAKE_OFFRIG_REPO_ROOT", str(REPO_ROOT))
+    unit_cfg_dir = tmp_path / "unit_offrig_cfg"
+    _write_offrig_config_toml(unit_cfg_dir)
+    monkeypatch.setenv("OFFRIG_CONFIG_DIR", str(unit_cfg_dir))
 
     assert offrig_host.main(["check-bin"]) == 0
     assert str(shim) in capsys.readouterr().out
+
+    assert offrig_host.main(["check-path-visibility", "--bin", str(shim), "--path", str(tmp_path)]) == 0
+    assert json.loads(capsys.readouterr().out)["compatible"] is True
+
+    assert offrig_host.main(
+        ["check-profile-image", "--profile", "rdlab-judge", "--image", offrig_host.DEFAULT_RUNPOD_IMAGE_REF]
+    ) == 0
+    assert json.loads(capsys.readouterr().out)["match"] is True
+
+    assert offrig_host.main(
+        ["remaining-run-budget", "--deadline", "2026-11-23 13:05 UTC", "--now-epoch", "1795437900"]
+    ) == 0
+    assert json.loads(capsys.readouterr().out)["remaining_run_seconds"] == 900
 
     assert offrig_host.main(["plan", "--project", str(REPO_ROOT), "--profile", "job", "--wall-seconds", "600", "--container-disk-gb", "60", "--note", "unit"]) == 0
     assert json.loads(capsys.readouterr().out)["plan_id"] == 77
@@ -1159,7 +1246,7 @@ def test_vm_judges_runpod_receipt_runtime_and_content_root_helpers(
     monkeypatch.setenv("RDLAB_VM_ROOT", str(tmp_path / "runpod_root"))
     assert vm_judges.resolve_content_dir() == tmp_path / "runpod_root"
 
-    # Image split from tag+digest and bare image ref
+    # Image split from tag+digest and bare image ref (explicitly labelled as requested + offrig profile)
     rp_fields = vm_judges.resolve_host_receipt_fields(
         {
             "RDLAB_HOST": "runpod",
@@ -1170,15 +1257,26 @@ def test_vm_judges_runpod_receipt_runtime_and_content_root_helpers(
     assert rp_fields == {
         "host": "runpod",
         "pod_id": "pod-abc",
-        "image": {
+        "image_requested": {
             "ref": "vllm/vllm-openai:v0.34.0@sha256:" + "b" * 64,
             "tag": "vllm/vllm-openai:v0.34.0",
             "digest": "sha256:" + "b" * 64,
         },
+        "image_source": "offrig profile",
     }
     bare_tag = vm_judges.resolve_host_receipt_fields({"RDLAB_RUNPOD_IMAGE": "vllm/vllm-openai:v0.34.0"})
-    assert bare_tag["image"] == {"ref": "vllm/vllm-openai:v0.34.0", "tag": "vllm/vllm-openai:v0.34.0", "digest": None}
-    assert vm_judges.resolve_host_receipt_fields({}) == {"host": "colab", "pod_id": None, "image": None}
+    assert bare_tag["image_requested"] == {
+        "ref": "vllm/vllm-openai:v0.34.0",
+        "tag": "vllm/vllm-openai:v0.34.0",
+        "digest": None,
+    }
+    assert bare_tag["image_source"] == "offrig profile"
+    assert vm_judges.resolve_host_receipt_fields({}) == {
+        "host": "colab",
+        "pod_id": None,
+        "image_requested": None,
+        "image_source": None,
+    }
 
     dl_dur = vm_judges.compute_model_download_duration(
         [
@@ -1199,7 +1297,7 @@ def test_vm_judges_runpod_receipt_runtime_and_content_root_helpers(
     assert parsed.work_dir == tmp_path / "custom_root" / "rdlab_work"
 
     monkeypatch.setenv("RDLAB_HOST", "runpod")
-    monkeypatch.setenv("RDLAB_CARD_TYPE", "G4")
+    monkeypatch.setenv("RDLAB_CARD_TYPE", "RUNPOD-RTX-PRO-6000-SERVER")
     monkeypatch.setattr(
         vm_judges,
         "read_vm_gpu_name",
@@ -1208,7 +1306,28 @@ def test_vm_judges_runpod_receipt_runtime_and_content_root_helpers(
     card_chk = vm_judges.verify_vm_card_type("time-one", dryrun=False, until=None)
     assert card_chk is not None
     assert card_chk["source"] == "offrig pod + nvidia-smi"
-    assert card_chk["card_type"] == "G4"
+    assert card_chk["card_type"] == "RUNPOD-RTX-PRO-6000-SERVER"
+
+    # RunPod VM check refuses Workstation Edition and refuses Colab G4 card_type
+    monkeypatch.setattr(
+        vm_judges,
+        "read_vm_gpu_name",
+        lambda: ("NVIDIA RTX PRO 6000 Blackwell Workstation Edition", "ok"),
+    )
+    with pytest.raises(vm_judges.RefusalError) as ws_exc:
+        vm_judges.verify_vm_card_type("time-one", dryrun=False, until=None)
+    assert ws_exc.value.failure_class == vm_judges.CARD_TYPE_MISMATCH
+
+    monkeypatch.setenv("RDLAB_CARD_TYPE", "G4")
+    monkeypatch.setattr(
+        vm_judges,
+        "read_vm_gpu_name",
+        lambda: ("NVIDIA RTX PRO 6000 Blackwell Server Edition", "ok"),
+    )
+    with pytest.raises(vm_judges.RefusalError) as g4_exc:
+        vm_judges.verify_vm_card_type("time-one", dryrun=False, until=None)
+    assert g4_exc.value.failure_class == vm_judges.CARD_TYPE_MISMATCH
+    monkeypatch.setenv("RDLAB_CARD_TYPE", "RUNPOD-RTX-PRO-6000-SERVER")
 
     # Runtime environment collection against a mocked `nvidia-smi` and fake venv python
     fake_bin = tmp_path / "bin"
@@ -1246,8 +1365,12 @@ def test_vm_judges_runpod_receipt_runtime_and_content_root_helpers(
 
     orig_run_vm_sub = vm_judges.run_vm_subprocess
 
+    import platform as _platform
+
     def _patched_run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
         if Path(cmd[0]) == vllm_py:
+            if len(cmd) >= 3 and "platform" in cmd[2]:
+                return subprocess.CompletedProcess(cmd, 0, stdout="3.12.11\n", stderr="")
             return subprocess.CompletedProcess(cmd, 0, stdout="0.34.0\n", stderr="")
         return orig_run_vm_sub(cmd, **_kwargs)
 
@@ -1256,7 +1379,11 @@ def test_vm_judges_runpod_receipt_runtime_and_content_root_helpers(
     assert rt["host_gpu_name"] == "NVIDIA RTX PRO 6000 Blackwell Server Edition"
     assert rt["driver_version"] == "580.95.05"
     assert rt["cuda_version"] == "13.0"
+    assert rt["python_version"] == "3.12.11"
+    assert rt["system_python_version"] == _platform.python_version()
     assert rt["vllm_version"] == "0.34.0"
+
+    assert vm_judges._read_vllm_python_version(work_dir=None) is None
 
     import importlib.metadata as importlib_metadata
 
@@ -1454,3 +1581,765 @@ def test_offrig_host_error_and_edge_branches(
     assert rc_step == 0
     assert capsys.readouterr().out == "no-newline\n"
     importlib.reload(offrig_host)
+
+
+@pytest.mark.parametrize("dry", [False, True], ids=["live", "dry"])
+def test_runpod_refuses_stub_run_id_and_accepts_real_run_id(
+    dry: bool,
+    tmp_path: Path,
+    clean_repo_root: Path,
+) -> None:
+    items_path, part_dir = _make_synthetic_items_with_part(tmp_path / "data")
+    receipts_dir = _make_synthetic_receipts(tmp_path / "data")
+
+    env_bad = _setup_fake_offrig_env(tmp_path / "offrig_bad", repo_root=clean_repo_root)
+    bad_args = [
+        "--host",
+        "runpod",
+        "--time-one",
+        "--run-id",
+        "rdlab-d5c-qwen36-g4-stub-a4-23",
+        "--items-file",
+        _to_bash_path(items_path),
+        "--part-dir",
+        _to_bash_path(part_dir),
+        "--receipts-dir",
+        _to_bash_path(receipts_dir),
+        "--out-dir",
+        _to_bash_path(tmp_path / "out_bad"),
+    ]
+    if dry:
+        bad_args.insert(0, "--dry")
+    res_bad = _run_bash_launcher(
+        repo_root=clean_repo_root,
+        args=bad_args,
+        env_vars={
+            "OFFRIG_CONFIG_DIR": _to_bash_path(env_bad["offrig_config_dir"]),
+            "RDLAB_OFFRIG_MCP_BIN": _to_bash_path(env_bad["shim_sh"]),
+            "RDLAB_OFFRIG_PROJECT": _to_bash_path(clean_repo_root),
+            "RDLAB_FAKE_OFFRIG_CONFIG": _to_bash_path(env_bad["cfg_path"]),
+            "RDLAB_FAKE_OFFRIG_LOG": _to_bash_path(env_bad["log_path"]),
+            "RDLAB_FAKE_OFFRIG_STATE": _to_bash_path(env_bad["state_path"]),
+            "RDLAB_FAKE_OFFRIG_REPO_ROOT": _to_bash_path(clean_repo_root),
+            "RDLAB_OFFRIG_POLL_INTERVAL": "0.02",
+        },
+    )
+    assert res_bad.returncode == 2
+    assert "WINDOW_ID_STUB_REFUSED" in res_bad.stderr
+    assert _read_call_log(env_bad["log_path"]) == []
+
+    env_ok = _setup_fake_offrig_env(tmp_path / "offrig_ok", repo_root=clean_repo_root)
+    ok_args = [
+        "--host",
+        "runpod",
+        "--time-one",
+        "--run-id",
+        "rdlab-d5c-qwen36-runpod-time-a1",
+        "--items-file",
+        _to_bash_path(items_path),
+        "--part-dir",
+        _to_bash_path(part_dir),
+        "--receipts-dir",
+        _to_bash_path(receipts_dir),
+        "--out-dir",
+        _to_bash_path(tmp_path / "out_ok"),
+    ]
+    if dry:
+        ok_args.insert(0, "--dry")
+    res_ok = _run_bash_launcher(
+        repo_root=clean_repo_root,
+        args=ok_args,
+        env_vars={
+            "OFFRIG_CONFIG_DIR": _to_bash_path(env_ok["offrig_config_dir"]),
+            "RDLAB_OFFRIG_MCP_BIN": _to_bash_path(env_ok["shim_sh"]),
+            "RDLAB_OFFRIG_PROJECT": _to_bash_path(clean_repo_root),
+            "RDLAB_FAKE_OFFRIG_CONFIG": _to_bash_path(env_ok["cfg_path"]),
+            "RDLAB_FAKE_OFFRIG_LOG": _to_bash_path(env_ok["log_path"]),
+            "RDLAB_FAKE_OFFRIG_STATE": _to_bash_path(env_ok["state_path"]),
+            "RDLAB_FAKE_OFFRIG_REPO_ROOT": _to_bash_path(clean_repo_root),
+            "RDLAB_OFFRIG_POLL_INTERVAL": "0.02",
+        },
+    )
+    assert res_ok.returncode == 0, f"stderr={res_ok.stderr}\nstdout={res_ok.stdout}"
+    assert "WINDOW_ID_STUB_REFUSED" not in res_ok.stderr
+    if not dry:
+        assert "offrig_plan" in [c["tool"] for c in _read_call_log(env_ok["log_path"])]
+
+
+def test_offrig_profile_image_verification_and_pre_plan_refusal(
+    tmp_path: Path,
+    clean_repo_root: Path,
+) -> None:
+    cfg_dir = tmp_path / "cfg_unit"
+    assert offrig_host.resolve_offrig_config_path({"OFFRIG_CONFIG_DIR": str(cfg_dir)}) == cfg_dir / "config.toml"
+    posix_cfg = offrig_host.resolve_offrig_config_path({"XDG_CONFIG_HOME": str(tmp_path / "xdg")})
+    if not sys.platform.startswith(("win", "darwin")):
+        assert posix_cfg == tmp_path / "xdg" / "offrig" / "config.toml"
+
+    # Missing config.toml -> OFFRIG_CONFIG_UNREADABLE
+    with pytest.raises(offrig_host.OffrigHostError, match="OFFRIG_CONFIG_UNREADABLE"):
+        offrig_host.read_offrig_profile_image("rdlab-judge", config_path=cfg_dir / "config.toml")
+
+    # Malformed TOML -> OFFRIG_CONFIG_UNREADABLE
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    bad_toml = cfg_dir / "bad.toml"
+    bad_toml.write_text("[[profiles]\n", encoding="utf-8")
+    with pytest.raises(offrig_host.OffrigHostError, match="OFFRIG_CONFIG_UNREADABLE"):
+        offrig_host.read_offrig_profile_image("rdlab-judge", config_path=bad_toml)
+
+    # Missing [profiles.job] or wrong profile -> OFFRIG_PROFILE_NOT_FOUND
+    no_job = cfg_dir / "no_job.toml"
+    no_job.write_text('[[profiles]]\nname = "rdlab-judge"\n', encoding="utf-8")
+    with pytest.raises(offrig_host.OffrigHostError, match="OFFRIG_PROFILE_NOT_FOUND"):
+        offrig_host.read_offrig_profile_image("rdlab-judge", config_path=no_job)
+    with pytest.raises(offrig_host.OffrigHostError, match="OFFRIG_PROFILE_NOT_FOUND"):
+        offrig_host.read_offrig_profile_image("other-profile", config_path=no_job)
+
+    # Mismatch -> OFFRIG_PROFILE_IMAGE_MISMATCH
+    cfg_file = _write_offrig_config_toml(cfg_dir, image="vllm/vllm-openai:v0.33.0")
+    with pytest.raises(offrig_host.OffrigHostError, match="OFFRIG_PROFILE_IMAGE_MISMATCH"):
+        offrig_host.verify_offrig_profile_image(
+            "rdlab-judge",
+            offrig_host.DEFAULT_RUNPOD_IMAGE_REF,
+            config_path=cfg_file,
+        )
+    with pytest.raises(offrig_host.OffrigHostError, match="OFFRIG_PROFILE_IMAGE_MISMATCH"):
+        offrig_host.verify_offrig_profile_image("rdlab-judge", "", config_path=cfg_file)
+
+    assert offrig_host.main(["check-profile-image", "--profile", "rdlab-judge", "--image", "vllm/vllm-openai:v0.33.0", "--config-path", str(cfg_file)]) == 0
+
+    # Launcher refuses before `offrig_plan` when profile job.image mismatches requested image
+    items_path, part_dir = _make_synthetic_items_with_part(tmp_path / "data")
+    receipts_dir = _make_synthetic_receipts(tmp_path / "data")
+    env_mis = _setup_fake_offrig_env(
+        tmp_path / "offrig_mis",
+        repo_root=clean_repo_root,
+        config_overrides={"profile_image": "vllm/vllm-openai:v0.31.0"},
+    )
+    out_mis = tmp_path / "out_mis"
+    res_mis = _run_bash_launcher(
+        repo_root=clean_repo_root,
+        args=[
+            "--host",
+            "runpod",
+            "--time-one",
+            "--run-id",
+            "rp-img-mis-01",
+            "--items-file",
+            _to_bash_path(items_path),
+            "--part-dir",
+            _to_bash_path(part_dir),
+            "--receipts-dir",
+            _to_bash_path(receipts_dir),
+            "--out-dir",
+            _to_bash_path(out_mis),
+        ],
+        env_vars={
+            "OFFRIG_CONFIG_DIR": _to_bash_path(env_mis["offrig_config_dir"]),
+            "RDLAB_OFFRIG_MCP_BIN": _to_bash_path(env_mis["shim_sh"]),
+            "RDLAB_OFFRIG_PROJECT": _to_bash_path(clean_repo_root),
+            "RDLAB_FAKE_OFFRIG_CONFIG": _to_bash_path(env_mis["cfg_path"]),
+            "RDLAB_FAKE_OFFRIG_LOG": _to_bash_path(env_mis["log_path"]),
+            "RDLAB_FAKE_OFFRIG_STATE": _to_bash_path(env_mis["state_path"]),
+            "RDLAB_FAKE_OFFRIG_REPO_ROOT": _to_bash_path(clean_repo_root),
+        },
+    )
+    assert res_mis.returncode == 2
+    assert "OFFRIG_PROFILE_IMAGE_MISMATCH" in res_mis.stderr
+    assert _read_call_log(env_mis["log_path"]) == []
+
+
+def test_runpod_deadline_covers_window_and_fake_clock_bounds_run_keeping_fetch_before_deadline(
+    tmp_path: Path,
+    clean_repo_root: Path,
+) -> None:
+    assert offrig_host.DEFAULT_LAUNCH_WAIT_MINUTES == 20
+    assert offrig_host.DEFAULT_IMAGE_PULL_SETUP_SECONDS == 900
+    assert offrig_host.DEFAULT_FETCH_ALLOWANCE_SECONDS == 180
+    assert offrig_host.DEFAULT_SHUTDOWN_RESERVE_SECONDS == 120
+    assert offrig_host.compute_watchdog_max_hours(1500) == pytest.approx(1.0834)
+    assert offrig_host.parse_offrig_deadline_utc("2026-11-23T13:05:00Z") == pytest.approx(1795439100.0)
+    assert offrig_host.parse_offrig_deadline_utc("2026-11-23T13:05:00") == pytest.approx(1795439100.0)
+
+    items_path, part_dir = _make_synthetic_items_with_part(tmp_path / "data")
+    receipts_dir = _make_synthetic_receipts(tmp_path / "data")
+
+    # 1. Slow setup consumes 3000s of 3900s deadline -> 900s before deadline -> 600s run budget (540s VM wall), fetch+shutdown still finish before deadline
+    t0 = 1795435200  # 2026-11-23 12:00 UTC
+    clock_file = tmp_path / "fake_clock.txt"
+    clock_file.write_text(f"{t0}\n", encoding="utf-8")
+    env_slow = _setup_fake_offrig_env(
+        tmp_path / "slow_setup",
+        repo_root=clean_repo_root,
+        config_overrides={"advance_clock_on_step": {"gate": 3000}},
+    )
+    out_slow = tmp_path / "out_slow"
+    res_slow = _run_bash_launcher(
+        repo_root=clean_repo_root,
+        args=[
+            "--host",
+            "runpod",
+            "--time-one",
+            "--run-id",
+            "rp-slow-01",
+            "--items-file",
+            _to_bash_path(items_path),
+            "--part-dir",
+            _to_bash_path(part_dir),
+            "--receipts-dir",
+            _to_bash_path(receipts_dir),
+            "--out-dir",
+            _to_bash_path(out_slow),
+        ],
+        env_vars={
+            "OFFRIG_CONFIG_DIR": _to_bash_path(env_slow["offrig_config_dir"]),
+            "RDLAB_FAKE_CLOCK_FILE": _to_bash_path(clock_file),
+            "RDLAB_OFFRIG_MCP_BIN": _to_bash_path(env_slow["shim_sh"]),
+            "RDLAB_OFFRIG_PROJECT": _to_bash_path(clean_repo_root),
+            "RDLAB_FAKE_OFFRIG_CONFIG": _to_bash_path(env_slow["cfg_path"]),
+            "RDLAB_FAKE_OFFRIG_LOG": _to_bash_path(env_slow["log_path"]),
+            "RDLAB_FAKE_OFFRIG_STATE": _to_bash_path(env_slow["state_path"]),
+            "RDLAB_FAKE_OFFRIG_REPO_ROOT": _to_bash_path(clean_repo_root),
+            "RDLAB_OFFRIG_POLL_INTERVAL": "0.02",
+        },
+    )
+    assert res_slow.returncode == 0, f"stderr={res_slow.stderr}\nstdout={res_slow.stdout}"
+    run_env_doc = json.loads((env_slow["vm_root_dir"] / "run_window_env.json").read_text(encoding="utf-8"))
+    assert run_env_doc["env"]["RDLAB_WALL_SECONDS"] == "540"
+    cli_log_txt = (out_slow / "colab-cli.log").read_text(encoding="utf-8")
+    assert "RUNPOD_RUN_BOUNDED_BY_DEADLINE" in cli_log_txt
+    tools_slow = [c["tool"] for c in _read_call_log(env_slow["log_path"])]
+    assert "offrig_get" in tools_slow and tools_slow[-1] == "offrig_shutdown"
+    assert (out_slow / "vm_receipt.json").is_file()
+    final_clock = int(clock_file.read_text(encoding="utf-8").strip())
+    deadline_ep = offrig_host.parse_offrig_deadline_utc("2026-11-23 13:05 UTC")
+    assert final_clock < deadline_ep
+
+    # 2. Setup consumes entire margin beyond reserve -> skips `run`, runs fetch & shutdown with RUNPOD_DEADLINE_EXHAUSTED
+    clock_ex = tmp_path / "fake_clock_ex.txt"
+    clock_ex.write_text(f"{t0}\n", encoding="utf-8")
+    env_ex = _setup_fake_offrig_env(
+        tmp_path / "ex_setup",
+        repo_root=clean_repo_root,
+        config_overrides={"advance_clock_on_step": {"gate": 3700}},
+    )
+    out_ex = tmp_path / "out_ex"
+    res_ex = _run_bash_launcher(
+        repo_root=clean_repo_root,
+        args=[
+            "--host",
+            "runpod",
+            "--time-one",
+            "--run-id",
+            "rp-exhausted-01",
+            "--items-file",
+            _to_bash_path(items_path),
+            "--part-dir",
+            _to_bash_path(part_dir),
+            "--receipts-dir",
+            _to_bash_path(receipts_dir),
+            "--out-dir",
+            _to_bash_path(out_ex),
+        ],
+        env_vars={
+            "OFFRIG_CONFIG_DIR": _to_bash_path(env_ex["offrig_config_dir"]),
+            "RDLAB_FAKE_CLOCK_FILE": _to_bash_path(clock_ex),
+            "RDLAB_OFFRIG_MCP_BIN": _to_bash_path(env_ex["shim_sh"]),
+            "RDLAB_OFFRIG_PROJECT": _to_bash_path(clean_repo_root),
+            "RDLAB_FAKE_OFFRIG_CONFIG": _to_bash_path(env_ex["cfg_path"]),
+            "RDLAB_FAKE_OFFRIG_LOG": _to_bash_path(env_ex["log_path"]),
+            "RDLAB_FAKE_OFFRIG_STATE": _to_bash_path(env_ex["state_path"]),
+            "RDLAB_FAKE_OFFRIG_REPO_ROOT": _to_bash_path(clean_repo_root),
+            "RDLAB_OFFRIG_POLL_INTERVAL": "0.02",
+        },
+    )
+    assert res_ex.returncode == 2
+    assert "RUNPOD_DEADLINE_EXHAUSTED_BEFORE_RUN" in (out_ex / "colab-cli.log").read_text(encoding="utf-8")
+    assert not (env_ex["vm_root_dir"] / "run_window_env.json").exists()
+    assert json.loads(env_ex["state_path"].read_text(encoding="utf-8"))["shutdown"] is True
+    assert json.loads((out_ex / "outcome.draft.json").read_text(encoding="utf-8"))["failure_class"] == "RUNPOD_DEADLINE_EXHAUSTED"
+
+
+@pytest.mark.parametrize(
+    ("case_label", "cfg_overrides", "extra_env", "expected_code"),
+    [
+        (
+            "client_timeout",
+            {"sleep_on_tool": "offrig_launch", "sleep_seconds": 0.8},
+            {"RDLAB_OFFRIG_LAUNCH_TIMEOUT_SECONDS": "0.15"},
+            "OFFRIG_MCP_TIMEOUT",
+        ),
+        (
+            "sidecar_crash",
+            {"crash_on_tool": "offrig_launch"},
+            {},
+            "OFFRIG_MCP_EOF",
+        ),
+        (
+            "bad_json",
+            {"bad_json_on_tool": "offrig_launch"},
+            {},
+            "OFFRIG_MCP_BAD_JSON",
+        ),
+        (
+            "job_poll_failure",
+            {"job_state": "failed", "job_error": "capacity lost during wait"},
+            {},
+            "OFFRIG_JOB_FAILED",
+        ),
+        (
+            "watchdog_start_failed",
+            {"watchdog": "FAILED to start: fork denied; shut down by the deadline yourself"},
+            {},
+            "OFFRIG_WATCHDOG_START_FAILED",
+        ),
+    ],
+)
+def test_runpod_shutdown_called_on_every_launch_failure_class(
+    case_label: str,
+    cfg_overrides: dict[str, Any],
+    extra_env: dict[str, str],
+    expected_code: str,
+    tmp_path: Path,
+    clean_repo_root: Path,
+) -> None:
+    items_path, part_dir = _make_synthetic_items_with_part(tmp_path / "data")
+    receipts_dir = _make_synthetic_receipts(tmp_path / "data")
+    env_info = _setup_fake_offrig_env(
+        tmp_path / f"launch_{case_label}",
+        repo_root=clean_repo_root,
+        config_overrides=cfg_overrides,
+    )
+    out_dir = tmp_path / f"out_{case_label}"
+    env_vars = {
+        "OFFRIG_CONFIG_DIR": _to_bash_path(env_info["offrig_config_dir"]),
+        "RDLAB_OFFRIG_MCP_BIN": _to_bash_path(env_info["shim_sh"]),
+        "RDLAB_OFFRIG_PROJECT": _to_bash_path(clean_repo_root),
+        "RDLAB_FAKE_OFFRIG_CONFIG": _to_bash_path(env_info["cfg_path"]),
+        "RDLAB_FAKE_OFFRIG_LOG": _to_bash_path(env_info["log_path"]),
+        "RDLAB_FAKE_OFFRIG_STATE": _to_bash_path(env_info["state_path"]),
+        "RDLAB_FAKE_OFFRIG_REPO_ROOT": _to_bash_path(clean_repo_root),
+        "RDLAB_OFFRIG_POLL_INTERVAL": "0.02",
+        **extra_env,
+    }
+    res = _run_bash_launcher(
+        repo_root=clean_repo_root,
+        args=[
+            "--host",
+            "runpod",
+            "--time-one",
+            "--run-id",
+            f"rp-lf-{case_label}",
+            "--items-file",
+            _to_bash_path(items_path),
+            "--part-dir",
+            _to_bash_path(part_dir),
+            "--receipts-dir",
+            _to_bash_path(receipts_dir),
+            "--out-dir",
+            _to_bash_path(out_dir),
+        ],
+        env_vars=env_vars,
+    )
+    assert res.returncode == 2
+    assert expected_code in res.stderr
+    calls = _read_call_log(env_info["log_path"])
+    shutdown_calls = [c for c in calls if c["tool"] == "offrig_shutdown"]
+    assert shutdown_calls, calls
+    assert all(int(c["arguments"]["plan_id"]) == 101 for c in shutdown_calls)
+    assert json.loads(env_info["state_path"].read_text(encoding="utf-8"))["shutdown"] is True
+    outcome = json.loads((out_dir / "outcome.draft.json").read_text(encoding="utf-8"))
+    assert outcome["pod_shutdown"] is True
+    assert outcome["failure_class"] == expected_code
+
+
+def test_runpod_plan_gpu_list_gate_and_probe_gpu_gate_and_status_poll_retries(
+    tmp_path: Path,
+    clean_repo_root: Path,
+) -> None:
+    # 1. `verify_plan_gpu_list` refuses Workstation Edition & unknown/empty GPU list
+    with pytest.raises(offrig_host.OffrigHostError, match="RUNPOD_PLAN_WORKSTATION_REFUSED"):
+        offrig_host.verify_plan_gpu_list(
+            {
+                "plan_id": 1,
+                "gpus": "1x NVIDIA RTX PRO 6000 Blackwell Server Edition | NVIDIA RTX PRO 6000 Blackwell Workstation Edition",
+            }
+        )
+    with pytest.raises(offrig_host.OffrigHostError, match="RUNPOD_PLAN_GPU_MISMATCH"):
+        offrig_host.verify_plan_gpu_list({"plan_id": 1, "gpu_types": ["NVIDIA A100-SXM4-80GB"]})
+    with pytest.raises(offrig_host.OffrigHostError, match="RUNPOD_PLAN_GPU_MISMATCH"):
+        offrig_host.verify_plan_gpu_list({"plan_id": 1})
+
+    # Launcher refuses plan with Workstation Edition BEFORE `offrig_launch`
+    items_path, part_dir = _make_synthetic_items_with_part(tmp_path / "data")
+    receipts_dir = _make_synthetic_receipts(tmp_path / "data")
+    env_ws_plan = _setup_fake_offrig_env(
+        tmp_path / "ws_plan",
+        repo_root=clean_repo_root,
+        config_overrides={
+            "plan_gpus": "1x NVIDIA RTX PRO 6000 Blackwell Server Edition | NVIDIA RTX PRO 6000 Blackwell Workstation Edition",
+        },
+    )
+    out_ws_plan = tmp_path / "out_ws_plan"
+    res_ws_plan = _run_bash_launcher(
+        repo_root=clean_repo_root,
+        args=[
+            "--host",
+            "runpod",
+            "--time-one",
+            "--run-id",
+            "rp-ws-plan-01",
+            "--items-file",
+            _to_bash_path(items_path),
+            "--part-dir",
+            _to_bash_path(part_dir),
+            "--receipts-dir",
+            _to_bash_path(receipts_dir),
+            "--out-dir",
+            _to_bash_path(out_ws_plan),
+        ],
+        env_vars={
+            "OFFRIG_CONFIG_DIR": _to_bash_path(env_ws_plan["offrig_config_dir"]),
+            "RDLAB_OFFRIG_MCP_BIN": _to_bash_path(env_ws_plan["shim_sh"]),
+            "RDLAB_OFFRIG_PROJECT": _to_bash_path(clean_repo_root),
+            "RDLAB_FAKE_OFFRIG_CONFIG": _to_bash_path(env_ws_plan["cfg_path"]),
+            "RDLAB_FAKE_OFFRIG_LOG": _to_bash_path(env_ws_plan["log_path"]),
+            "RDLAB_FAKE_OFFRIG_STATE": _to_bash_path(env_ws_plan["state_path"]),
+            "RDLAB_FAKE_OFFRIG_REPO_ROOT": _to_bash_path(clean_repo_root),
+        },
+    )
+    assert res_ws_plan.returncode == 2
+    assert "RUNPOD_PLAN_WORKSTATION_REFUSED" in res_ws_plan.stderr
+    assert [c["tool"] for c in _read_call_log(env_ws_plan["log_path"])] == ["offrig_plan"]
+
+    # 2. Probe path runs `verify-gpu`, refuses Workstation Edition, and shuts down pod
+    env_probe_ws = _setup_fake_offrig_env(
+        tmp_path / "probe_ws",
+        repo_root=clean_repo_root,
+        config_overrides={
+            "gpu": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+            "plan_gpus": "1x NVIDIA RTX PRO 6000 Blackwell Server Edition",
+            "nvidia_smi_stdout": "NVIDIA RTX PRO 6000 Blackwell Workstation Edition, 97887, 580.95.05\n",
+        },
+    )
+    # Use matching offrig GPU Workstation on post-launch metadata as well so RUNPOD_GPU_WORKSTATION_REFUSED triggers
+    cfg_ws = json.loads(env_probe_ws["cfg_path"].read_text(encoding="utf-8"))
+    cfg_ws["gpu"] = "NVIDIA RTX PRO 6000 Blackwell Workstation Edition"
+    cfg_ws["plan_gpus"] = "1x NVIDIA RTX PRO 6000 Blackwell Server Edition"
+    env_probe_ws["cfg_path"].write_text(json.dumps(cfg_ws, indent=2) + "\n", encoding="utf-8")
+    out_probe_ws = tmp_path / "out_probe_ws"
+    res_probe_ws = _run_bash_launcher(
+        repo_root=clean_repo_root,
+        args=["--host", "runpod", "--probe", "--run-id", "rp-probe-ws-01", "--out-dir", _to_bash_path(out_probe_ws)],
+        env_vars={
+            "OFFRIG_CONFIG_DIR": _to_bash_path(env_probe_ws["offrig_config_dir"]),
+            "RDLAB_OFFRIG_MCP_BIN": _to_bash_path(env_probe_ws["shim_sh"]),
+            "RDLAB_OFFRIG_PROJECT": _to_bash_path(clean_repo_root),
+            "RDLAB_FAKE_OFFRIG_CONFIG": _to_bash_path(env_probe_ws["cfg_path"]),
+            "RDLAB_FAKE_OFFRIG_LOG": _to_bash_path(env_probe_ws["log_path"]),
+            "RDLAB_FAKE_OFFRIG_STATE": _to_bash_path(env_probe_ws["state_path"]),
+            "RDLAB_FAKE_OFFRIG_REPO_ROOT": _to_bash_path(clean_repo_root),
+            "RDLAB_OFFRIG_POLL_INTERVAL": "0.02",
+        },
+    )
+    assert res_probe_ws.returncode == 2
+    assert "RUNPOD_GPU_WORKSTATION_REFUSED" in res_probe_ws.stderr
+    assert json.loads(env_probe_ws["state_path"].read_text(encoding="utf-8"))["shutdown"] is True
+
+    # 3. `exec_vm_step` status poll retries transiently then recovers, and fails once exhausted
+    class _FlakyStatusClient:
+        def __init__(self, fail_times: int) -> None:
+            self.fail_times = fail_times
+            self.status_calls = 0
+
+        def call_tool(self, _tool: str, args: dict[str, Any], **_kw: Any) -> dict[str, Any]:
+            if args.get("action") == "start":
+                return {"started": True}
+            self.status_calls += 1
+            if self.status_calls <= self.fail_times:
+                raise offrig_host.OffrigHostError("OFFRIG_MCP_TIMEOUT", "transient status poll timeout")
+            return {"status": {"state": "exited", "code": 0, "log_tail": "OK\n"}}
+
+    flaky_ok = _FlakyStatusClient(fail_times=2)
+    rc_flaky, tail_flaky = offrig_host.exec_vm_step(
+        flaky_ok,  # type: ignore[arg-type]
+        plan_id=1,
+        job_name="run",
+        vm_script="/workspace/job/vm_judges.py",
+        env_pairs=["RDLAB_STEP=run"],
+        timeout_seconds=30,
+        poll_interval=0.01,
+        status_poll_retries=3,
+    )
+    assert rc_flaky == 0 and tail_flaky == "OK\n" and flaky_ok.status_calls == 3
+
+    flaky_fail = _FlakyStatusClient(fail_times=5)
+    with pytest.raises(offrig_host.OffrigHostError, match="OFFRIG_MCP_TIMEOUT"):
+        offrig_host.exec_vm_step(
+            flaky_fail,  # type: ignore[arg-type]
+            plan_id=1,
+            job_name="run",
+            vm_script="/workspace/job/vm_judges.py",
+            env_pairs=["RDLAB_STEP=run"],
+            timeout_seconds=30,
+            poll_interval=0.01,
+            status_poll_retries=2,
+        )
+    assert flaky_fail.status_calls == 3
+
+
+def test_runpod_card_type_pre_plan_goldens_refusal_path_visibility_and_sde_scope(
+    tmp_path: Path,
+    clean_repo_root: Path,
+) -> None:
+    # 1. Pre-plan goldens refusal on RunPod counted AND lock-check even when Colab `G4` goldens are promoted
+    goldens_doc = json.loads((clean_repo_root / "scripts" / "colab" / "boot_gatekeeper_goldens.json").read_text(encoding="utf-8"))
+    goldens_doc["card_types"]["G4"] = {
+        "status": "filled",
+        "prompts": {sp["prompt_id"]: {"output_token_ids_sha256": "c" * 64} for sp in goldens_doc["synthetic_prompts"]},
+    }
+    goldens_doc["promoted_provenance"] = {
+        "window_id": "rdlab-g4-prom-01",
+        "session_env_sha256": "a" * 64,
+        "session_fingerprint_sha256": "b" * 64,
+        "mode": "lock-check",
+        "lock_check_phase": "anchors",
+        "card_type": "G4",
+        "hash_source": "real_transport",
+        "stub_transport": False,
+    }
+    goldens_doc["goldens_body_sha256"] = vm_judges.compute_goldens_body_sha256(goldens_doc)
+    g4_goldens_path = tmp_path / "g4_only_goldens.json"
+    g4_goldens_path.write_text(json.dumps(goldens_doc), encoding="utf-8")
+
+    items_path, part_dir = _make_synthetic_items_with_part(tmp_path / "data")
+    receipts_dir = _make_synthetic_receipts(tmp_path / "data")
+    for mode_name, extra_mode_args in (
+        ("counted", ["--counted", "--items-file", _to_bash_path(items_path), "--part-dir", _to_bash_path(part_dir)]),
+        (
+            "lock-check",
+            [
+                "--lock-check",
+                "--lock-check-phase",
+                "anchors",
+                "--anchor-items",
+                _to_bash_path(items_path),
+                "--p0a-items",
+                _to_bash_path(items_path),
+                "--p0a-part-dir",
+                _to_bash_path(part_dir),
+                "--counted-items",
+                _to_bash_path(items_path),
+            ],
+        ),
+    ):
+        env_g = _setup_fake_offrig_env(tmp_path / f"gold_{mode_name}", repo_root=clean_repo_root)
+        res_g = _run_bash_launcher(
+            repo_root=clean_repo_root,
+            args=[
+                "--host",
+                "runpod",
+                *extra_mode_args,
+                "--run-id",
+                f"rp-no-golden-{mode_name}",
+                "--receipts-dir",
+                _to_bash_path(receipts_dir),
+                "--boot-gatekeeper-goldens",
+                _to_bash_path(g4_goldens_path),
+                "--out-dir",
+                _to_bash_path(tmp_path / f"out_gold_{mode_name}"),
+            ],
+            env_vars={
+                "OFFRIG_CONFIG_DIR": _to_bash_path(env_g["offrig_config_dir"]),
+                "RDLAB_OFFRIG_MCP_BIN": _to_bash_path(env_g["shim_sh"]),
+                "RDLAB_OFFRIG_PROJECT": _to_bash_path(clean_repo_root),
+                "RDLAB_FAKE_OFFRIG_CONFIG": _to_bash_path(env_g["cfg_path"]),
+                "RDLAB_FAKE_OFFRIG_LOG": _to_bash_path(env_g["log_path"]),
+                "RDLAB_FAKE_OFFRIG_STATE": _to_bash_path(env_g["state_path"]),
+                "RDLAB_FAKE_OFFRIG_REPO_ROOT": _to_bash_path(clean_repo_root),
+            },
+        )
+        assert res_g.returncode == 2
+        assert "BOOT_GATEKEEPER_GOLDEN_MISSING" in res_g.stderr
+        assert vm_judges.RUNPOD_SERVER_CARD_TYPE in res_g.stderr
+        assert _read_call_log(env_g["log_path"]) == []
+
+    # 2. Path visibility preflight: Windows `.exe` binary given POSIX paths refused before `offrig_plan`
+    fake_exe = tmp_path / "offrig-mcp.exe"
+    fake_exe.write_bytes(b"MZ\x90\x00" + b"\x00" * 60)
+    fake_exe.chmod(0o755)
+    with pytest.raises(offrig_host.OffrigHostError, match="OFFRIG_PATH_INCOMPATIBLE"):
+        offrig_host.check_offrig_binary_path_visibility(fake_exe, "/workspace/rdlab")
+    env_vis = _setup_fake_offrig_env(tmp_path / "vis", repo_root=clean_repo_root)
+    res_vis = _run_bash_launcher(
+        repo_root=clean_repo_root,
+        args=[
+            "--host",
+            "runpod",
+            "--time-one",
+            "--run-id",
+            "rp-vis-01",
+            "--items-file",
+            _to_bash_path(items_path),
+            "--part-dir",
+            _to_bash_path(part_dir),
+            "--receipts-dir",
+            _to_bash_path(receipts_dir),
+            "--out-dir",
+            _to_bash_path(tmp_path / "out_vis"),
+        ],
+        env_vars={
+            "OFFRIG_CONFIG_DIR": _to_bash_path(env_vis["offrig_config_dir"]),
+            "RDLAB_OFFRIG_MCP_BIN": _to_bash_path(fake_exe),
+            "RDLAB_OFFRIG_PROJECT": _to_bash_path(clean_repo_root),
+            "RDLAB_FAKE_OFFRIG_CONFIG": _to_bash_path(env_vis["cfg_path"]),
+            "RDLAB_FAKE_OFFRIG_LOG": _to_bash_path(env_vis["log_path"]),
+            "RDLAB_FAKE_OFFRIG_STATE": _to_bash_path(env_vis["state_path"]),
+            "RDLAB_FAKE_OFFRIG_REPO_ROOT": _to_bash_path(clean_repo_root),
+        },
+    )
+    assert res_vis.returncode == 2
+    assert "OFFRIG_PATH_INCOMPATIBLE" in res_vis.stderr
+    assert _read_call_log(env_vis["log_path"]) == []
+
+    # 3. `SOURCE_DATE_EPOCH` is scoped to parity (`--dry` + `RDLAB_DRY_STAGE=1`), so non-dry staging never freezes timestamps
+    part_dir_bash = _to_bash_path(part_dir)
+    # Extract `stage_window_artifacts` inline Python invocation behaviour via clean live `launch_judges.sh --stub` with SOURCE_DATE_EPOCH
+    fake_bin_dir = tmp_path / "colab_fake_bin"
+    fake_bin_dir.mkdir(parents=True, exist_ok=True)
+    fake_colab_exe = fake_bin_dir / "colab"
+    fake_colab_exe.write_text("#!/usr/bin/env bash\necho '[]'\nexit 0\n", encoding="utf-8", newline="\n")
+    fake_colab_exe.chmod(0o755)
+    out_sde = tmp_path / "out_sde_live"
+    sde_bash = (
+        f"export PATH={shlex.quote(_to_bash_path(fake_bin_dir) + ':/usr/bin:/bin')}; "
+        f"export RDLAB_JUDGE_LOCK_SHA256={shlex.quote(vm_judges.EXPECTED_JUDGE_LOCK_SHA256)}; "
+        f"export RDLAB_D3_LOCK_SHA256={shlex.quote(vm_judges.EXPECTED_D3_LOCK_SHA256)}; "
+        f"export SOURCE_DATE_EPOCH=1700000000; export RDLAB_DRY_STAGE=1; "
+        f"bash {shlex.quote(_to_bash_path(clean_repo_root / 'scripts' / 'colab' / 'launch_judges.sh'))} "
+        f"--stub --run-id sde-live-chk --items-file {shlex.quote(_to_bash_path(items_path))} "
+        f"--part-dir {shlex.quote(part_dir_bash)} --receipts-dir {shlex.quote(_to_bash_path(receipts_dir))} "
+        f"--out-dir {shlex.quote(_to_bash_path(out_sde))}"
+    )
+    subprocess.run(["bash", "-c", sde_bash], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30, check=False)
+    rig_binding = out_sde / "launcher_part_binding.json"
+    assert rig_binding.is_file()
+    assert json.loads(rig_binding.read_text(encoding="utf-8"))["checked_at"] != "2023-11-14T22:13:20Z"
+
+
+def test_offrig_host_and_vm_judges_defensive_branches(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cover defensive parsing, config-table, watchdog-abort, poll-deadline, and GPU branches."""
+    with pytest.raises(offrig_host.OffrigHostError) as exc_empty:
+        offrig_host.parse_offrig_deadline_utc("   ")
+    assert exc_empty.value.code == "OFFRIG_DEADLINE_INVALID"
+
+    with pytest.raises(offrig_host.OffrigHostError) as exc_bad_utc:
+        offrig_host.parse_offrig_deadline_utc("2026-11-99 99:99 UTC")
+    assert exc_bad_utc.value.code == "OFFRIG_DEADLINE_INVALID"
+
+    win_appdata = tmp_path / "win_appdata"
+    monkeypatch.setattr(offrig_host.sys, "platform", "win32")
+    assert (
+        offrig_host.resolve_offrig_config_path(environ={"APPDATA": str(win_appdata)})
+        == win_appdata / "offrig" / "config.toml"
+    )
+    monkeypatch.setattr(offrig_host.sys, "platform", "darwin")
+    mac_cfg = offrig_host.resolve_offrig_config_path(environ={})
+    assert mac_cfg.parts[-4:] == ("Library", "Application Support", "offrig", "config.toml")
+    monkeypatch.setattr(offrig_host.sys, "platform", "linux")
+    xdg_cfg = tmp_path / "xdg_cfg"
+    assert (
+        offrig_host.resolve_offrig_config_path(environ={"XDG_CONFIG_HOME": str(xdg_cfg)})
+        == xdg_cfg / "offrig" / "config.toml"
+    )
+
+    expected_img = "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04"
+    dict_cfg = tmp_path / "dict_profiles.toml"
+    dict_cfg.write_text(
+        f'[profiles.judge-host]\n[profiles.judge-host.job]\nimage = "{expected_img}"\n',
+        encoding="utf-8",
+    )
+    verified_img = offrig_host.verify_offrig_profile_image(
+        "judge-host", expected_img, config_path=dict_cfg
+    )
+    assert verified_img["requested_image"] == expected_img
+    assert verified_img["profile_image"] == expected_img
+    assert verified_img["source"] == "offrig profile"
+    assert verified_img["match"] is True
+
+    missing_bin_res = offrig_host.check_offrig_binary_path_visibility(
+        tmp_path / "nonexistent-offrig",
+        str(tmp_path / "sample.jsonl"),
+    )
+    assert missing_bin_res["compatible"] is True
+    assert missing_bin_res["windows_binary"] is False
+
+    fake_exe = tmp_path / "offrig.exe"
+    fake_exe.write_bytes(b"MZ")
+    with pytest.raises(offrig_host.OffrigHostError) as exc_empty_sample:
+        offrig_host.check_offrig_binary_path_visibility(fake_exe, "")
+    assert exc_empty_sample.value.code == "OFFRIG_PATH_INCOMPATIBLE"
+
+    single_gpu = "NVIDIA RTX PRO 6000 Blackwell Server Edition"
+    plan_gpu_summary = offrig_host.verify_plan_gpu_list({"plan_id": 1, "gpu": single_gpu})
+    assert single_gpu in plan_gpu_summary["planned_gpus"]
+    assert plan_gpu_summary["verified"] is True
+
+    class _FakeWatchdogClient:
+        def __init__(self, *, fail_shutdown: bool) -> None:
+            self.fail_shutdown = fail_shutdown
+            self.calls: list[tuple[str, dict[str, Any]]] = []
+
+        def call_tool(self, tool_name: str, arguments: dict[str, Any], *, timeout: float = 120.0) -> dict[str, Any]:
+            self.calls.append((tool_name, dict(arguments)))
+            if tool_name == "offrig_launch":
+                return {
+                    "plan_id": int(arguments["plan_id"]),
+                    "status": "running",
+                    "watchdog": "FAILED to start: simulated",
+                }
+            if tool_name == "offrig_status":
+                return {"status": "running", "state": "running"}
+            if tool_name == "offrig_shutdown":
+                if self.fail_shutdown:
+                    raise offrig_host.OffrigHostError("OFFRIG_MCP_TIMEOUT", "shutdown timeout")
+                return {"ok": True}
+            if tool_name == "offrig_exec":
+                if arguments.get("action") == "status":
+                    fake_now[0] += 5.0
+                    raise offrig_host.OffrigHostError("OFFRIG_MCP_TIMEOUT", "job poll timeout")
+                return {"job_id": "job-99"}
+            raise AssertionError(f"unexpected tool {tool_name}")
+
+    fake_now = [100.0]
+    for fail_shutdown in (False, True):
+        client = _FakeWatchdogClient(fail_shutdown=fail_shutdown)
+        with pytest.raises(offrig_host.OffrigHostError) as exc_wd:
+            offrig_host.launch_and_wait(client, plan_id=11, poll_interval=0.0, timeout_seconds=5.0)
+        assert exc_wd.value.code == "OFFRIG_WATCHDOG_START_FAILED"
+        assert any(name == "offrig_shutdown" and args["plan_id"] == 11 for name, args in client.calls)
+
+    exec_client = _FakeWatchdogClient(fail_shutdown=False)
+    monkeypatch.setattr(offrig_host.time, "monotonic", lambda: fake_now[0])
+    rc_step, tail_step = offrig_host.exec_vm_step(
+        exec_client,
+        plan_id=11,
+        job_name="step-deadline",
+        vm_script="scripts/colab/run_judges.sh",
+        env_pairs=(),
+        timeout_seconds=1,
+        poll_interval=0.0,
+        status_poll_retries=5,
+    )
+    assert rc_step == 124
+    assert tail_step == ""
+    assert any(
+        name == "offrig_exec" and args.get("action") == "stop"
+        for name, args in exec_client.calls
+    )
+
+    assert vm_judges.card_type_from_gpu_name("NVIDIA L4", host="runpod") is None
+

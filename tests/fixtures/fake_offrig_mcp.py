@@ -162,8 +162,15 @@ def _synthesize_vm_run(
     vllm_py = work_dir / vm_judges.VLLM_VENV_NAME / "bin" / "python"
     vllm_py.parent.mkdir(parents=True, exist_ok=True)
     vllm_ver_str = str(cfg.get("vllm_version") or "0.34.0")
+    vllm_py_ver_str = str(cfg.get("vllm_python_version") or "3.12.11")
     vllm_py.write_text(
-        f"#!/usr/bin/env python3\nprint({vllm_ver_str!r})\n",
+        f"#!/usr/bin/env python3\n"
+        f"import sys\n"
+        f"code = ' '.join(sys.argv[1:])\n"
+        f"if 'platform' in code:\n"
+        f"    print({vllm_py_ver_str!r})\n"
+        f"else:\n"
+        f"    print({vllm_ver_str!r})\n",
         encoding="utf-8",
         newline="\n",
     )
@@ -176,7 +183,11 @@ def _synthesize_vm_run(
             mode=env_map.get("RDLAB_MODE", "time-one"),
             judge_download_records=download_records,
             judge_order=["flow-judge-v0.1", "mu-judge"],
-            card_type_check={"card_type": env_map.get("RDLAB_CARD_TYPE", "G4"), "gpu_name": gpu_str, "source": "offrig pod + nvidia-smi"},
+            card_type_check={
+                "card_type": env_map.get("RDLAB_CARD_TYPE", vm_judges.RUNPOD_SERVER_CARD_TYPE),
+                "gpu_name": gpu_str,
+                "source": "offrig pod + nvidia-smi",
+            },
             work_dir=work_dir,
             environ=env_map,
         )
@@ -240,16 +251,31 @@ def _handle_tool_call(
 
     if tool_name == "offrig_plan":
         max_hours = float(arguments.get("max_hours") or 1.0)
-        deadline_dt = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=max_hours)
+        if cfg.get("deadline_utc"):
+            state["deadline"] = str(cfg["deadline_utc"])
+        else:
+            now_dt = datetime.datetime.now(datetime.timezone.utc)
+            raw_clock_f = (os.environ.get("RDLAB_FAKE_CLOCK_FILE") or "").strip()
+            if raw_clock_f and Path(raw_clock_f).is_file():
+                try:
+                    now_dt = datetime.datetime.fromtimestamp(
+                        float(Path(raw_clock_f).read_text(encoding="utf-8").strip()),
+                        datetime.timezone.utc,
+                    )
+                except ValueError:
+                    pass
+            deadline_dt = now_dt + datetime.timedelta(hours=max_hours)
+            state["deadline"] = deadline_dt.strftime("%Y-%m-%d %H:%M UTC")
         state["plan"] = dict(arguments)
-        state["deadline"] = deadline_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
         _save_json(state_path, state)
         return False, {
             "plan_id": plan_id,
             "profile": arguments.get("profile"),
             "max_hours": max_hours,
+            "wait_minutes": arguments.get("wait_minutes"),
             "no_fallback": arguments.get("no_fallback", True),
             "container_disk_gb": arguments.get("container_disk_gb") or 60,
+            "gpus": str(cfg.get("plan_gpus") or f"1x {gpu_name}"),
             "gpu": gpu_name,
             "cost_per_hr": cost_per_hr,
         }
@@ -261,7 +287,8 @@ def _handle_tool_call(
             "plan_id": plan_id,
             "job_id": job_id,
             "pod_id": pod_id,
-            "deadline": state.get("deadline") or "2026-11-23T18:00:00Z",
+            "watchdog": str(cfg.get("watchdog") if cfg.get("watchdog") is not None else "started"),
+            "deadline": state.get("deadline") or "2026-11-23 18:00 UTC",
             "worst_case": round(cost_per_hr * float((state.get("plan") or {}).get("max_hours") or 1.0), 4),
         }
 
@@ -356,6 +383,18 @@ def _handle_tool_call(
 
         if action == "status":
             job_name = str(arguments.get("name") or "")
+            if cfg.get("advance_clock_on_step") and isinstance(cfg["advance_clock_on_step"], dict):
+                adv = cfg["advance_clock_on_step"]
+                step_delta = adv.get(job_name)
+                if step_delta:
+                    adv_key = f"advanced_{job_name}"
+                    if not state.get(adv_key):
+                        raw_clock_f = (os.environ.get("RDLAB_FAKE_CLOCK_FILE") or "").strip()
+                        if raw_clock_f and Path(raw_clock_f).is_file():
+                            cur_ep = float(Path(raw_clock_f).read_text(encoding="utf-8").strip())
+                            Path(raw_clock_f).write_text(f"{int(cur_ep + int(step_delta))}\n", encoding="utf-8")
+                        state[adv_key] = True
+                        _save_json(state_path, state)
             jobs = state.get("jobs") or {}
             rec = jobs.get(job_name) or {"state": "exited", "code": 2, "log_tail": "unknown job"}
             if arguments.get("save_log"):
@@ -432,6 +471,18 @@ def main() -> int:
             tool_name = str(params.get("name") or "")
             tool_args = params.get("arguments") or {}
             state = _load_json(state_path, {})
+            if cfg.get("crash_on_tool") == tool_name:
+                _append_call_log(log_path, tool_name, dict(tool_args))
+                return 1
+            if cfg.get("bad_json_on_tool") == tool_name:
+                _append_call_log(log_path, tool_name, dict(tool_args))
+                sys.stdout.write("{not-valid-json\n")
+                sys.stdout.flush()
+                continue
+            if cfg.get("sleep_on_tool") == tool_name:
+                import time as _time
+                _append_call_log(log_path, tool_name, dict(tool_args))
+                _time.sleep(float(cfg.get("sleep_seconds") or 5.0))
             is_err, payload = _handle_tool_call(
                 tool_name,
                 dict(tool_args),
