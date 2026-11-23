@@ -37,6 +37,8 @@ DEFAULT_LAUNCH_WAIT_MINUTES = 20
 DEFAULT_IMAGE_PULL_SETUP_SECONDS = 900
 DEFAULT_FETCH_ALLOWANCE_SECONDS = 180
 DEFAULT_SHUTDOWN_RESERVE_SECONDS = 120
+DEFAULT_MIN_RUN_SECONDS = 300
+DEFAULT_RUNPOD_MAX_PRICE_HR = 2.79
 DEFAULT_EXEC_STATUS_POLL_RETRIES = 3
 MIN_MAX_HOURS = 0.02
 
@@ -67,6 +69,38 @@ def split_image_ref(image_ref: str) -> tuple[str, str | None]:
         tag_part, digest_part = raw.split("@", 1)
         return tag_part.strip(), digest_part.strip() or None
     return raw, None
+
+
+def validate_max_price_hr(raw_value: Any) -> float:
+    """Validate and return a finite positive USD/hr RunPod price cap for `offrig_plan`."""
+    if isinstance(raw_value, bool) or raw_value is None:
+        raise OffrigHostError(
+            "OFFRIG_MAX_PRICE_INVALID",
+            f"RunPod max_price_hr must be a finite positive USD/hr number, got {raw_value!r}",
+        )
+    if isinstance(raw_value, str):
+        stripped = raw_value.strip()
+        if not stripped:
+            raise OffrigHostError(
+                "OFFRIG_MAX_PRICE_INVALID",
+                "RunPod max_price_hr is empty; set a positive USD/hr ceiling (default 2.79)",
+            )
+        raw_num: Any = stripped
+    else:
+        raw_num = raw_value
+    try:
+        val = float(raw_num)
+    except (TypeError, ValueError) as exc:
+        raise OffrigHostError(
+            "OFFRIG_MAX_PRICE_INVALID",
+            f"RunPod max_price_hr must be numeric USD/hr, got {raw_value!r}",
+        ) from exc
+    if math.isnan(val) or math.isinf(val) or val <= 0.0:
+        raise OffrigHostError(
+            "OFFRIG_MAX_PRICE_INVALID",
+            f"RunPod max_price_hr must be finite and > 0 USD/hr, got {raw_value!r}",
+        )
+    return val
 
 
 def compute_watchdog_max_hours(
@@ -136,8 +170,15 @@ def compute_remaining_run_budget_seconds(
     *,
     fetch_allowance_seconds: int = DEFAULT_FETCH_ALLOWANCE_SECONDS,
     shutdown_reserve_seconds: int = DEFAULT_SHUTDOWN_RESERVE_SECONDS,
+    min_run_seconds: int = DEFAULT_MIN_RUN_SECONDS,
 ) -> dict[str, Any]:
     """Compute seconds remaining for the `run` step before offrig's deadline minus fetch and shutdown reserves."""
+    min_run = int(min_run_seconds)
+    if min_run < 0:
+        raise OffrigHostError(
+            "OFFRIG_MIN_RUN_INVALID",
+            f"min_run_seconds must be non-negative, got {min_run_seconds}",
+        )
     deadline_epoch = parse_offrig_deadline_utc(deadline_str)
     reserve_seconds = max(0, int(fetch_allowance_seconds)) + max(0, int(shutdown_reserve_seconds))
     remaining_before_deadline = int(math.floor(deadline_epoch - float(now_epoch)))
@@ -149,6 +190,40 @@ def compute_remaining_run_budget_seconds(
         "reserve_seconds": reserve_seconds,
         "remaining_before_deadline_seconds": remaining_before_deadline,
         "remaining_run_seconds": remaining_run_seconds,
+        "min_run_seconds": min_run,
+        "below_min_run_budget": remaining_run_seconds < min_run,
+    }
+
+
+def compute_remaining_fetch_budget_seconds(
+    deadline_str: str | None,
+    now_epoch: float,
+    *,
+    fetch_started_epoch: float,
+    fetch_allowance_seconds: int = DEFAULT_FETCH_ALLOWANCE_SECONDS,
+    shutdown_reserve_seconds: int = DEFAULT_SHUTDOWN_RESERVE_SECONDS,
+) -> dict[str, Any]:
+    """Compute remaining fetch timeout seconds capped by both fetch allowance and pre-shutdown deadline."""
+    allowance_deadline = float(fetch_started_epoch) + max(0, int(fetch_allowance_seconds))
+    effective_cutoff = allowance_deadline
+    pod_fetch_cutoff: float | None = None
+    raw_deadline = str(deadline_str or "").strip()
+    if raw_deadline:
+        try:
+            deadline_epoch = parse_offrig_deadline_utc(raw_deadline)
+            pod_fetch_cutoff = deadline_epoch - max(0, int(shutdown_reserve_seconds))
+            effective_cutoff = min(allowance_deadline, pod_fetch_cutoff)
+        except OffrigHostError:
+            pass
+    remaining_fetch_seconds = int(math.floor(effective_cutoff - float(now_epoch)))
+    return {
+        "deadline": raw_deadline or None,
+        "now_epoch": float(now_epoch),
+        "fetch_started_epoch": float(fetch_started_epoch),
+        "allowance_deadline_epoch": allowance_deadline,
+        "pod_fetch_cutoff_epoch": pod_fetch_cutoff,
+        "effective_cutoff_epoch": effective_cutoff,
+        "remaining_fetch_seconds": remaining_fetch_seconds,
     }
 
 
@@ -692,6 +767,7 @@ def plan_pod(
     *,
     profile: str,
     wall_seconds: int,
+    max_price_hr: float | str = DEFAULT_RUNPOD_MAX_PRICE_HR,
     launch_wait_minutes: int = DEFAULT_LAUNCH_WAIT_MINUTES,
     image_pull_setup_seconds: int = DEFAULT_IMAGE_PULL_SETUP_SECONDS,
     fetch_allowance_seconds: int = DEFAULT_FETCH_ALLOWANCE_SECONDS,
@@ -700,7 +776,8 @@ def plan_pod(
     note: str | None = None,
     no_fallback: bool = True,
 ) -> dict[str, Any]:
-    """Call `offrig_plan` with `no_fallback=True`, explicit `wait_minutes`, and full-window watchdog deadline."""
+    """Call `offrig_plan` with `no_fallback=True`, explicit `wait_minutes`, `max_price_hr`, and full-window deadline."""
+    validated_price = validate_max_price_hr(max_price_hr)
     max_hours = compute_watchdog_max_hours(
         wall_seconds,
         launch_wait_minutes=launch_wait_minutes,
@@ -711,6 +788,7 @@ def plan_pod(
     args: dict[str, Any] = {
         "profile": profile,
         "max_hours": max_hours,
+        "max_price_hr": validated_price,
         "wait_minutes": int(launch_wait_minutes),
         "no_fallback": bool(no_fallback),
     }
@@ -928,6 +1006,9 @@ def _build_cli_parser() -> argparse.ArgumentParser:
     p_img.add_argument("--image", required=True)
     p_img.add_argument("--config-path", default=None)
 
+    p_price = sub.add_parser("check-max-price")
+    p_price.add_argument("--max-price-hr", required=True)
+
     p_rem = sub.add_parser("remaining-run-budget")
     p_rem.add_argument("--deadline", required=True)
     p_rem.add_argument("--now-epoch", type=float, required=True)
@@ -937,11 +1018,28 @@ def _build_cli_parser() -> argparse.ArgumentParser:
     p_rem.add_argument(
         "--shutdown-reserve-seconds", type=int, default=DEFAULT_SHUTDOWN_RESERVE_SECONDS
     )
+    p_rem.add_argument(
+        "--min-run-seconds", type=int, default=DEFAULT_MIN_RUN_SECONDS
+    )
+
+    p_frem = sub.add_parser("remaining-fetch-budget")
+    p_frem.add_argument("--deadline", default="")
+    p_frem.add_argument("--now-epoch", type=float, required=True)
+    p_frem.add_argument("--fetch-started-epoch", type=float, required=True)
+    p_frem.add_argument(
+        "--fetch-allowance-seconds", type=int, default=DEFAULT_FETCH_ALLOWANCE_SECONDS
+    )
+    p_frem.add_argument(
+        "--shutdown-reserve-seconds", type=int, default=DEFAULT_SHUTDOWN_RESERVE_SECONDS
+    )
 
     p_plan = sub.add_parser("plan")
     p_plan.add_argument("--project", required=True)
     p_plan.add_argument("--profile", required=True)
     p_plan.add_argument("--wall-seconds", type=int, required=True)
+    p_plan.add_argument(
+        "--max-price-hr", default=str(DEFAULT_RUNPOD_MAX_PRICE_HR)
+    )
     p_plan.add_argument(
         "--launch-wait-minutes", type=int, default=DEFAULT_LAUNCH_WAIT_MINUTES
     )
@@ -980,6 +1078,9 @@ def _build_cli_parser() -> argparse.ArgumentParser:
     p_get.add_argument("--plan-id", type=int, required=True)
     p_get.add_argument("--pod", required=True)
     p_get.add_argument("--local", required=True)
+    p_get.add_argument(
+        "--timeout-seconds", type=float, default=float(DEFAULT_FETCH_ALLOWANCE_SECONDS)
+    )
 
     p_run = sub.add_parser("exec-run")
     p_run.add_argument("--project", required=True)
@@ -1029,21 +1130,39 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             print(json.dumps(res, sort_keys=True))
             return 0
+        if args.subcommand == "check-max-price":
+            val = validate_max_price_hr(args.max_price_hr)
+            print(json.dumps({"max_price_hr": val, "ok": True}, sort_keys=True))
+            return 0
         if args.subcommand == "remaining-run-budget":
             res = compute_remaining_run_budget_seconds(
                 args.deadline,
                 args.now_epoch,
                 fetch_allowance_seconds=args.fetch_allowance_seconds,
                 shutdown_reserve_seconds=args.shutdown_reserve_seconds,
+                min_run_seconds=args.min_run_seconds,
             )
             print(json.dumps(res, sort_keys=True))
             return 0
+        if args.subcommand == "remaining-fetch-budget":
+            res = compute_remaining_fetch_budget_seconds(
+                args.deadline,
+                args.now_epoch,
+                fetch_started_epoch=args.fetch_started_epoch,
+                fetch_allowance_seconds=args.fetch_allowance_seconds,
+                shutdown_reserve_seconds=args.shutdown_reserve_seconds,
+            )
+            print(json.dumps(res, sort_keys=True))
+            return 0
+        if args.subcommand == "plan":
+            validate_max_price_hr(args.max_price_hr)
         with OffrigMcpClient(project_dir=args.project) as client:
             if args.subcommand == "plan":
                 res = plan_pod(
                     client,
                     profile=args.profile,
                     wall_seconds=args.wall_seconds,
+                    max_price_hr=args.max_price_hr,
                     launch_wait_minutes=args.launch_wait_minutes,
                     image_pull_setup_seconds=args.image_pull_setup_seconds,
                     fetch_allowance_seconds=args.fetch_allowance_seconds,
@@ -1083,7 +1202,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 res = client.call_tool(
                     "offrig_get",
                     {"local": args.local, "pod": args.pod, "plan_id": args.plan_id},
-                    timeout=300.0,
+                    timeout=max(1.0, float(args.timeout_seconds)),
                 )
                 print(json.dumps(res, sort_keys=True))
                 return 0
