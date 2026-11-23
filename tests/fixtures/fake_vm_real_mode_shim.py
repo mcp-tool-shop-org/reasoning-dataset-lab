@@ -261,7 +261,10 @@ def install(ns: dict[str, Any], *, state_dir: str, vm_root: str) -> None:
         if "--device" in cmd:
             cmd[cmd.index("--device") + 1] = "cpu"
         if "--window-mode" in cmd:
-            cmd[cmd.index("--window-mode") + 1] = _STUB_WINDOW_MODE.get(window_mode, window_mode)
+            if "--synthetic-items" in cmd and window_mode in ("time-one", "time_one"):
+                cmd[cmd.index("--window-mode") + 1] = "dryrun"
+            else:
+                cmd[cmd.index("--window-mode") + 1] = _STUB_WINDOW_MODE.get(window_mode, window_mode)
         if "--stub" not in cmd:
             cmd.append("--stub")
         res = orig_child(cmd, *args, **kwargs)
