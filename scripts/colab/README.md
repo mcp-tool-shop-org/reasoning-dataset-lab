@@ -181,6 +181,26 @@ bash scripts/colab/launch_judges.sh --time-one --dry --run-id t1-dry < /dev/null
 bash scripts/colab/launch_judges.sh --time-one --resume --run-id t1-01 --out-dir /tmp/rdlab-colab-runs/t1-01 < /dev/null
 ```
 
+### 6. RunPod Host (`--host runpod`)
+
+Pass `--host runpod` (`RDLAB_HOST=runpod`, default `colab`) to run the same staged bundles and `vm_judges.py` pipeline on a RunPod job pod managed through `offrig-mcp` (`scripts/colab/offrig_host.py`), without requiring `--card`, `--shape`, or `--max-rate`:
+
+```bash
+bash scripts/colab/launch_judges.sh \
+  --host runpod \
+  --offrig-profile rdlab-judge \
+  --container-disk-gb 60 \
+  --time-one \
+  --items-file /path/to/items.jsonl \
+  --part-dir /path/to/part_bakeoff_sealed \
+  --receipts-dir /path/to/receipts < /dev/null
+```
+
+- **Profile, container disk, and workspace root:** Uses `--offrig-profile` (`RDLAB_OFFRIG_PROFILE`, default `rdlab-judge`), `--offrig-project` (`RDLAB_OFFRIG_PROJECT`), and `--runpod-image` (`RDLAB_RUNPOD_IMAGE`, default `vllm/vllm-openai:v0.34.0@sha256:20fdb089454afbb324efa4110a2c025ff7b27cc1a086e07aa580b18df8ad1ce1` matching `scripts/colab/locks/vllm.lock.txt`). The VM working root defaults to `/workspace/job` (`RDLAB_VM_ROOT`). Model weights (~70 GB) download directly on the pod under `HF_HOME` (default `/workspace/hf` from `offrig` job env or `<VM_ROOT>/hf_home`); no network volume is created automatically, so size `container_disk_gb >= 60` (`--container-disk-gb`) for the unpacked image and `/tmp` and `volume_gb >= 200` on the offrig profile for `/workspace`.
+- **Strict GPU gate (`no_fallback=true`):** Immediately after launch, `offrig_host.py verify-gpu` checks that both `offrig` pod metadata and in-pod `nvidia-smi` report `NVIDIA RTX PRO 6000 Blackwell Server Edition` with `>= 90,000` MiB VRAM. Any wrong GPU, Workstation Edition, low VRAM, unreadable `nvidia-smi`, or cross-source disagreement refuses (`RUNPOD_GPU_*` / `RUNPOD_VRAM_INSUFFICIENT`) before file upload and shuts down the pod.
+- **Shutdown and watchdog backstop:** `offrig_plan` sets `max_hours` with a safety margin past `WALL_SECONDS` (`RDLAB_OFFRIG_BACKSTOP_MARGIN_SECONDS`, default `300` s) so RunPod/offrig's watchdog terminates the pod even on `SIGKILL`. On every handled exit (success, gate refusal, failed step, timeout, `SIGTERM`/`SIGINT`), the launcher fetches outputs and calls `offrig_shutdown` (retrying once on error). Missing `offrig-mcp` (`OFFRIG_NOT_FOUND`) or failing pre-launch `offrig` calls refuse before any pod is started.
+- **Receipts and USD spend:** `vm_receipt.json` records `host: "runpod"`, `pod_id`, `image` (`ref`, `tag`, `digest`), `runtime_environment` (`host_gpu_name`, `driver_version`, `cuda_version`, `python_version`, `vllm_version`), `model_download_seconds`, and `model_download_seconds_by_judge`. `outcome.draft.json` records `host: "runpod"`, `venue: "runpod"`, `pod_id`, `offrig_plan_id`, `watchdog_deadline`, `cost_usd`, `cost_currency: "USD"`, `cost_per_hr_usd`, `cost_basis` (from `offrig_shutdown` `spent` USD), and `model_download_seconds`.
+
 ---
 
 ## Public-Repo Rule

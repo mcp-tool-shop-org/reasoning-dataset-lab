@@ -72,6 +72,31 @@ KIT_LAUNCH_JUDGES_SH_SHA256=""
 KIT_IDENTITY_UNAVAILABLE_REASON=""
 KIT_GATE_CLASS=""
 
+HOST="${RDLAB_HOST:-colab}"
+OFFRIG_PROFILE="${RDLAB_OFFRIG_PROFILE:-rdlab-judge}"
+OFFRIG_PROJECT="${RDLAB_OFFRIG_PROJECT:-$REPO_ROOT}"
+CONTAINER_DISK_GB="${RDLAB_CONTAINER_DISK_GB:-}"
+RUNPOD_IMAGE_REF="${RDLAB_RUNPOD_IMAGE:-vllm/vllm-openai:v0.34.0@sha256:20fdb089454afbb324efa4110a2c025ff7b27cc1a086e07aa580b18df8ad1ce1}"
+RUNPOD_IMAGE_TAG=""
+RUNPOD_IMAGE_DIGEST=""
+RUNPOD_BACKSTOP_MARGIN_SECONDS="${RDLAB_OFFRIG_BACKSTOP_MARGIN_SECONDS:-300}"
+OFFRIG_HOST_PY="${RDLAB_OFFRIG_HOST_PY:-$SCRIPT_DIR/offrig_host.py}"
+VM_ROOT="/content"
+RUNPOD_PLAN_ID=""
+RUNPOD_POD_ID=""
+RUNPOD_LAUNCH_STARTED=0
+RUNPOD_POD_OPENED=0
+RUNPOD_SHUTDOWN_DONE=0
+RUNPOD_SHUTDOWN_REASON=""
+RUNPOD_COST_USD=""
+RUNPOD_COST_PER_HR_USD=""
+RUNPOD_WATCHDOG_DEADLINE=""
+RUNPOD_OFFRIG_GPU=""
+RUNPOD_GPU_GATE_JSON=""
+RUNPOD_LAUNCH_INFO_JSON=""
+RUNPOD_POLL_INTERVAL="${RDLAB_OFFRIG_POLL_INTERVAL:-2}"
+RUNPOD_LAUNCH_TIMEOUT_SECONDS="${RDLAB_OFFRIG_LAUNCH_TIMEOUT_SECONDS:-900}"
+
 EXPECTED_JUDGE_LOCK_SHA256="608f56ab8eae6852718438366ff0ce74ef6aafb66db75faef034ae0bb5bdcf10"
 EXPECTED_D3_LOCK_SHA256="08801f9ac5e3cfb14ce819b051aeef388bea3e564e7b99bddc10d91537ab78e2"
 EXPECTED_VLLM_LOCK_SHA256="a9243e0bb6416650c21ff131beefb4f3406bc42310919219409d68459cb3cef5"
@@ -130,9 +155,14 @@ REREAD_RESERVED_RT=""
 
 usage() {
   cat <<'EOF'
-Usage: scripts/colab/launch_judges.sh [--session-smoke] [--probe] [--stub] [--time-one] [--lock-check] [--lock-check-stub] [--lock-check-phase anchors|p0a|all] [--counted] [--counted-stub] [--card A100|G4|L4|T4] [--shape standard|high-mem] [--until STEP] [--dry] [--resume] [--run-id ID] [--out-dir DIR] [--items-file FILE] [--part-dir DIR] [--synthetic-items] [--anchor-items FILE] [--p0a-items FILE] [--p0a-part-dir DIR] [--counted-items FILE] [--counted-manifest FILE] [--receipts-dir DIR] [--cap UNITS] [--max-rate UNITS_PER_H] [--pass-mode binary|three_way|three_way_contradicted|three_way_two_question|three_way_symmetric|three_way_nli|three_way_schedules|per_judge]
+Usage: scripts/colab/launch_judges.sh [--host colab|runpod] [--offrig-profile NAME] [--offrig-project DIR] [--container-disk-gb GB] [--runpod-image REF] [--session-smoke] [--probe] [--stub] [--time-one] [--lock-check] [--lock-check-stub] [--lock-check-phase anchors|p0a|all] [--counted] [--counted-stub] [--card A100|G4|L4|T4] [--shape standard|high-mem] [--until STEP] [--dry] [--resume] [--run-id ID] [--out-dir DIR] [--items-file FILE] [--part-dir DIR] [--synthetic-items] [--anchor-items FILE] [--p0a-items FILE] [--p0a-part-dir DIR] [--counted-items FILE] [--counted-manifest FILE] [--receipts-dir DIR] [--cap UNITS] [--max-rate UNITS_PER_H] [--pass-mode binary|three_way|three_way_contradicted|three_way_two_question|three_way_symmetric|three_way_nli|three_way_schedules|per_judge]
 
 Options:
+  --host HOST          Execution host: colab (default) or runpod (or set RDLAB_HOST)
+  --offrig-profile P   For --host runpod: offrig job profile name (default rdlab-judge; or set RDLAB_OFFRIG_PROFILE)
+  --offrig-project D   For --host runpod: offrig project directory (default repo root; or set RDLAB_OFFRIG_PROJECT)
+  --container-disk-gb N  For --host runpod: optional container disk size override in GB passed to offrig_plan
+  --runpod-image REF   For --host runpod: pinned image reference (tag@digest; default vllm/vllm-openai:v0.34.0@sha256:20fdb089454afbb324efa4110a2c025ff7b27cc1a086e07aa580b18df8ad1ce1)
   --session-smoke      Run the CPU session smoke check only (open, verify row, stop, verify gone)
   --probe              Run the read-only CPU VM environment probe (CPU; default wall 300s, cap 0.01)
   --stub               Run the CPU stub pipeline (CPU; CPython 3.15 pyyaml sdist build)
@@ -497,6 +527,46 @@ while [[ $# -gt 0 ]]; do
       SYNTHETIC_ITEMS_FLAG=1
       shift
       ;;
+    --host)
+      HOST="${2:-}"
+      shift 2
+      ;;
+    --host=*)
+      HOST="${1#*=}"
+      shift
+      ;;
+    --offrig-profile)
+      OFFRIG_PROFILE="${2:-}"
+      shift 2
+      ;;
+    --offrig-profile=*)
+      OFFRIG_PROFILE="${1#*=}"
+      shift
+      ;;
+    --offrig-project)
+      OFFRIG_PROJECT="${2:-}"
+      shift 2
+      ;;
+    --offrig-project=*)
+      OFFRIG_PROJECT="${1#*=}"
+      shift
+      ;;
+    --container-disk-gb)
+      CONTAINER_DISK_GB="${2:-}"
+      shift 2
+      ;;
+    --container-disk-gb=*)
+      CONTAINER_DISK_GB="${1#*=}"
+      shift
+      ;;
+    --runpod-image)
+      RUNPOD_IMAGE_REF="${2:-}"
+      shift 2
+      ;;
+    --runpod-image=*)
+      RUNPOD_IMAGE_REF="${1#*=}"
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -508,6 +578,31 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+HOST="$(printf '%s' "$HOST" | tr '[:upper:]' '[:lower:]')"
+case "$HOST" in
+  colab)
+    VM_ROOT="/content"
+    ;;
+  runpod)
+    VM_ROOT="${RDLAB_VM_ROOT:-/workspace/job}"
+    if [[ "$RUNPOD_IMAGE_REF" == *@* ]]; then
+      RUNPOD_IMAGE_TAG="${RUNPOD_IMAGE_REF%%@*}"
+      RUNPOD_IMAGE_DIGEST="${RUNPOD_IMAGE_REF#*@}"
+    else
+      RUNPOD_IMAGE_TAG="$RUNPOD_IMAGE_REF"
+      RUNPOD_IMAGE_DIGEST=""
+    fi
+    if [[ -n "$CONTAINER_DISK_GB" ]] && ! [[ "$CONTAINER_DISK_GB" =~ ^[1-9][0-9]*$ ]]; then
+      echo "CONTAINER_DISK_INVALID: --container-disk-gb must be a positive integer, got '$CONTAINER_DISK_GB'" >&2
+      exit 2
+    fi
+    ;;
+  *)
+    echo "HOST_INVALID: unknown --host '$HOST' (allowed: colab, runpod)" >&2
+    exit 2
+    ;;
+esac
 
 _synth_norm="$(printf '%s' "$SYNTHETIC_ITEMS_RAW" | tr '[:upper:]' '[:lower:]' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
 case "$_synth_norm" in
@@ -549,37 +644,38 @@ fi
 
 # --- Card, shape, and rate per mode ---
 if [[ "$SESSION_SMOKE_FLAG" -ne 1 ]] && [[ "$MODE" == "time-one" || "$MODE" == "counted" || "$MODE" == "lock-check" ]]; then
-  if [[ -z "$CARD" ]]; then
-    echo "CARD_REQUIRED: --$MODE requires --card A100|G4|L4|T4 (or RDLAB_CARD; no default)" >&2
-    exit 2
-  fi
-  case "$CARD" in
-    A100|G4|L4|T4)
-      ;;
-    *)
-      echo "CARD_INVALID: unknown --card '$CARD' (allowed: A100, G4, L4, T4)" >&2
+  if [[ "$HOST" == "colab" ]]; then
+    if [[ -z "$CARD" ]]; then
+      echo "CARD_REQUIRED: --$MODE requires --card A100|G4|L4|T4 (or RDLAB_CARD; no default)" >&2
       exit 2
-      ;;
-  esac
-  if [[ -z "$SHAPE" ]]; then
-    echo "SHAPE_REQUIRED: --$MODE requires --shape standard|high-mem (or RDLAB_SHAPE; no default)" >&2
-    exit 2
-  fi
-  case "$SHAPE" in
-    standard)
-      EXPECTED_SESSION_SHAPE="Standard"
-      COLAB_NEW_FLAGS=(--gpu "$CARD")
-      ;;
-    high-mem)
-      EXPECTED_SESSION_SHAPE="High-RAM"
-      COLAB_NEW_FLAGS=(--gpu "$CARD" --high-mem)
-      ;;
-    *)
-      echo "SHAPE_INVALID: unknown --shape '$SHAPE' (allowed: standard, high-mem)" >&2
+    fi
+    case "$CARD" in
+      A100|G4|L4|T4)
+        ;;
+      *)
+        echo "CARD_INVALID: unknown --card '$CARD' (allowed: A100, G4, L4, T4)" >&2
+        exit 2
+        ;;
+    esac
+    if [[ -z "$SHAPE" ]]; then
+      echo "SHAPE_REQUIRED: --$MODE requires --shape standard|high-mem (or RDLAB_SHAPE; no default)" >&2
       exit 2
-      ;;
-  esac
-  if ! REQUESTED_CARD_TYPE="$("$PYTHON_BIN" - "$REPO_ROOT" "$CARD" "$SHAPE" <<'PY'
+    fi
+    case "$SHAPE" in
+      standard)
+        EXPECTED_SESSION_SHAPE="Standard"
+        COLAB_NEW_FLAGS=(--gpu "$CARD")
+        ;;
+      high-mem)
+        EXPECTED_SESSION_SHAPE="High-RAM"
+        COLAB_NEW_FLAGS=(--gpu "$CARD" --high-mem)
+        ;;
+      *)
+        echo "SHAPE_INVALID: unknown --shape '$SHAPE' (allowed: standard, high-mem)" >&2
+        exit 2
+        ;;
+    esac
+    if ! REQUESTED_CARD_TYPE="$("$PYTHON_BIN" - "$REPO_ROOT" "$CARD" "$SHAPE" <<'PY'
 import sys
 from pathlib import Path
 
@@ -595,11 +691,19 @@ except vm_judges.RefusalError as exc:
     sys.exit(2)
 PY
 )"; then
-    exit 2
+      exit 2
+    fi
+  else
+    # RunPod host uses the offrig profile + RTX PRO 6000 Blackwell Server Edition gate instead of Colab --card/--shape.
+    CARD="${CARD:-G4}"
+    SHAPE=""
+    EXPECTED_SESSION_SHAPE=""
+    REQUESTED_CARD_TYPE="G4"
+    COLAB_NEW_FLAGS=()
   fi
   if [[ "$MODE" == "time-one" ]]; then
     WALL_SECONDS="${RDLAB_WALL_SECONDS:-1500}"
-    if [[ -z "$EXPLICIT_CAP" ]]; then
+    if [[ "$HOST" == "colab" ]] && [[ -z "$EXPLICIT_CAP" ]]; then
       EXPLICIT_CAP="2.5"
     fi
     VRAM_HALT_MIB="${RDLAB_VRAM_HALT_MIB:-26000}"
@@ -634,7 +738,7 @@ else
   COLAB_NEW_FLAGS=()
   if [[ "$MODE" == "probe" ]]; then
     WALL_SECONDS="${RDLAB_WALL_SECONDS:-300}"
-    if [[ -z "$EXPLICIT_CAP" ]]; then
+    if [[ "$HOST" == "colab" ]] && [[ -z "$EXPLICIT_CAP" ]]; then
       EXPLICIT_CAP="0.01"
     fi
     VRAM_HALT_MIB="0"
@@ -651,7 +755,7 @@ if [[ -n "$MAX_RATE" ]] && ! [[ "$MAX_RATE" =~ ^[0-9]+([.][0-9]+)?$ && "$MAX_RAT
   echo "BAD_MAX_RATE: --max-rate must be a positive number of units per hour, got '$MAX_RATE'" >&2
   exit 2
 fi
-if [[ "$SESSION_SMOKE_FLAG" -ne 1 ]] && [[ "$MODE" == "time-one" || "$MODE" == "lock-check" || "$MODE" == "counted" ]] && [[ -z "$MAX_RATE" ]]; then
+if [[ "$HOST" == "colab" ]] && [[ "$SESSION_SMOKE_FLAG" -ne 1 ]] && [[ "$MODE" == "time-one" || "$MODE" == "lock-check" || "$MODE" == "counted" ]] && [[ -z "$MAX_RATE" ]]; then
   echo "MAX_RATE_REQUIRED: --$MODE requires --max-rate <units/h> (the highest window rate, units/h, this window accepts; no default)" >&2
   exit 2
 fi
@@ -1174,7 +1278,7 @@ if [[ -n "$EXPLICIT_CAP" ]]; then
 else
   CAP_UNITS="$WALL_X_RATE"
 fi
-if [[ "$SESSION_SMOKE_FLAG" -ne 1 ]] && { [[ "$MODE" != "probe" ]] || [[ -n "$RATE_UNITS_PER_HOUR" ]] || [[ "$CAP_FLAG_OR_ENV_SET" -eq 1 ]]; }; then
+if [[ "$HOST" == "colab" ]] && [[ "$SESSION_SMOKE_FLAG" -ne 1 ]] && { [[ "$MODE" != "probe" ]] || [[ -n "$RATE_UNITS_PER_HOUR" ]] || [[ "$CAP_FLAG_OR_ENV_SET" -eq 1 ]]; }; then
   if [[ -n "$RATE_UNITS_PER_HOUR" ]]; then
     read -r CAP_BUDGET_OK CLEANUP_RESERVE_UNITS EFFECTIVE_TRIP_UNITS RESERVED_CAP_RUNTIME_SECONDS UNRESERVED_CAP_RUNTIME_SECONDS <<< "$(eval_cap_budget "$CAP_UNITS" "$RATE_UNITS_PER_HOUR")"
     if [[ "$DRY_FLAG" -eq 1 ]]; then
@@ -1326,6 +1430,12 @@ build_gate_env_args() {
   GATE_ENV_ARGS=(
     --env "RDLAB_STEP=gate"
   )
+  if [[ "$HOST" != "colab" ]]; then
+    GATE_ENV_ARGS+=(
+      --env "RDLAB_VM_ROOT=$VM_ROOT"
+      --env "RDLAB_HOST=$HOST"
+    )
+  fi
   if [[ -n "${HF_HOME:-}" ]]; then
     GATE_ENV_ARGS+=(--env "HF_HOME=$HF_HOME")
   fi
@@ -1348,6 +1458,12 @@ build_probe_env_args() {
     --env "RDLAB_STEP=probe"
     --env "RDLAB_WALL_SECONDS=$VM_WALL_SECONDS"
   )
+  if [[ "$HOST" != "colab" ]]; then
+    PROBE_ENV_ARGS+=(
+      --env "RDLAB_VM_ROOT=$VM_ROOT"
+      --env "RDLAB_HOST=$HOST"
+    )
+  fi
 }
 
 # A real time-one / counted / lock-check window (no VM_DRYRUN, no --until): the VM needs the card type of the session
@@ -1377,16 +1493,26 @@ build_exec_env_args() {
     --env "RDLAB_D3_LOCK_SHA256=$d_sha"
     --env "RDLAB_DEVICE_PY_SHA256=$dev_sha"
     --env "RDLAB_EXPECT_UV_VERSION=$exp_uv"
-    --env "RDLAB_REPO_DIR=/content/rdlab"
-    --env "RDLAB_REPO_TAR=/content/repo_bundle.tar.gz"
-    --env "RDLAB_RECEIPTS_DIR=/content/rdlab_receipts"
-    --env "RDLAB_RECEIPTS_TAR=/content/receipts_bundle.tar.gz"
-    --env "RDLAB_ITEMS_FILE=/content/rdlab_items/items.jsonl"
-    --env "RDLAB_RUN_DIR=/content/rdlab_run"
-    --env "RDLAB_RESULT_TAR=/content/result.tar.gz"
-    --env "RDLAB_STATUS_FILE=/content/status.json"
+    --env "RDLAB_REPO_DIR=${VM_ROOT}/rdlab"
+    --env "RDLAB_REPO_TAR=${VM_ROOT}/repo_bundle.tar.gz"
+    --env "RDLAB_RECEIPTS_DIR=${VM_ROOT}/rdlab_receipts"
+    --env "RDLAB_RECEIPTS_TAR=${VM_ROOT}/receipts_bundle.tar.gz"
+    --env "RDLAB_ITEMS_FILE=${VM_ROOT}/rdlab_items/items.jsonl"
+    --env "RDLAB_RUN_DIR=${VM_ROOT}/rdlab_run"
+    --env "RDLAB_RESULT_TAR=${VM_ROOT}/result.tar.gz"
+    --env "RDLAB_STATUS_FILE=${VM_ROOT}/status.json"
     --env "RDLAB_RESUME=$EFFECTIVE_RESUME"
   )
+  if [[ "$HOST" != "colab" ]]; then
+    EXEC_ENV_ARGS+=(
+      --env "RDLAB_VM_ROOT=$VM_ROOT"
+      --env "RDLAB_HOST=$HOST"
+      --env "RDLAB_POD_ID=${RUNPOD_POD_ID:-<pod-of-launched-plan>}"
+      --env "RDLAB_RUNPOD_IMAGE=$RUNPOD_IMAGE_REF"
+      --env "RDLAB_RUNPOD_IMAGE_TAG=$RUNPOD_IMAGE_TAG"
+      --env "RDLAB_RUNPOD_IMAGE_DIGEST=$RUNPOD_IMAGE_DIGEST"
+    )
+  fi
   # The kit identity (#107), computed before any session opens: the VM records it in window.json and refuses
   # KIT_VM_SCRIPT_MISMATCH when the vm_judges.py it was sent hashes otherwise. A value that could not be read is not sent.
   if [[ -n "$KIT_HEAD_SHA" ]]; then
@@ -1436,7 +1562,7 @@ build_exec_env_args() {
     EXEC_ENV_ARGS+=(--env "RDLAB_VLLM_LOCK_SHA256=$RDLAB_VLLM_LOCK_SHA256")
   fi
   if [[ "$EFFECTIVE_RESUME" -eq 1 ]] && [[ -f "$OUT_DIR/schedule.json" ]]; then
-    EXEC_ENV_ARGS+=(--env "RDLAB_RESUME_TAR=/content/resume_state.tar.gz")
+    EXEC_ENV_ARGS+=(--env "RDLAB_RESUME_TAR=${VM_ROOT}/resume_state.tar.gz")
   fi
   if [[ -n "${OPENED_CARD_TYPE:-}" ]]; then
     EXEC_ENV_ARGS+=(--env "RDLAB_CARD_TYPE=$OPENED_CARD_TYPE")
@@ -1444,7 +1570,7 @@ build_exec_env_args() {
   if [[ -n "${OPENED_SHAPE_OBS:-}" ]]; then
     EXEC_ENV_ARGS+=(--env "RDLAB_SESSION_SHAPE_OBSERVED=$OPENED_SHAPE_OBS")
   fi
-  if needs_opened_card_type; then
+  if [[ "$HOST" == "colab" ]] && needs_opened_card_type; then
     EXEC_ENV_ARGS+=(
       --env "RDLAB_CARD=$CARD"
       --env "RDLAB_SHAPE=$SHAPE"
@@ -1496,7 +1622,7 @@ build_exec_env_args() {
     EXEC_ENV_ARGS+=(--env "RDLAB_SHARD=$RDLAB_SHARD")
   fi
   if [[ -n "${RDLAB_SHARD_MANIFEST+x}" ]] && [[ -n "${RDLAB_SHARD_MANIFEST}" ]]; then
-    EXEC_ENV_ARGS+=(--env "RDLAB_SHARD_MANIFEST=/content/rdlab/shard_manifest.json")
+    EXEC_ENV_ARGS+=(--env "RDLAB_SHARD_MANIFEST=${VM_ROOT}/rdlab/shard_manifest.json")
   fi
   if [[ -n "${RDLAB_SHARD_MANIFEST_SHA256+x}" ]] && [[ -n "${RDLAB_SHARD_MANIFEST_SHA256}" ]]; then
     EXEC_ENV_ARGS+=(--env "RDLAB_SHARD_MANIFEST_SHA256=$RDLAB_SHARD_MANIFEST_SHA256")
@@ -1511,8 +1637,8 @@ build_exec_env_args() {
     EXEC_ENV_ARGS+=(--env "RDLAB_REPLACEMENT_SESSION=$RDLAB_REPLACEMENT_SESSION")
   fi
   if [[ -n "${RDLAB_BOOT_GATEKEEPER_GOLDENS+x}" ]] && [[ -n "${RDLAB_BOOT_GATEKEEPER_GOLDENS}" ]]; then
-    if [[ -f "${RDLAB_BOOT_GATEKEEPER_GOLDENS}" ]] && [[ "${RDLAB_BOOT_GATEKEEPER_GOLDENS}" != /content/* ]]; then
-      EXEC_ENV_ARGS+=(--env "RDLAB_BOOT_GATEKEEPER_GOLDENS=/content/rdlab/boot_gatekeeper_goldens.candidate.json")
+    if [[ -f "${RDLAB_BOOT_GATEKEEPER_GOLDENS}" ]] && [[ "${RDLAB_BOOT_GATEKEEPER_GOLDENS}" != "$VM_ROOT"/* ]]; then
+      EXEC_ENV_ARGS+=(--env "RDLAB_BOOT_GATEKEEPER_GOLDENS=${VM_ROOT}/rdlab/boot_gatekeeper_goldens.candidate.json")
     else
       EXEC_ENV_ARGS+=(--env "RDLAB_BOOT_GATEKEEPER_GOLDENS=$RDLAB_BOOT_GATEKEEPER_GOLDENS")
     fi
@@ -1528,15 +1654,15 @@ build_exec_env_args() {
   fi
   if [[ "$MODE" == "lock-check" ]] || [[ "$MODE" == "lock-check-stub" ]]; then
     EXEC_ENV_ARGS+=(
-      --env "RDLAB_ANCHOR_ITEMS_FILE=/content/rdlab_items/anchor_items.jsonl"
-      --env "RDLAB_P0A_ITEMS_FILE=/content/rdlab_items/p0a_items.jsonl"
+      --env "RDLAB_ANCHOR_ITEMS_FILE=${VM_ROOT}/rdlab_items/anchor_items.jsonl"
+      --env "RDLAB_P0A_ITEMS_FILE=${VM_ROOT}/rdlab_items/p0a_items.jsonl"
       --env "RDLAB_LOCK_CHECK_PHASE=$LOCK_CHECK_PHASE"
     )
     if [[ -n "$COUNTED_ITEMS_FILE" ]]; then
-      EXEC_ENV_ARGS+=(--env "RDLAB_COUNTED_ITEMS_FILE=/content/rdlab/counted_items.jsonl")
+      EXEC_ENV_ARGS+=(--env "RDLAB_COUNTED_ITEMS_FILE=${VM_ROOT}/rdlab/counted_items.jsonl")
     fi
     if [[ -n "$COUNTED_MANIFEST_FILE" ]]; then
-      EXEC_ENV_ARGS+=(--env "RDLAB_COUNTED_MANIFEST=/content/rdlab/counted_manifest.json")
+      EXEC_ENV_ARGS+=(--env "RDLAB_COUNTED_MANIFEST=${VM_ROOT}/rdlab/counted_manifest.json")
     fi
   fi
   local eff_session_id=""
@@ -1675,6 +1801,598 @@ except vm_judges.RefusalError as exc:
     sys.stderr.write(f"{exc}\n")
     raise SystemExit(2)
 PY
+}
+
+verify_lock_and_device_digests() {
+  if [[ -z "$RECEIPTS_DIR" ]] || [[ ! -d "$RECEIPTS_DIR" ]]; then
+    RUN_WHY="RDLAB_RECEIPTS_DIR or --receipts-dir is missing"
+    echo "RECEIPTS_DIR_MISSING: RDLAB_RECEIPTS_DIR must point to the weight sha256 receipts directory" >&2
+    return 2
+  fi
+  if ! "$PYTHON_BIN" - "$REPO_ROOT" "$EXPECTED_JUDGE_LOCK_SHA256" "$EXPECTED_D3_LOCK_SHA256" "$EXPECTED_VLLM_LOCK_SHA256" "$EXPECTED_DEVICE_PY_SHA256" <<'PY'
+import os
+import sys
+from pathlib import Path
+
+repo_root = Path(sys.argv[1])
+exp_judge = sys.argv[2]
+exp_d3 = sys.argv[3]
+exp_vllm = sys.argv[4]
+exp_dev = sys.argv[5]
+sys.path.insert(0, str(repo_root / "src"))
+sys.path.insert(0, str(repo_root / "scripts" / "colab"))
+import vm_judges
+
+vm_judges.verify_lock_digests(
+    repo_root / "scripts" / "colab" / "locks" / "judge.lock.txt",
+    repo_root / "scripts" / "colab" / "locks" / "d3.lock.txt",
+    env_judge_sha256=os.environ.get("RDLAB_JUDGE_LOCK_SHA256"),
+    env_d3_sha256=os.environ.get("RDLAB_D3_LOCK_SHA256"),
+    expected_judge_sha256=exp_judge,
+    expected_d3_sha256=exp_d3,
+)
+vllm_lock = repo_root / "scripts" / "colab" / "locks" / "vllm.lock.txt"
+if vllm_lock.is_file():
+    vm_judges.verify_vllm_lock(
+        vllm_lock,
+        env_vllm_sha256=os.environ.get("RDLAB_VLLM_LOCK_SHA256"),
+        expected_vllm_sha256=exp_vllm,
+    )
+vm_judges.verify_device_py_digest(
+    repo_root / "src" / "reasoning_dataset_lab" / "pilot_b" / "device.py",
+    env_device_sha256=(
+        os.environ["RDLAB_DEVICE_PY_SHA256"]
+        if "RDLAB_DEVICE_PY_SHA256" in os.environ
+        else exp_dev
+    ),
+    expected_device_sha256=exp_dev,
+)
+PY
+  then
+    RUN_WHY="lock file or device.py SHA-256 verification failed before session open"
+    return 2
+  fi
+}
+
+stage_window_artifacts() {
+  mkdir -p "$STAGE_DIR"
+  # Part files left in the stage dir by an earlier, interrupted launch must never be uploaded for this one.
+  rm -f "$STAGED_PART_JSON_FILE" "$STAGED_PART_CHECKSUMS_FILE" "$STAGED_P0A_PART_JSON_FILE" "$STAGED_P0A_CHECKSUMS_FILE" "$STAGED_BINDING_FILE" "$RIG_BINDING_FILE"
+  if ! "$PYTHON_BIN" - "$REPO_ROOT" "$ITEMS_FILE" "$STAGED_ITEMS_FILE" "$RECEIPTS_DIR" "$RECEIPTS_TAR" "$REPO_TAR" "$STAGED_DEVICE_PY" "$GOLDEN_ANCHOR_MANIFEST" "$ANCHOR_ITEMS_FILE" "$STAGED_ANCHOR_ITEMS_FILE" "$P0A_ITEMS_FILE" "$STAGED_P0A_ITEMS_FILE" "$COUNTED_ITEMS_FILE" "$COUNTED_MANIFEST_FILE" "$STAGED_BINDING_FILE" "$MODE" "${VM_DRYRUN:-0}" "$STAGED_PART_JSON_FILE" "$STAGED_PART_CHECKSUMS_FILE" "$(effective_part_dir "$ITEMS_FILE")" "$P0A_PART_DIR" "$STAGED_P0A_PART_JSON_FILE" "$STAGED_P0A_CHECKSUMS_FILE" "$STAGED_VM_SCRIPT" "$PASS_MODE" "$SYNTHETIC_ITEMS_FLAG" "$VM_ROOT" <<'PY'
+import contextlib
+import datetime
+import gzip
+import json
+import os
+import shutil
+import sys
+import tarfile
+from pathlib import Path
+
+repo_root = Path(sys.argv[1])
+items_src = Path(sys.argv[2])
+items_dst = Path(sys.argv[3])
+receipts_dir = Path(sys.argv[4])
+receipts_tar = Path(sys.argv[5])
+repo_tar = Path(sys.argv[6])
+device_py_dst = Path(sys.argv[7])
+raw_golden_manifest = sys.argv[8].strip() if len(sys.argv) > 8 else ""
+raw_anchor_src = sys.argv[9].strip() if len(sys.argv) > 9 else ""
+raw_anchor_dst = sys.argv[10].strip() if len(sys.argv) > 10 else ""
+raw_p0a_src = sys.argv[11].strip() if len(sys.argv) > 11 else ""
+raw_p0a_dst = sys.argv[12].strip() if len(sys.argv) > 12 else ""
+raw_counted_items = sys.argv[13].strip() if len(sys.argv) > 13 else ""
+raw_counted_manifest = sys.argv[14].strip() if len(sys.argv) > 14 else ""
+raw_binding_dst = sys.argv[15].strip() if len(sys.argv) > 15 else ""
+stage_mode = sys.argv[16].strip() if len(sys.argv) > 16 else ""
+stage_vm_dryrun = (sys.argv[17].strip() == "1") if len(sys.argv) > 17 else False
+raw_part_json_dst = sys.argv[18].strip() if len(sys.argv) > 18 else ""
+raw_part_checksums_dst = sys.argv[19].strip() if len(sys.argv) > 19 else ""
+raw_part_dir = sys.argv[20].strip() if len(sys.argv) > 20 else ""
+raw_p0a_part_dir = sys.argv[21].strip() if len(sys.argv) > 21 else ""
+raw_p0a_part_json_dst = sys.argv[22].strip() if len(sys.argv) > 22 else ""
+raw_p0a_checksums_dst = sys.argv[23].strip() if len(sys.argv) > 23 else ""
+raw_sent_vm_script = sys.argv[24].strip() if len(sys.argv) > 24 else ""
+raw_pass_mode = sys.argv[25].strip() if len(sys.argv) > 25 else ""
+stage_synthetic_items = (sys.argv[26].strip() == "1") if len(sys.argv) > 26 else False
+vm_root = (sys.argv[27].strip() if len(sys.argv) > 27 else "/content").rstrip("/") or "/content"
+
+fixed_mtime: int | None = None
+raw_sde = (os.environ.get("SOURCE_DATE_EPOCH") or "").strip()
+if raw_sde.isdigit():
+    fixed_mtime = int(raw_sde)
+
+
+@contextlib.contextmanager
+def _open_tar_gz(path: Path):
+    if fixed_mtime is None:
+        with tarfile.open(path, "w:gz") as tf:
+            yield tf
+        return
+    with path.open("wb") as raw_fh:
+        with gzip.GzipFile(filename="", mode="wb", fileobj=raw_fh, mtime=fixed_mtime) as gz_fh:
+            with tarfile.open(fileobj=gz_fh, mode="w") as tf:
+                yield tf
+
+
+def _tar_add_file(tf: tarfile.TarFile, src: Path, arcname: str) -> None:
+    if fixed_mtime is None:
+        tf.add(src, arcname=arcname, recursive=False)
+        return
+    ti = tf.gettarinfo(str(src), arcname=arcname)
+    ti.mtime = fixed_mtime
+    ti.uid = 0
+    ti.gid = 0
+    ti.uname = "root"
+    ti.gname = "root"
+    if ti.isreg():
+        with src.open("rb") as fh:
+            tf.addfile(ti, fh)
+    else:
+        tf.addfile(ti)
+
+
+sys.path.insert(0, str(repo_root / "src"))
+sys.path.insert(0, str(repo_root / "scripts" / "colab"))
+import vm_judges
+
+vm_judges.check_upload_path_allowed(items_src)
+if stage_synthetic_items:
+    vm_judges.verify_synthetic_items_prefix(items_src)
+else:
+    vm_judges.verify_items_allowlist(items_src)
+_ = vm_judges.collect_claim_ngram_sha256s(items_src)
+shutil.copyfile(items_src, items_dst)
+checked_at_dt = (
+    datetime.datetime.fromtimestamp(fixed_mtime, datetime.timezone.utc)
+    if fixed_mtime is not None
+    else datetime.datetime.now(datetime.timezone.utc)
+)
+binding_record: dict = {
+    "schema_version": "1.0",
+    "checked_by": "launcher",
+    "checked_at": checked_at_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
+    "mode": stage_mode,
+    "window_part": None,
+    "p0a_part": None,
+}
+if stage_mode not in ("lock-check", "lock-check-stub") and stage_synthetic_items:
+    _ = vm_judges.preflight_part_manifest(
+        items_src,
+        mode=stage_mode,
+        dryrun=stage_vm_dryrun,
+        part_dir=None,
+        pass_mode=raw_pass_mode or None,
+        synthetic_items=True,
+        checked_by="launcher",
+    )
+elif stage_mode not in ("lock-check", "lock-check-stub") and raw_part_json_dst and raw_part_checksums_dst:
+    from reasoning_dataset_lab.pilot_b import schema_check
+
+    part_src_dir = Path(raw_part_dir) if raw_part_dir else items_src.parent
+    identity = vm_judges.preflight_part_manifest(
+        items_src,
+        mode=stage_mode,
+        dryrun=stage_vm_dryrun,
+        part_dir=part_src_dir,
+        part_items_file=part_src_dir / "items.jsonl",
+        schema_errors=lambda doc: schema_check.validate(doc, "part"),
+        pass_mode=raw_pass_mode or None,
+    )
+    if identity is not None:
+        shutil.copyfile(part_src_dir / vm_judges.PART_JSON_FILENAME, Path(raw_part_json_dst))
+        shutil.copyfile(part_src_dir / vm_judges.PART_CHECKSUMS_FILENAME, Path(raw_part_checksums_dst))
+        binding_record["window_part"] = vm_judges.launcher_binding_entry(identity)
+if raw_anchor_src and raw_anchor_dst:
+    anchor_src = Path(raw_anchor_src)
+    vm_judges.check_upload_path_allowed(anchor_src)
+    vm_judges.verify_items_allowlist(anchor_src)
+    _ = vm_judges.collect_claim_ngram_sha256s(anchor_src)
+    shutil.copyfile(anchor_src, Path(raw_anchor_dst))
+if raw_p0a_src and raw_p0a_dst:
+    p0a_src = Path(raw_p0a_src)
+    vm_judges.check_upload_path_allowed(p0a_src)
+    vm_judges.verify_items_allowlist(p0a_src)
+    _ = vm_judges.collect_claim_ngram_sha256s(p0a_src)
+    shutil.copyfile(p0a_src, Path(raw_p0a_dst))
+    if raw_p0a_part_dir and raw_p0a_part_json_dst and raw_p0a_checksums_dst:
+        from reasoning_dataset_lab.pilot_b import schema_check as _p0a_schema
+
+        p0a_part_dir = Path(raw_p0a_part_dir)
+        p0a_identity = vm_judges.verify_p0a_pilot_part(
+            p0a_src,
+            mode=stage_mode,
+            dryrun=stage_vm_dryrun,
+            part_dir=p0a_part_dir,
+            schema_errors=lambda doc: _p0a_schema.validate(doc, "part"),
+        )
+        shutil.copyfile(p0a_part_dir / vm_judges.PART_JSON_FILENAME, Path(raw_p0a_part_json_dst))
+        shutil.copyfile(p0a_part_dir / vm_judges.PART_CHECKSUMS_FILENAME, Path(raw_p0a_checksums_dst))
+        if p0a_identity is not None:
+            binding_record["p0a_part"] = vm_judges.launcher_binding_entry(p0a_identity)
+if raw_binding_dst and (binding_record["window_part"] is not None or binding_record["p0a_part"] is not None):
+    Path(raw_binding_dst).write_text(json.dumps(binding_record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+shutil.copyfile(repo_root / "src" / "reasoning_dataset_lab" / "pilot_b" / "device.py", device_py_dst)
+
+with _open_tar_gz(receipts_tar) as tf:
+    for spec in vm_judges.receipt_tar_specs():
+        owner, repo = spec.repo_id.split("/", 1)
+        rname = f"{owner}__{repo}.sha256.json"
+        rpath = receipts_dir / rname
+        if not rpath.is_file():
+            raise SystemExit(f"RECEIPT_MISSING: missing {rname} in {receipts_dir}")
+        _tar_add_file(tf, rpath, rname)
+
+tracked_files = vm_judges.tracked_repo_bundle_files(repo_root)
+raw_shard_manifest = (os.environ.get("RDLAB_SHARD_MANIFEST") or "").strip()
+with _open_tar_gz(repo_tar) as tf:
+    for rel in tracked_files:
+        if rel == vm_judges.KIT_VM_SCRIPT_RELPATH and raw_sent_vm_script:
+            _tar_add_file(tf, Path(raw_sent_vm_script), rel)
+            continue
+        _tar_add_file(tf, repo_root / rel, rel)
+    if raw_shard_manifest:
+        sm_path = Path(raw_shard_manifest)
+        if not sm_path.is_file():
+            raise SystemExit(f"SHARD_MANIFEST_INVALID: file does not exist: {sm_path}")
+        _tar_add_file(tf, sm_path, "shard_manifest.json")
+    if raw_golden_manifest:
+        gm_path = Path(raw_golden_manifest)
+        if not gm_path.is_file():
+            raise SystemExit(f"GOLDEN_ANCHOR_MANIFEST_MISSING: file does not exist: {gm_path}")
+        _tar_add_file(tf, gm_path, "golden_anchor_manifest.json")
+    if raw_counted_items:
+        ci_path = Path(raw_counted_items)
+        if not ci_path.is_file():
+            raise SystemExit(f"COUNTED_ITEMS_MISSING: file does not exist: {ci_path}")
+        vm_judges.check_upload_path_allowed(ci_path)
+        vm_judges.verify_items_allowlist(ci_path)
+        _tar_add_file(tf, ci_path, "counted_items.jsonl")
+    if raw_counted_manifest:
+        cm_path = Path(raw_counted_manifest)
+        if not cm_path.is_file():
+            raise SystemExit(f"COUNTED_MANIFEST_MISSING: file does not exist: {cm_path}")
+        vm_judges.check_upload_path_allowed(cm_path)
+        _tar_add_file(tf, cm_path, "counted_manifest.json")
+        sib_items = cm_path.parent / "items.jsonl"
+        if sib_items.is_file():
+            vm_judges.check_upload_path_allowed(sib_items)
+            vm_judges.verify_items_allowlist(sib_items)
+            _tar_add_file(tf, sib_items, "items.jsonl")
+    raw_bg_goldens = (os.environ.get("RDLAB_BOOT_GATEKEEPER_GOLDENS") or "").strip()
+    if raw_bg_goldens and not raw_bg_goldens.startswith(f"{vm_root}/"):
+        bg_path = Path(raw_bg_goldens)
+        if bg_path.is_file():
+            _tar_add_file(tf, bg_path, "boot_gatekeeper_goldens.candidate.json")
+PY
+  then
+    RUN_WHY="staging of items, receipts, or repo bundle failed on rig"
+    return 2
+  fi
+  if [[ -f "$STAGED_BINDING_FILE" ]]; then
+    cp "$STAGED_BINDING_FILE" "$RIG_BINDING_FILE"
+    if [[ "$DRY_FLAG" != "1" ]]; then
+      BINDING_SUMMARY="$("$PYTHON_BIN" - "$RIG_BINDING_FILE" <<'PY'
+import json
+import sys
+
+doc = json.load(open(sys.argv[1], encoding="utf-8"))
+parts = []
+for key, ent in sorted(doc.items()):
+    if isinstance(ent, dict):
+        b = ent["binding"]
+        parts.append(
+            f"{key}:part_id={ent['part_id']},part_json_sha256={ent['part_json_sha256']},"
+            f"uploaded_items={b['uploaded_items']},rule={b['rule']},projection_checked={b['projection_checked']},"
+            f"pin={ent['pin']}"
+        )
+print(" ".join(parts))
+PY
+)" || BINDING_SUMMARY="unreadable"
+      log_msg "PART_BINDING_LAUNCHER record=$RIG_BINDING_FILE $BINDING_SUMMARY"
+    fi
+  fi
+  if [[ "$EFFECTIVE_RESUME" -eq 1 ]] && [[ -f "$OUT_DIR/schedule.json" ]]; then
+    "$PYTHON_BIN" - "$OUT_DIR" "$RESUME_TAR" <<'PY'
+import contextlib
+import gzip
+import os
+import sys
+import tarfile
+from pathlib import Path
+
+out_dir = Path(sys.argv[1])
+tar_path = Path(sys.argv[2])
+raw_sde = (os.environ.get("SOURCE_DATE_EPOCH") or "").strip()
+fixed_mtime = int(raw_sde) if raw_sde.isdigit() else None
+
+
+@contextlib.contextmanager
+def _open_tar_gz(path: Path):
+    if fixed_mtime is None:
+        with tarfile.open(path, "w:gz") as tf:
+            yield tf
+        return
+    with path.open("wb") as raw_fh:
+        with gzip.GzipFile(filename="", mode="wb", fileobj=raw_fh, mtime=fixed_mtime) as gz_fh:
+            with tarfile.open(fileobj=gz_fh, mode="w") as tf:
+                yield tf
+
+
+with _open_tar_gz(tar_path) as tf:
+    for exact in ("schedule.json", "generations.jsonl", "shard_manifest.json", "shard_manifest.json.sha256", "session_env.json"):
+        p = out_dir / exact
+        if p.is_file():
+            if fixed_mtime is None:
+                tf.add(p, arcname=exact, recursive=False)
+            else:
+                ti = tf.gettarinfo(str(p), arcname=exact)
+                ti.mtime = fixed_mtime
+                ti.uid = 0
+                ti.gid = 0
+                ti.uname = "root"
+                ti.gname = "root"
+                with p.open("rb") as fh:
+                    tf.addfile(ti, fh)
+    for sub_dir_name, pat in (("rows", "*.jsonl"), ("anchor_rows", "*.jsonl"), ("judge_done", "*.json")):
+        sdir = out_dir / sub_dir_name
+        if sdir.is_dir():
+            for rf in sorted(sdir.glob(pat)):
+                if rf.is_file():
+                    arc = f"{sub_dir_name}/{rf.name}"
+                    if fixed_mtime is None:
+                        tf.add(rf, arcname=arc, recursive=False)
+                    else:
+                        ti = tf.gettarinfo(str(rf), arcname=arc)
+                        ti.mtime = fixed_mtime
+                        ti.uid = 0
+                        ti.gid = 0
+                        ti.uname = "root"
+                        ti.gname = "root"
+                        with rf.open("rb") as fh:
+                            tf.addfile(ti, fh)
+PY
+  fi
+}
+
+verify_and_close_run_outputs() {
+  if [[ "$EXEC_RC" -eq 124 ]] || [[ "$EXEC_RC" -eq 137 ]]; then
+    RUN_WHY="wall-clock timeout exceeded (${WALL_SECONDS}s)"
+    exit "$EXEC_RC"
+  fi
+  if [[ ! -f "$OUT_DIR/status.json" ]]; then
+    RUN_WHY="status.json missing after VM run (exec_rc=$EXEC_RC)"
+    if [[ "$EXEC_RC" -ne 0 ]]; then
+      exit "$EXEC_RC"
+    fi
+    exit 1
+  fi
+  STATUS_CHECK_OUT=""
+  STATUS_CHECK_RC=0
+  STATUS_CHECK_OUT="$("$PYTHON_BIN" - "$REPO_ROOT" "$OUT_DIR/status.json" <<'PY'
+import sys
+from pathlib import Path
+
+repo_root = Path(sys.argv[1])
+status_path = Path(sys.argv[2])
+sys.path.insert(0, str(repo_root / "src"))
+sys.path.insert(0, str(repo_root / "scripts" / "colab"))
+import vm_judges
+
+rc, msg = vm_judges.verify_run_status_file(status_path)
+print(msg)
+if rc != 0:
+    raise SystemExit(rc)
+PY
+)" || STATUS_CHECK_RC=$?
+  if [[ "$STATUS_CHECK_RC" -ne 0 ]]; then
+    if [[ "$STATUS_CHECK_OUT" == stale_status\|* ]]; then
+      RUN_WHY="VM status.json is stale (${STATUS_CHECK_OUT})"
+    else
+      RUN_WHY="VM status.json reported failure (${STATUS_CHECK_OUT})"
+    fi
+    exit "$STATUS_CHECK_RC"
+  fi
+  if [[ "$EXEC_RC" -ne 0 ]]; then
+    if [[ "$HOST" == "colab" ]]; then
+      RUN_WHY="colab exec exited non-zero ($EXEC_RC)"
+    else
+      RUN_WHY="runpod offrig exec exited non-zero ($EXEC_RC)"
+    fi
+    exit "$EXEC_RC"
+  fi
+  if [[ ! -f "$OUT_DIR/result.tar.gz" ]]; then
+    RUN_WHY="result.tar.gz missing after VM run"
+    exit 1
+  fi
+  if ! "$PYTHON_BIN" - "$REPO_ROOT" "$OUT_DIR" "$ITEMS_FILE" "$CLI_LOG" "$ANCHOR_ITEMS_FILE" "$P0A_ITEMS_FILE" "$COUNTED_ITEMS_FILE" <<'PY'
+import json
+import shutil
+import sys
+import tarfile
+from pathlib import Path
+
+repo_root = Path(sys.argv[1])
+out_dir = Path(sys.argv[2])
+items_file = Path(sys.argv[3])
+cli_log = Path(sys.argv[4])
+raw_anchor_file = sys.argv[5].strip() if len(sys.argv) > 5 else ""
+raw_p0a_file = sys.argv[6].strip() if len(sys.argv) > 6 else ""
+raw_counted_file = sys.argv[7].strip() if len(sys.argv) > 7 else ""
+
+sys.path.insert(0, str(repo_root / "src"))
+sys.path.insert(0, str(repo_root / "scripts" / "colab"))
+import vm_judges
+
+tar_path = out_dir / "result.tar.gz"
+extract_dir = out_dir / "extracted"
+extract_dir.mkdir(parents=True, exist_ok=True)
+
+vm_judges.validate_tar_file(tar_path)
+with tarfile.open(tar_path, "r:*") as tf:
+    tf.extractall(extract_dir, filter="data")
+
+for rel_name in (
+    "schedule.json",
+    "generations.jsonl",
+    "time_one_summary.json",
+    "vm_receipt.json",
+    "session_env.json",
+    "shard_manifest.json",
+    "shard_manifest.json.sha256",
+    "golden_anchor_manifest.json",
+    "golden_anchor_manifest.json.sha256",
+    "boot_gatekeeper.json",
+    "boot_gatekeeper_goldens.filled.json",
+    "p0a_report.json",
+    "window.json",
+):
+    src = extract_dir / rel_name
+    if src.is_file():
+        shutil.copyfile(src, out_dir / rel_name)
+
+stub_exercise_el = False
+src_elephant_install = extract_dir / "elephant_install.json"
+if src_elephant_install.is_file():
+    try:
+        el_doc = json.loads(src_elephant_install.read_text(encoding="utf-8", errors="replace"))
+    except Exception:
+        el_doc = {}
+    if isinstance(el_doc, dict) and bool(el_doc.get("stub_exercise")):
+        stub_exercise_el = True
+        shutil.copyfile(src_elephant_install, out_dir / "elephant_install.json")
+
+src_progress = extract_dir / "progress.jsonl"
+if src_progress.is_file() and not (out_dir / "progress.jsonl").is_file():
+    shutil.copyfile(src_progress, out_dir / "progress.jsonl")
+
+for sub_name, pat in (("rows", "*.jsonl"), ("anchor_rows", "*.jsonl"), ("judge_done", "*.json")):
+    src_sub = extract_dir / sub_name
+    if src_sub.is_dir():
+        dst_sub = out_dir / sub_name
+        dst_sub.mkdir(parents=True, exist_ok=True)
+        for rf in sorted(src_sub.glob(pat)):
+            if rf.is_file():
+                shutil.copyfile(rf, dst_sub / rf.name)
+(out_dir / ".unverified_judge_done").unlink(missing_ok=True)
+
+vm_judges.scrub_log_file_in_place(cli_log)
+for extra_f in (
+    out_dir / "progress.jsonl",
+    out_dir / "status.json",
+    out_dir / "gate_status.json",
+    out_dir / "vm_receipt.json",
+    out_dir / "session_env.json",
+    out_dir / "shard_manifest.json",
+    out_dir / "boot_gatekeeper.json",
+    out_dir / "elephant_install.json",
+    extract_dir / "progress.jsonl",
+    extract_dir / "vm_receipt.json",
+    extract_dir / "session_env.json",
+    extract_dir / "shard_manifest.json",
+    extract_dir / "boot_gatekeeper.json",
+):
+    if extra_f.is_file():
+        vm_judges.scrub_log_file_in_place(extra_f)
+if stub_exercise_el and src_elephant_install.is_file():
+    vm_judges.scrub_log_file_in_place(src_elephant_install)
+for jdone_parent in (out_dir / "judge_done", extract_dir / "judge_done"):
+    if jdone_parent.is_dir():
+        for jf in sorted(jdone_parent.glob("*.json")):
+            if jf.is_file():
+                vm_judges.scrub_log_file_in_place(jf)
+for lf in (extract_dir / "logs").glob("*.log"):
+    vm_judges.scrub_log_file_in_place(lf)
+
+claim_hashes = vm_judges.collect_claim_ngram_sha256s(items_file)
+for extra_item_src in (raw_anchor_file, raw_p0a_file, raw_counted_file):
+    if extra_item_src:
+        ep = Path(extra_item_src)
+        if ep.is_file():
+            claim_hashes.update(vm_judges.collect_claim_ngram_sha256s(ep))
+paths_to_check: list[Path] = [cli_log]
+for top_f in (
+    out_dir / "progress.jsonl",
+    out_dir / "status.json",
+    out_dir / "gate_status.json",
+    out_dir / "vm_receipt.json",
+    out_dir / "session_env.json",
+    out_dir / "shard_manifest.json",
+    out_dir / "boot_gatekeeper.json",
+    out_dir / "elephant_install.json",
+):
+    if top_f.is_file():
+        paths_to_check.append(top_f)
+if (out_dir / "judge_done").is_dir():
+    for jf in sorted((out_dir / "judge_done").glob("*.json")):
+        if jf.is_file():
+            paths_to_check.append(jf)
+generation_output_paths: list[Path] = []
+if (out_dir / "generations.jsonl").is_file():
+    generation_output_paths.append(out_dir / "generations.jsonl")
+for copied_sub in ("rows", "anchor_rows"):
+    copied_dir = out_dir / copied_sub
+    if copied_dir.is_dir():
+        for cf in sorted(copied_dir.glob("*.jsonl")):
+            if cf.is_file():
+                generation_output_paths.append(cf)
+
+try:
+    vm_judges.verify_rig_fetched_outputs_clean(
+        scan_paths=paths_to_check,
+        extract_dir=extract_dir,
+        private_generation_paths=generation_output_paths,
+        claim_ngram_sha256s=claim_hashes,
+    )
+except vm_judges.RefusalError as exc:
+    for q in (
+        out_dir / "result.tar.gz",
+        out_dir / "schedule.json",
+        out_dir / "generations.jsonl",
+        out_dir / "time_one_summary.json",
+        out_dir / "progress.jsonl",
+        out_dir / "session_env.json",
+        out_dir / "shard_manifest.json",
+        out_dir / "shard_manifest.json.sha256",
+        out_dir / "golden_anchor_manifest.json",
+        out_dir / "golden_anchor_manifest.json.sha256",
+        out_dir / "boot_gatekeeper.json",
+        out_dir / "boot_gatekeeper_goldens.filled.json",
+        out_dir / "elephant_install.json",
+        out_dir / ".unverified_judge_done",
+        out_dir / "p0a_report.json",
+        out_dir / "window.json",
+        out_dir / "outputs-closed.json",
+    ):
+        if q.is_file():
+            q.unlink()
+    shutil.rmtree(extract_dir, ignore_errors=True)
+    shutil.rmtree(out_dir / "rows", ignore_errors=True)
+    shutil.rmtree(out_dir / "anchor_rows", ignore_errors=True)
+    shutil.rmtree(out_dir / "judge_done", ignore_errors=True)
+    receipt_p = out_dir / "vm_receipt.json"
+    receipt_p.write_text(
+        json.dumps(
+            {
+                "status": "failed",
+                "failure_class": exc.failure_class,
+                "detail": exc.detail,
+                "quarantined_files_excluded": True,
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    raise SystemExit(f"LOG_GUARD_FAILED: {exc.failure_class}: {exc.detail}") from exc
+
+vm_judges.write_outputs_closed(out_dir)
+PY
+  then
+    RUN_WHY="rig log guard or result tar verification failed"
+    exit 2
+  fi
 }
 
 if [[ "$DRY_FLAG" == "1" ]]; then
@@ -1831,6 +2549,111 @@ PY
       check_part_manifest_beside_items "$ITEMS_FILE"
     fi
   fi
+  if [[ "${RDLAB_DRY_STAGE:-0}" == "1" ]] && [[ "$SESSION_SMOKE_FLAG" -ne 1 ]] && [[ "$MODE" != "probe" ]]; then
+    if [[ "$MODE" == "lock-check" || "$MODE" == "lock-check-stub" ]] && [[ -z "$ITEMS_FILE" ]]; then
+      ITEMS_FILE="$ANCHOR_ITEMS_FILE"
+    fi
+    if [[ -z "$ITEMS_FILE" ]] || [[ ! -f "$ITEMS_FILE" ]]; then
+      echo "ITEMS_FILE_MISSING: --items-file is required for RDLAB_DRY_STAGE=1" >&2
+      exit 2
+    fi
+    verify_lock_and_device_digests || exit $?
+    mkdir -p "$OUT_DIR" "$STAGE_DIR"
+    stage_vm_script
+    compute_kit_identity "$STAGED_VM_SCRIPT"
+    stage_window_artifacts || exit $?
+  fi
+  if [[ "$HOST" == "runpod" ]]; then
+    if [[ "$SESSION_SMOKE_FLAG" -eq 1 ]]; then
+      printf 'offrig_plan profile=%s wall_seconds=%s no_fallback=true\n' "$OFFRIG_PROFILE" "$WALL_SECONDS"
+      printf 'offrig_launch plan_id=<plan-id>\n'
+      printf 'offrig_job plan_id=<plan-id>\n'
+      printf 'offrig_shutdown plan_id=<plan-id> reason=session_smoke_ok\n'
+      exit 0
+    fi
+    if [[ "$MODE" == "probe" ]]; then
+      build_probe_env_args
+      DRY_PROBE_ENV_STR="${PROBE_ENV_ARGS[*]}"
+      {
+        printf 'offrig_plan profile=%s wall_seconds=%s no_fallback=true\n' "$OFFRIG_PROFILE" "$WALL_SECONDS"
+        printf 'offrig_launch plan_id=<plan-id>\n'
+        printf 'offrig_job plan_id=<plan-id>\n'
+        printf 'offrig_put %s %s/vm_judges.py\n' "$STAGED_VM_SCRIPT" "$VM_ROOT"
+        printf 'offrig_exec action=start name=probe %s %s/vm_judges.py --timeout=%s\n' "$DRY_PROBE_ENV_STR" "$VM_ROOT" "$EXEC_TIMEOUT_SECONDS"
+        printf 'offrig_get %s/probe.json %s/probe.json\n' "$VM_ROOT" "$OUT_DIR"
+        printf 'offrig_shutdown plan_id=<plan-id> reason=probe_ok\n'
+      } | scrub_stream
+      exit 0
+    fi
+
+    build_gate_env_args
+    DRY_GATE_ENV_STR="${GATE_ENV_ARGS[*]}"
+    if needs_opened_card_type; then
+      OPENED_CARD_TYPE="G4"
+    fi
+    OPENED_SESSION_ID="$SESSION_NAME"
+    build_exec_env_args
+    DRY_ENV_STR="${EXEC_ENV_ARGS[*]}"
+    if ! guard_forwarded_test_hooks; then
+      exit 2
+    fi
+    printf 'KIT_IDENTITY kit_head_sha=%s kit_tree_clean=%s kit_vm_judges_py_sha256=%s kit_launch_judges_sh_sha256=%s\n' \
+      "${KIT_HEAD_SHA:-null}" "${KIT_TREE_CLEAN:-null}" "${KIT_VM_JUDGES_PY_SHA256:-null}" "${KIT_LAUNCH_JUDGES_SH_SHA256:-null}" >&2
+    if [[ -n "$KIT_IDENTITY_UNAVAILABLE_REASON" ]]; then
+      printf 'KIT_IDENTITY_UNAVAILABLE recorded=null reason=%s\n' "$KIT_IDENTITY_UNAVAILABLE_REASON" >&2
+    fi
+    if ! kit_identity_gate >/dev/null; then
+      exit 2
+    fi
+
+    {
+      if [[ -n "$CONTAINER_DISK_GB" ]]; then
+        printf 'offrig_plan profile=%s wall_seconds=%s backstop_margin_seconds=%s container_disk_gb=%s no_fallback=true image=%s\n' \
+          "$OFFRIG_PROFILE" "$WALL_SECONDS" "$RUNPOD_BACKSTOP_MARGIN_SECONDS" "$CONTAINER_DISK_GB" "$RUNPOD_IMAGE_REF"
+      else
+        printf 'offrig_plan profile=%s wall_seconds=%s backstop_margin_seconds=%s no_fallback=true image=%s\n' \
+          "$OFFRIG_PROFILE" "$WALL_SECONDS" "$RUNPOD_BACKSTOP_MARGIN_SECONDS" "$RUNPOD_IMAGE_REF"
+      fi
+      printf 'offrig_launch plan_id=<plan-id>\n'
+      printf 'offrig_job plan_id=<plan-id>\n'
+      printf 'offrig_exec action=run plan_id=<plan-id> nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader,nounits\n'
+      printf 'offrig_exec action=run plan_id=<plan-id> mkdir -p %s/rdlab_items %s/rdlab_run\n' "$VM_ROOT" "$VM_ROOT"
+      printf 'offrig_put %s %s/vm_judges.py\n' "$STAGED_VM_SCRIPT" "$VM_ROOT"
+      printf 'offrig_exec action=start name=alive --env RDLAB_STEP=alive --env RDLAB_VM_ROOT=%s --env RDLAB_HOST=runpod %s/vm_judges.py --timeout=%s\n' "$VM_ROOT" "$VM_ROOT" "$ALIVE_PROBE_TIMEOUT_SECONDS"
+      printf 'offrig_exec action=start name=gate %s %s/vm_judges.py --timeout=%s\n' "$DRY_GATE_ENV_STR" "$VM_ROOT" "$GATE_TIMEOUT_SECONDS"
+      printf 'offrig_put %s %s/device.py\n' "$STAGED_DEVICE_PY" "$VM_ROOT"
+      printf 'offrig_put %s %s/repo_bundle.tar.gz\n' "$REPO_TAR" "$VM_ROOT"
+      printf 'offrig_put %s %s/receipts_bundle.tar.gz\n' "$RECEIPTS_TAR" "$VM_ROOT"
+      if [[ "$MODE" == "lock-check" ]] || [[ "$MODE" == "lock-check-stub" ]]; then
+        printf 'offrig_put %s %s/rdlab_items/anchor_items.jsonl\n' "$STAGED_ANCHOR_ITEMS_FILE" "$VM_ROOT"
+        printf 'offrig_put %s %s/rdlab_items/p0a_items.jsonl\n' "$STAGED_P0A_ITEMS_FILE" "$VM_ROOT"
+        if [[ -n "$P0A_PART_DIR" ]] && [[ -f "$P0A_PART_DIR/part.json" ]]; then
+          printf 'offrig_put %s %s/rdlab_items/p0a_part.json\n' "$STAGED_P0A_PART_JSON_FILE" "$VM_ROOT"
+          printf 'offrig_put %s %s/rdlab_items/p0a_checksums.txt\n' "$STAGED_P0A_CHECKSUMS_FILE" "$VM_ROOT"
+          printf 'offrig_put %s %s/rdlab_items/launcher_part_binding.json\n' "$STAGED_BINDING_FILE" "$VM_ROOT"
+        fi
+      else
+        printf 'offrig_put %s %s/rdlab_items/items.jsonl\n' "$STAGED_ITEMS_FILE" "$VM_ROOT"
+        if [[ "$SYNTHETIC_ITEMS_FLAG" -ne 1 ]] && [[ -n "$ITEMS_FILE" ]] && [[ -f "$(effective_part_dir "$ITEMS_FILE")/part.json" ]]; then
+          printf 'offrig_put %s %s/rdlab_items/part.json\n' "$STAGED_PART_JSON_FILE" "$VM_ROOT"
+          printf 'offrig_put %s %s/rdlab_items/checksums.txt\n' "$STAGED_PART_CHECKSUMS_FILE" "$VM_ROOT"
+          printf 'offrig_put %s %s/rdlab_items/launcher_part_binding.json\n' "$STAGED_BINDING_FILE" "$VM_ROOT"
+        fi
+      fi
+      if [[ "$EFFECTIVE_RESUME" -eq 1 ]] && [[ -f "$OUT_DIR/schedule.json" ]]; then
+        printf 'offrig_put %s %s/resume_state.tar.gz\n' "$RESUME_TAR" "$VM_ROOT"
+      fi
+      printf 'offrig_exec action=start name=run %s %s/vm_judges.py --timeout=%s\n' "$DRY_ENV_STR" "$VM_ROOT" "$EXEC_TIMEOUT_SECONDS"
+      printf 'offrig_get %s/result.tar.gz %s/result.tar.gz\n' "$VM_ROOT" "$OUT_DIR"
+      printf 'offrig_get %s/status.json %s/status.json\n' "$VM_ROOT" "$OUT_DIR"
+      printf 'offrig_get %s/gate_status.json %s/gate_status.json\n' "$VM_ROOT" "$OUT_DIR"
+      printf 'offrig_get %s/rdlab_run/vm_receipt.json %s/vm_receipt.json\n' "$VM_ROOT" "$OUT_DIR"
+      printf 'offrig_get %s/rdlab_run/progress.jsonl %s/progress.jsonl\n' "$VM_ROOT" "$OUT_DIR"
+      printf 'offrig_shutdown plan_id=<plan-id>\n'
+    } | scrub_stream
+    exit 0
+  fi
+
   if [[ "$SESSION_SMOKE_FLAG" -eq 1 ]]; then
     printf 'colab sessions\n'
     printf 'colab new -s %s\n' "$SESSION_NAME"
@@ -2052,6 +2875,9 @@ START_EPOCH="$(now_epoch_seconds)"
 OPEN_CLOCK_EPOCH="$START_EPOCH"
 
 cleanup_stage() {
+  if [[ "${DRY_FLAG:-0}" == "1" ]] && [[ "${RDLAB_DRY_STAGE:-0}" == "1" ]]; then
+    return 0
+  fi
   if [[ -n "$STAGE_DIR" ]] && [[ -d "$STAGE_DIR" ]]; then
     rm -rf "$STAGE_DIR" 2>/dev/null || true
   fi
@@ -2430,6 +3256,20 @@ write_outcome_draft() {
   RDLAB_RATE_REREAD_STATE_FILE="$RATE_REREAD_STATE" \
   RDLAB_RATE_REREADS_FILE="$RATE_REREADS_FILE" \
   RDLAB_RATE_REREAD_INTERVAL="$RATE_REREAD_SECONDS" \
+  RDLAB_OUTCOME_HOST="$HOST" \
+  RDLAB_OUTCOME_POD_ID="${RUNPOD_POD_ID:-}" \
+  RDLAB_OUTCOME_PLAN_ID="${RUNPOD_PLAN_ID:-}" \
+  RDLAB_OUTCOME_OFFRIG_PROFILE="${OFFRIG_PROFILE:-}" \
+  RDLAB_OUTCOME_WATCHDOG_DEADLINE="${RUNPOD_WATCHDOG_DEADLINE:-}" \
+  RDLAB_OUTCOME_RUNPOD_IMAGE="${RUNPOD_IMAGE_REF:-}" \
+  RDLAB_OUTCOME_RUNPOD_IMAGE_TAG="${RUNPOD_IMAGE_TAG:-}" \
+  RDLAB_OUTCOME_RUNPOD_IMAGE_DIGEST="${RUNPOD_IMAGE_DIGEST:-}" \
+  RDLAB_OUTCOME_RUNPOD_GPU="${RUNPOD_OFFRIG_GPU:-}" \
+  RDLAB_OUTCOME_RUNPOD_COST_USD="${RUNPOD_COST_USD:-}" \
+  RDLAB_OUTCOME_RUNPOD_COST_PER_HR_USD="${RUNPOD_COST_PER_HR_USD:-}" \
+  RDLAB_OUTCOME_POD_OPENED="${RUNPOD_POD_OPENED:-0}" \
+  RDLAB_OUTCOME_SHUTDOWN_DONE="${RUNPOD_SHUTDOWN_DONE:-0}" \
+  RDLAB_OUTCOME_SHUTDOWN_REASON="${RUNPOD_SHUTDOWN_REASON:-}" \
   "$PYTHON_BIN" - "$OUTCOME_FILE" "$RUN_ID" "${OPENED_CARD_TYPE:-$CARD}" "$CAP_UNITS" "$RATE_UNITS_PER_HOUR" "$WALL_SECONDS" "$EXPLICIT_CAP" "$runtime_s" "$RUN_OUTCOME" "$RUN_WHY" "$CARD" "$SHAPE" "$EXPECTED_SESSION_SHAPE" "$OPENED_SHAPE_OBS" "$stop_path_rec" "$CAP_MARGIN_UNITS" "$CLEANUP_STOP_ATTEMPTED_BY_SECONDS" "$CLEANUP_BOUND_SECONDS" "${REPO_ROOT:-}" <<'PY'
 import datetime
 import json
@@ -2533,7 +3373,25 @@ if _reread_state_raw and Path(_reread_state_raw).is_file():
         }
     except Exception as exc:  # recorded, never fatal to the outcome draft
         rate_rereads_doc = {"error": f"rate re-read state unreadable: {type(exc).__name__}"}
-if no_session_assigned:
+outcome_host = os.environ.get("RDLAB_OUTCOME_HOST", "colab").strip() or "colab"
+runpod_cost_usd_val: float | None = None
+runpod_cost_per_hr_usd = _env_float("RDLAB_OUTCOME_RUNPOD_COST_PER_HR_USD")
+if outcome_host == "runpod":
+    pod_opened_flag = os.environ.get("RDLAB_OUTCOME_POD_OPENED", "0").strip() == "1"
+    shutdown_spent_usd = _env_float("RDLAB_OUTCOME_RUNPOD_COST_USD")
+    if shutdown_spent_usd is not None:
+        runpod_cost_usd_val = round(shutdown_spent_usd, 6)
+        cost = runpod_cost_usd_val
+        cost_basis = "offrig_shutdown_spent_usd"
+    elif pod_opened_flag and runpod_cost_per_hr_usd is not None:
+        runpod_cost_usd_val = round((runtime_seconds / 3600.0) * runpod_cost_per_hr_usd, 6)
+        cost = runpod_cost_usd_val
+        cost_basis = "offrig_rate_usd_x_runtime"
+    else:
+        runpod_cost_usd_val = 0.0
+        cost = 0.0
+        cost_basis = "no_pod_opened"
+elif no_session_assigned:
     cost = 0.0
     cost_basis = "no_session_assigned"
 elif rate is not None:
@@ -2670,6 +3528,50 @@ payload: dict[str, object] = {
     "format_verified_on_real_cli": verified_flag,
     "sessions_output_shape": sessions_shape,
 }
+if outcome_host == "runpod":
+    _raw_plan_id = os.environ.get("RDLAB_OUTCOME_PLAN_ID", "").strip()
+    payload.update(
+        {
+            "venue": "runpod",
+            "host": "runpod",
+            "pod_id": os.environ.get("RDLAB_OUTCOME_POD_ID", "").strip() or None,
+            "offrig_plan_id": int(_raw_plan_id) if _raw_plan_id.isdigit() else (_raw_plan_id or None),
+            "offrig_profile": os.environ.get("RDLAB_OUTCOME_OFFRIG_PROFILE", "").strip() or None,
+            "watchdog_deadline": os.environ.get("RDLAB_OUTCOME_WATCHDOG_DEADLINE", "").strip() or None,
+            "image": {
+                "ref": os.environ.get("RDLAB_OUTCOME_RUNPOD_IMAGE", "").strip() or None,
+                "tag": os.environ.get("RDLAB_OUTCOME_RUNPOD_IMAGE_TAG", "").strip() or None,
+                "digest": os.environ.get("RDLAB_OUTCOME_RUNPOD_IMAGE_DIGEST", "").strip() or None,
+            },
+            "gpu_reported": os.environ.get("RDLAB_OUTCOME_RUNPOD_GPU", "").strip() or None,
+            "cost_usd": runpod_cost_usd_val,
+            "cost_currency": "USD",
+            "cost_per_hr_usd": runpod_cost_per_hr_usd,
+            "pod_shutdown": os.environ.get("RDLAB_OUTCOME_SHUTDOWN_DONE", "0").strip() == "1",
+            "shutdown_reason": os.environ.get("RDLAB_OUTCOME_SHUTDOWN_REASON", "").strip() or None,
+            "rate_scope": None,
+            "rate_source": None,
+            "cap": None,
+            "cap_source": None,
+            "wall_x_rate": None,
+            "binding_cap": None,
+            "cap_binds": None,
+            "cleanup_reserve_units": None,
+            "effective_trip_units": None,
+            "cap_trip_formula": None,
+            "format_verified_on_real_cli": None,
+            "sessions_output_shape": None,
+            "model_download_seconds": None,
+        }
+    )
+    _rp_receipt_file = out_path.parent / "vm_receipt.json"
+    if _rp_receipt_file.is_file():
+        try:
+            _rp_rdoc = json.loads(_rp_receipt_file.read_text(encoding="utf-8"))
+            if isinstance(_rp_rdoc, dict) and "model_download_seconds" in _rp_rdoc:
+                payload["model_download_seconds"] = _rp_rdoc.get("model_download_seconds")
+        except Exception:
+            pass
 raw_only_judges = os.environ.get("RDLAB_ONLY_JUDGES", "").strip()
 only_judges_list: list[str] | None = (
     [p for p in raw_only_judges.split(",") if p] if raw_only_judges else None
@@ -3430,6 +4332,544 @@ classify_colab_new_failure() {
   fi
 }
 
+runpod_extract_error_class() {
+  local err_text="${1:-}" fallback="${2:-OFFRIG_COMMAND_FAILED}" code=""
+  code="$(printf '%s\n' "$err_text" | sed -nE 's/^((OFFRIG|RUNPOD)_[A-Z0-9_]+):.*/\1/p' | head -n1)"
+  printf '%s\n' "${code:-$fallback}"
+}
+
+runpod_put_file() {
+  local local_path="$1" pod_path="$2" err_f rc=0 err_txt err_code
+  err_f="$(mktemp "${OUT_DIR:-/tmp}/.runpod_err.XXXXXX" 2>/dev/null || mktemp)"
+  "$PYTHON_BIN" "$OFFRIG_HOST_PY" put --project "$OFFRIG_PROJECT" --plan-id "$RUNPOD_PLAN_ID" \
+    --local "$local_path" --pod "$pod_path" </dev/null >>"$CLI_LOG" 2>"$err_f" || rc=$?
+  err_txt="$(cat "$err_f" 2>/dev/null || true)"
+  rm -f "$err_f"
+  if [[ -n "$err_txt" ]]; then
+    printf '%s\n' "$err_txt" | scrub_stream >> "$CLI_LOG"
+  fi
+  if [[ "$rc" -ne 0 ]]; then
+    err_code="$(runpod_extract_error_class "$err_txt" "OFFRIG_PUT_FAILED")"
+    RUN_FAILURE_CLASS="$err_code"
+    RUN_WHY="${err_txt:-offrig put failed for $pod_path on pod ${RUNPOD_POD_ID:-$RUNPOD_PLAN_ID} (rc=$rc)}"
+    log_msg "RUNPOD_PUT_FAILED plan_id=$RUNPOD_PLAN_ID pod_id=$RUNPOD_POD_ID pod_path=$pod_path class=$err_code rc=$rc"
+    printf '%s\n' "$RUN_WHY" >&2
+    exit "$rc"
+  fi
+}
+
+runpod_get_file_best_effort() {
+  local pod_path="$1" local_path="$2"
+  "$PYTHON_BIN" "$OFFRIG_HOST_PY" get --project "$OFFRIG_PROJECT" --plan-id "$RUNPOD_PLAN_ID" \
+    --pod "$pod_path" --local "$local_path" </dev/null >>"$CLI_LOG" 2>>"$CLI_LOG" || true
+}
+
+runpod_fetch_results_once() {
+  if [[ "$CLEANUP_SKIP_FETCH" -eq 1 ]] || [[ "$RUNPOD_POD_OPENED" -ne 1 ]] || [[ -z "$RUNPOD_PLAN_ID" ]] || [[ "$SESSION_SMOKE_FLAG" -eq 1 ]]; then
+    return 0
+  fi
+  if [[ -f "$FETCH_DONE_MARKER" ]]; then
+    FETCHED=1
+    return 0
+  fi
+  FETCHED=1
+  log_msg "FETCH_START host=runpod plan_id=$RUNPOD_PLAN_ID pod_id=$RUNPOD_POD_ID"
+  if [[ "$MODE" == "probe" ]]; then
+    runpod_get_file_best_effort "${VM_ROOT}/probe.json" "$OUT_DIR/probe.json"
+  else
+    runpod_get_file_best_effort "${VM_ROOT}/result.tar.gz" "$OUT_DIR/result.tar.gz"
+    runpod_get_file_best_effort "${VM_ROOT}/status.json" "$OUT_DIR/status.json"
+    runpod_get_file_best_effort "${VM_ROOT}/gate_status.json" "$OUT_DIR/gate_status.json"
+    runpod_get_file_best_effort "${VM_ROOT}/rdlab_run/vm_receipt.json" "$OUT_DIR/vm_receipt.json"
+    runpod_get_file_best_effort "${VM_ROOT}/rdlab_run/progress.jsonl" "$OUT_DIR/progress.jsonl"
+    if [[ ! -f "$OUT_DIR/result.tar.gz" ]]; then
+      mkdir -p "$OUT_DIR/logs"
+      runpod_get_file_best_effort "${VM_ROOT}/rdlab_run/logs/vm.log" "$OUT_DIR/logs/vm.log"
+    fi
+    "$PYTHON_BIN" - "$REPO_ROOT" "$OUT_DIR" >/dev/null 2>&1 <<'PY' || true
+import sys
+from pathlib import Path
+
+repo_root = Path(sys.argv[1])
+out_dir = Path(sys.argv[2])
+sys.path.insert(0, str(repo_root / "src"))
+sys.path.insert(0, str(repo_root / "scripts" / "colab"))
+import vm_judges
+
+for name in ("progress.jsonl", "status.json", "gate_status.json", "vm_receipt.json", "logs/vm.log"):
+    p = out_dir / name
+    if p.is_file():
+        vm_judges.scrub_log_file_in_place(p)
+PY
+  fi
+  log_msg "FETCH_DONE host=runpod plan_id=$RUNPOD_PLAN_ID pod_id=$RUNPOD_POD_ID"
+  touch "$FETCH_DONE_MARKER"
+}
+
+runpod_shutdown_pod() {
+  local req_reason="${1:-cleanup_trap}" eff_reason attempt=1 rc=0 out="" err_f err_txt="" spent=""
+  if [[ -z "$RUNPOD_PLAN_ID" ]] || [[ "$RUNPOD_SHUTDOWN_DONE" -eq 1 ]]; then
+    return 0
+  fi
+  eff_reason="$req_reason"
+  if [[ -n "$DEADLINE_MARKER" ]] && [[ -f "$DEADLINE_MARKER" ]]; then
+    eff_reason="wall_timeout"
+  elif [[ "$RUN_WHY" == *"interrupted by signal"* ]]; then
+    eff_reason="sigterm_interrupt"
+  fi
+  while (( attempt <= STOP_ATTEMPTS )); do
+    rc=0
+    out=""
+    err_f="$(mktemp "${OUT_DIR:-/tmp}/.runpod_down.XXXXXX" 2>/dev/null || mktemp)"
+    log_msg "RUNPOD_SHUTDOWN_ATTEMPT attempt=${attempt}/${STOP_ATTEMPTS} plan_id=$RUNPOD_PLAN_ID pod_id=$RUNPOD_POD_ID reason=$eff_reason"
+    out="$("$PYTHON_BIN" "$OFFRIG_HOST_PY" shutdown --project "$OFFRIG_PROJECT" --plan-id "$RUNPOD_PLAN_ID" --reason "$eff_reason" </dev/null 2>"$err_f")" || rc=$?
+    err_txt="$(cat "$err_f" 2>/dev/null || true)"
+    rm -f "$err_f"
+    if [[ -n "$err_txt" ]]; then
+      printf '%s\n' "$err_txt" | scrub_stream >> "$CLI_LOG"
+    fi
+    if [[ -n "$out" ]]; then
+      printf '%s\n' "$out" | scrub_stream >> "$CLI_LOG"
+    fi
+    if [[ "$rc" -eq 0 ]]; then
+      spent="$("$PYTHON_BIN" - "$out" <<'PY' 2>/dev/null || true
+import json
+import sys
+
+try:
+    doc = json.loads(sys.argv[1])
+except Exception:
+    raise SystemExit(0)
+val = doc.get("spent") if isinstance(doc, dict) else None
+if isinstance(val, (int, float)):
+    print(f"{float(val):.6f}")
+PY
+)"
+      if [[ -n "$spent" ]]; then
+        RUNPOD_COST_USD="$spent"
+      fi
+      RUNPOD_SHUTDOWN_DONE=1
+      RUNPOD_SHUTDOWN_REASON="$eff_reason"
+      STOPPED=1
+      touch "$OUT_DIR/.rig_stopped" "$STOP_COMPLETED_MARKER"
+      log_msg "RUNPOD_SHUTDOWN_COMPLETED attempt=${attempt}/${STOP_ATTEMPTS} plan_id=$RUNPOD_PLAN_ID pod_id=$RUNPOD_POD_ID reason=$eff_reason spent_usd=${RUNPOD_COST_USD:-unknown}"
+      return 0
+    fi
+    log_msg "RUNPOD_SHUTDOWN_FAILED attempt=${attempt}/${STOP_ATTEMPTS} plan_id=$RUNPOD_PLAN_ID pod_id=$RUNPOD_POD_ID rc=$rc"
+    attempt=$(( attempt + 1 ))
+  done
+  RUNPOD_SHUTDOWN_DONE=1
+  RUNPOD_SHUTDOWN_REASON="$eff_reason"
+  STOPPED=1
+  touch "$OUT_DIR/.rig_stopped" "$STOP_EXHAUSTED_MARKER"
+  RUN_OUTCOME="failed"
+  if [[ -z "$RUN_FAILURE_CLASS" ]]; then
+    RUN_FAILURE_CLASS="$(runpod_extract_error_class "$err_txt" "OFFRIG_SHUTDOWN_FAILED")"
+  fi
+  RUN_WHY="${err_txt:-offrig shutdown failed after ${STOP_ATTEMPTS} attempts on plan $RUNPOD_PLAN_ID (rc=$rc)}"
+  printf '%s\n' "$RUN_WHY" >&2
+  return 1
+}
+
+runpod_open_pod() {
+  local note_text="$1" check_err check_rc=0 plan_out plan_err plan_rc=0 plan_f_err
+  local launch_out_f launch_err_f launch_rc=0 launch_txt err_code
+  local -a plan_args=() launch_fields=()
+
+  check_err="$("$PYTHON_BIN" "$OFFRIG_HOST_PY" check-bin </dev/null 2>&1)" || check_rc=$?
+  if [[ "$check_rc" -ne 0 ]]; then
+    RUN_FAILURE_CLASS="$(runpod_extract_error_class "$check_err" "OFFRIG_NOT_FOUND")"
+    RUN_WHY="${check_err:-OFFRIG_NOT_FOUND: offrig-mcp binary not found}"
+    log_msg "RUNPOD_BIN_MISSING class=$RUN_FAILURE_CLASS detail=$RUN_WHY"
+    printf '%s\n' "$RUN_WHY" >&2
+    exit 2
+  fi
+  log_msg "RUNPOD_BIN_OK bin=$check_err"
+
+  plan_args=(
+    plan
+    --project "$OFFRIG_PROJECT"
+    --profile "$OFFRIG_PROFILE"
+    --wall-seconds "$WALL_SECONDS"
+    --backstop-margin-seconds "$RUNPOD_BACKSTOP_MARGIN_SECONDS"
+    --note "$note_text"
+  )
+  if [[ -n "$CONTAINER_DISK_GB" ]]; then
+    plan_args+=(--container-disk-gb "$CONTAINER_DISK_GB")
+  fi
+  plan_f_err="$(mktemp "${OUT_DIR:-/tmp}/.runpod_plan_err.XXXXXX" 2>/dev/null || mktemp)"
+  plan_out="$("$PYTHON_BIN" "$OFFRIG_HOST_PY" "${plan_args[@]}" </dev/null 2>"$plan_f_err")" || plan_rc=$?
+  plan_err="$(cat "$plan_f_err" 2>/dev/null || true)"
+  rm -f "$plan_f_err"
+  if [[ -n "$plan_err" ]]; then
+    printf '%s\n' "$plan_err" | scrub_stream >> "$CLI_LOG"
+  fi
+  if [[ "$plan_rc" -ne 0 ]]; then
+    err_code="$(runpod_extract_error_class "$plan_err" "OFFRIG_PLAN_FAILED")"
+    RUN_FAILURE_CLASS="$err_code"
+    RUN_WHY="${plan_err:-offrig plan failed (rc=$plan_rc)}"
+    log_msg "RUNPOD_PLAN_FAILED class=$err_code rc=$plan_rc"
+    printf '%s\n' "$RUN_WHY" >&2
+    exit 2
+  fi
+  printf '%s\n' "$plan_out" | scrub_stream >> "$CLI_LOG"
+  RUNPOD_PLAN_ID="$("$PYTHON_BIN" - "$plan_out" <<'PY'
+import json
+import sys
+
+doc = json.loads(sys.argv[1])
+print(doc["plan_id"])
+PY
+)"
+  log_msg "RUNPOD_PLAN_CREATED plan_id=$RUNPOD_PLAN_ID profile=$OFFRIG_PROFILE wall_s=$WALL_SECONDS backstop_margin_s=$RUNPOD_BACKSTOP_MARGIN_SECONDS"
+
+  launch_out_f="$(mktemp "${OUT_DIR:-/tmp}/.runpod_launch.XXXXXX" 2>/dev/null || mktemp)"
+  launch_err_f="$(mktemp "${OUT_DIR:-/tmp}/.runpod_launch_err.XXXXXX" 2>/dev/null || mktemp)"
+  RUNPOD_LAUNCH_STARTED=1
+  "$PYTHON_BIN" "$OFFRIG_HOST_PY" launch-and-wait \
+    --project "$OFFRIG_PROJECT" \
+    --plan-id "$RUNPOD_PLAN_ID" \
+    --poll-interval "$RUNPOD_POLL_INTERVAL" \
+    --timeout-seconds "$RUNPOD_LAUNCH_TIMEOUT_SECONDS" </dev/null >"$launch_out_f" 2>"$launch_err_f" &
+  EXEC_PID="$!"
+  printf '%s\n' "$EXEC_PID" > "$EXEC_PID_FILE"
+  wait "$EXEC_PID" 2>/dev/null || launch_rc=$?
+  EXEC_PID=""
+  rm -f "$EXEC_PID_FILE"
+  launch_txt="$(cat "$launch_out_f" 2>/dev/null || true)"
+  plan_err="$(cat "$launch_err_f" 2>/dev/null || true)"
+  rm -f "$launch_out_f" "$launch_err_f"
+  if [[ -n "$plan_err" ]]; then
+    printf '%s\n' "$plan_err" | scrub_stream >> "$CLI_LOG"
+  fi
+  if [[ -n "$launch_txt" ]]; then
+    printf '%s\n' "$launch_txt" | scrub_stream >> "$CLI_LOG"
+  fi
+  if [[ "$launch_rc" -ne 0 ]]; then
+    RUNPOD_LAUNCH_STARTED=0
+    err_code="$(runpod_extract_error_class "$plan_err" "OFFRIG_LAUNCH_FAILED")"
+    if [[ "$err_code" == "OFFRIG_JOB_FAILED" ]]; then
+      RUNPOD_POD_OPENED=1
+    fi
+    RUN_FAILURE_CLASS="$err_code"
+    RUN_WHY="${plan_err:-offrig launch-and-wait failed for plan $RUNPOD_PLAN_ID (rc=$launch_rc)}"
+    log_msg "RUNPOD_LAUNCH_FAILED plan_id=$RUNPOD_PLAN_ID class=$err_code rc=$launch_rc"
+    printf '%s\n' "$RUN_WHY" >&2
+    exit 2
+  fi
+  RUNPOD_LAUNCH_INFO_JSON="$launch_txt"
+  mapfile -t launch_fields < <("$PYTHON_BIN" - "$launch_txt" <<'PY'
+import json
+import sys
+
+doc = json.loads(sys.argv[1])
+print(doc.get("pod_id") or "")
+print(doc.get("gpu") or "")
+cph = doc.get("cost_per_hr")
+print("" if cph is None else f"{float(cph):.6f}")
+print(doc.get("deadline") or "")
+PY
+)
+  RUNPOD_POD_ID="${launch_fields[0]:-}"
+  RUNPOD_OFFRIG_GPU="${launch_fields[1]:-}"
+  RUNPOD_COST_PER_HR_USD="${launch_fields[2]:-}"
+  RUNPOD_WATCHDOG_DEADLINE="${launch_fields[3]:-}"
+  RUNPOD_POD_OPENED=1
+  RUNPOD_LAUNCH_STARTED=0
+  OPENED_SESSION_ID="$RUNPOD_POD_ID"
+  OPEN_CLOCK_EPOCH="$(now_epoch_seconds)"
+  START_EPOCH="$OPEN_CLOCK_EPOCH"
+  log_msg "RUNPOD_POD_OPENED plan_id=$RUNPOD_PLAN_ID pod_id=$RUNPOD_POD_ID gpu=${RUNPOD_OFFRIG_GPU:-unknown} cost_per_hr_usd=${RUNPOD_COST_PER_HR_USD:-unknown} deadline=${RUNPOD_WATCHDOG_DEADLINE:-none}"
+}
+
+run_runpod_session_smoke() {
+  log_msg "RUNPOD_SESSION_SMOKE_START id=$RUN_ID profile=$OFFRIG_PROFILE"
+  runpod_open_pod "rdlab-$RUN_ID-session-smoke"
+  runpod_shutdown_pod "session_smoke_ok" || exit 1
+  RUN_OUTCOME="ok"
+  RUN_WHY="completed RunPod session-smoke check for pod $RUNPOD_POD_ID"
+  log_msg "SESSION_SMOKE_OK id=$RUN_ID host=runpod pod_id=$RUNPOD_POD_ID"
+  exit 0
+}
+
+run_runpod_probe() {
+  local probe_rc=0
+  log_msg "RUNPOD_PROBE_START id=$RUN_ID profile=$OFFRIG_PROFILE wall_s=$WALL_SECONDS"
+  runpod_open_pod "rdlab-$RUN_ID-probe"
+  local mkdir_cmd
+  mkdir_cmd="$("$PYTHON_BIN" -c 'import shlex, sys; r = sys.argv[1]; print("mkdir -p", shlex.quote(r), shlex.quote(r + "/rdlab_items"), shlex.quote(r + "/rdlab_run"))' "$VM_ROOT")"
+  "$PYTHON_BIN" "$OFFRIG_HOST_PY" exec-run --project "$OFFRIG_PROJECT" --plan-id "$RUNPOD_PLAN_ID" --command "$mkdir_cmd" --timeout-secs 30 </dev/null >>"$CLI_LOG" 2>>"$CLI_LOG" || {
+    RUN_FAILURE_CLASS="OFFRIG_EXEC_FAILED"
+    RUN_WHY="failed to create $VM_ROOT directories on pod $RUNPOD_POD_ID"
+    printf '%s\n' "$RUN_WHY" >&2
+    exit 2
+  }
+  runpod_put_file "$STAGED_VM_SCRIPT" "${VM_ROOT}/vm_judges.py"
+  build_probe_env_args
+  : > "$PROBE_EXEC_OUT_TMP"
+  "$PYTHON_BIN" "$OFFRIG_HOST_PY" exec-vm-step \
+    --project "$OFFRIG_PROJECT" \
+    --plan-id "$RUNPOD_PLAN_ID" \
+    --job-name "probe" \
+    --vm-script "${VM_ROOT}/vm_judges.py" \
+    "${PROBE_ENV_ARGS[@]}" \
+    --timeout-seconds "$EXEC_TIMEOUT_SECONDS" \
+    --poll-interval "$RUNPOD_POLL_INTERVAL" </dev/null >"$PROBE_EXEC_OUT_TMP" 2>&1 9>&- &
+  EXEC_PID="$!"
+  printf '%s\n' "$EXEC_PID" > "$EXEC_PID_FILE"
+  wait "$EXEC_PID" 2>/dev/null || probe_rc=$?
+  EXEC_PID=""
+  rm -f "$EXEC_PID_FILE"
+  cleanup_stage
+  if [[ -f "$PROBE_EXEC_OUT_TMP" ]]; then
+    scrub_stream < "$PROBE_EXEC_OUT_TMP" >> "$CLI_LOG" 2>/dev/null || true
+    rm -f "$PROBE_EXEC_OUT_TMP" 2>/dev/null || true
+  fi
+  if [[ "$probe_rc" -eq 124 || "$probe_rc" -eq 137 ]]; then
+    touch "$DEADLINE_MARKER"
+  fi
+  runpod_fetch_results_once
+  runpod_shutdown_pod "probe_done" || exit 1
+  if [[ "$probe_rc" -eq 124 || "$probe_rc" -eq 137 ]]; then
+    RUN_WHY="wall-clock timeout exceeded (${WALL_SECONDS}s)"
+    exit "$probe_rc"
+  fi
+  if [[ "$probe_rc" -ne 0 ]]; then
+    RUN_WHY="runpod probe exited non-zero ($probe_rc)"
+    exit "$probe_rc"
+  fi
+  if [[ ! -f "$OUT_DIR/probe.json" ]]; then
+    RUN_WHY="probe.json missing after RunPod probe"
+    exit 1
+  fi
+  if ! "$PYTHON_BIN" - "$REPO_ROOT" "$OUT_DIR/probe.json" "$CLI_LOG" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+repo_root = Path(sys.argv[1])
+probe_path = Path(sys.argv[2])
+cli_log = Path(sys.argv[3])
+sys.path.insert(0, str(repo_root / "src"))
+sys.path.insert(0, str(repo_root / "scripts" / "colab"))
+import vm_judges
+
+vm_judges.scrub_log_file_in_place(probe_path)
+vm_judges.scrub_log_file_in_place(cli_log)
+data = json.loads(probe_path.read_text(encoding="utf-8"))
+if data.get("step") != "probe":
+    raise SystemExit("PROBE_INVALID: step != probe")
+vm_judges.verify_rig_logs_and_outputs_clean([probe_path, cli_log], claim_ngram_sha256s=set())
+PY
+  then
+    RUN_WHY="probe.json verification or log guard failed"
+    exit 2
+  fi
+  RUN_OUTCOME="probe"
+  RUN_WHY="completed RunPod probe for pod $RUNPOD_POD_ID"
+  log_msg "PROBE_OK id=$RUN_ID host=runpod pod_id=$RUNPOD_POD_ID"
+  exit 0
+}
+
+run_runpod_window() {
+  local vgpu_json vgpu_err vgpu_rc=0 err_code err_txt mkdir_cmd
+  local alive_ok=0 alive_attempt=0 alive_rc=0 alive_out=""
+  local gate_rc=0 gate_out="" gate_reason="" shutdown_r="run_completed"
+
+  log_msg "RUNPOD_WINDOW_START id=$RUN_ID mode=$MODE profile=$OFFRIG_PROFILE image=$RUNPOD_IMAGE_REF wall_s=$WALL_SECONDS vm_root=$VM_ROOT"
+  runpod_open_pod "rdlab-$RUN_ID-$MODE"
+
+  vgpu_err="$(mktemp "${OUT_DIR:-/tmp}/.runpod_vgpu_err.XXXXXX" 2>/dev/null || mktemp)"
+  vgpu_json="$("$PYTHON_BIN" "$OFFRIG_HOST_PY" verify-gpu \
+    --project "$OFFRIG_PROJECT" \
+    --plan-id "$RUNPOD_PLAN_ID" \
+    --offrig-gpu "$RUNPOD_OFFRIG_GPU" </dev/null 2>"$vgpu_err")" || vgpu_rc=$?
+  err_txt="$(cat "$vgpu_err" 2>/dev/null || true)"
+  rm -f "$vgpu_err"
+  if [[ -n "$err_txt" ]]; then
+    printf '%s\n' "$err_txt" | scrub_stream >> "$CLI_LOG"
+  fi
+  if [[ "$vgpu_rc" -ne 0 ]]; then
+    err_code="$(runpod_extract_error_class "$err_txt" "RUNPOD_GPU_MISMATCH")"
+    RUN_FAILURE_CLASS="$err_code"
+    RUN_WHY="${err_txt:-RunPod GPU card gate refused pod $RUNPOD_POD_ID (rc=$vgpu_rc)}"
+    log_msg "RUNPOD_GPU_GATE_REFUSED plan_id=$RUNPOD_PLAN_ID pod_id=$RUNPOD_POD_ID class=$err_code detail=$RUN_WHY"
+    printf '%s\n' "$RUN_WHY" >&2
+    exit 2
+  fi
+  RUNPOD_GPU_GATE_JSON="$vgpu_json"
+  printf '%s\n' "$vgpu_json" | scrub_stream >> "$CLI_LOG"
+  log_msg "RUNPOD_GPU_VERIFIED plan_id=$RUNPOD_PLAN_ID pod_id=$RUNPOD_POD_ID gpu=$RUNPOD_OFFRIG_GPU"
+
+  if needs_opened_card_type; then
+    OPENED_CARD_TYPE="G4"
+    log_msg "CARD_TYPE pod_id=$RUNPOD_POD_ID card_type=$OPENED_CARD_TYPE hardware=$RUNPOD_OFFRIG_GPU"
+    if [[ "$MODE" == "counted" ]]; then
+      GOLD_ERR="$("$PYTHON_BIN" - "$REPO_ROOT" "$OPENED_CARD_TYPE" <<'PY' 2>&1 >/dev/null
+import os
+import sys
+from pathlib import Path
+
+repo_root = Path(sys.argv[1])
+sys.path.insert(0, str(repo_root / "src"))
+sys.path.insert(0, str(repo_root / "scripts" / "colab"))
+import vm_judges
+
+raw = (os.environ.get("RDLAB_BOOT_GATEKEEPER_GOLDENS") or "").strip()
+try:
+    vm_judges.preflight_boot_gatekeeper_goldens(
+        mode="counted", repo_root=repo_root, goldens_path=Path(raw) if raw else None, card_type=sys.argv[2]
+    )
+except vm_judges.RefusalError as exc:
+    sys.stderr.write(f"{exc}\n")
+    raise SystemExit(2)
+PY
+)" || {
+        RUN_FAILURE_CLASS="BOOT_GATEKEEPER_GOLDEN_MISSING"
+        RUN_WHY="BOOT_GATEKEEPER_GOLDEN_MISSING on pod $RUNPOD_POD_ID (card $OPENED_CARD_TYPE): $GOLD_ERR"
+        printf '%s\n' "$RUN_WHY" >&2
+        exit 2
+      }
+    fi
+  fi
+
+  mkdir_cmd="$("$PYTHON_BIN" -c 'import shlex, sys; r = sys.argv[1]; print("mkdir -p", shlex.quote(r), shlex.quote(r + "/rdlab_items"), shlex.quote(r + "/rdlab_run"))' "$VM_ROOT")"
+  "$PYTHON_BIN" "$OFFRIG_HOST_PY" exec-run --project "$OFFRIG_PROJECT" --plan-id "$RUNPOD_PLAN_ID" --command "$mkdir_cmd" --timeout-secs 30 </dev/null >>"$CLI_LOG" 2>>"$CLI_LOG" || {
+    RUN_FAILURE_CLASS="OFFRIG_EXEC_FAILED"
+    RUN_WHY="failed to create $VM_ROOT directories on pod $RUNPOD_POD_ID"
+    printf '%s\n' "$RUN_WHY" >&2
+    exit 2
+  }
+  runpod_put_file "$STAGED_VM_SCRIPT" "${VM_ROOT}/vm_judges.py"
+
+  while (( alive_attempt < ALIVE_PROBE_MAX_TRIES )); do
+    alive_attempt=$(( alive_attempt + 1 ))
+    alive_rc=0
+    alive_out="$("$PYTHON_BIN" "$OFFRIG_HOST_PY" exec-vm-step \
+      --project "$OFFRIG_PROJECT" \
+      --plan-id "$RUNPOD_PLAN_ID" \
+      --job-name "alive" \
+      --vm-script "${VM_ROOT}/vm_judges.py" \
+      --env "RDLAB_STEP=alive" \
+      --env "RDLAB_VM_ROOT=$VM_ROOT" \
+      --env "RDLAB_HOST=$HOST" \
+      --timeout-seconds "$ALIVE_PROBE_TIMEOUT_SECONDS" \
+      --poll-interval "$RUNPOD_POLL_INTERVAL" </dev/null 2>&1 | scrub_stream | tee -a "$CLI_LOG")" || alive_rc=$?
+    if [[ "$alive_rc" -eq 0 ]] && printf '%s\n' "$alive_out" | grep -q '^VM_ALIVE_OK'; then
+      alive_ok=1
+      log_msg "ALIVE_PROBE_OK host=runpod pod_id=$RUNPOD_POD_ID attempt=${alive_attempt}/${ALIVE_PROBE_MAX_TRIES}"
+      break
+    fi
+    log_msg "ALIVE_PROBE_RETRY host=runpod pod_id=$RUNPOD_POD_ID attempt=${alive_attempt}/${ALIVE_PROBE_MAX_TRIES} rc=$alive_rc"
+    if (( alive_attempt < ALIVE_PROBE_MAX_TRIES )); then
+      sleep "$ALIVE_PROBE_SLEEP_SECONDS"
+    fi
+  done
+  if [[ "$alive_ok" -ne 1 ]]; then
+    RUN_FAILURE_CLASS="VM_ALIVE_FAILED"
+    RUN_WHY="VM alive probe failed on RunPod pod $RUNPOD_POD_ID after ${ALIVE_PROBE_MAX_TRIES} attempts"
+    printf '%s\n' "$RUN_WHY" >&2
+    exit 2
+  fi
+
+  build_gate_env_args
+  gate_out="$("$PYTHON_BIN" "$OFFRIG_HOST_PY" exec-vm-step \
+    --project "$OFFRIG_PROJECT" \
+    --plan-id "$RUNPOD_PLAN_ID" \
+    --job-name "gate" \
+    --vm-script "${VM_ROOT}/vm_judges.py" \
+    "${GATE_ENV_ARGS[@]}" \
+    --timeout-seconds "$GATE_TIMEOUT_SECONDS" \
+    --poll-interval "$RUNPOD_POLL_INTERVAL" </dev/null 2>&1 | scrub_stream | tee -a "$CLI_LOG")" || gate_rc=$?
+  if [[ "$gate_rc" -ne 0 ]] || ! printf '%s\n' "$gate_out" | grep -q '^VM_GATE_OK'; then
+    if printf '%s\n' "$gate_out" | grep -Eq 'VM_DISK_INSUFFICIENT|VM_PYTHON_UNAVAILABLE|VM_PYTHON_INSTALL_FAILED|PYTHON_ARCHIVE_TOO_LARGE|PYTHON_INSTALL_TIMEOUT|PYTHON_ARCHIVE_SHA256_MISMATCH|PYTHON_BUILD_CHANGED|UV_VERSION_CHANGED|PINNED_UV_DOWNLOAD_FAILED|PINNED_UV_SIZE_MISMATCH|PINNED_UV_SHA256_MISMATCH|PINNED_UV_BAD_MEMBER|PINNED_UV_VERSION_MISMATCH|FORCE_PINNED_UV_INVALID|VM_ITEMS_DIR_UNAVAILABLE|FORBIDDEN_STORAGE_PATH|DEVICE_INDEX_CHECK_FAILED|BAKEOFF_JUDGE_DEVICE_INVALID'; then
+      gate_reason="$(printf '%s\n' "$gate_out" | grep -m1 -E 'VM_DISK_INSUFFICIENT|VM_PYTHON_UNAVAILABLE|VM_PYTHON_INSTALL_FAILED|PYTHON_ARCHIVE_TOO_LARGE|PYTHON_INSTALL_TIMEOUT|PYTHON_ARCHIVE_SHA256_MISMATCH|PYTHON_BUILD_CHANGED|UV_VERSION_CHANGED|PINNED_UV_DOWNLOAD_FAILED|PINNED_UV_SIZE_MISMATCH|PINNED_UV_SHA256_MISMATCH|PINNED_UV_BAD_MEMBER|PINNED_UV_VERSION_MISMATCH|FORCE_PINNED_UV_INVALID|VM_ITEMS_DIR_UNAVAILABLE|FORBIDDEN_STORAGE_PATH|DEVICE_INDEX_CHECK_FAILED|BAKEOFF_JUDGE_DEVICE_INVALID' || true)"
+      RUN_FAILURE_CLASS="VM_GATE_REFUSED"
+      RUN_WHY="VM gate refused on pod $RUNPOD_POD_ID: $gate_reason"
+      printf '%s\n' "$gate_reason" >&2
+      exit 2
+    fi
+    RUN_FAILURE_CLASS="VM_GATE_REFUSED"
+    RUN_WHY="VM gate failed on pod $RUNPOD_POD_ID (rc=$gate_rc)"
+    printf '%s\n' "$RUN_WHY" >&2
+    exit 1
+  fi
+
+  rm -rf "$DEADLINE_MARKER" "$COST_CAP_MARKER" "$FETCH_CLAIM_DIR" "$FETCH_DONE_MARKER" "$RUN_END_DETECTED_MARKER" "$EXEC_OUT_TMP" "$OUT_DIR/.rig_stopped" "$OUT_DIR/status.json" "$OUT_DIR/gate_status.json" "$OUT_DIR"/progress.jsonl.tmp.*
+  if [[ "$EFFECTIVE_RESUME" -ne 1 ]]; then
+    rm -f "$OUT_DIR/progress.jsonl"
+  fi
+  touch "$WATCHDOG_ARMED_MARKER"
+
+  runpod_put_file "$STAGED_DEVICE_PY" "${VM_ROOT}/device.py"
+  runpod_put_file "$REPO_TAR" "${VM_ROOT}/repo_bundle.tar.gz"
+  runpod_put_file "$RECEIPTS_TAR" "${VM_ROOT}/receipts_bundle.tar.gz"
+  if [[ "$MODE" == "lock-check" ]] || [[ "$MODE" == "lock-check-stub" ]]; then
+    runpod_put_file "$STAGED_ANCHOR_ITEMS_FILE" "${VM_ROOT}/rdlab_items/anchor_items.jsonl"
+    runpod_put_file "$STAGED_P0A_ITEMS_FILE" "${VM_ROOT}/rdlab_items/p0a_items.jsonl"
+    if [[ -f "$STAGED_P0A_PART_JSON_FILE" ]]; then
+      runpod_put_file "$STAGED_P0A_PART_JSON_FILE" "${VM_ROOT}/rdlab_items/p0a_part.json"
+      runpod_put_file "$STAGED_P0A_CHECKSUMS_FILE" "${VM_ROOT}/rdlab_items/p0a_checksums.txt"
+    fi
+  else
+    runpod_put_file "$STAGED_ITEMS_FILE" "${VM_ROOT}/rdlab_items/items.jsonl"
+    if [[ -f "$STAGED_PART_JSON_FILE" ]]; then
+      runpod_put_file "$STAGED_PART_JSON_FILE" "${VM_ROOT}/rdlab_items/part.json"
+      runpod_put_file "$STAGED_PART_CHECKSUMS_FILE" "${VM_ROOT}/rdlab_items/checksums.txt"
+    fi
+  fi
+  if [[ -f "$STAGED_BINDING_FILE" ]]; then
+    runpod_put_file "$STAGED_BINDING_FILE" "${VM_ROOT}/rdlab_items/launcher_part_binding.json"
+  fi
+  if [[ "$EFFECTIVE_RESUME" -eq 1 ]] && [[ -f "$RESUME_TAR" ]]; then
+    runpod_put_file "$RESUME_TAR" "${VM_ROOT}/resume_state.tar.gz"
+  fi
+
+  build_exec_env_args
+  EXEC_RC=0
+  : > "$EXEC_OUT_TMP"
+  "$PYTHON_BIN" "$OFFRIG_HOST_PY" exec-vm-step \
+    --project "$OFFRIG_PROJECT" \
+    --plan-id "$RUNPOD_PLAN_ID" \
+    --job-name "run" \
+    --vm-script "${VM_ROOT}/vm_judges.py" \
+    "${EXEC_ENV_ARGS[@]}" \
+    --timeout-seconds "$EXEC_TIMEOUT_SECONDS" \
+    --poll-interval "$RUNPOD_POLL_INTERVAL" </dev/null >"$EXEC_OUT_TMP" 2>&1 9>&- &
+  EXEC_PID="$!"
+  printf '%s\n' "$EXEC_PID" > "$EXEC_PID_FILE"
+  wait "$EXEC_PID" 2>/dev/null || EXEC_RC=$?
+  EXEC_PID=""
+  rm -f "$EXEC_PID_FILE"
+  cleanup_stage
+  if [[ -f "$EXEC_OUT_TMP" ]]; then
+    err_txt="$(cat "$EXEC_OUT_TMP" 2>/dev/null || true)"
+    scrub_stream < "$EXEC_OUT_TMP" >> "$CLI_LOG" 2>/dev/null || true
+    rm -f "$EXEC_OUT_TMP" 2>/dev/null || true
+  fi
+  if [[ "$EXEC_RC" -eq 124 ]] || [[ "$EXEC_RC" -eq 137 ]]; then
+    touch "$DEADLINE_MARKER"
+    shutdown_r="wall_timeout"
+  elif [[ "$EXEC_RC" -ne 0 ]]; then
+    shutdown_r="run_failed"
+  else
+    shutdown_r="run_completed"
+  fi
+  runpod_fetch_results_once
+  runpod_shutdown_pod "$shutdown_r" || exit 1
+  if [[ "$EXEC_RC" -ne 0 ]] && [[ ! -f "$OUT_DIR/status.json" ]] && [[ -z "$RUN_FAILURE_CLASS" ]]; then
+    err_code="$(runpod_extract_error_class "${err_txt:-}" "")"
+    if [[ -n "$err_code" ]]; then
+      RUN_FAILURE_CLASS="$err_code"
+    fi
+  fi
+  verify_and_close_run_outputs
+  RUN_OUTCOME="ok"
+  RUN_WHY="completed judge bake-off window in ${MODE} mode"
+  log_msg "WINDOW_OK id=$RUN_ID host=runpod pod_id=$RUNPOD_POD_ID"
+  exit 0
+}
+
 stop_all() {
   local exit_code=$? ep_from_file="" stop_rc=0 verify_rc=0 wait_w=0 max_wait_w=0
   set +e
@@ -3467,10 +4907,26 @@ stop_all() {
     scrub_stream < "$PROBE_EXEC_OUT_TMP" >> "$CLI_LOG" 2>/dev/null || true
     rm -f "$PROBE_EXEC_OUT_TMP" 2>/dev/null || true
   fi
-  if [[ "$NEW_SUCCEEDED" -eq 1 ]] && [[ -n "$S" ]] && [[ "$STOPPED" -eq 0 ]] && [[ ! -f "$OUT_DIR/.rig_stopped" ]]; then
+  if [[ "$HOST" == "runpod" ]]; then
+    if [[ "$RUNPOD_LAUNCH_STARTED" -eq 1 ]] && { [[ "$exit_code" -eq 143 ]] || [[ "$exit_code" -eq 130 ]]; }; then
+      RUNPOD_POD_OPENED=1
+    fi
+    if [[ -n "$RUNPOD_PLAN_ID" ]] && [[ "$RUNPOD_POD_OPENED" -eq 1 ]]; then
+      if [[ "$FETCHED" -ne 1 ]] && [[ "$SESSION_SMOKE_FLAG" -ne 1 ]]; then
+        runpod_fetch_results_once || true
+      fi
+      if [[ "$RUNPOD_SHUTDOWN_DONE" -ne 1 ]]; then
+        STOP_PATH="trap"
+        printf 'trap\n' > "$STOP_PATH_FILE"
+        if ! runpod_shutdown_pod "${RUNPOD_SHUTDOWN_REASON:-cleanup_trap}"; then
+          exit_code=1
+        fi
+      fi
+    fi
+  elif [[ "$NEW_SUCCEEDED" -eq 1 ]] && [[ -n "$S" ]] && [[ "$STOPPED" -eq 0 ]] && [[ ! -f "$OUT_DIR/.rig_stopped" ]]; then
     fetch_results_once "$WATCHDOG_FETCH_TIMEOUT"
   fi
-  if [[ "$NEW_SUCCEEDED" -eq 1 ]] && [[ -n "$S" ]]; then
+  if [[ "$HOST" == "colab" ]] && [[ "$NEW_SUCCEEDED" -eq 1 ]] && [[ -n "$S" ]]; then
     if mkdir "$STOP_CLAIM_DIR" 2>/dev/null; then
       STOP_PATH="trap"
       printf 'trap\n' > "$STOP_PATH_FILE"
@@ -3538,6 +4994,9 @@ trap stop_all EXIT
 trap 'on_interrupt_signal' TERM INT
 
 if [[ "$SESSION_SMOKE_FLAG" -eq 1 ]]; then
+  if [[ "$HOST" == "runpod" ]]; then
+    run_runpod_session_smoke
+  fi
   log_msg "SESSION_SMOKE_START id=$RUN_ID session=$SESSION_NAME card=$CARD"
   mkdir -p "$(dirname "$OPEN_LOCK")"
   exec 9>"$OPEN_LOCK"
@@ -3612,6 +5071,9 @@ if [[ "$MODE" == "probe" ]]; then
   for hf_var in $(compgen -e | grep -E '^(HF_TOKEN(_[A-Za-z0-9_]+)?|HUGGING_FACE_HUB_TOKEN)$' || true); do
     unset "$hf_var"
   done
+  if [[ "$HOST" == "runpod" ]]; then
+    run_runpod_probe
+  fi
   log_msg "PROBE_START id=$RUN_ID session=$SESSION_NAME card=$CARD wall_s=$WALL_SECONDS vm_wall_s=$VM_WALL_SECONDS exec_timeout_s=$EXEC_TIMEOUT_SECONDS rig_timeout_s=$RIG_TIMEOUT rate_uh=$RATE_UNITS_PER_HOUR cap_units=$CAP_UNITS"
   mkdir -p "$(dirname "$OPEN_LOCK")"
   exec 9>"$OPEN_LOCK"
@@ -3934,300 +5396,30 @@ PY
   fi
 fi
 
-if [[ -z "$RECEIPTS_DIR" ]] || [[ ! -d "$RECEIPTS_DIR" ]]; then
-  RUN_WHY="RDLAB_RECEIPTS_DIR or --receipts-dir is missing"
-  echo "RECEIPTS_DIR_MISSING: RDLAB_RECEIPTS_DIR must point to the weight sha256 receipts directory" >&2
-  exit 2
-fi
+verify_lock_and_device_digests || exit $?
+stage_window_artifacts || exit $?
 
-if ! "$PYTHON_BIN" - "$REPO_ROOT" "$EXPECTED_JUDGE_LOCK_SHA256" "$EXPECTED_D3_LOCK_SHA256" "$EXPECTED_VLLM_LOCK_SHA256" "$EXPECTED_DEVICE_PY_SHA256" <<'PY'
-import os
-import sys
-from pathlib import Path
-
-repo_root = Path(sys.argv[1])
-exp_judge = sys.argv[2]
-exp_d3 = sys.argv[3]
-exp_vllm = sys.argv[4]
-exp_dev = sys.argv[5]
-sys.path.insert(0, str(repo_root / "src"))
-sys.path.insert(0, str(repo_root / "scripts" / "colab"))
-import vm_judges
-
-vm_judges.verify_lock_digests(
-    repo_root / "scripts" / "colab" / "locks" / "judge.lock.txt",
-    repo_root / "scripts" / "colab" / "locks" / "d3.lock.txt",
-    env_judge_sha256=os.environ.get("RDLAB_JUDGE_LOCK_SHA256"),
-    env_d3_sha256=os.environ.get("RDLAB_D3_LOCK_SHA256"),
-    expected_judge_sha256=exp_judge,
-    expected_d3_sha256=exp_d3,
-)
-vllm_lock = repo_root / "scripts" / "colab" / "locks" / "vllm.lock.txt"
-if vllm_lock.is_file():
-    vm_judges.verify_vllm_lock(
-        vllm_lock,
-        env_vllm_sha256=os.environ.get("RDLAB_VLLM_LOCK_SHA256"),
-        expected_vllm_sha256=exp_vllm,
-    )
-vm_judges.verify_device_py_digest(
-    repo_root / "src" / "reasoning_dataset_lab" / "pilot_b" / "device.py",
-    env_device_sha256=(
-        os.environ["RDLAB_DEVICE_PY_SHA256"]
-        if "RDLAB_DEVICE_PY_SHA256" in os.environ
-        else exp_dev
-    ),
-    expected_device_sha256=exp_dev,
-)
-PY
-then
-  RUN_WHY="lock file or device.py SHA-256 verification failed before session open"
-  exit 2
-fi
-
-mkdir -p "$STAGE_DIR"
-# Part files left in the stage dir by an earlier, interrupted launch must never be uploaded for this one.
-rm -f "$STAGED_PART_JSON_FILE" "$STAGED_PART_CHECKSUMS_FILE" "$STAGED_P0A_PART_JSON_FILE" "$STAGED_P0A_CHECKSUMS_FILE" "$STAGED_BINDING_FILE" "$RIG_BINDING_FILE"
-if ! "$PYTHON_BIN" - "$REPO_ROOT" "$ITEMS_FILE" "$STAGED_ITEMS_FILE" "$RECEIPTS_DIR" "$RECEIPTS_TAR" "$REPO_TAR" "$STAGED_DEVICE_PY" "$GOLDEN_ANCHOR_MANIFEST" "$ANCHOR_ITEMS_FILE" "$STAGED_ANCHOR_ITEMS_FILE" "$P0A_ITEMS_FILE" "$STAGED_P0A_ITEMS_FILE" "$COUNTED_ITEMS_FILE" "$COUNTED_MANIFEST_FILE" "$STAGED_BINDING_FILE" "$MODE" "${VM_DRYRUN:-0}" "$STAGED_PART_JSON_FILE" "$STAGED_PART_CHECKSUMS_FILE" "$(effective_part_dir "$ITEMS_FILE")" "$P0A_PART_DIR" "$STAGED_P0A_PART_JSON_FILE" "$STAGED_P0A_CHECKSUMS_FILE" "$STAGED_VM_SCRIPT" "$PASS_MODE" "$SYNTHETIC_ITEMS_FLAG" <<'PY'
-import datetime
-import json
-import shutil
-import sys
-import tarfile
-from pathlib import Path
-
-repo_root = Path(sys.argv[1])
-items_src = Path(sys.argv[2])
-items_dst = Path(sys.argv[3])
-receipts_dir = Path(sys.argv[4])
-receipts_tar = Path(sys.argv[5])
-repo_tar = Path(sys.argv[6])
-device_py_dst = Path(sys.argv[7])
-raw_golden_manifest = sys.argv[8].strip() if len(sys.argv) > 8 else ""
-raw_anchor_src = sys.argv[9].strip() if len(sys.argv) > 9 else ""
-raw_anchor_dst = sys.argv[10].strip() if len(sys.argv) > 10 else ""
-raw_p0a_src = sys.argv[11].strip() if len(sys.argv) > 11 else ""
-raw_p0a_dst = sys.argv[12].strip() if len(sys.argv) > 12 else ""
-raw_counted_items = sys.argv[13].strip() if len(sys.argv) > 13 else ""
-raw_counted_manifest = sys.argv[14].strip() if len(sys.argv) > 14 else ""
-raw_binding_dst = sys.argv[15].strip() if len(sys.argv) > 15 else ""
-stage_mode = sys.argv[16].strip() if len(sys.argv) > 16 else ""
-stage_vm_dryrun = (sys.argv[17].strip() == "1") if len(sys.argv) > 17 else False
-raw_part_json_dst = sys.argv[18].strip() if len(sys.argv) > 18 else ""
-raw_part_checksums_dst = sys.argv[19].strip() if len(sys.argv) > 19 else ""
-raw_part_dir = sys.argv[20].strip() if len(sys.argv) > 20 else ""
-raw_p0a_part_dir = sys.argv[21].strip() if len(sys.argv) > 21 else ""
-raw_p0a_part_json_dst = sys.argv[22].strip() if len(sys.argv) > 22 else ""
-raw_p0a_checksums_dst = sys.argv[23].strip() if len(sys.argv) > 23 else ""
-raw_sent_vm_script = sys.argv[24].strip() if len(sys.argv) > 24 else ""
-raw_pass_mode = sys.argv[25].strip() if len(sys.argv) > 25 else ""
-stage_synthetic_items = (sys.argv[26].strip() == "1") if len(sys.argv) > 26 else False
-
-sys.path.insert(0, str(repo_root / "src"))
-sys.path.insert(0, str(repo_root / "scripts" / "colab"))
-import vm_judges
-BAKEOFF_JUDGE_SPECS = vm_judges.BAKEOFF_JUDGE_SPECS
-
-vm_judges.check_upload_path_allowed(items_src)
-if stage_synthetic_items:
-    vm_judges.verify_synthetic_items_prefix(items_src)
-else:
-    vm_judges.verify_items_allowlist(items_src)
-_ = vm_judges.collect_claim_ngram_sha256s(items_src)
-shutil.copyfile(items_src, items_dst)
-binding_record: dict = {
-    "schema_version": "1.0",
-    "checked_by": "launcher",
-    "checked_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-    "mode": stage_mode,
-    "window_part": None,
-    "p0a_part": None,
-}
-if stage_mode not in ("lock-check", "lock-check-stub") and stage_synthetic_items:
-    _ = vm_judges.preflight_part_manifest(
-        items_src,
-        mode=stage_mode,
-        dryrun=stage_vm_dryrun,
-        part_dir=None,
-        pass_mode=raw_pass_mode or None,
-        synthetic_items=True,
-        checked_by="launcher",
-    )
-elif stage_mode not in ("lock-check", "lock-check-stub") and raw_part_json_dst and raw_part_checksums_dst:
-    # The part's own part.json and checksums.txt go to the VM beside items.jsonl, checked by the same rules as
-    # check_part_manifest_beside_items first; they are copied as given, never created or rewritten.
-    from reasoning_dataset_lab.pilot_b import schema_check
-
-    part_src_dir = Path(raw_part_dir) if raw_part_dir else items_src.parent
-    identity = vm_judges.preflight_part_manifest(
-        items_src,
-        mode=stage_mode,
-        dryrun=stage_vm_dryrun,
-        part_dir=part_src_dir,
-        part_items_file=part_src_dir / "items.jsonl",
-        schema_errors=lambda doc: schema_check.validate(doc, "part"),
-        pass_mode=raw_pass_mode or None,
-    )
-    if identity is not None:
-        shutil.copyfile(part_src_dir / vm_judges.PART_JSON_FILENAME, Path(raw_part_json_dst))
-        shutil.copyfile(part_src_dir / vm_judges.PART_CHECKSUMS_FILENAME, Path(raw_part_checksums_dst))
-        binding_record["window_part"] = vm_judges.launcher_binding_entry(identity)
-if raw_anchor_src and raw_anchor_dst:
-    anchor_src = Path(raw_anchor_src)
-    vm_judges.check_upload_path_allowed(anchor_src)
-    vm_judges.verify_items_allowlist(anchor_src)
-    _ = vm_judges.collect_claim_ngram_sha256s(anchor_src)
-    shutil.copyfile(anchor_src, Path(raw_anchor_dst))
-if raw_p0a_src and raw_p0a_dst:
-    p0a_src = Path(raw_p0a_src)
-    vm_judges.check_upload_path_allowed(p0a_src)
-    vm_judges.verify_items_allowlist(p0a_src)
-    _ = vm_judges.collect_claim_ngram_sha256s(p0a_src)
-    shutil.copyfile(p0a_src, Path(raw_p0a_dst))
-    # The burned pilot's own part.json and checksums.txt go up as p0a_part.json / p0a_checksums.txt, after the same
-    # check as before the session (pinned identity, every file in checksums.txt, the projection row by row); a P0a
-    # manifest.json is never read or staged.
-    if raw_p0a_part_dir and raw_p0a_part_json_dst and raw_p0a_checksums_dst:
-        from reasoning_dataset_lab.pilot_b import schema_check as _p0a_schema
-
-        p0a_part_dir = Path(raw_p0a_part_dir)
-        p0a_identity = vm_judges.verify_p0a_pilot_part(
-            p0a_src,
-            mode=stage_mode,
-            dryrun=stage_vm_dryrun,
-            part_dir=p0a_part_dir,
-            schema_errors=lambda doc: _p0a_schema.validate(doc, "part"),
-        )
-        shutil.copyfile(p0a_part_dir / vm_judges.PART_JSON_FILENAME, Path(raw_p0a_part_json_dst))
-        shutil.copyfile(p0a_part_dir / vm_judges.PART_CHECKSUMS_FILENAME, Path(raw_p0a_checksums_dst))
-        if p0a_identity is not None:
-            binding_record["p0a_part"] = vm_judges.launcher_binding_entry(p0a_identity)
-if raw_binding_dst and (binding_record["window_part"] is not None or binding_record["p0a_part"] is not None):
-    Path(raw_binding_dst).write_text(json.dumps(binding_record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-shutil.copyfile(repo_root / "src" / "reasoning_dataset_lab" / "pilot_b" / "device.py", device_py_dst)
-
-with tarfile.open(receipts_tar, "w:gz") as tf:
-    for spec in vm_judges.receipt_tar_specs():  # the five, plus D5c judges named in RDLAB_ONLY_JUDGES
-        owner, repo = spec.repo_id.split("/", 1)
-        rname = f"{owner}__{repo}.sha256.json"
-        rpath = receipts_dir / rname
-        if not rpath.is_file():
-            raise SystemExit(f"RECEIPT_MISSING: missing {rname} in {receipts_dir}")
-        tf.add(rpath, arcname=rname, recursive=False)
-
-# The repo bundle is the git-tracked files under these paths at a clean HEAD (`git ls-files`), never the working tree:
-# a modified or untracked file there refuses REPO_TREE_DIRTY, so nothing untracked under src/ or scripts/colab is
-# ever uploaded.
-import os as _os
-tracked_files = vm_judges.tracked_repo_bundle_files(repo_root)
-raw_shard_manifest = (_os.environ.get("RDLAB_SHARD_MANIFEST") or "").strip()
-with tarfile.open(repo_tar, "w:gz") as tf:
-    for rel in tracked_files:
-        # The bundle's vm_judges.py is the staged copy `colab exec -f` sends, so the VM's re-hash compares what ran
-        # with what was recorded; kit_identity_gate runs next and refuses a counted window unless it is HEAD's.
-        if rel == vm_judges.KIT_VM_SCRIPT_RELPATH and raw_sent_vm_script:
-            tf.add(Path(raw_sent_vm_script), arcname=rel, recursive=False)
-            continue
-        tf.add(repo_root / rel, arcname=rel, recursive=False)
-    if raw_shard_manifest:
-        sm_path = Path(raw_shard_manifest)
-        if not sm_path.is_file():
-            raise SystemExit(f"SHARD_MANIFEST_INVALID: file does not exist: {sm_path}")
-        tf.add(sm_path, arcname="shard_manifest.json", recursive=False)
-    if raw_golden_manifest:
-        gm_path = Path(raw_golden_manifest)
-        if not gm_path.is_file():
-            raise SystemExit(f"GOLDEN_ANCHOR_MANIFEST_MISSING: file does not exist: {gm_path}")
-        tf.add(gm_path, arcname="golden_anchor_manifest.json", recursive=False)
-    if raw_counted_items:
-        ci_path = Path(raw_counted_items)
-        if not ci_path.is_file():
-            raise SystemExit(f"COUNTED_ITEMS_MISSING: file does not exist: {ci_path}")
-        vm_judges.check_upload_path_allowed(ci_path)
-        vm_judges.verify_items_allowlist(ci_path)
-        tf.add(ci_path, arcname="counted_items.jsonl", recursive=False)
-    if raw_counted_manifest:
-        cm_path = Path(raw_counted_manifest)
-        if not cm_path.is_file():
-            raise SystemExit(f"COUNTED_MANIFEST_MISSING: file does not exist: {cm_path}")
-        vm_judges.check_upload_path_allowed(cm_path)
-        tf.add(cm_path, arcname="counted_manifest.json", recursive=False)
-        sib_items = cm_path.parent / "items.jsonl"
-        if sib_items.is_file():
-            vm_judges.check_upload_path_allowed(sib_items)
-            vm_judges.verify_items_allowlist(sib_items)
-            tf.add(sib_items, arcname="items.jsonl", recursive=False)
-    raw_bg_goldens = (_os.environ.get("RDLAB_BOOT_GATEKEEPER_GOLDENS") or "").strip()
-    if raw_bg_goldens and not raw_bg_goldens.startswith("/content/"):
-        bg_path = Path(raw_bg_goldens)
-        if bg_path.is_file():
-            tf.add(bg_path, arcname="boot_gatekeeper_goldens.candidate.json", recursive=False)
-PY
-then
-  RUN_WHY="staging of items, receipts, or repo bundle failed on rig"
-  exit 2
-fi
-if [[ -f "$STAGED_BINDING_FILE" ]]; then
-  # The rig keeps the launcher's binding record (the stage dir is removed after upload); the outcome draft carries it.
-  cp "$STAGED_BINDING_FILE" "$RIG_BINDING_FILE"
-  BINDING_SUMMARY="$("$PYTHON_BIN" - "$RIG_BINDING_FILE" <<'PY'
-import json
-import sys
-
-doc = json.load(open(sys.argv[1], encoding="utf-8"))
-parts = []
-for key, ent in sorted(doc.items()):
-    if isinstance(ent, dict):
-        b = ent["binding"]
-        parts.append(
-            f"{key}:part_id={ent['part_id']},part_json_sha256={ent['part_json_sha256']},"
-            f"uploaded_items={b['uploaded_items']},rule={b['rule']},projection_checked={b['projection_checked']},"
-            f"pin={ent['pin']}"
-        )
-print(" ".join(parts))
-PY
-)" || BINDING_SUMMARY="unreadable"
-  log_msg "PART_BINDING_LAUNCHER record=$RIG_BINDING_FILE $BINDING_SUMMARY"
-fi
-
-if [[ "$EFFECTIVE_RESUME" -eq 1 ]] && [[ -f "$OUT_DIR/schedule.json" ]]; then
-  "$PYTHON_BIN" - "$OUT_DIR" "$RESUME_TAR" <<'PY'
-import sys
-import tarfile
-from pathlib import Path
-
-out_dir = Path(sys.argv[1])
-tar_path = Path(sys.argv[2])
-with tarfile.open(tar_path, "w:gz") as tf:
-    for exact in ("schedule.json", "generations.jsonl", "shard_manifest.json", "shard_manifest.json.sha256", "session_env.json"):
-        p = out_dir / exact
-        if p.is_file():
-            tf.add(p, arcname=exact, recursive=False)
-    for sub_dir_name, pat in (("rows", "*.jsonl"), ("anchor_rows", "*.jsonl"), ("judge_done", "*.json")):
-        sdir = out_dir / sub_dir_name
-        if sdir.is_dir():
-            for rf in sorted(sdir.glob(pat)):
-                if rf.is_file():
-                    tf.add(rf, arcname=f"{sub_dir_name}/{rf.name}", recursive=False)
-PY
-fi
-
-# Before any colab call: the VM's test-hook guard on what this launcher forwards.
+# Before any host call: the VM's test-hook guard on what this launcher forwards.
 if ! guard_forwarded_test_hooks; then
   RUN_FAILURE_CLASS="TEST_HOOK_IN_COUNTED_MODE"
-  RUN_WHY="refused before any colab call: a forwarded test hook or item limit in a real window"
+  RUN_WHY="refused before any host call: a forwarded test hook or item limit in a real window"
   exit 2
 fi
 
-# Before any colab call: a counted window records a clean kit commit, or refuses (#107).
+# Before any host call: a counted window records a clean kit commit, or refuses (#107).
 log_msg "KIT_IDENTITY kit_head_sha=${KIT_HEAD_SHA:-null} kit_tree_clean=${KIT_TREE_CLEAN:-null} kit_vm_judges_py_sha256=${KIT_VM_JUDGES_PY_SHA256:-null} kit_launch_judges_sh_sha256=${KIT_LAUNCH_JUDGES_SH_SHA256:-null}"
 if ! KIT_GATE_CLASS="$(kit_identity_gate)"; then
   RUN_FAILURE_CLASS="${KIT_GATE_CLASS:-KIT_IDENTITY_UNAVAILABLE}"
-  RUN_WHY="refused before any colab call: ${RUN_FAILURE_CLASS} (a ${MODE} window runs only a clean kit commit and HEAD's scripts)"
+  RUN_WHY="refused before any host call: ${RUN_FAILURE_CLASS} (a ${MODE} window runs only a clean kit commit and HEAD's scripts)"
   exit 2
 fi
 if [[ -n "$KIT_IDENTITY_UNAVAILABLE_REASON" ]]; then
   log_msg "KIT_IDENTITY_UNAVAILABLE recorded=null reason=$KIT_IDENTITY_UNAVAILABLE_REASON"
   printf 'KIT_IDENTITY_UNAVAILABLE: kit_head_sha and kit_tree_clean recorded as null (%s)\n' "$KIT_IDENTITY_UNAVAILABLE_REASON" >&2
+fi
+
+if [[ "$HOST" == "runpod" ]]; then
+  run_runpod_window
 fi
 
 mkdir -p "$(dirname "$OPEN_LOCK")"
@@ -4918,247 +6110,7 @@ if isinstance(doc, dict):
 PY
 fi
 
-if [[ "$EXEC_RC" -eq 124 ]] || [[ "$EXEC_RC" -eq 137 ]]; then
-  RUN_WHY="wall-clock timeout exceeded (${WALL_SECONDS}s)"
-  exit "$EXEC_RC"
-fi
-
-if [[ ! -f "$OUT_DIR/status.json" ]]; then
-  RUN_WHY="status.json missing after VM run (exec_rc=$EXEC_RC)"
-  if [[ "$EXEC_RC" -ne 0 ]]; then
-    exit "$EXEC_RC"
-  fi
-  exit 1
-fi
-
-STATUS_CHECK_OUT=""
-STATUS_CHECK_RC=0
-STATUS_CHECK_OUT="$("$PYTHON_BIN" - "$REPO_ROOT" "$OUT_DIR/status.json" <<'PY'
-import sys
-from pathlib import Path
-
-repo_root = Path(sys.argv[1])
-status_path = Path(sys.argv[2])
-sys.path.insert(0, str(repo_root / "src"))
-sys.path.insert(0, str(repo_root / "scripts" / "colab"))
-import vm_judges
-
-rc, msg = vm_judges.verify_run_status_file(status_path)
-print(msg)
-if rc != 0:
-    raise SystemExit(rc)
-PY
-)" || STATUS_CHECK_RC=$?
-
-if [[ "$STATUS_CHECK_RC" -ne 0 ]]; then
-  if [[ "$STATUS_CHECK_OUT" == stale_status\|* ]]; then
-    RUN_WHY="VM status.json is stale (${STATUS_CHECK_OUT})"
-  else
-    RUN_WHY="VM status.json reported failure (${STATUS_CHECK_OUT})"
-  fi
-  exit "$STATUS_CHECK_RC"
-fi
-
-if [[ "$EXEC_RC" -ne 0 ]]; then
-  RUN_WHY="colab exec exited non-zero ($EXEC_RC)"
-  exit "$EXEC_RC"
-fi
-
-if [[ ! -f "$OUT_DIR/result.tar.gz" ]]; then
-  RUN_WHY="result.tar.gz missing after VM run"
-  exit 1
-fi
-
-# Extract result.tar.gz, run log guard on all kept logs and outputs, and write outputs-closed.json before any key read.
-if ! "$PYTHON_BIN" - "$REPO_ROOT" "$OUT_DIR" "$ITEMS_FILE" "$CLI_LOG" "$ANCHOR_ITEMS_FILE" "$P0A_ITEMS_FILE" "$COUNTED_ITEMS_FILE" <<'PY'
-import json
-import shutil
-import sys
-import tarfile
-from pathlib import Path
-
-repo_root = Path(sys.argv[1])
-out_dir = Path(sys.argv[2])
-items_file = Path(sys.argv[3])
-cli_log = Path(sys.argv[4])
-raw_anchor_file = sys.argv[5].strip() if len(sys.argv) > 5 else ""
-raw_p0a_file = sys.argv[6].strip() if len(sys.argv) > 6 else ""
-raw_counted_file = sys.argv[7].strip() if len(sys.argv) > 7 else ""
-
-sys.path.insert(0, str(repo_root / "src"))
-sys.path.insert(0, str(repo_root / "scripts" / "colab"))
-import vm_judges
-
-tar_path = out_dir / "result.tar.gz"
-extract_dir = out_dir / "extracted"
-extract_dir.mkdir(parents=True, exist_ok=True)
-
-vm_judges.validate_tar_file(tar_path)
-with tarfile.open(tar_path, "r:*") as tf:
-    tf.extractall(extract_dir, filter="data")
-
-for rel_name in (
-    "schedule.json",
-    "generations.jsonl",
-    "time_one_summary.json",
-    "vm_receipt.json",
-    "session_env.json",
-    "shard_manifest.json",
-    "shard_manifest.json.sha256",
-    "golden_anchor_manifest.json",
-    "golden_anchor_manifest.json.sha256",
-    "boot_gatekeeper.json",
-    "boot_gatekeeper_goldens.filled.json",
-    "p0a_report.json",
-    "window.json",
-):
-    src = extract_dir / rel_name
-    if src.is_file():
-        shutil.copyfile(src, out_dir / rel_name)
-
-stub_exercise_el = False
-src_elephant_install = extract_dir / "elephant_install.json"
-if src_elephant_install.is_file():
-    try:
-        el_doc = json.loads(src_elephant_install.read_text(encoding="utf-8", errors="replace"))
-    except Exception:
-        el_doc = {}
-    if isinstance(el_doc, dict) and bool(el_doc.get("stub_exercise")):
-        stub_exercise_el = True
-        shutil.copyfile(src_elephant_install, out_dir / "elephant_install.json")
-
-src_progress = extract_dir / "progress.jsonl"
-if src_progress.is_file() and not (out_dir / "progress.jsonl").is_file():
-    shutil.copyfile(src_progress, out_dir / "progress.jsonl")
-
-for sub_name, pat in (("rows", "*.jsonl"), ("anchor_rows", "*.jsonl"), ("judge_done", "*.json")):
-    src_sub = extract_dir / sub_name
-    if src_sub.is_dir():
-        dst_sub = out_dir / sub_name
-        dst_sub.mkdir(parents=True, exist_ok=True)
-        for rf in sorted(src_sub.glob(pat)):
-            if rf.is_file():
-                shutil.copyfile(rf, dst_sub / rf.name)
-(out_dir / ".unverified_judge_done").unlink(missing_ok=True)
-
-vm_judges.scrub_log_file_in_place(cli_log)
-for extra_f in (
-    out_dir / "progress.jsonl",
-    out_dir / "status.json",
-    out_dir / "gate_status.json",
-    out_dir / "vm_receipt.json",
-    out_dir / "session_env.json",
-    out_dir / "shard_manifest.json",
-    out_dir / "boot_gatekeeper.json",
-    out_dir / "elephant_install.json",
-    extract_dir / "progress.jsonl",
-    extract_dir / "vm_receipt.json",
-    extract_dir / "session_env.json",
-    extract_dir / "shard_manifest.json",
-    extract_dir / "boot_gatekeeper.json",
-):
-    if extra_f.is_file():
-        vm_judges.scrub_log_file_in_place(extra_f)
-if stub_exercise_el and src_elephant_install.is_file():
-    vm_judges.scrub_log_file_in_place(src_elephant_install)
-for jdone_parent in (out_dir / "judge_done", extract_dir / "judge_done"):
-    if jdone_parent.is_dir():
-        for jf in sorted(jdone_parent.glob("*.json")):
-            if jf.is_file():
-                vm_judges.scrub_log_file_in_place(jf)
-for lf in (extract_dir / "logs").glob("*.log"):
-    vm_judges.scrub_log_file_in_place(lf)
-
-claim_hashes = vm_judges.collect_claim_ngram_sha256s(items_file)
-for extra_item_src in (raw_anchor_file, raw_p0a_file, raw_counted_file):
-    if extra_item_src:
-        ep = Path(extra_item_src)
-        if ep.is_file():
-            claim_hashes.update(vm_judges.collect_claim_ngram_sha256s(ep))
-paths_to_check: list[Path] = [cli_log]
-for top_f in (
-    out_dir / "progress.jsonl",
-    out_dir / "status.json",
-    out_dir / "gate_status.json",
-    out_dir / "vm_receipt.json",
-    out_dir / "session_env.json",
-    out_dir / "shard_manifest.json",
-    out_dir / "boot_gatekeeper.json",
-    out_dir / "elephant_install.json",
-):
-    if top_f.is_file():
-        paths_to_check.append(top_f)
-if (out_dir / "judge_done").is_dir():
-    for jf in sorted((out_dir / "judge_done").glob("*.json")):
-        if jf.is_file():
-            paths_to_check.append(jf)
-generation_output_paths: list[Path] = []
-if (out_dir / "generations.jsonl").is_file():
-    generation_output_paths.append(out_dir / "generations.jsonl")
-for copied_sub in ("rows", "anchor_rows"):
-    copied_dir = out_dir / copied_sub
-    if copied_dir.is_dir():
-        for cf in sorted(copied_dir.glob("*.jsonl")):
-            if cf.is_file():
-                generation_output_paths.append(cf)
-
-try:
-    vm_judges.verify_rig_fetched_outputs_clean(
-        scan_paths=paths_to_check,
-        extract_dir=extract_dir,
-        private_generation_paths=generation_output_paths,
-        claim_ngram_sha256s=claim_hashes,
-    )
-except vm_judges.RefusalError as exc:
-    # Quarantine outputs and keep files out of any receipt that leaves the rig
-    for q in (
-        out_dir / "result.tar.gz",
-        out_dir / "schedule.json",
-        out_dir / "generations.jsonl",
-        out_dir / "time_one_summary.json",
-        out_dir / "progress.jsonl",
-        out_dir / "session_env.json",
-        out_dir / "shard_manifest.json",
-        out_dir / "shard_manifest.json.sha256",
-        out_dir / "golden_anchor_manifest.json",
-        out_dir / "golden_anchor_manifest.json.sha256",
-        out_dir / "boot_gatekeeper.json",
-        out_dir / "boot_gatekeeper_goldens.filled.json",
-        out_dir / "elephant_install.json",
-        out_dir / ".unverified_judge_done",
-        out_dir / "p0a_report.json",
-        out_dir / "window.json",
-        out_dir / "outputs-closed.json",
-    ):
-        if q.is_file():
-            q.unlink()
-    shutil.rmtree(extract_dir, ignore_errors=True)
-    shutil.rmtree(out_dir / "rows", ignore_errors=True)
-    shutil.rmtree(out_dir / "anchor_rows", ignore_errors=True)
-    shutil.rmtree(out_dir / "judge_done", ignore_errors=True)
-    receipt_p = out_dir / "vm_receipt.json"
-    receipt_p.write_text(
-        json.dumps(
-            {
-                "status": "failed",
-                "failure_class": exc.failure_class,
-                "detail": exc.detail,
-                "quarantined_files_excluded": True,
-            },
-            indent=2,
-        )
-        + "\n",
-        encoding="utf-8",
-        newline="\n",
-    )
-    raise SystemExit(f"LOG_GUARD_FAILED: {exc.failure_class}: {exc.detail}") from exc
-
-vm_judges.write_outputs_closed(out_dir)
-PY
-then
-  RUN_WHY="rig log guard or result tar verification failed"
-  exit 2
-fi
+verify_and_close_run_outputs
 
 RUN_OUTCOME="ok"
 RUN_WHY="completed judge bake-off window in ${MODE} mode"
