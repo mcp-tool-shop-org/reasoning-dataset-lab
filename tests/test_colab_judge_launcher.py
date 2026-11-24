@@ -5853,6 +5853,7 @@ def test_progress_log_per_judge_lines_and_step_timings_in_order(
         ("step_end", "download"),
         ("step_start", "verify"),
         ("step_end", "verify"),
+        ("weights_page_cache_drop", None),
         ("step_start", "judge_pass"),
         ("judge_pass_done", "d3-mini"),
         ("judge_pass_done", "flow-judge-v0.1"),

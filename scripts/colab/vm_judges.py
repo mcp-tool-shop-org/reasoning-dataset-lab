@@ -3276,7 +3276,6 @@ def read_cgroup_limit_chain(
     nearest_finite_path: str | None = None
     nearest_finite_memory_max: int | None = None
     nearest_finite_memory_current: int | None = None
-    nearest_finite_memory_peak: int | None = None
 
     try:
         if not cg_proc.is_file():
@@ -3285,7 +3284,6 @@ def read_cgroup_limit_chain(
                 "nearest_finite_path": None,
                 "nearest_finite_memory_max": None,
                 "nearest_finite_memory_current": None,
-                "nearest_finite_memory_peak": None,
             }
 
         v2_rel: str | None = None
@@ -3359,7 +3357,6 @@ def read_cgroup_limit_chain(
                     nearest_finite_path = norm_path
                     nearest_finite_memory_max = parsed_max
                     nearest_finite_memory_current = mem_cur_val
-                    nearest_finite_memory_peak = mem_peak_val
     except Exception:
         pass
 
@@ -3368,7 +3365,6 @@ def read_cgroup_limit_chain(
         "nearest_finite_path": nearest_finite_path,
         "nearest_finite_memory_max": nearest_finite_memory_max,
         "nearest_finite_memory_current": nearest_finite_memory_current,
-        "nearest_finite_memory_peak": nearest_finite_memory_peak,
     }
 
 
@@ -3382,9 +3378,14 @@ def read_cgroup_memory_peak(
         cgroup_root=cgroup_root,
         proc_cgroup_path=proc_cgroup_path,
     )
-    if cg_chain.get("nearest_finite_path") is not None:
-        return cg_chain.get("nearest_finite_memory_peak")
-    for entry in cg_chain.get("chain") or []:
+    nf_path = cg_chain.get("nearest_finite_path")
+    chain = cg_chain.get("chain") or []
+    if nf_path is not None:
+        for entry in chain:
+            if entry.get("path") == nf_path:
+                peak_val = entry.get("memory.peak")
+                return int(peak_val) if peak_val is not None else None
+    for entry in chain:
         peak_val = entry.get("memory.peak")
         if peak_val is not None:
             return int(peak_val)

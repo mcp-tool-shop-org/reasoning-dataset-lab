@@ -3023,7 +3023,6 @@ def test_jit_build_env_set_before_llm_constructor_and_records_peak_and_seconds(
             "nearest_finite_path": "/pod.scope",
             "nearest_finite_memory_max": 124999999488,
             "nearest_finite_memory_current": 93410516992,
-            "nearest_finite_memory_peak": 101234567890,
         },
     )
     # Write expected receipts for all bakeoff judges + qwen3.6
