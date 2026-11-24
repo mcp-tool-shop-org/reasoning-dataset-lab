@@ -419,12 +419,17 @@ DEFAULT_JUDGE_ORDER: tuple[str, ...] = tuple(sorted(BAKEOFF_JUDGE_SPECS.keys()))
 
 
 def resolve_content_dir(content_dir: Path | None = None) -> Path:
-    """Resolve the VM `/content` directory (or `RDLAB_VM_CONTENT_DIR` under the test fake)."""
+    """Resolve the VM working root (`/content` on Colab, `RDLAB_VM_ROOT` on RunPod, or test override)."""
     if content_dir is not None:
         return Path(content_dir)
     env_content = os.environ.get("RDLAB_VM_CONTENT_DIR", "").strip()
     if env_content:
         return Path(env_content)
+    env_vm_root = os.environ.get("RDLAB_VM_ROOT", "").strip()
+    if env_vm_root:
+        return Path(env_vm_root)
+    if os.environ.get("RDLAB_HOST", "").strip().lower() == "runpod":
+        return Path("/workspace/job")
     return DEFAULT_CONTENT_DIR
 
 
@@ -1825,6 +1830,7 @@ def build_vm_uv_env(
     """Return the exact environment used by both `run_gate` and `sync_judge_venvs` when invoking `uv`."""
     env = dict(os.environ if base_env is None else base_env)
     env.pop("UV_SYSTEM_PYTHON", None)
+    env.pop("UV_OVERRIDE", None)
     env["HF_DEACTIVATE_ASYNC_LOAD"] = "1"
     temp_root = resolve_vm_python_temp_dir(content_dir)
     install_dir = temp_root / "install"
@@ -8961,6 +8967,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         default=env_int("RDLAB_VRAM_HALT_MIB", DEFAULT_VRAM_HALT_MIB),
     )
+    content_root = resolve_content_dir()
     parser.add_argument(
         "--repo-dir",
         type=Path,
@@ -8974,7 +8981,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--receipts-dir",
         type=Path,
-        default=env_path("RDLAB_RECEIPTS_DIR", Path("/content/rdlab_receipts")),
+        default=env_path("RDLAB_RECEIPTS_DIR", content_root / "rdlab_receipts"),
     )
     parser.add_argument(
         "--receipts-tar",
@@ -8984,7 +8991,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--items-file",
         type=Path,
-        default=env_path("RDLAB_ITEMS_FILE", Path("/content/rdlab_items/items.jsonl")),
+        default=env_path("RDLAB_ITEMS_FILE", content_root / "rdlab_items" / "items.jsonl"),
     )
     parser.add_argument(
         "--anchor-items",
@@ -9024,32 +9031,32 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--run-dir",
         type=Path,
-        default=env_path("RDLAB_RUN_DIR", Path("/content/rdlab_run")),
+        default=env_path("RDLAB_RUN_DIR", content_root / "rdlab_run"),
     )
     parser.add_argument(
         "--work-dir",
         type=Path,
-        default=env_path("RDLAB_WORK_DIR", resolve_content_dir() / "rdlab_work"),
+        default=env_path("RDLAB_WORK_DIR", content_root / "rdlab_work"),
     )
     parser.add_argument(
         "--hf-home",
         type=Path,
-        default=env_path("HF_HOME", Path("/content/hf_home")),
+        default=env_path("HF_HOME", content_root / "hf_home"),
     )
     parser.add_argument(
         "--result-tar",
         type=Path,
-        default=env_path("RDLAB_RESULT_TAR", Path("/content/result.tar.gz")),
+        default=env_path("RDLAB_RESULT_TAR", content_root / "result.tar.gz"),
     )
     parser.add_argument(
         "--status-file",
         type=Path,
-        default=env_path("RDLAB_STATUS_FILE", Path("/content/status.json")),
+        default=env_path("RDLAB_STATUS_FILE", content_root / "status.json"),
     )
     parser.add_argument(
         "--gate-status-file",
         type=Path,
-        default=env_path("RDLAB_GATE_STATUS_FILE", DEFAULT_GATE_STATUS_FILE),
+        default=env_path("RDLAB_GATE_STATUS_FILE", content_root / "gate_status.json"),
     )
     parser.add_argument(
         "--until",
@@ -12770,6 +12777,7 @@ GPU_NAME_CARD_TYPES: tuple[tuple[str, str], ...] = (
     (r"(?<![A-Z0-9])L4(?![0-9A-Z])", "L4"),
     (r"(?<![A-Z0-9])T4(?![0-9A-Z])", "T4"),
 )
+RUNPOD_SERVER_CARD_TYPE = "RUNPOD-RTX-PRO-6000-SERVER"
 
 
 def card_type_from_session_fields(hardware: str | None, shape: str | None) -> str | None:
@@ -12821,9 +12829,19 @@ def card_type_from_sessions_output(text: str | None, session: str) -> tuple[str 
     return card, seen
 
 
-def card_type_from_gpu_name(name: str | None) -> str | None:
-    """Map an `nvidia-smi --query-gpu=name` value to a card type (`GPU_NAME_CARD_TYPES`), or None."""
+def card_type_from_gpu_name(
+    name: str | None,
+    *,
+    host: str | None = None,
+) -> str | None:
+    """Map an `nvidia-smi --query-gpu=name` value to a card type, or None."""
     up = " ".join(str(name or "").split()).upper()
+    if (host or "").strip().lower() == "runpod":
+        if "WORKSTATION" in up:
+            return None
+        if re.search(r"RTX PRO 6000\b.*\bSERVER EDITION\b", up):
+            return RUNPOD_SERVER_CARD_TYPE
+        return None
     for pattern, card in GPU_NAME_CARD_TYPES:
         if re.search(pattern, up):
             return card
@@ -12866,9 +12884,15 @@ def verify_vm_card_type(
             CARD_TYPE_UNKNOWN,
             "RDLAB_CARD_TYPE was not forwarded: a real window needs the card type of the session the launcher opened",
         )
+    host = os.environ.get("RDLAB_HOST", "").strip().lower()
     gpu_name, detail = read_vm_gpu_name()
-    measured = card_type_from_gpu_name(gpu_name)
+    measured = card_type_from_gpu_name(gpu_name, host=host or None)
     if measured is None:
+        if host == "runpod" and "WORKSTATION" in " ".join(str(gpu_name or "").split()).upper():
+            raise RefusalError(
+                CARD_TYPE_MISMATCH,
+                f"Workstation Edition GPU is refused on RunPod (nvidia-smi: {gpu_name!r}, expected Server Edition / {forwarded!r})",
+            )
         raise RefusalError(
             CARD_TYPE_UNKNOWN,
             f"cannot read this VM's card type: GPU name {gpu_name!r} ({detail}); forwarded card type {forwarded!r}",
@@ -12881,7 +12905,7 @@ def verify_vm_card_type(
         )
     req_card = os.environ.get("RDLAB_CARD", "").strip()
     req_shape = os.environ.get("RDLAB_SHAPE", "").strip().lower()
-    if req_card or req_shape:
+    if host != "runpod" and (req_card or req_shape):
         if req_card not in ALLOWED_REQUESTED_CARDS:
             raise RefusalError(
                 CARD_INVALID if req_card else CARD_REQUIRED,
@@ -12906,7 +12930,12 @@ def verify_vm_card_type(
                 f"requested shape {req_shape!r} (expected session Shape: {exp_session_shape!r}, card_type={expected_card_type!r}) "
                 f"!= opened card_type {forwarded!r} (nvidia-smi: {gpu_name!r})",
             )
-    return {"card_type": forwarded, "gpu_name": gpu_name, "source": "colab sessions Hardware + nvidia-smi"}
+    host_src = (
+        "offrig pod + nvidia-smi"
+        if os.environ.get("RDLAB_HOST", "").strip().lower() == "runpod"
+        else "colab sessions Hardware + nvidia-smi"
+    )
+    return {"card_type": forwarded, "gpu_name": gpu_name, "source": host_src}
 
 
 def build_vm_shape_check(
@@ -14303,9 +14332,14 @@ def run_gate(args: argparse.Namespace) -> int:
         if py_report["route"] == "found" or not py_report["archive_sha256_actual"]
         else str(py_report["archive_sha256_actual"])
     )
+    items_dir_label = (
+        (Path(os.environ.get("RDLAB_VM_ROOT") or "/workspace/job") / "rdlab_items").as_posix()
+        if os.environ.get("RDLAB_HOST", "").strip().lower() == "runpod"
+        else DEFAULT_ITEMS_DIR.as_posix()
+    )
     print(
         f"VM_GATE_OK {platform.platform()} "
-        f"items_dir={DEFAULT_ITEMS_DIR.as_posix()} "
+        f"items_dir={items_dir_label} "
         f"content_free_bytes={disk_report['content_free_bytes']} "
         f"hf_home_free_bytes={disk_report['hf_home_free_bytes']} "
         f"required_bytes={disk_report['required_bytes']} "
@@ -14598,8 +14632,8 @@ def run_probe(args: argparse.Namespace) -> int:
             "duration_seconds": fetch_rec["duration_seconds"],
         }
 
-    # 6. df -B1 /content /tmp, nproc, and free -b
-    _run_probe_cmd("df_content_tmp", ["df", "-B1", "/content", "/tmp"])
+    # 6. df -B1 <content_dir> /tmp, nproc, and free -b
+    _run_probe_cmd("df_content_tmp", ["df", "-B1", str(content_dir), "/tmp"])
     _run_probe_cmd("nproc", ["nproc"])
     _run_probe_cmd("free_b", ["free", "-b"])
 
@@ -14719,6 +14753,156 @@ def finalize_filled_goldens_with_session_env(
         )
 
 
+def resolve_host_receipt_fields(
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Resolve host, pod id, and requested image provenance metadata for receipts."""
+    env = os.environ if environ is None else environ
+    host = str(env.get("RDLAB_HOST") or "colab").strip().lower() or "colab"
+    pod_id = str(env.get("RDLAB_POD_ID") or "").strip() or None
+    image_ref = str(env.get("RDLAB_RUNPOD_IMAGE") or "").strip() or None
+    image_tag = str(env.get("RDLAB_RUNPOD_IMAGE_TAG") or "").strip() or None
+    image_digest = str(env.get("RDLAB_RUNPOD_IMAGE_DIGEST") or "").strip() or None
+    if image_ref and not (image_tag or image_digest):
+        if "@" in image_ref:
+            image_tag, image_digest = (
+                p.strip() or None for p in image_ref.split("@", 1)
+            )
+        else:
+            image_tag = image_ref
+    image_requested: dict[str, Any] | None = None
+    if any((image_ref, image_tag, image_digest)):
+        eff_ref = image_ref or (
+            f"{image_tag}@{image_digest}"
+            if image_tag and image_digest
+            else image_tag or image_digest
+        )
+        image_requested = {
+            "ref": eff_ref,
+            "tag": image_tag,
+            "digest": image_digest,
+        }
+    return {
+        "host": host,
+        "pod_id": pod_id,
+        "image_requested": image_requested,
+        "image_source": "offrig profile" if image_requested is not None else None,
+    }
+
+
+def _read_vllm_python_version(work_dir: Path | None = None) -> str | None:
+    """Read the Python version of `venv-vllm` that runs the judge, or None when absent."""
+    if work_dir is not None:
+        vllm_py = Path(work_dir) / VLLM_VENV_NAME / "bin" / "python"
+        if vllm_py.is_file():
+            res = run_vm_subprocess(
+                [
+                    str(vllm_py),
+                    "-c",
+                    "import platform; print(platform.python_version())",
+                ],
+                timeout=30,
+                check=False,
+            )
+            ver = (res.stdout or "").strip().splitlines()
+            if res.returncode == 0 and ver and ver[-1].strip():
+                return ver[-1].strip()
+    return None
+
+
+def _read_vllm_version(work_dir: Path | None = None) -> str | None:
+    """Read installed vLLM version from `venv-vllm` if synced, else the current Python."""
+    if work_dir is not None:
+        vllm_py = Path(work_dir) / VLLM_VENV_NAME / "bin" / "python"
+        if vllm_py.is_file():
+            res = run_vm_subprocess(
+                [
+                    str(vllm_py),
+                    "-c",
+                    "import importlib.metadata as m, vllm; "
+                    "print(getattr(vllm, '__version__', '') or m.version('vllm'))",
+                ],
+                timeout=30,
+                check=False,
+            )
+            ver = (res.stdout or "").strip().splitlines()
+            if res.returncode == 0 and ver and ver[-1].strip():
+                return ver[-1].strip()
+    try:
+        import importlib.metadata as importlib_metadata
+
+        return importlib_metadata.version("vllm")
+    except Exception:
+        return None
+
+
+def collect_runtime_environment(
+    environ: Mapping[str, str] | None = None,
+    *,
+    work_dir: Path | None = None,
+) -> dict[str, Any]:
+    """Read live host GPU name, driver version, CUDA version, vLLM venv Python version, system Python, and vLLM version."""
+    import platform
+
+    _ = environ  # reserved for callers passing explicit env context
+    host_gpu_name: str | None = None
+    driver_version: str | None = None
+    cuda_version: str | None = None
+
+    smi = shutil.which("nvidia-smi")
+    if smi:
+        q_res = run_vm_subprocess(
+            [smi, "--query-gpu=name,driver_version", "--format=csv,noheader"],
+            timeout=30,
+            check=False,
+        )
+        lines = [ln.strip() for ln in (q_res.stdout or "").splitlines() if ln.strip()]
+        if q_res.returncode == 0 and lines:
+            parts = [p.strip() for p in lines[0].rsplit(",", 1)]
+            if parts and parts[0]:
+                host_gpu_name = parts[0]
+            if len(parts) == 2 and parts[1]:
+                driver_version = parts[1]
+        hdr_res = run_vm_subprocess([smi], timeout=30, check=False)
+        if hdr_res.returncode == 0 and hdr_res.stdout:
+            m = re.search(r"CUDA\s+Version:\s*([0-9]+(?:\.[0-9]+)*)", hdr_res.stdout)
+            if m:
+                cuda_version = m.group(1)
+
+    return {
+        "host_gpu_name": host_gpu_name,
+        "driver_version": driver_version,
+        "cuda_version": cuda_version,
+        "python_version": _read_vllm_python_version(work_dir=work_dir),
+        "system_python_version": platform.python_version(),
+        "vllm_version": _read_vllm_version(work_dir=work_dir),
+    }
+
+
+def compute_model_download_duration(
+    judge_download_records: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Compute total and per-judge model download duration in seconds."""
+    by_judge: dict[str, float] = {}
+    total = 0.0
+    for rec in judge_download_records:
+        jid = str(rec.get("judge_id") or "").strip()
+        raw_sec = rec.get("seconds", rec.get("elapsed_seconds"))
+        if raw_sec is None:
+            continue
+        try:
+            sec = max(0.0, float(raw_sec))
+        except (TypeError, ValueError):
+            continue
+        total += sec
+        if jid:
+            by_judge[jid] = round(sec, 6)
+    return {
+        "model_download_seconds": round(total, 6),
+        "model_download_seconds_by_judge": by_judge,
+    }
+
+
 def build_vm_receipt_doc(
     *,
     mode: str,
@@ -14758,6 +14942,9 @@ def build_vm_receipt_doc(
     counted_source_sha256: str | None = None,
     pass_mode: str = DEFAULT_PASS_MODE,
     synthetic_items: bool = False,
+    work_dir: Path | None = None,
+    environ: Mapping[str, str] | None = None,
+    runtime_environment: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the canonical `vm_receipt.json` document (used by `vm_judges.main` and tests)."""
     if session_env_report is None and session_env is not None:
@@ -14767,6 +14954,13 @@ def build_vm_receipt_doc(
     eff_venv_info: Mapping[str, Any] = venv_info or {}
     py_rep: Mapping[str, Any] = eff_venv_info.get("python_315_report") or {}
     eff_judge_venvs: Mapping[str, Any] = judge_venvs_map or {}
+    host_fields = resolve_host_receipt_fields(environ=environ)
+    eff_runtime_env = (
+        dict(runtime_environment)
+        if isinstance(runtime_environment, Mapping)
+        else collect_runtime_environment(environ=environ, work_dir=work_dir)
+    )
+    dl_duration = compute_model_download_duration(judge_download_records)
     download_stack_versions_by_judge = {
         str(rec.get("judge_id") or ""): {
             "venv": (eff_judge_venvs.get(str(rec.get("judge_id") or "")) or {}).get("venv"),
@@ -14782,7 +14976,10 @@ def build_vm_receipt_doc(
         "synthetic_items": bool(synthetic_items),
         "lock_check_phase": lock_check_phase,
         "pass_mode": pass_mode,
-        **receipt_hardware_fields(mode, dryrun=dryrun, card_type_check=card_type_check),
+        **host_fields,
+        "runtime_environment": eff_runtime_env,
+        **dl_duration,
+        **receipt_hardware_fields(mode, dryrun=dryrun, card_type_check=card_type_check, environ=environ),
         "shard_spec": (
             shard_info_report["shard_spec"]
             if shard_info_report is not None and "shard_spec" in shard_info_report
@@ -15878,6 +16075,7 @@ def main(argv: list[str] | None = None) -> int:
             counted_source_sha256=counted_source_sha256,
             pass_mode=main_pass_mode,
             synthetic_items=main_synthetic_items,
+            work_dir=args.work_dir,
         )
         receipt_serialized = json.dumps(receipt_doc, indent=2) + "\n"
         # Set before the first write (#108 fix 1): a failure while either OK receipt is written still rewrites both.
@@ -16126,6 +16324,9 @@ def main(argv: list[str] | None = None) -> int:
             "mode": args.mode,
             "synthetic_items": bool(main_synthetic_items),
             "lock_check_phase": main_lock_check_phase,
+            **resolve_host_receipt_fields(),
+            "runtime_environment": collect_runtime_environment(work_dir=args.work_dir),
+            **compute_model_download_duration(judge_download_records),
             "judge_venvs": fail_judge_venvs_map,
             "judge_order": list(judge_order),
             "judge_order_source": judge_order_source,
@@ -16343,6 +16544,9 @@ def main(argv: list[str] | None = None) -> int:
                     "mode": args.mode,
                     "synthetic_items": bool(main_synthetic_items),
                     "lock_check_phase": main_lock_check_phase,
+                    **resolve_host_receipt_fields(),
+                    "runtime_environment": collect_runtime_environment(work_dir=args.work_dir),
+                    **compute_model_download_duration(judge_download_records),
                     "judge_order": list(judge_order),
                     "judge_order_source": judge_order_source,
                     "only_judges": list(only_judges) if only_judges is not None else None,
