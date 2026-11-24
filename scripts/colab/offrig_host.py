@@ -18,6 +18,7 @@ import sys
 import threading
 import time
 import tomllib
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -54,6 +55,8 @@ DEFAULT_ONE_ITEM_MIN_SECONDS = 15
 DEFAULT_MIN_RUN_SECONDS = 1766
 DEFAULT_RUNPOD_MAX_PRICE_HR = 2.79
 DEFAULT_EXEC_STATUS_POLL_RETRIES = 3
+DEFAULT_NO_POD_REREAD_DELAY_SECONDS = 15.0
+DEFAULT_NO_POD_REREAD_MAX_WAIT_SECONDS = 30.0
 MIN_MAX_HOURS = 0.02
 
 _DEFAULT_FIVE_JUDGE_IDS: tuple[str, ...] = (
@@ -105,10 +108,17 @@ _TOOL_ERROR_CODES: dict[str, str] = {
 class OffrigHostError(RuntimeError):
     """Named refusal raised by the RunPod offrig host adapter."""
 
-    def __init__(self, code: str, detail: str) -> None:
+    def __init__(
+        self,
+        code: str,
+        detail: str,
+        *,
+        status_polls_exhausted: bool = False,
+    ) -> None:
         super().__init__(f"{code}: {detail}")
         self.code = code
         self.detail = detail
+        self.status_polls_exhausted = bool(status_polls_exhausted)
 
 
 def split_image_ref(image_ref: str) -> tuple[str, str | None]:
@@ -170,8 +180,55 @@ def validate_max_worst_case_usd(raw_value: Any) -> float:
         raw_value,
         error_code="OFFRIG_MAX_WORST_CASE_INVALID",
         label="RunPod max_worst_case_usd",
-        empty_hint="set a positive USD total ceiling or omit the cap",
+        empty_hint="pass --runpod-max-worst-case-usd <USD> or set RDLAB_RUNPOD_MAX_WORST_CASE_USD",
     )
+
+
+def _parse_decimal_usd(raw_value: Any) -> tuple[Decimal, float] | None:
+    if isinstance(raw_value, bool) or raw_value is None:
+        return None
+    s = raw_value.strip() if isinstance(raw_value, str) else str(raw_value).strip()
+    if not s:
+        return None
+    try:
+        dec = Decimal(s)
+    except InvalidOperation:
+        return None
+    if not dec.is_finite() or dec < Decimal("0"):
+        return None
+    return dec, float(dec)
+
+
+def check_rented_cost_per_hr(cost_per_hr: Any, max_price_hr: Any) -> dict[str, Any]:
+    """Verify rented `cost_per_hr` against `max_price_hr`; allow missing since offrig enforces on create."""
+    cap_val = validate_max_price_hr(max_price_hr)
+    cap_pair = _parse_decimal_usd(max_price_hr)
+    cap_dec = cap_pair[0] if cap_pair is not None else Decimal(str(cap_val))
+    if cost_per_hr is None or (isinstance(cost_per_hr, str) and not cost_per_hr.strip()):
+        return {
+            "cost_per_hr_usd": None,
+            "max_price_hr_usd": float(cap_val),
+            "cost_per_hr_checked": False,
+            "over_cap": False,
+        }
+    parsed = _parse_decimal_usd(cost_per_hr)
+    if parsed is None:
+        raise OffrigHostError(
+            "RUNPOD_PRICE_OVER_CAP",
+            f"rented RunPod cost_per_hr ({cost_per_hr!r}) is unreadable against max_price_hr cap ({cap_val:.2f} USD/hr)",
+        )
+    cph_dec, cph_val = parsed
+    if cph_dec > cap_dec:
+        raise OffrigHostError(
+            "RUNPOD_PRICE_OVER_CAP",
+            f"rented RunPod cost_per_hr ({cph_val:.4f} USD/hr) exceeds max_price_hr cap ({cap_val:.2f} USD/hr)",
+        )
+    return {
+        "cost_per_hr_usd": float(cph_val),
+        "max_price_hr_usd": float(cap_val),
+        "cost_per_hr_checked": True,
+        "over_cap": False,
+    }
 
 
 def compute_watchdog_max_hours(
@@ -929,6 +986,94 @@ def resolve_no_pod_rented_shutdown(
     }
 
 
+def verify_no_pod_rented_two_reads(
+    *,
+    project_dir: str | Path,
+    plan_id: int | str | None = None,
+    expected_pod_id: str | None = None,
+    expected_pod_name: str | None = None,
+    reread_delay_seconds: float | None = None,
+    max_extra_wait_seconds: float = DEFAULT_NO_POD_REREAD_MAX_WAIT_SECONDS,
+    environ: Mapping[str, str] | None = None,
+    sleep_fn: Any = time.sleep,
+    monotonic_fn: Any = time.monotonic,
+    status_reader: Any = None,
+) -> dict[str, Any]:
+    """Verify `no pod was rented` with two clean `offrig_status` reads bounded by extra wait."""
+    env = os.environ if environ is None else environ
+    if reread_delay_seconds is not None:
+        delay_s = max(0.0, float(reread_delay_seconds))
+    else:
+        raw_delay = str(env.get("RDLAB_OFFRIG_NO_POD_REREAD_SECONDS") or "").strip()
+        if raw_delay:
+            try:
+                delay_s = max(0.0, float(raw_delay))
+            except ValueError:
+                delay_s = DEFAULT_NO_POD_REREAD_DELAY_SECONDS
+        else:
+            delay_s = DEFAULT_NO_POD_REREAD_DELAY_SECONDS
+    max_wait_s = max(0.0, float(max_extra_wait_seconds))
+
+    def _read_once(timeout_s: float) -> dict[str, Any]:
+        try:
+            if status_reader is not None:
+                raw_st = status_reader(timeout_s)
+                if isinstance(raw_st, Mapping) and raw_st.get("error") and "runpod" not in raw_st:
+                    return {"error": str(raw_st.get("error"))}
+                return extract_status_pods(raw_st)
+            t_end = monotonic_fn() + max(0.05, float(timeout_s))
+            with OffrigMcpClient(
+                project_dir=project_dir,
+                environ=env,
+                startup_timeout=min(30.0, max(0.05, float(timeout_s))),
+                start_new_session=True,
+            ) as st_client:
+                rem_call = t_end - monotonic_fn()
+                if rem_call <= 0:
+                    return {
+                        "error": f"OFFRIG_MCP_TIMEOUT: timed out after {timeout_s:.1f}s before offrig_status"
+                    }
+                raw_st = st_client.call_tool(
+                    "offrig_status", {}, timeout=min(30.0, rem_call)
+                )
+                return extract_status_pods(raw_st)
+        except OffrigHostError as exc:
+            return {"error": f"{exc.code}: {exc.detail}"}
+
+    status_1 = _read_once(30.0)
+    res_1 = resolve_no_pod_rented_shutdown(
+        status_1,
+        plan_id=plan_id,
+        expected_pod_id=expected_pod_id,
+        expected_pod_name=expected_pod_name,
+    )
+    if res_1.get("pod_shutdown") is False or res_1.get("may_bill") is True:
+        return {**res_1, "status_pods": status_1, "reads_performed": 1}
+
+    extra_deadline = monotonic_fn() + max_wait_s
+    rem_before_sleep = extra_deadline - monotonic_fn()
+    eff_sleep = min(delay_s, max(0.0, rem_before_sleep))
+    if eff_sleep > 0:
+        sleep_fn(eff_sleep)
+
+    rem_for_read2 = extra_deadline - monotonic_fn()
+    if rem_for_read2 <= 0:
+        err_msg = (
+            f"second offrig_status read skipped: extra wait bound ({max_wait_s:.1f}s) exhausted"
+        )
+        fail_res = _no_pod_unusable(err_msg)
+        return {**fail_res, "status_pods": {"error": err_msg}, "reads_performed": 1}
+
+    status_2 = _read_once(rem_for_read2)
+    res_2 = resolve_no_pod_rented_shutdown(
+        status_2,
+        plan_id=plan_id,
+        expected_pod_id=expected_pod_id,
+        expected_pod_name=expected_pod_name,
+    )
+    return {**res_2, "status_pods": status_2, "reads_performed": 2}
+
+
 def resolve_offrig_config_path(environ: Mapping[str, str] | None = None) -> Path:
     """Resolve offrig's `config.toml` path matching `offrig_core::config::config_path`."""
     env = os.environ if environ is None else environ
@@ -1231,6 +1376,7 @@ class OffrigMcpClient:
         self._next_id = 1
         self._reader_thread: threading.Thread | None = None
         self._stderr_thread: threading.Thread | None = None
+        self._timed_out = False
 
     def __enter__(self) -> OffrigMcpClient:
         self.start()
@@ -1287,16 +1433,20 @@ class OffrigMcpClient:
         )
         self._reader_thread.start()
         self._stderr_thread.start()
-        self._request(
-            "initialize",
-            {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
-                "clientInfo": {"name": "rdlab-runpod-launcher", "version": "1.0"},
-            },
-            timeout=self._startup_timeout,
-        )
-        self._notify("notifications/initialized", {})
+        try:
+            self._request(
+                "initialize",
+                {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "rdlab-runpod-launcher", "version": "1.0"},
+                },
+                timeout=self._startup_timeout,
+            )
+            self._notify("notifications/initialized", {})
+        except Exception:
+            self.close()
+            raise
 
     def close(self) -> None:
         """Close stdin and terminate the `offrig-mcp` child process."""
@@ -1304,20 +1454,24 @@ class OffrigMcpClient:
         if proc is None:
             return
         self._proc = None
+        timed_out = self._timed_out
         try:
             if proc.stdin is not None:
                 proc.stdin.close()
         except OSError:
             pass
-        try:
-            proc.wait(timeout=3.0)
-        except subprocess.TimeoutExpired:
-            proc.terminate()
+        if not timed_out:
             try:
-                proc.wait(timeout=2.0)
+                proc.wait(timeout=3.0)
+                return
             except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait()
+                pass
+        proc.terminate()
+        try:
+            proc.wait(timeout=0.3 if timed_out else 2.0)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
 
     def _send(self, msg: Mapping[str, Any]) -> None:
         if self._proc is None or self._proc.stdin is None:
@@ -1350,6 +1504,7 @@ class OffrigMcpClient:
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
+                self._timed_out = True
                 raise OffrigHostError(
                     "OFFRIG_MCP_TIMEOUT",
                     f"timed out after {timeout:.1f}s waiting for offrig-mcp response to {method}",
@@ -1357,6 +1512,7 @@ class OffrigMcpClient:
             try:
                 raw = self._lines.get(timeout=remaining)
             except queue.Empty as exc:
+                self._timed_out = True
                 raise OffrigHostError(
                     "OFFRIG_MCP_TIMEOUT",
                     f"timed out after {timeout:.1f}s waiting for offrig-mcp response to {method}",
@@ -1539,7 +1695,7 @@ def launch_and_wait(
     known_pod_id = str(launch_res.get("pod_id") or "").strip() or None
     known_pod_name = str(launch_res.get("pod_name") or "").strip() or None
     watchdog = launch_res.get("watchdog")
-    if watchdog is not None and str(watchdog).strip().lower() != "started":
+    if not isinstance(watchdog, str) or watchdog.strip().lower() != "started":
         try:
             client.call_tool(
                 "offrig_shutdown",
@@ -1548,9 +1704,15 @@ def launch_and_wait(
             )
         except OffrigHostError:
             pass
+        extras = [
+            f"{k}={v}"
+            for k, v in (("pod_id", known_pod_id), ("pod_name", known_pod_name))
+            if v
+        ]
+        suffix = f"; {' '.join(extras)}" if extras else ""
         raise OffrigHostError(
             "OFFRIG_WATCHDOG_START_FAILED",
-            f"offrig_launch reported watchdog failure ({watchdog!r}); pod shutdown requested immediately",
+            f"offrig_launch reported missing or failed watchdog ({watchdog!r}); pod shutdown requested immediately{suffix}",
         )
     _check_launch_stop(
         stop_event,
@@ -1600,13 +1762,18 @@ def launch_and_wait(
                     "OFFRIG_JOB_FAILED",
                     f"offrig_job reached done without progress.pod_id: {job_res!r}",
                 )
+            raw_cph = prog.get("cost_per_hr")
+            if raw_cph is None:
+                raw_cph = rented.get("cost_per_hr")
+            if raw_cph is None:
+                raw_cph = launch_res.get("cost_per_hr")
             return {
                 "plan_id": int(plan_id),
                 "job_id": job_res.get("job_id", job_id),
                 "pod_id": pod_id,
                 "pod_name": prog.get("pod_name") or prog.get("pod") or known_pod_name,
                 "gpu": rented.get("gpu"),
-                "cost_per_hr": prog.get("cost_per_hr", rented.get("cost_per_hr")),
+                "cost_per_hr": raw_cph,
                 "cuda_version": rented.get("cuda_version"),
                 "job_dir": prog.get("job_dir") or DEFAULT_RUNPOD_VM_ROOT,
                 "deadline": launch_res.get("deadline"),
@@ -1658,6 +1825,38 @@ def verify_pod_gpu(
     return verify_runpod_gpu_gate(offrig_gpu, str(res.get("stdout") or ""))
 
 
+def _stop_and_save_timed_out_vm_step(
+    client: OffrigMcpClient,
+    *,
+    plan_id: int,
+    job_name: str,
+    save_log: str | None,
+) -> None:
+    try:
+        client.call_tool(
+            "offrig_exec",
+            {"action": "stop", "name": job_name, "plan_id": int(plan_id)},
+            timeout=5.0,
+        )
+    except OffrigHostError:
+        pass
+    if save_log:
+        try:
+            client.call_tool(
+                "offrig_exec",
+                {
+                    "action": "status",
+                    "name": job_name,
+                    "plan_id": int(plan_id),
+                    "tail": 400,
+                    "save_log": save_log,
+                },
+                timeout=5.0,
+            )
+        except OffrigHostError:
+            pass
+
+
 def exec_vm_step(
     client: OffrigMcpClient,
     *,
@@ -1670,24 +1869,45 @@ def exec_vm_step(
     poll_interval: float = 1.0,
     status_poll_retries: int = DEFAULT_EXEC_STATUS_POLL_RETRIES,
     save_log: str | None = None,
+    started_monotonic: float | None = None,
 ) -> tuple[int, str]:
     """Start a detached `vm_judges.py` job on the pod and wait until exit or timeout."""
+    start_mono = time.monotonic() if started_monotonic is None else float(started_monotonic)
+    deadline = start_mono + max(1.0, float(timeout_seconds))
     cmd = format_env_shell_command(env_pairs, vm_script, script_args)
-    client.call_tool(
-        "offrig_exec",
-        {
-            "action": "start",
-            "name": job_name,
-            "command": cmd,
-            "plan_id": int(plan_id),
-        },
-        timeout=60.0,
-    )
-    deadline = time.monotonic() + max(1.0, float(timeout_seconds))
+    rem_start = deadline - time.monotonic()
+    if rem_start <= 0:
+        return 124, ""
+    try:
+        client.call_tool(
+            "offrig_exec",
+            {
+                "action": "start",
+                "name": job_name,
+                "command": cmd,
+                "plan_id": int(plan_id),
+            },
+            timeout=min(60.0, max(0.05, rem_start)),
+        )
+    except OffrigHostError as exc:
+        if exc.code == "OFFRIG_MCP_TIMEOUT" and time.monotonic() >= deadline:
+            return 124, ""
+        raise
+    if time.monotonic() >= deadline:
+        _stop_and_save_timed_out_vm_step(
+            client, plan_id=plan_id, job_name=job_name, save_log=save_log
+        )
+        return 124, ""
     max_poll_errors = max(0, int(status_poll_retries))
     poll_errors = 0
     last_log_tail = ""
     while True:
+        rem_poll = deadline - time.monotonic()
+        if rem_poll <= 0:
+            _stop_and_save_timed_out_vm_step(
+                client, plan_id=plan_id, job_name=job_name, save_log=save_log
+            )
+            return 124, last_log_tail
         status_args: dict[str, Any] = {
             "action": "status",
             "name": job_name,
@@ -1695,16 +1915,27 @@ def exec_vm_step(
             "tail": 400,
         }
         try:
-            res = client.call_tool("offrig_exec", status_args, timeout=60.0)
+            res = client.call_tool(
+                "offrig_exec",
+                status_args,
+                timeout=min(60.0, max(0.05, rem_poll)),
+            )
             poll_errors = 0
-        except OffrigHostError:
+        except OffrigHostError as exc:
+            if exc.code == "OFFRIG_MCP_TIMEOUT" and time.monotonic() >= deadline:
+                _stop_and_save_timed_out_vm_step(
+                    client, plan_id=plan_id, job_name=job_name, save_log=save_log
+                )
+                return 124, last_log_tail
             poll_errors += 1
             if poll_errors > max_poll_errors:
+                exc.status_polls_exhausted = True
                 raise
-            if time.monotonic() >= deadline:
+            rem_retry = deadline - time.monotonic()
+            if rem_retry <= 0:
                 res = {"status": {"state": "running", "log_tail": last_log_tail}}
             else:
-                time.sleep(max(0.01, float(poll_interval)))
+                time.sleep(min(max(0.01, float(poll_interval)), rem_retry))
                 continue
         st = res.get("status")
         st_map = st if isinstance(st, Mapping) else {}
@@ -1727,32 +1958,165 @@ def exec_vm_step(
             raw_code = st_map.get("code")
             rc = int(raw_code) if isinstance(raw_code, int) else 2
             return rc, log_tail
-        if time.monotonic() >= deadline:
+        rem_wait = deadline - time.monotonic()
+        if rem_wait <= 0:
+            _stop_and_save_timed_out_vm_step(
+                client, plan_id=plan_id, job_name=job_name, save_log=save_log
+            )
+            return 124, log_tail
+        time.sleep(min(max(0.01, float(poll_interval)), rem_wait))
+
+
+def _current_epoch_seconds(environ: Mapping[str, str] | None = None) -> float:
+    env = os.environ if environ is None else environ
+    raw_clock = str(env.get("RDLAB_FAKE_CLOCK_FILE") or "").strip()
+    if raw_clock:
+        try:
+            txt = Path(raw_clock).read_text(encoding="utf-8").strip()
+            if txt:
+                return float(txt)
+        except (OSError, ValueError):
+            pass
+    return time.time()
+
+
+def poll_vm_step_until_cutoff(
+    *,
+    project_dir: str | Path,
+    plan_id: int,
+    job_name: str,
+    deadline_str: str | None = None,
+    fetch_allowance_seconds: int = DEFAULT_FETCH_ALLOWANCE_SECONDS,
+    shutdown_reserve_seconds: int = DEFAULT_SHUTDOWN_RESERVE_SECONDS,
+    max_wait_seconds: float | None = None,
+    poll_interval: float = 1.0,
+    save_log: str | None = None,
+    environ: Mapping[str, str] | None = None,
+    client_factory: Any = None,
+    sleep_fn: Any = time.sleep,
+    monotonic_fn: Any = time.monotonic,
+    epoch_fn: Any = None,
+) -> tuple[int, str]:
+    """Re-poll a running pod job with fresh MCP connections until it exits or the fetch cutoff arrives."""
+    env = os.environ if environ is None else environ
+    cur_epoch = epoch_fn if epoch_fn is not None else (lambda: _current_epoch_seconds(env))
+
+    epoch_cutoff: float | None = None
+    raw_dl = str(deadline_str or "").strip()
+    if raw_dl:
+        try:
+            dl_ep = parse_offrig_deadline_utc(raw_dl)
+        except OffrigHostError:
+            return 124, ""
+        epoch_cutoff = dl_ep - max(0, int(fetch_allowance_seconds)) - max(
+            0, int(shutdown_reserve_seconds)
+        )
+
+    mono_cutoff: float | None = None
+    if max_wait_seconds is not None:
+        mono_cutoff = monotonic_fn() + max(0.0, float(max_wait_seconds))
+    elif epoch_cutoff is None:
+        mono_cutoff = monotonic_fn() + 1800.0
+
+    def _remaining() -> float:
+        bounds: list[float] = []
+        if mono_cutoff is not None:
+            bounds.append(mono_cutoff - monotonic_fn())
+        if epoch_cutoff is not None:
+            bounds.append(epoch_cutoff - float(cur_epoch()))
+        return min(bounds) if bounds else 0.0
+
+    last_log_tail = ""
+    client: Any = None
+    try:
+        while True:
+            rem = _remaining()
+            if rem <= 0:
+                return 124, last_log_tail
+            if client is None:
+                try:
+                    if client_factory is not None:
+                        client = client_factory(rem)
+                    else:
+                        client = OffrigMcpClient(
+                            project_dir=project_dir,
+                            environ=env,
+                            startup_timeout=min(30.0, max(0.05, rem)),
+                        )
+                        client.start()
+                except OffrigHostError:
+                    if client is not None:
+                        try:
+                            client.close()
+                        except Exception:
+                            pass
+                        client = None
+                    rem_after = _remaining()
+                    if rem_after <= 0:
+                        return 124, last_log_tail
+                    sleep_fn(min(max(0.01, float(poll_interval)), rem_after))
+                    continue
+            rem_poll = _remaining()
+            if rem_poll <= 0:
+                return 124, last_log_tail
             try:
-                client.call_tool(
+                res = client.call_tool(
                     "offrig_exec",
-                    {"action": "stop", "name": job_name, "plan_id": int(plan_id)},
-                    timeout=30.0,
+                    {
+                        "action": "status",
+                        "name": job_name,
+                        "plan_id": int(plan_id),
+                        "tail": 400,
+                    },
+                    timeout=min(60.0, max(0.05, rem_poll)),
                 )
             except OffrigHostError:
-                pass
-            if save_log:
                 try:
-                    client.call_tool(
-                        "offrig_exec",
-                        {
-                            "action": "status",
-                            "name": job_name,
-                            "plan_id": int(plan_id),
-                            "tail": 400,
-                            "save_log": save_log,
-                        },
-                        timeout=60.0,
-                    )
-                except OffrigHostError:
+                    client.close()
+                except Exception:
                     pass
-            return 124, log_tail
-        time.sleep(max(0.01, float(poll_interval)))
+                client = None
+                rem_after = _remaining()
+                if rem_after <= 0:
+                    return 124, last_log_tail
+                sleep_fn(min(max(0.01, float(poll_interval)), rem_after))
+                continue
+
+            st = res.get("status")
+            st_map = st if isinstance(st, Mapping) else {}
+            state = str(st_map.get("state") or "").strip().lower()
+            log_tail = str(st_map.get("log_tail") or last_log_tail)
+            last_log_tail = log_tail
+            if state == "exited":
+                if save_log and _remaining() > 0.2:
+                    try:
+                        client.call_tool(
+                            "offrig_exec",
+                            {
+                                "action": "status",
+                                "name": job_name,
+                                "plan_id": int(plan_id),
+                                "tail": 400,
+                                "save_log": save_log,
+                            },
+                            timeout=min(120.0, max(0.05, _remaining())),
+                        )
+                    except OffrigHostError:
+                        pass
+                raw_code = st_map.get("code")
+                rc = int(raw_code) if isinstance(raw_code, int) else 2
+                return rc, log_tail
+
+            rem_sleep = _remaining()
+            if rem_sleep <= 0:
+                return 124, last_log_tail
+            sleep_fn(min(max(0.01, float(poll_interval)), rem_sleep))
+    finally:
+        if client is not None:
+            try:
+                client.close()
+            except Exception:
+                pass
 
 
 def _build_cli_parser() -> argparse.ArgumentParser:
@@ -1772,6 +2136,10 @@ def _build_cli_parser() -> argparse.ArgumentParser:
 
     p_price = sub.add_parser("check-max-price")
     p_price.add_argument("--max-price-hr", required=True)
+
+    p_rprice = sub.add_parser("check-rented-price")
+    p_rprice.add_argument("--cost-per-hr", default="")
+    p_rprice.add_argument("--max-price-hr", required=True)
 
     p_mwc = sub.add_parser("check-max-worst-case")
     p_mwc.add_argument("--max-worst-case-usd", required=True)
@@ -1882,6 +2250,21 @@ def _build_cli_parser() -> argparse.ArgumentParser:
     )
     p_step.add_argument("--save-log", default=None)
 
+    p_poll = sub.add_parser("poll-vm-step")
+    p_poll.add_argument("--project", required=True)
+    p_poll.add_argument("--plan-id", type=int, required=True)
+    p_poll.add_argument("--job-name", required=True)
+    p_poll.add_argument("--deadline", default="")
+    p_poll.add_argument(
+        "--fetch-allowance-seconds", type=int, default=DEFAULT_FETCH_ALLOWANCE_SECONDS
+    )
+    p_poll.add_argument(
+        "--shutdown-reserve-seconds", type=int, default=DEFAULT_SHUTDOWN_RESERVE_SECONDS
+    )
+    p_poll.add_argument("--max-wait-seconds", type=float, default=None)
+    p_poll.add_argument("--poll-interval", type=float, default=1.0)
+    p_poll.add_argument("--save-log", default=None)
+
     p_down = sub.add_parser("shutdown")
     p_down.add_argument("--project", required=True)
     p_down.add_argument("--plan-id", type=int, required=True)
@@ -1902,6 +2285,18 @@ def _build_cli_parser() -> argparse.ArgumentParser:
     p_npr.add_argument("--expected-pod-id", default="")
     p_npr.add_argument("--expected-pod-name", default="")
     p_npr.add_argument("--status-json", required=True)
+
+    p_vnpr = sub.add_parser("verify-no-pod-rented")
+    p_vnpr.add_argument("--project", required=True)
+    p_vnpr.add_argument("--plan-id", default="")
+    p_vnpr.add_argument("--expected-pod-id", default="")
+    p_vnpr.add_argument("--expected-pod-name", default="")
+    p_vnpr.add_argument("--reread-delay-seconds", type=float, default=None)
+    p_vnpr.add_argument(
+        "--max-extra-wait-seconds",
+        type=float,
+        default=DEFAULT_NO_POD_REREAD_MAX_WAIT_SECONDS,
+    )
 
     return parser
 
@@ -1930,6 +2325,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.subcommand == "check-max-price":
             val = validate_max_price_hr(args.max_price_hr)
             print(json.dumps({"max_price_hr": val, "ok": True}, sort_keys=True))
+            return 0
+        if args.subcommand == "check-rented-price":
+            res = check_rented_cost_per_hr(args.cost_per_hr, args.max_price_hr)
+            print(json.dumps(res, sort_keys=True))
             return 0
         if args.subcommand == "check-max-worst-case":
             val = validate_max_worst_case_usd(args.max_worst_case_usd)
@@ -2001,6 +2400,43 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             print(json.dumps(res, sort_keys=True))
             return 0
+        if args.subcommand == "poll-vm-step":
+            rc, log_tail = poll_vm_step_until_cutoff(
+                project_dir=args.project,
+                plan_id=args.plan_id,
+                job_name=args.job_name,
+                deadline_str=args.deadline or None,
+                fetch_allowance_seconds=args.fetch_allowance_seconds,
+                shutdown_reserve_seconds=args.shutdown_reserve_seconds,
+                max_wait_seconds=args.max_wait_seconds,
+                poll_interval=args.poll_interval,
+                save_log=args.save_log,
+            )
+            if log_tail:
+                sys.stdout.write(log_tail)
+                if not log_tail.endswith("\n"):
+                    sys.stdout.write("\n")
+            return rc
+        if args.subcommand == "verify-no-pod-rented":
+            saved_vnpr_handlers: dict[signal.Signals, Any] = {}
+            if threading.current_thread() is threading.main_thread():
+                for sig in (signal.SIGINT, signal.SIGTERM):
+                    saved_vnpr_handlers[sig] = signal.getsignal(sig)
+                    signal.signal(sig, signal.SIG_IGN)
+            try:
+                res = verify_no_pod_rented_two_reads(
+                    project_dir=args.project,
+                    plan_id=args.plan_id or None,
+                    expected_pod_id=args.expected_pod_id or None,
+                    expected_pod_name=args.expected_pod_name or None,
+                    reread_delay_seconds=args.reread_delay_seconds,
+                    max_extra_wait_seconds=args.max_extra_wait_seconds,
+                )
+            finally:
+                for sig, prev in saved_vnpr_handlers.items():
+                    signal.signal(sig, prev)
+            print(json.dumps(res, sort_keys=True))
+            return 0
         if args.subcommand == "plan":
             validate_max_price_hr(args.max_price_hr)
         is_launch = args.subcommand == "launch-and-wait"
@@ -2018,118 +2454,140 @@ def main(argv: Sequence[str] | None = None) -> int:
             for sig in (signal.SIGINT, signal.SIGTERM):
                 saved_handlers[sig] = signal.getsignal(sig)
                 signal.signal(sig, handler)
+        exec_started_monotonic: float | None = None
+        exec_deadline_mono: float | None = None
+        startup_timeout = 30.0
+        if args.subcommand == "exec-vm-step":
+            exec_started_monotonic = time.monotonic()
+            exec_deadline_mono = exec_started_monotonic + max(1.0, float(args.timeout_seconds))
+            startup_timeout = min(30.0, max(0.05, exec_deadline_mono - exec_started_monotonic))
         try:
-            with OffrigMcpClient(
-                project_dir=args.project,
-                start_new_session=shield_rpc,
-            ) as client:
-                if args.subcommand == "plan":
-                    res = plan_pod(
-                        client,
-                        profile=args.profile,
-                        wall_seconds=args.wall_seconds,
-                        max_price_hr=args.max_price_hr,
-                        launch_wait_minutes=args.launch_wait_minutes,
-                        image_pull_setup_seconds=args.image_pull_setup_seconds,
-                        fetch_allowance_seconds=args.fetch_allowance_seconds,
-                        shutdown_reserve_seconds=args.shutdown_reserve_seconds,
-                        container_disk_gb=args.container_disk_gb,
-                        note=args.note,
-                        no_fallback=not args.allow_fallback,
-                    )
-                    print(json.dumps(res, sort_keys=True))
-                    return 0
-                if args.subcommand == "launch-and-wait":
-                    res = launch_and_wait(
-                        client,
-                        plan_id=args.plan_id,
-                        poll_interval=args.poll_interval,
-                        timeout_seconds=args.timeout_seconds,
-                        stop_event=stop_event,
-                    )
-                    print(json.dumps(res, sort_keys=True))
-                    return 0
-                if args.subcommand == "verify-gpu":
-                    res = verify_pod_gpu(
-                        client,
-                        plan_id=args.plan_id,
-                        offrig_gpu=args.offrig_gpu,
-                    )
-                    print(json.dumps(res, sort_keys=True))
-                    return 0
-                if args.subcommand == "put":
-                    res = client.call_tool(
-                        "offrig_put",
-                        {"local": args.local, "pod": args.pod, "plan_id": args.plan_id},
-                        timeout=600.0,
-                    )
-                    print(json.dumps(res, sort_keys=True))
-                    return 0
-                if args.subcommand == "get":
-                    res = client.call_tool(
-                        "offrig_get",
-                        {"local": args.local, "pod": args.pod, "plan_id": args.plan_id},
-                        timeout=max(1.0, float(args.timeout_seconds)),
-                    )
-                    print(json.dumps(res, sort_keys=True))
-                    return 0
-                if args.subcommand == "exec-run":
-                    res = client.call_tool(
-                        "offrig_exec",
-                        {
-                            "action": "run",
-                            "command": args.command,
-                            "plan_id": args.plan_id,
-                            "timeout_secs": args.timeout_secs,
-                        },
-                        timeout=max(60.0, float(args.timeout_secs) + 30.0),
-                    )
-                    if res.get("stdout"):
-                        sys.stdout.write(str(res["stdout"]))
-                    if res.get("stderr"):
-                        sys.stderr.write(str(res["stderr"]))
-                    if res.get("timed_out"):
-                        return 124
-                    code = res.get("exit_code")
-                    return int(code) if isinstance(code, int) else 2
-                if args.subcommand == "exec-vm-step":
-                    rc, log_tail = exec_vm_step(
-                        client,
-                        plan_id=args.plan_id,
-                        job_name=args.job_name,
-                        vm_script=args.vm_script,
-                        env_pairs=args.env,
-                        timeout_seconds=args.timeout_seconds,
-                        poll_interval=args.poll_interval,
-                        status_poll_retries=args.status_poll_retries,
-                        save_log=args.save_log,
-                    )
-                    if log_tail:
-                        sys.stdout.write(log_tail)
-                        if not log_tail.endswith("\n"):
-                            sys.stdout.write("\n")
-                    return rc
-                if args.subcommand == "shutdown":
-                    res = client.call_tool(
-                        "offrig_shutdown",
-                        {"plan_id": args.plan_id, "reason": args.reason},
-                        timeout=120.0,
-                    )
-                    out_doc = dict(res)
-                    out_doc["classification"] = classify_shutdown_reply(
-                        res, expected_pod_id=args.expected_pod_id
-                    )
-                    print(json.dumps(out_doc, sort_keys=True))
-                    return 0
-                if args.subcommand == "status":
-                    res = client.call_tool("offrig_status", {}, timeout=30.0)
-                    print(json.dumps(extract_status_pods(res), sort_keys=True))
-                    return 0
+            try:
+                with OffrigMcpClient(
+                    project_dir=args.project,
+                    startup_timeout=startup_timeout,
+                    start_new_session=shield_rpc,
+                ) as client:
+                    if args.subcommand == "plan":
+                        res = plan_pod(
+                            client,
+                            profile=args.profile,
+                            wall_seconds=args.wall_seconds,
+                            max_price_hr=args.max_price_hr,
+                            launch_wait_minutes=args.launch_wait_minutes,
+                            image_pull_setup_seconds=args.image_pull_setup_seconds,
+                            fetch_allowance_seconds=args.fetch_allowance_seconds,
+                            shutdown_reserve_seconds=args.shutdown_reserve_seconds,
+                            container_disk_gb=args.container_disk_gb,
+                            note=args.note,
+                            no_fallback=not args.allow_fallback,
+                        )
+                        print(json.dumps(res, sort_keys=True))
+                        return 0
+                    if args.subcommand == "launch-and-wait":
+                        res = launch_and_wait(
+                            client,
+                            plan_id=args.plan_id,
+                            poll_interval=args.poll_interval,
+                            timeout_seconds=args.timeout_seconds,
+                            stop_event=stop_event,
+                        )
+                        print(json.dumps(res, sort_keys=True))
+                        return 0
+                    if args.subcommand == "verify-gpu":
+                        res = verify_pod_gpu(
+                            client,
+                            plan_id=args.plan_id,
+                            offrig_gpu=args.offrig_gpu,
+                        )
+                        print(json.dumps(res, sort_keys=True))
+                        return 0
+                    if args.subcommand == "put":
+                        res = client.call_tool(
+                            "offrig_put",
+                            {"local": args.local, "pod": args.pod, "plan_id": args.plan_id},
+                            timeout=600.0,
+                        )
+                        print(json.dumps(res, sort_keys=True))
+                        return 0
+                    if args.subcommand == "get":
+                        res = client.call_tool(
+                            "offrig_get",
+                            {"local": args.local, "pod": args.pod, "plan_id": args.plan_id},
+                            timeout=max(1.0, float(args.timeout_seconds)),
+                        )
+                        print(json.dumps(res, sort_keys=True))
+                        return 0
+                    if args.subcommand == "exec-run":
+                        res = client.call_tool(
+                            "offrig_exec",
+                            {
+                                "action": "run",
+                                "command": args.command,
+                                "plan_id": args.plan_id,
+                                "timeout_secs": args.timeout_secs,
+                            },
+                            timeout=max(60.0, float(args.timeout_secs) + 30.0),
+                        )
+                        if res.get("stdout"):
+                            sys.stdout.write(str(res["stdout"]))
+                        if res.get("stderr"):
+                            sys.stderr.write(str(res["stderr"]))
+                        if res.get("timed_out"):
+                            return 124
+                        code = res.get("exit_code")
+                        return int(code) if isinstance(code, int) else 2
+                    if args.subcommand == "exec-vm-step":
+                        rc, log_tail = exec_vm_step(
+                            client,
+                            plan_id=args.plan_id,
+                            job_name=args.job_name,
+                            vm_script=args.vm_script,
+                            env_pairs=args.env,
+                            timeout_seconds=args.timeout_seconds,
+                            poll_interval=args.poll_interval,
+                            status_poll_retries=args.status_poll_retries,
+                            save_log=args.save_log,
+                            started_monotonic=exec_started_monotonic,
+                        )
+                        if log_tail:
+                            sys.stdout.write(log_tail)
+                            if not log_tail.endswith("\n"):
+                                sys.stdout.write("\n")
+                        return rc
+                    if args.subcommand == "shutdown":
+                        res = client.call_tool(
+                            "offrig_shutdown",
+                            {"plan_id": args.plan_id, "reason": args.reason},
+                            timeout=120.0,
+                        )
+                        out_doc = dict(res)
+                        out_doc["classification"] = classify_shutdown_reply(
+                            res, expected_pod_id=args.expected_pod_id
+                        )
+                        print(json.dumps(out_doc, sort_keys=True))
+                        return 0
+                    if args.subcommand == "status":
+                        res = client.call_tool("offrig_status", {}, timeout=30.0)
+                        print(json.dumps(extract_status_pods(res), sort_keys=True))
+                        return 0
+            except OffrigHostError as exc:
+                if (
+                    args.subcommand == "exec-vm-step"
+                    and exc.code == "OFFRIG_MCP_TIMEOUT"
+                    and exec_deadline_mono is not None
+                    and time.monotonic() >= exec_deadline_mono
+                ):
+                    return 124
+                raise
         finally:
             for sig, prev in saved_handlers.items():
                 signal.signal(sig, prev)
     except OffrigHostError as exc:
-        sys.stderr.write(f"{exc.code}: {exc.detail}\n")
+        if exc.status_polls_exhausted:
+            sys.stderr.write(f"OFFRIG_EXEC_STATUS_POLLS_EXHAUSTED: {exc.code}: {exc.detail}\n")
+        else:
+            sys.stderr.write(f"{exc.code}: {exc.detail}\n")
         return 2
     return 2
 

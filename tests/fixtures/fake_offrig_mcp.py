@@ -291,6 +291,7 @@ def _handle_tool_call(
             "wait_minutes": arguments.get("wait_minutes"),
             "no_fallback": arguments.get("no_fallback", True),
             "container_disk_gb": arguments.get("container_disk_gb") or 60,
+            "container_disk_priced": cfg["container_disk_priced"] if "container_disk_priced" in cfg else False,
             "gpus": str(cfg.get("plan_gpus") or f"1x {gpu_name}"),
             "gpu": gpu_name,
             "cost_per_hr": cost_per_hr,
@@ -331,10 +332,11 @@ def _handle_tool_call(
             "plan_id": plan_id,
             "job_id": job_id,
             "pod_name": str(cfg.get("launch_pod_name") or state.get("pod_name") or f"offrig-job-{plan_id}"),
-            "watchdog": str(cfg.get("watchdog") if cfg.get("watchdog") is not None else "started"),
             "deadline": launch_deadline,
             "worst_case": round(cost_per_hr * float((state.get("plan") or {}).get("max_hours") or 1.0), 4),
         }
+        if not cfg.get("launch_omit_watchdog"):
+            launch_reply["watchdog"] = str(cfg.get("watchdog") if cfg.get("watchdog") is not None else "started")
         if not cfg.get("launch_omit_pod_id"):
             launch_reply["pod_id"] = pod_id
         return False, launch_reply
@@ -360,19 +362,23 @@ def _handle_tool_call(
                 "state": "running",
                 "progress": run_prog,
             }
+        done_prog: dict[str, Any] = {
+            "pod_id": pod_id,
+            "job_dir": pod_vm_root,
+        }
+        done_rented: dict[str, Any] = {
+            "gpu": gpu_name,
+            "cuda_version": cfg.get("cuda_version", "13.0"),
+        }
+        if not cfg.get("omit_rented_cost_per_hr"):
+            eff_cph = float(cfg["rented_cost_per_hr"]) if "rented_cost_per_hr" in cfg else cost_per_hr
+            done_prog["cost_per_hr"] = eff_cph
+            done_rented["cost_per_hr"] = eff_cph
         return False, {
             "job_id": job_id,
             "state": "done",
-            "progress": {
-                "pod_id": pod_id,
-                "cost_per_hr": cost_per_hr,
-                "job_dir": pod_vm_root,
-            },
-            "rented": {
-                "gpu": gpu_name,
-                "cost_per_hr": cost_per_hr,
-                "cuda_version": cfg.get("cuda_version", "13.0"),
-            },
+            "progress": done_prog,
+            "rented": done_rented,
         }
 
     if tool_name == "offrig_put":
@@ -423,6 +429,9 @@ def _handle_tool_call(
 
         if action == "start":
             job_name = str(arguments.get("name") or "")
+            start_delay = float(cfg.get("exec_start_delay_seconds") or 0.0)
+            if start_delay > 0.0:
+                time.sleep(start_delay)
             if fail_tool == f"offrig_exec:start:{job_name}" or fail_tool == "offrig_exec:start":
                 return True, {"error": f"injected failure for exec start {job_name}"}
             command = str(arguments.get("command") or "")
@@ -438,6 +447,13 @@ def _handle_tool_call(
                     jobs[job_name] = {"state": "exited", "code": rc, "log_tail": msg + "\n"}
                 else:
                     jobs[job_name] = {"state": "exited", "code": rc, "log_tail": f"STEP_{job_name.upper()}_FAILED rc={rc}\n"}
+            elif cfg.get("complete_run_on_status_poll") and job_name == "run":
+                jobs[job_name] = {
+                    "state": "running",
+                    "code": None,
+                    "log_tail": "run working...\n",
+                    "deferred_command": command,
+                }
             else:
                 env_map, _script, _args = _parse_env_command(command)
                 rc, tail = _synthesize_vm_run(
@@ -453,6 +469,14 @@ def _handle_tool_call(
 
         if action == "status":
             job_name = str(arguments.get("name") or "")
+            poll_key = f"status_polls_{job_name}"
+            poll_n = int(state.get(poll_key) or 0) + 1
+            state[poll_key] = poll_n
+            _save_json(state_path, state)
+            if job_name == "run" and poll_n <= int(cfg.get("fail_run_status_polls") or 0):
+                if cfg.get("crash_on_failed_status_poll"):
+                    raise SystemExit(1)
+                return True, {"error": f"simulated status poll failure #{poll_n}"}
             if cfg.get("advance_clock_on_step") and isinstance(cfg["advance_clock_on_step"], dict):
                 adv = cfg["advance_clock_on_step"]
                 step_delta = adv.get(job_name)
@@ -465,8 +489,24 @@ def _handle_tool_call(
                             Path(raw_clock_f).write_text(f"{int(cur_ep + int(step_delta))}\n", encoding="utf-8")
                         state[adv_key] = True
                         _save_json(state_path, state)
-            jobs = state.get("jobs") or {}
+            jobs = state.setdefault("jobs", {})
             rec = jobs.get(job_name) or {"state": "exited", "code": 2, "log_tail": "unknown job"}
+            if (
+                job_name == "run"
+                and rec.get("deferred_command")
+                and poll_n >= int(cfg.get("complete_run_on_status_poll") or 0)
+            ):
+                env_map, _script, _args = _parse_env_command(str(rec["deferred_command"]))
+                rc, tail = _synthesize_vm_run(
+                    env_map=env_map,
+                    pod_vm_root=pod_vm_root,
+                    local_vm_root=local_vm_root,
+                    repo_root=repo_root,
+                    cfg=cfg,
+                )
+                rec = {"state": "exited", "code": rc, "log_tail": tail}
+                jobs[job_name] = rec
+                _save_json(state_path, state)
             if arguments.get("save_log"):
                 log_out = Path(str(arguments["save_log"]))
                 log_out.parent.mkdir(parents=True, exist_ok=True)
@@ -484,6 +524,27 @@ def _handle_tool_call(
             return False, {"name": job_name, "stopped": True}
 
     if tool_name == "offrig_status":
+        status_calls = int(state.get("status_calls") or 0) + 1
+        state["status_calls"] = status_calls
+        _save_json(state_path, state)
+        seq = cfg.get("status_sequence")
+        if isinstance(seq, list) and seq:
+            entry = seq[min(status_calls - 1, len(seq) - 1)]
+            if isinstance(entry, dict):
+                if entry.get("fail_error"):
+                    return True, {"error": str(entry["fail_error"])}
+                if "status_raw_override" in entry:
+                    return False, entry["status_raw_override"]
+                return False, {
+                    "runpod": {
+                        "offrig_pods": list(entry.get("status_pods") or []),
+                        "sibling_pods": list(entry.get("status_sibling_pods") or []),
+                        "other_pods": int(entry.get("status_other_pods") or 0),
+                        "other_pod_names": list(entry.get("status_other_pod_names") or []),
+                        "note": entry.get("status_note"),
+                    },
+                    "open_plans": list(entry.get("status_open_plans") or []),
+                }
         if "status_raw_override" in cfg:
             return False, cfg["status_raw_override"]
         return False, {
@@ -564,6 +625,9 @@ def main() -> int:
         if method == "notifications/initialized":
             continue
         if method == "initialize":
+            startup_delay = float(cfg.get("startup_delay_seconds") or 0.0)
+            if startup_delay > 0.0:
+                time.sleep(startup_delay)
             resp = {
                 "jsonrpc": "2.0",
                 "id": msg_id,
