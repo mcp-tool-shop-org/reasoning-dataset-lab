@@ -2760,15 +2760,46 @@ def test_jit_build_jobs_budget_env_overrides_and_refusals(
 
     # Exercise read_flashinfer_jit_build_log edge cases in both modules
     bad_jit_log = tmp_path / "bad_jit.jsonl"
-    bad_jit_log.write_text("\nnot-json\n[]\n{\"name\":\"fused_moe_120\",\"seconds\":1.5}\n", encoding="utf-8")
+    bad_jit_log.write_text(
+        "\nnot-json\n[]\n"
+        '{"name":"bad","seconds":true}\n'
+        '{"name":"fused_moe_120","seconds":1.0}\n'
+        '{"name":"fused_moe_120","seconds":0.5}\n',
+        encoding="utf-8",
+    )
     for reader in (vm_judges.read_flashinfer_jit_build_log, bakeoff_judge.read_flashinfer_jit_build_log):
         assert reader(None)["jit_build_seconds"] is None
         assert reader(tmp_path / "missing.jsonl")["jit_build_seconds"] is None
         assert reader(bad_jit_log)["jit_build_seconds"] == 1.5
 
     assert vm_judges.read_cgroup_memory_peak(cgroup_root=tmp_path / "nocg", proc_cgroup_path=tmp_path / "noproc") is None
+    assert bakeoff_judge._read_cgroup_memory_peak_bytes(cgroup_root=tmp_path / "nocg", proc_cgroup_path=tmp_path / "noproc") is None
     cg_nofin, proc_nofin = _write_fake_cgroup_tree(tmp_path / "nofin", limit_raw="max", current_raw="10", peak_raw="777")
     assert vm_judges.read_cgroup_memory_peak(cgroup_root=cg_nofin, proc_cgroup_path=proc_nofin) == 777
+
+    edge_cg = tmp_path / "edge_cg"
+    edge_cg.mkdir(parents=True, exist_ok=True)
+    (edge_cg / "memory.peak").write_text("555\n", encoding="utf-8")
+    edge_proc = tmp_path / "edge_proc"
+    edge_proc.write_text(
+        "malformed_line\n2:cpu:/other\n0::/missing.slice\n3:memory:/missing.slice\n",
+        encoding="utf-8",
+    )
+    assert bakeoff_judge._read_cgroup_memory_peak_bytes(cgroup_root=edge_cg, proc_cgroup_path=edge_proc) == 555
+
+    with pytest.MonkeyPatch.context() as mp_os:
+        mp_os.setattr(Path, "read_text", lambda *_a, **_kw: (_ for _ in ()).throw(OSError("simulated io error")))
+        assert bakeoff_judge._read_cgroup_int_value(edge_cg / "memory.peak") is None
+        assert bakeoff_judge._read_cgroup_memory_state(cgroup_root=edge_cg, proc_cgroup_path=edge_proc) == {
+            "limit_bytes": None,
+            "current_bytes": None,
+            "peak_bytes": None,
+        }
+        assert bakeoff_judge.read_flashinfer_jit_build_log(bad_jit_log) == {
+            "jit_build_seconds": None,
+            "jit_build_targets": [],
+            "jit_build_entries": [],
+        }
 
 
 def test_jit_build_jobs_fallback_when_no_finite_limit(
@@ -2969,6 +3000,7 @@ def test_jit_build_env_set_before_llm_constructor_and_records_peak_and_seconds(
     monkeypatch.setattr(sys.modules["vllm"], "LLM", orig_llm_cls)
     bj_out_2 = tmp_path / "bj_out_2"
     bj_prog_2 = tmp_path / "bj_prog_2.jsonl"
+    monkeypatch.setenv("FLASHINFER_JIT_BUILD_LOG", str(tmp_path / "configured_empty_jit.jsonl"))
     res_bj_2 = run_bakeoff_judge(
         judge=QWEN36_ID,
         part_dir=bj_items_dir,
@@ -2983,6 +3015,7 @@ def test_jit_build_env_set_before_llm_constructor_and_records_peak_and_seconds(
         progress_file=bj_prog_2,
         synthetic_items=False,
     )
+    monkeypatch.delenv("FLASHINFER_JIT_BUILD_LOG", raising=False)
     done_bj_2 = json.loads(Path(res_bj_2["judge_done_path"]).read_text(encoding="utf-8"))
     assert done_bj_2["build_seconds_source"] == "llm_init"
     assert isinstance(done_bj_2["build_wall_seconds"], float)
