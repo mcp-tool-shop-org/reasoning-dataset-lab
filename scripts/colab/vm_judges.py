@@ -2311,9 +2311,9 @@ def sync_judge_venvs(
 
 def _ensure_dryrun_venv_python_wrapper(venv_python: Path) -> None:
     """Create a lightweight executable `<venv>/bin/python` wrapper in dryrun/hermetic test mode if absent."""
-    if venv_python.exists():
-        return
     venv_dir = venv_python.parent.parent
+    if (venv_dir / "lib").is_dir():
+        return
     is_d3_venv = "d3" in venv_dir.name.lower()
     hf_hub_ver = "1.33.0" if is_d3_venv else "2.4.0"
     hf_xet_ver = "1.8.0"
@@ -2633,6 +2633,8 @@ def _ensure_dryrun_venv_python_wrapper(venv_python: Path) -> None:
             encoding="utf-8",
             newline="\n",
         )
+    if venv_python.exists():
+        return
     venv_python.parent.mkdir(parents=True, exist_ok=True)
     py_exe = str(Path(sys.executable)).replace("\\", "/")
     site_pkgs_posix = site_pkgs.as_posix()

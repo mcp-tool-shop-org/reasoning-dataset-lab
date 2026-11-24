@@ -329,12 +329,21 @@ def test_judge_download_allow_patterns_and_env_isolation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Verify `--allow-pattern` handling in `judge_download`, wrapper early-exit, and env/PYTHONPATH guards."""
-    # 1. Existing venv_python makes _ensure_dryrun_venv_python_wrapper return before creating site-packages.
-    existing_venv_py = tmp_path / "existing_venv" / "bin" / "python"
-    existing_venv_py.parent.mkdir(parents=True, exist_ok=True)
-    existing_venv_py.write_text("#!/bin/sh\n", encoding="utf-8")
-    vm_judges._ensure_dryrun_venv_python_wrapper(existing_venv_py)
-    assert not (tmp_path / "existing_venv" / "site-packages").exists()
+    # 1. Synced venv (`lib/` present) returns early before creating site-packages, while a dryrun
+    #    wrapper without `lib/` still gets fake site-packages without overwriting custom `bin/python`.
+    synced_venv_py = tmp_path / "synced_venv" / "bin" / "python"
+    synced_venv_py.parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "synced_venv" / "lib" / "python3.15" / "site-packages").mkdir(parents=True, exist_ok=True)
+    synced_venv_py.write_text("#!/bin/sh\n", encoding="utf-8")
+    vm_judges._ensure_dryrun_venv_python_wrapper(synced_venv_py)
+    assert not (tmp_path / "synced_venv" / "site-packages").exists()
+
+    custom_dry_py = tmp_path / "custom_dry_venv" / "bin" / "python"
+    custom_dry_py.parent.mkdir(parents=True, exist_ok=True)
+    custom_dry_py.write_text("#!/bin/sh\n# custom wrapper\n", encoding="utf-8")
+    vm_judges._ensure_dryrun_venv_python_wrapper(custom_dry_py)
+    assert (tmp_path / "custom_dry_venv" / "site-packages" / "torch" / "__init__.py").is_file()
+    assert custom_dry_py.read_text(encoding="utf-8") == "#!/bin/sh\n# custom wrapper\n"
 
     # 2. build_download_child_env and build_judge_child_env strip cache/transfer/token env vars and guard site-packages.
     polluted = {
@@ -525,6 +534,17 @@ def test_judge_download_allow_patterns_and_env_isolation(
         seen_argv = json.loads(seen_argv_file.read_text(encoding="utf-8"))
         idx = seen_argv.index("--allow-pattern")
         assert seen_argv[idx : idx + 2] == ["--allow-pattern", "config.json"]
+
+        # Dryrun with absent venv_python creates wrapper and runs hermetic child cleanly.
+        dry_recs = vm_judges.download_all_judge_weights(
+            hf_home / "dry_fresh",
+            dryrun=True,
+            repo_dir=REPO_ROOT,
+            work_dir=tmp_path / "fresh_dry_work",
+            only_judge_ids=("flow-judge-v0.1",),
+        )
+        assert dry_recs[0]["files_downloaded"] == 0
+        assert (tmp_path / "fresh_dry_work" / "venv-judge" / "bin" / "python").is_file()
 
 
 def test_colab_dry_golden_and_runpod_image_rung_cli_guards(tmp_path: Path) -> None:
