@@ -56,6 +56,7 @@ DEFAULT_MIN_RUN_SECONDS = 1766
 DEFAULT_RUNPOD_MAX_PRICE_HR = 2.79
 DEFAULT_EXEC_STATUS_POLL_RETRIES = 3
 DEFAULT_NO_POD_REREAD_DELAY_SECONDS = 15.0
+MIN_NO_POD_REREAD_DELAY_SECONDS = 15.0
 DEFAULT_NO_POD_REREAD_MAX_WAIT_SECONDS = 30.0
 MIN_MAX_HOURS = 0.02
 
@@ -986,6 +987,40 @@ def resolve_no_pod_rented_shutdown(
     }
 
 
+def _resolve_no_pod_reread_delay_seconds(
+    *,
+    reread_delay_seconds: float | None,
+    env: Mapping[str, str],
+    allow_short_for_tests: bool = False,
+) -> float:
+    """Resolve two-read delay, clamping real runs to `MIN_NO_POD_REREAD_DELAY_SECONDS`."""
+    fake_cfg = str(env.get("RDLAB_FAKE_OFFRIG_CONFIG") or "").strip()
+    short_allowed = bool(allow_short_for_tests or (fake_cfg and Path(fake_cfg).is_file()))
+    if reread_delay_seconds is not None:
+        candidate = float(reread_delay_seconds)
+        raw_delay_s = (
+            candidate if math.isfinite(candidate) else DEFAULT_NO_POD_REREAD_DELAY_SECONDS
+        )
+    else:
+        raw_delay = str(env.get("RDLAB_OFFRIG_NO_POD_REREAD_SECONDS") or "").strip()
+        if raw_delay:
+            try:
+                candidate = float(raw_delay)
+                raw_delay_s = (
+                    candidate
+                    if math.isfinite(candidate)
+                    else DEFAULT_NO_POD_REREAD_DELAY_SECONDS
+                )
+            except ValueError:
+                raw_delay_s = DEFAULT_NO_POD_REREAD_DELAY_SECONDS
+        else:
+            raw_delay_s = DEFAULT_NO_POD_REREAD_DELAY_SECONDS
+    delay_s = max(0.0, raw_delay_s)
+    if not short_allowed:
+        delay_s = max(MIN_NO_POD_REREAD_DELAY_SECONDS, delay_s)
+    return delay_s
+
+
 def verify_no_pod_rented_two_reads(
     *,
     project_dir: str | Path,
@@ -994,25 +1029,27 @@ def verify_no_pod_rented_two_reads(
     expected_pod_name: str | None = None,
     reread_delay_seconds: float | None = None,
     max_extra_wait_seconds: float = DEFAULT_NO_POD_REREAD_MAX_WAIT_SECONDS,
+    already_closed: bool = False,
+    _allow_short_for_tests: bool = False,
     environ: Mapping[str, str] | None = None,
     sleep_fn: Any = time.sleep,
     monotonic_fn: Any = time.monotonic,
     status_reader: Any = None,
 ) -> dict[str, Any]:
-    """Verify `no pod was rented` with two clean `offrig_status` reads bounded by extra wait."""
+    """Verify `no pod was rented` or `already: closed` with two clean `offrig_status` reads."""
     env = os.environ if environ is None else environ
-    if reread_delay_seconds is not None:
-        delay_s = max(0.0, float(reread_delay_seconds))
-    else:
-        raw_delay = str(env.get("RDLAB_OFFRIG_NO_POD_REREAD_SECONDS") or "").strip()
-        if raw_delay:
-            try:
-                delay_s = max(0.0, float(raw_delay))
-            except ValueError:
-                delay_s = DEFAULT_NO_POD_REREAD_DELAY_SECONDS
-        else:
-            delay_s = DEFAULT_NO_POD_REREAD_DELAY_SECONDS
+    delay_s = _resolve_no_pod_reread_delay_seconds(
+        reread_delay_seconds=reread_delay_seconds,
+        env=env,
+        allow_short_for_tests=_allow_short_for_tests,
+    )
     max_wait_s = max(0.0, float(max_extra_wait_seconds))
+    resolver = (
+        resolve_already_closed_shutdown
+        if already_closed
+        else resolve_no_pod_rented_shutdown
+    )
+    unusable_builder = _closed_fail if already_closed else _no_pod_unusable
 
     def _read_once(timeout_s: float) -> dict[str, Any]:
         try:
@@ -1041,7 +1078,7 @@ def verify_no_pod_rented_two_reads(
             return {"error": f"{exc.code}: {exc.detail}"}
 
     status_1 = _read_once(30.0)
-    res_1 = resolve_no_pod_rented_shutdown(
+    res_1 = resolver(
         status_1,
         plan_id=plan_id,
         expected_pod_id=expected_pod_id,
@@ -1061,11 +1098,11 @@ def verify_no_pod_rented_two_reads(
         err_msg = (
             f"second offrig_status read skipped: extra wait bound ({max_wait_s:.1f}s) exhausted"
         )
-        fail_res = _no_pod_unusable(err_msg)
+        fail_res = unusable_builder(err_msg)
         return {**fail_res, "status_pods": {"error": err_msg}, "reads_performed": 1}
 
     status_2 = _read_once(rem_for_read2)
-    res_2 = resolve_no_pod_rented_shutdown(
+    res_2 = resolver(
         status_2,
         plan_id=plan_id,
         expected_pod_id=expected_pod_id,
@@ -2297,6 +2334,7 @@ def _build_cli_parser() -> argparse.ArgumentParser:
         type=float,
         default=DEFAULT_NO_POD_REREAD_MAX_WAIT_SECONDS,
     )
+    p_vnpr.add_argument("--already-closed", action="store_true")
 
     return parser
 
@@ -2431,6 +2469,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     expected_pod_name=args.expected_pod_name or None,
                     reread_delay_seconds=args.reread_delay_seconds,
                     max_extra_wait_seconds=args.max_extra_wait_seconds,
+                    already_closed=bool(args.already_closed),
                 )
             finally:
                 for sig, prev in saved_vnpr_handlers.items():

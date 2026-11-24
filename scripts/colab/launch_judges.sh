@@ -112,6 +112,7 @@ RUNPOD_SHUTDOWN_FINISHED=0
 RUNPOD_SHUTDOWN_DEFERRED_SIGNAL=0
 RUNPOD_SHUTDOWN_CALLS_MADE=0
 RUNPOD_SHUTDOWN_DONE=0
+RUNPOD_TERMINATED_CONFIRMED=0
 RUNPOD_POD_SHUTDOWN_STATE="null"
 RUNPOD_SHUTDOWN_FAILURE_CLASS=""
 RUNPOD_SHUTDOWN_REASON=""
@@ -3487,6 +3488,7 @@ write_outcome_draft() {
   "$PYTHON_BIN" - "$OUTCOME_FILE" "$RUN_ID" "${OPENED_CARD_TYPE:-$CARD}" "$CAP_UNITS" "$RATE_UNITS_PER_HOUR" "$WALL_SECONDS" "$EXPLICIT_CAP" "$runtime_s" "$RUN_OUTCOME" "$RUN_WHY" "$CARD" "$SHAPE" "$EXPECTED_SESSION_SHAPE" "$OPENED_SHAPE_OBS" "$stop_path_rec" "$CAP_MARGIN_UNITS" "$CLEANUP_STOP_ATTEMPTED_BY_SECONDS" "$CLEANUP_BOUND_SECONDS" "${REPO_ROOT:-}" "${RUNPOD_COST_PER_HR_CHECKED:-}" "${RUNPOD_PLAN_CONTAINER_DISK_GB:-${CONTAINER_DISK_GB:-}}" "${RUNPOD_CONTAINER_DISK_PRICED:-}" <<'PY'
 import datetime
 import json
+import math
 import os
 import re
 import shutil
@@ -3509,10 +3511,13 @@ rate = rate_arg if rate_source == "live_window" else None
 
 def _env_float(name: str) -> float | None:
     raw = os.environ.get(name, "").strip()
+    if not raw:
+        return None
     try:
-        return float(raw) if raw else None
+        val = float(raw)
     except ValueError:
         return None
+    return val if math.isfinite(val) else None
 wall_seconds = int(sys.argv[6])
 explicit_cap_raw = sys.argv[7].strip()
 runtime_seconds = int(sys.argv[8])
@@ -4829,6 +4834,11 @@ PY
         RUNPOD_COST_USD="$sd_spent"
       fi
       if [[ "$sd_status" == "confirmed" ]]; then
+        case "${sd_outcome_text:-}" in
+          [Tt][Ee][Rr][Mm][Ii][Nn][Aa][Tt][Ee][Dd]\ *)
+            RUNPOD_TERMINATED_CONFIRMED=1
+            ;;
+        esac
         RUNPOD_POD_SHUTDOWN_STATE="true"
         RUNPOD_SHUTDOWN_DONE=1
         RUNPOD_SHUTDOWN_FAILURE_CLASS=""
@@ -4848,9 +4858,16 @@ PY
         return 0
       fi
       if [[ "$sd_status" == "already_closed" ]]; then
-        runpod_read_status_pods_once
-        ac_rc=0
-        ac_json="$( trap '' INT TERM; exec "$PYTHON_BIN" "$OFFRIG_HOST_PY" resolve-already-closed --plan-id "$RUNPOD_PLAN_ID" --expected-pod-id "$RUNPOD_POD_ID" --expected-pod-name "$RUNPOD_PLAN_POD_NAME" --status-json "$RUNPOD_SHUTDOWN_STATUS_PODS" </dev/null 2>/dev/null )" || ac_rc=$?
+        ac_used_two_reads=0
+        if [[ "${RUNPOD_LAUNCH_ATTEMPTED:-0}" -eq 1 ]] && [[ "${RUNPOD_TERMINATED_CONFIRMED:-0}" -ne 1 ]]; then
+          ac_rc=0
+          ac_json="$( trap '' INT TERM; exec "$PYTHON_BIN" "$OFFRIG_HOST_PY" verify-no-pod-rented --already-closed --project "$OFFRIG_PROJECT" --plan-id "$RUNPOD_PLAN_ID" --expected-pod-id "$RUNPOD_POD_ID" --expected-pod-name "$RUNPOD_PLAN_POD_NAME" </dev/null 2>/dev/null )" || ac_rc=$?
+          ac_used_two_reads=1
+        else
+          runpod_read_status_pods_once
+          ac_rc=0
+          ac_json="$( trap '' INT TERM; exec "$PYTHON_BIN" "$OFFRIG_HOST_PY" resolve-already-closed --plan-id "$RUNPOD_PLAN_ID" --expected-pod-id "$RUNPOD_POD_ID" --expected-pod-name "$RUNPOD_PLAN_POD_NAME" --status-json "$RUNPOD_SHUTDOWN_STATUS_PODS" </dev/null 2>/dev/null )" || ac_rc=$?
+        fi
         mapfile -t ac_lines < <( trap '' INT TERM; exec "$PYTHON_BIN" - "$ac_rc" "$ac_json" <<'PY'
 import json
 import sys
@@ -4861,6 +4878,9 @@ if rc != 0:
     print("RUNPOD_SHUTDOWN_ALREADY_CLOSED")
     print("resolve-already-closed helper failed")
     print("")
+    print("1")
+    print("false")
+    print("")
     raise SystemExit(0)
 try:
     d = json.loads(sys.argv[2])
@@ -4869,17 +4889,36 @@ except Exception as exc:
     print("RUNPOD_SHUTDOWN_ALREADY_CLOSED")
     print(f"malformed resolve-already-closed output: {exc}")
     print("")
+    print("1")
+    print("false")
+    print("")
     raise SystemExit(0)
 print("true" if d.get("pod_shutdown") is True else "false")
 print(str(d.get("failure_class") or "RUNPOD_SHUTDOWN_ALREADY_CLOSED"))
-print(str(d.get("detail") or ""))
+print(str(d.get("detail") or "").replace("\n", " "))
 print(str(d.get("listed_pod_id") or ""))
+print(str(d.get("reads_performed") or 1))
+st_pods = d.get("status_pods") if "status_pods" in d else None
+st_ok = not (isinstance(st_pods, dict) and st_pods.get("error"))
+print("true" if st_ok else "false")
+if "status_pods" in d:
+    print(json.dumps(d["status_pods"], sort_keys=True))
+else:
+    print("")
 PY
 )
         ac_closed="${ac_lines[0]:-false}"
         ac_class="${ac_lines[1]:-RUNPOD_SHUTDOWN_ALREADY_CLOSED}"
         ac_detail="${ac_lines[2]:-$sd_detail}"
         ac_listed_pod_id="${ac_lines[3]:-}"
+        ac_reads="${ac_lines[4]:-1}"
+        ac_status_ok="${ac_lines[5]:-false}"
+        ac_status_json="${ac_lines[6]:-}"
+        if [[ "$ac_used_two_reads" -eq 1 ]] && [[ -n "$ac_status_json" ]]; then
+          printf '%s\n' "$ac_status_json" | scrub_stream >> "$CLI_LOG"
+          RUNPOD_SHUTDOWN_STATUS_PODS="$ac_status_json"
+          log_msg "RUNPOD_SHUTDOWN_STATUS_READ ok=${ac_status_ok} plan_id=${RUNPOD_PLAN_ID:-unknown} pod_id=${RUNPOD_POD_ID:-unknown} reads=${ac_reads}"
+        fi
         if [[ "$ac_closed" == "true" ]]; then
           RUNPOD_POD_SHUTDOWN_STATE="true"
           RUNPOD_SHUTDOWN_DONE=1
@@ -5011,14 +5050,21 @@ if spent is None and isinstance(doc, dict):
         spent = float(raw_sp)
 print(str(cls.get("status") or "unconfirmed"))
 print("" if spent is None else f"{float(spent):.6f}")
+print(str(cls.get("outcome_text") or ""))
 PY
 )
               f_status="${f_cls_lines[0]:-unconfirmed}"
               f_spent="${f_cls_lines[1]:-}"
+              f_outcome_text="${f_cls_lines[2]:-}"
               if [[ -n "$f_spent" ]]; then
                 RUNPOD_COST_USD="$f_spent"
               fi
               if [[ "$f_status" == "confirmed" ]]; then
+                case "${f_outcome_text:-}" in
+                  [Tt][Ee][Rr][Mm][Ii][Nn][Aa][Tt][Ee][Dd]\ *)
+                    RUNPOD_TERMINATED_CONFIRMED=1
+                    ;;
+                esac
                 RUNPOD_POD_SHUTDOWN_STATE="true"
                 RUNPOD_SHUTDOWN_DONE=1
                 RUNPOD_SHUTDOWN_FAILURE_CLASS=""
@@ -5189,16 +5235,29 @@ runpod_open_pod() {
   printf '%s\n' "$plan_out" | scrub_stream >> "$CLI_LOG"
   mapfile -t plan_fields < <("$PYTHON_BIN" - "$plan_out" <<'PY'
 import json
+import math
 import sys
+
+
+def _fmt_num(raw: object, fmt: str, *, preserve_bad: bool = False) -> str:
+    if raw is None:
+        return ""
+    if isinstance(raw, bool):
+        return str(raw) if preserve_bad else ""
+    try:
+        val = float(raw)
+    except (ValueError, TypeError):
+        return str(raw).strip() if preserve_bad else ""
+    if math.isfinite(val):
+        return format(val, fmt)
+    return str(raw).strip() if preserve_bad else ""
+
 
 doc = json.loads(sys.argv[1])
 print(doc["plan_id"])
-mh = doc.get("max_hours")
-print("" if mh is None else f"{float(mh):.4f}")
-mp = doc.get("max_price_hr")
-print("" if mp is None else f"{float(mp):.2f}")
-wc = doc.get("worst_case")
-print("" if wc is None else f"{float(wc):.2f}")
+print(_fmt_num(doc.get("max_hours"), ".4f"))
+print(_fmt_num(doc.get("max_price_hr"), ".2f"))
+print(_fmt_num(doc.get("worst_case"), ".2f", preserve_bad=True))
 print(doc.get("lane") or "")
 print(doc.get("pod_name") or "")
 cdg = doc.get("container_disk_gb")
@@ -5257,14 +5316,30 @@ PY
     printf '%s\n' "$disk_note_line" >&2
   fi
   if ! mwc_check_err="$("$PYTHON_BIN" - "${RUNPOD_WORST_CASE_USD:-}" "$RUNPOD_MAX_WORST_CASE_USD" <<'PY' 2>&1
+import math
 import sys
 
 raw_wc = sys.argv[1].strip()
-cap = float(sys.argv[2].strip())
+raw_cap = sys.argv[2].strip()
+try:
+    cap = float(raw_cap)
+except ValueError:
+    print(f"RUNPOD_WORST_CASE_EXCEEDED: invalid --runpod-max-worst-case-usd={raw_cap!r}")
+    raise SystemExit(2)
+if not math.isfinite(cap) or cap <= 0:
+    print(f"RUNPOD_WORST_CASE_EXCEEDED: non-finite or non-positive --runpod-max-worst-case-usd={raw_cap!r}")
+    raise SystemExit(2)
 if not raw_wc:
     print(f"RUNPOD_WORST_CASE_EXCEEDED: offrig_plan omitted worst_case while --runpod-max-worst-case-usd={cap:.2f} is enforced")
     raise SystemExit(2)
-wc = float(raw_wc)
+try:
+    wc = float(raw_wc)
+except ValueError:
+    print(f"RUNPOD_WORST_CASE_EXCEEDED: offrig_plan returned non-numeric worst_case={raw_wc!r} while --runpod-max-worst-case-usd={cap:.2f} is enforced")
+    raise SystemExit(2)
+if not math.isfinite(wc) or wc < 0:
+    print(f"RUNPOD_WORST_CASE_EXCEEDED: offrig_plan returned non-finite worst_case={raw_wc!r} while --runpod-max-worst-case-usd={cap:.2f} is enforced")
+    raise SystemExit(2)
 if wc > cap:
     print(f"RUNPOD_WORST_CASE_EXCEEDED: offrig_plan worst_case_usd={wc:.2f} exceeds --runpod-max-worst-case-usd={cap:.2f}")
     raise SystemExit(2)
@@ -5388,13 +5463,27 @@ PY
   RUNPOD_LAUNCH_INFO_JSON="$launch_txt"
   mapfile -t launch_fields < <("$PYTHON_BIN" - "$launch_txt" <<'PY'
 import json
+import math
 import sys
 
 doc = json.loads(sys.argv[1])
 print(doc.get("pod_id") or "")
 print(doc.get("gpu") or "")
 cph = doc.get("cost_per_hr")
-print("" if cph is None else f"{float(cph):.6f}")
+if cph is None:
+    print("")
+elif isinstance(cph, bool):
+    print(str(cph))
+else:
+    s_cph = str(cph).strip()
+    if not s_cph:
+        print("")
+    else:
+        try:
+            fval = float(s_cph)
+            print(f"{fval:.6f}" if math.isfinite(fval) else s_cph)
+        except ValueError:
+            print(s_cph)
 print(doc.get("deadline") or "")
 PY
 )

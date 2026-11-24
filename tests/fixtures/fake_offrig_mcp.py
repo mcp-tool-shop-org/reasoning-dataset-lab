@@ -270,11 +270,13 @@ def _handle_tool_call(
         state["plan"] = dict(arguments)
         state["plan_state"] = "planned"
         _save_json(state_path, state)
-        worst_case_val = (
-            float(cfg["plan_worst_case"])
-            if cfg.get("plan_worst_case") is not None
-            else round(float(max_hours) * float(arguments.get("max_price_hr") or cost_per_hr), 2)
-        )
+        raw_pwc = cfg.get("plan_worst_case")
+        if isinstance(raw_pwc, (int, float)) and not isinstance(raw_pwc, bool):
+            worst_case_val: Any = float(raw_pwc)
+        elif raw_pwc is not None:
+            worst_case_val = raw_pwc
+        else:
+            worst_case_val = round(float(max_hours) * float(arguments.get("max_price_hr") or cost_per_hr), 2)
         plan_lane = str(cfg.get("plan_lane") or "rdlab-judge").strip()
         plan_prof = str(arguments.get("profile") or "rdlab-judge").strip()
         default_pod_name = f"offrig-{plan_lane}-{plan_prof}" if plan_lane else f"offrig-{plan_prof}"
@@ -337,7 +339,7 @@ def _handle_tool_call(
         }
         if not cfg.get("launch_omit_watchdog"):
             launch_reply["watchdog"] = str(cfg.get("watchdog") if cfg.get("watchdog") is not None else "started")
-        if not cfg.get("launch_omit_pod_id"):
+        if cfg.get("launch_include_pod_id") and not cfg.get("launch_omit_pod_id"):
             launch_reply["pod_id"] = pod_id
         return False, launch_reply
 
@@ -371,7 +373,15 @@ def _handle_tool_call(
             "cuda_version": cfg.get("cuda_version", "13.0"),
         }
         if not cfg.get("omit_rented_cost_per_hr"):
-            eff_cph = float(cfg["rented_cost_per_hr"]) if "rented_cost_per_hr" in cfg else cost_per_hr
+            if "rented_cost_per_hr" in cfg:
+                raw_cph = cfg["rented_cost_per_hr"]
+                eff_cph: Any = (
+                    float(raw_cph)
+                    if isinstance(raw_cph, (int, float)) and not isinstance(raw_cph, bool)
+                    else raw_cph
+                )
+            else:
+                eff_cph = cost_per_hr
             done_prog["cost_per_hr"] = eff_cph
             done_rented["cost_per_hr"] = eff_cph
         return False, {
