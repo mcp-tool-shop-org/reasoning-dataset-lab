@@ -1254,6 +1254,9 @@ try:
         os.environ.get("RDLAB_HF_DOWNLOAD_MAX_WORKERS"),
         os.environ.get("HF_XET_NUM_CONCURRENT_RANGE_GETS"),
     )
+    vm_judges.resolve_session_env_probe_timeout_seconds(
+        environ={**os.environ, "RDLAB_HOST": host_arg},
+    )
     only_judges_t = vm_judges.validate_only_judges(
         mode,
         os.environ.get("RDLAB_ONLY_JUDGES", None),
@@ -1742,6 +1745,9 @@ build_exec_env_args() {
   fi
   if [[ -n "${RDLAB_DOWNLOAD_CHILD_TIMEOUT_SECONDS+x}" ]] && [[ -n "${RDLAB_DOWNLOAD_CHILD_TIMEOUT_SECONDS}" ]]; then
     EXEC_ENV_ARGS+=(--env "RDLAB_DOWNLOAD_CHILD_TIMEOUT_SECONDS=$RDLAB_DOWNLOAD_CHILD_TIMEOUT_SECONDS")
+  fi
+  if [[ -n "${RDLAB_SESSION_ENV_PROBE_TIMEOUT_SECONDS+x}" ]] && [[ -n "${RDLAB_SESSION_ENV_PROBE_TIMEOUT_SECONDS}" ]]; then
+    EXEC_ENV_ARGS+=(--env "RDLAB_SESSION_ENV_PROBE_TIMEOUT_SECONDS=$RDLAB_SESSION_ENV_PROBE_TIMEOUT_SECONDS")
   fi
   if [[ -n "${RDLAB_CHILD_WALL_MARGIN_SECONDS+x}" ]] && [[ -n "${RDLAB_CHILD_WALL_MARGIN_SECONDS}" ]]; then
     EXEC_ENV_ARGS+=(--env "RDLAB_CHILD_WALL_MARGIN_SECONDS=$RDLAB_CHILD_WALL_MARGIN_SECONDS")

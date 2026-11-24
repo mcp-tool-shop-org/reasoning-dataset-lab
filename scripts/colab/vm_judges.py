@@ -37,6 +37,7 @@ import inspect
 import io
 import json
 import math
+import mmap
 import os
 import random
 import re
@@ -47,13 +48,15 @@ import stat
 import subprocess
 import sys
 import tarfile
+import tempfile
 import threading
 import time
 import urllib.error
 import urllib.request
+import uuid
 import zipfile
 from pathlib import Path
-from typing import Any, Iterable, Mapping, NamedTuple, Sequence
+from typing import Any, Callable, Iterable, Mapping, NamedTuple, Sequence
 
 DEFAULT_CONTENT_DIR = Path("/content")
 DEFAULT_ITEMS_DIR = Path("/content/rdlab_items")
@@ -99,6 +102,15 @@ DEFAULT_GPU_GATE_TIMEOUT_SECONDS = 60.0
 DEFAULT_FIRST_LOAD_TIMEOUT_SECONDS = 1800.0
 DEFAULT_JUDGE_CHILD_TIMEOUT_SECONDS = 600.0
 DEFAULT_DOWNLOAD_CHILD_TIMEOUT_SECONDS = 900.0
+SESSION_ENV_PROBE_TIMEOUT_ENV_VAR = "RDLAB_SESSION_ENV_PROBE_TIMEOUT_SECONDS"
+DEFAULT_COLAB_SESSION_ENV_PROBE_TIMEOUT_SECONDS = 30.0
+DEFAULT_RUNPOD_SESSION_ENV_PROBE_TIMEOUT_SECONDS = 300.0
+SESSION_ENV_PROBE_TIMEOUT_INVALID = "SESSION_ENV_PROBE_TIMEOUT_INVALID"
+PROBE_PHASE_MARKER_PREFIX = "SESSION_ENV_PROBE_PHASE:"
+DISK_THROUGHPUT_HARD_BOUND_SECONDS = 10.0
+DISK_THROUGHPUT_STEP_BUDGET_SECONDS = 2.0
+DISK_THROUGHPUT_CHUNK_BYTES = 1024 * 1024
+DISK_THROUGHPUT_MAX_CHUNKS_PER_TARGET = 16
 DOWNLOAD_ZERO_FILES = "DOWNLOAD_ZERO_FILES"
 DEFAULT_CHILD_WALL_MARGIN_SECONDS = 60.0
 CHILD_GROUP_SIGTERM_GRACE_SECONDS = 0.5
@@ -5326,6 +5338,49 @@ def resolve_download_child_timeout_seconds() -> float:
     except ValueError:
         pass
     return float(DEFAULT_DOWNLOAD_CHILD_TIMEOUT_SECONDS)
+
+
+def resolve_session_env_probe_timeout_seconds(
+    raw_timeout: Any = None,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> tuple[float, str]:
+    """Resolve `RDLAB_SESSION_ENV_PROBE_TIMEOUT_SECONDS` (default 300.0 s on RunPod, 30.0 s on Colab).
+
+    Refuses non-numeric, non-finite, boolean, empty, or non-positive values with `SESSION_ENV_PROBE_TIMEOUT_INVALID`.
+    """
+    env = os.environ if environ is None else environ
+    if raw_timeout is not None:
+        candidate: Any = raw_timeout
+        source = "env"
+    elif SESSION_ENV_PROBE_TIMEOUT_ENV_VAR in env:
+        candidate = env[SESSION_ENV_PROBE_TIMEOUT_ENV_VAR]
+        source = "env"
+    else:
+        host = str(env.get("RDLAB_HOST", "")).strip().lower()
+        default_val = (
+            DEFAULT_RUNPOD_SESSION_ENV_PROBE_TIMEOUT_SECONDS
+            if host == "runpod"
+            else DEFAULT_COLAB_SESSION_ENV_PROBE_TIMEOUT_SECONDS
+        )
+        return float(default_val), "default"
+
+    val: float | None = None
+    if not isinstance(candidate, bool):
+        text = str(candidate).strip()
+        if text:
+            try:
+                parsed = float(text)
+            except (TypeError, ValueError):
+                parsed = math.nan
+            if math.isfinite(parsed) and parsed > 0.0:
+                val = float(parsed)
+    if val is None:
+        raise RefusalError(
+            SESSION_ENV_PROBE_TIMEOUT_INVALID,
+            f"{SESSION_ENV_PROBE_TIMEOUT_ENV_VAR} must be a positive finite number (> 0), got {candidate!r}",
+        )
+    return val, source
 
 
 def resolve_child_wall_margin_seconds() -> float:
@@ -11837,14 +11892,25 @@ def _load_merge_config_for_session_env(repo_dir: Path | None = None) -> dict[str
 
 
 _VENV_RUNTIME_PROBE_SCRIPT = (
-    "import importlib.metadata, json, os, sys\n"
+    "import importlib.metadata, json, os, sys, time\n"
     "out = {}\n"
+    "pt = {}\n"
+    "t_script0 = time.monotonic()\n"
+    f"print('{PROBE_PHASE_MARKER_PREFIX}import_torch', flush=True)\n"
+    "t_imp_done = None\n"
     "try:\n"
     "    import torch\n"
     "    tv = getattr(torch, '__version__', None)\n"
     "    out['torch_version'] = str(tv) if tv else 'unreadable: torch.__version__ missing'\n"
+    "    t_imp_done = time.monotonic()\n"
+    "    pt['import_torch_seconds'] = round(max(0.0, t_imp_done - t_script0), 6)\n"
+    f"    print('{PROBE_PHASE_MARKER_PREFIX}cuda_query', flush=True)\n"
+    "    t_cuda0 = time.monotonic()\n"
     "    cv = getattr(getattr(torch, 'version', None), 'cuda', None)\n"
     "    out['cuda_runtime'] = str(cv) if cv else 'unreadable: torch.version.cuda is None'\n"
+    "    pt['cuda_query_seconds'] = round(max(0.0, time.monotonic() - t_cuda0), 6)\n"
+    f"    print('{PROBE_PHASE_MARKER_PREFIX}determinism_setup', flush=True)\n"
+    "    t_det0 = time.monotonic()\n"
     "    try:\n"
     "        use_det = getattr(torch, 'use_deterministic_algorithms', None)\n"
     "        if callable(use_det):\n"
@@ -11889,6 +11955,7 @@ _VENV_RUNTIME_PROBE_SCRIPT = (
     "            out['sdpa_backend'] = '+'.join(names) if names else 'math'\n"
     "    except Exception as se:\n"
     "        out['sdpa_backend'] = f'unreadable: {type(se).__name__}: {se}'\n"
+    "    pt['determinism_setup_seconds'] = round(max(0.0, time.monotonic() - t_det0), 6)\n"
     "except Exception as te:\n"
     "    reason = f'unreadable: {type(te).__name__}: {te}'\n"
     "    out['torch_version'] = reason\n"
@@ -11897,6 +11964,13 @@ _VENV_RUNTIME_PROBE_SCRIPT = (
     "    out['determinism_warn_only'] = None\n"
     "    out['cudnn_benchmark'] = reason\n"
     "    out['sdpa_backend'] = reason\n"
+    "    if 'import_torch_seconds' not in pt:\n"
+    "        t_imp_done = time.monotonic()\n"
+    "        pt['import_torch_seconds'] = round(max(0.0, t_imp_done - t_script0), 6)\n"
+    "    pt.setdefault('cuda_query_seconds', 0.0)\n"
+    "    pt.setdefault('determinism_setup_seconds', 0.0)\n"
+    f"print('{PROBE_PHASE_MARKER_PREFIX}package_versions', flush=True)\n"
+    "t_pkg0 = time.monotonic()\n"
     "try:\n"
     "    import transformers\n"
     "    tfv = getattr(transformers, '__version__', None)\n"
@@ -11916,16 +11990,94 @@ _VENV_RUNTIME_PROBE_SCRIPT = (
     "        out['bitsandbytes_version'] = f'unreadable: {type(be).__name__}: {be}'\n"
     "except Exception as be:\n"
     "    out['bitsandbytes_version'] = f'unreadable: {type(be).__name__}: {be}'\n"
-    "print(json.dumps(out, sort_keys=True))\n"
+    "pt['package_versions_seconds'] = round(max(0.0, time.monotonic() - t_pkg0), 6)\n"
+    "out['_t_import_done_monotonic'] = t_imp_done\n"
+    "out['phase_timings'] = pt\n"
+    "print(json.dumps(out, sort_keys=True), flush=True)\n"
 )
+
+
+def _unreadable_runtime_probe_doc(
+    reason: str,
+    *,
+    probe_timings: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return an `unreadable:` runtime probe payload with optional phase timings."""
+    doc: dict[str, Any] = {
+        "torch_version": reason,
+        "cuda_runtime": reason,
+        "transformers_version": reason,
+        "bitsandbytes_version": reason,
+        "determinism_status": reason,
+        "determinism_warn_only": None,
+        "cudnn_benchmark": reason,
+        "sdpa_backend": reason,
+    }
+    if probe_timings is not None:
+        doc["probe_timings"] = probe_timings
+    return doc
+
+
+def _decode_probe_stream(raw: bytes | str | None) -> str:
+    """Decode subprocess stream output (`bytes`, `str`, or `None`) cleanly as UTF-8."""
+    if raw is None:
+        return ""
+    if isinstance(raw, bytes):
+        return raw.decode("utf-8", errors="replace")
+    return str(raw)
+
+
+def _merge_timeout_stream(pre_raw: bytes | str | None, rem_raw: bytes | str | None) -> str:
+    """Combine pre-timeout and post-kill subprocess output without duplicating shared prefixes."""
+    pre_s = _decode_probe_stream(pre_raw)
+    rem_s = _decode_probe_stream(rem_raw)
+    if not pre_s:
+        return rem_s
+    if not rem_s:
+        return pre_s
+    if rem_s.startswith(pre_s):
+        return rem_s
+    return pre_s + rem_s
+
+
+def _parse_probe_phase_markers(stdout_text: str) -> tuple[list[str], list[str]]:
+    """Extract flushed `SESSION_ENV_PROBE_PHASE:<phase>` markers and non-marker lines from probe stdout."""
+    phases_started: list[str] = []
+    payload_lines: list[str] = []
+    for raw_line in stdout_text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith(PROBE_PHASE_MARKER_PREFIX):
+            phase_name = line[len(PROBE_PHASE_MARKER_PREFIX) :].strip()
+            if phase_name:
+                phases_started.append(phase_name)
+        else:
+            payload_lines.append(raw_line)
+    return phases_started, payload_lines
+
+
+def _kill_process_group_best_effort(proc: subprocess.Popen[Any]) -> None:
+    """Terminate a timed-out subprocess and its process group cleanly."""
+    if os.name != "nt":
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            pass
+    try:
+        proc.kill()
+    except OSError:
+        pass
 
 
 def _query_judge_venv_runtime(
     *,
     work_dir: Path | None = None,
     venv_python: Path | None = None,
+    timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
     """Read installed package versions and runtime attributes from `venv-judge` without any `FAKE_COLAB_*` defaults."""
+    eff_timeout, _ = resolve_session_env_probe_timeout_seconds(timeout_seconds)
     eff_venv_py: Path | None = None
     if venv_python is not None:
         eff_venv_py = Path(venv_python)
@@ -11939,69 +12091,116 @@ def _query_judge_venv_runtime(
     if eff_venv_py is not None:
         if not eff_venv_py.exists():
             reason = f"unreadable: judge venv python not found at {eff_venv_py}"
-            return {
-                "torch_version": reason,
-                "cuda_runtime": reason,
-                "transformers_version": reason,
-                "bitsandbytes_version": reason,
-                "determinism_status": reason,
-                "determinism_warn_only": None,
-                "cudnn_benchmark": reason,
-                "sdpa_backend": reason,
-            }
+            return _unreadable_runtime_probe_doc(reason)
+        t_parent_start = time.monotonic()
         try:
-            proc = subprocess.run(
+            proc = subprocess.Popen(
                 [str(eff_venv_py), "-c", _VENV_RUNTIME_PROBE_SCRIPT],
                 stdin=subprocess.DEVNULL,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=30,
-                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=(os.name != "nt"),
             )
-            if proc.returncode != 0 or not proc.stdout.strip():
-                err_txt = (proc.stderr or proc.stdout or f"exit {proc.returncode}").strip().splitlines()[-1]
-                reason = f"unreadable: subprocess failed ({err_txt})"
-                return {
-                    "torch_version": reason,
-                    "cuda_runtime": reason,
-                    "transformers_version": reason,
-                    "bitsandbytes_version": reason,
-                    "determinism_status": reason,
-                    "determinism_warn_only": None,
-                    "cudnn_benchmark": reason,
-                    "sdpa_backend": reason,
-                }
-            parsed = json.loads(proc.stdout.strip().splitlines()[-1])
+            try:
+                raw_out_b, raw_err_b = proc.communicate(timeout=eff_timeout)
+            except subprocess.TimeoutExpired as exc:
+                _kill_process_group_best_effort(proc)
+                try:
+                    rem_out_b, rem_err_b = proc.communicate(timeout=2.0)
+                except subprocess.TimeoutExpired:
+                    rem_out_b, rem_err_b = b"", b""
+                total_seconds = round(max(0.0, time.monotonic() - t_parent_start), 6)
+                out_txt = _merge_timeout_stream(exc.stdout, rem_out_b)
+                _ = _merge_timeout_stream(exc.stderr, rem_err_b)
+                phases_started, _ = _parse_probe_phase_markers(out_txt)
+                running_phase = phases_started[-1] if phases_started else "import_torch"
+                phase_history = ",".join(phases_started) if phases_started else "none:interpreter_start"
+                reason = (
+                    f"unreadable: TimeoutExpired after {total_seconds:.3f}s "
+                    f"(timeout={eff_timeout:g}s) during phase {running_phase} "
+                    f"(phases_started={phase_history})"
+                )
+                return _unreadable_runtime_probe_doc(
+                    reason,
+                    probe_timings={
+                        "import_torch_seconds": None,
+                        "cuda_query_seconds": None,
+                        "determinism_setup_seconds": None,
+                        "package_versions_seconds": None,
+                        "total_seconds": total_seconds,
+                        "timed_out": True,
+                        "running_phase": running_phase,
+                        "phases_started": phases_started,
+                        "partial_stdout": out_txt,
+                    },
+                )
+            total_seconds = round(max(0.0, time.monotonic() - t_parent_start), 6)
+            out_txt = _decode_probe_stream(raw_out_b)
+            err_txt = _decode_probe_stream(raw_err_b)
+            phases_started, payload_lines = _parse_probe_phase_markers(out_txt)
+            if proc.returncode != 0 or not payload_lines:
+                last_err = (err_txt or out_txt or f"exit {proc.returncode}").strip().splitlines()[-1]
+                reason = f"unreadable: subprocess failed ({last_err})"
+                return _unreadable_runtime_probe_doc(
+                    reason,
+                    probe_timings={
+                        "import_torch_seconds": None,
+                        "cuda_query_seconds": None,
+                        "determinism_setup_seconds": None,
+                        "package_versions_seconds": None,
+                        "total_seconds": total_seconds,
+                        "timed_out": False,
+                        "running_phase": phases_started[-1] if phases_started else None,
+                        "phases_started": phases_started,
+                    },
+                )
+            parsed = json.loads(payload_lines[-1])
             if isinstance(parsed, dict):
+                t_imp_done = parsed.pop("_t_import_done_monotonic", None)
+                child_pt = parsed.pop("phase_timings", None)
+                pt_map = dict(child_pt) if isinstance(child_pt, Mapping) else {}
+                import_torch_s = pt_map.get("import_torch_seconds")
+                if isinstance(t_imp_done, (int, float)) and not isinstance(t_imp_done, bool):
+                    parent_to_import = float(t_imp_done) - t_parent_start
+                    if 0.0 <= parent_to_import <= (total_seconds + 0.05):
+                        import_torch_s = round(max(0.0, parent_to_import), 6)
+                parsed["probe_timings"] = {
+                    "import_torch_seconds": import_torch_s,
+                    "cuda_query_seconds": pt_map.get("cuda_query_seconds"),
+                    "determinism_setup_seconds": pt_map.get("determinism_setup_seconds"),
+                    "package_versions_seconds": pt_map.get("package_versions_seconds"),
+                    "total_seconds": total_seconds,
+                    "timed_out": False,
+                    "running_phase": None,
+                    "phases_started": phases_started,
+                }
                 return parsed
+            return _unreadable_runtime_probe_doc(
+                f"unreadable: probe returned non-dict JSON ({type(parsed).__name__})"
+            )
         except Exception as exc:
             reason = f"unreadable: {type(exc).__name__}: {exc}"
-            return {
-                "torch_version": reason,
-                "cuda_runtime": reason,
-                "transformers_version": reason,
-                "bitsandbytes_version": reason,
-                "determinism_status": reason,
-                "determinism_warn_only": None,
-                "cudnn_benchmark": reason,
-                "sdpa_backend": reason,
-            }
+            return _unreadable_runtime_probe_doc(reason)
 
     # In-process fallback when no venv path is configured (e.g., direct unit tests with monkeypatched sys.modules)
     import importlib
     import importlib.metadata
 
+    t_inproc0 = time.monotonic()
     out: dict[str, Any] = {}
+    pt_inproc: dict[str, Any] = {}
     try:
         torch_mod = sys.modules.get("torch")
         if torch_mod is None:
             torch_mod = importlib.import_module("torch")
         tv = getattr(torch_mod, "__version__", None)
         out["torch_version"] = str(tv) if tv else "unreadable: torch.__version__ missing"
+        pt_inproc["import_torch_seconds"] = round(max(0.0, time.monotonic() - t_inproc0), 6)
+        t_cuda0 = time.monotonic()
         cv = getattr(getattr(torch_mod, "version", None), "cuda", None)
         out["cuda_runtime"] = str(cv) if cv else "unreadable: torch.version.cuda is None"
+        pt_inproc["cuda_query_seconds"] = round(max(0.0, time.monotonic() - t_cuda0), 6)
+        t_det0 = time.monotonic()
         try:
             use_det = getattr(torch_mod, "use_deterministic_algorithms", None)
             if callable(use_det):
@@ -12050,6 +12249,7 @@ def _query_judge_venv_runtime(
                 out["sdpa_backend"] = "+".join(names) if names else "math"
         except Exception as se:
             out["sdpa_backend"] = f"unreadable: {type(se).__name__}: {se}"
+        pt_inproc["determinism_setup_seconds"] = round(max(0.0, time.monotonic() - t_det0), 6)
     except Exception as te:
         reason = f"unreadable: {type(te).__name__}: {te}"
         out["torch_version"] = reason
@@ -12058,7 +12258,11 @@ def _query_judge_venv_runtime(
         out["determinism_warn_only"] = None
         out["cudnn_benchmark"] = reason
         out["sdpa_backend"] = reason
+        pt_inproc.setdefault("import_torch_seconds", round(max(0.0, time.monotonic() - t_inproc0), 6))
+        pt_inproc.setdefault("cuda_query_seconds", 0.0)
+        pt_inproc.setdefault("determinism_setup_seconds", 0.0)
 
+    t_pkg0 = time.monotonic()
     try:
         tf_mod = sys.modules.get("transformers")
         if tf_mod is None:
@@ -12089,8 +12293,298 @@ def _query_judge_venv_runtime(
                 out["bitsandbytes_version"] = f"unreadable: {type(be).__name__}: {be}"
         except Exception as be:
             out["bitsandbytes_version"] = f"unreadable: {type(be).__name__}: {be}"
+    pt_inproc["package_versions_seconds"] = round(max(0.0, time.monotonic() - t_pkg0), 6)
+    pt_inproc["total_seconds"] = round(max(0.0, time.monotonic() - t_inproc0), 6)
+    pt_inproc["timed_out"] = False
+    pt_inproc["running_phase"] = None
+    pt_inproc["phases_started"] = ["import_torch", "cuda_query", "determinism_setup", "package_versions"]
+    out["probe_timings"] = pt_inproc
 
     return out
+
+
+def _parse_linux_mount_fstype(
+    target_dir: Path,
+    *,
+    mounts_path: Path = Path("/proc/mounts"),
+) -> str | None:
+    """Return the mounted filesystem type covering `target_dir` when `/proc/mounts` is readable."""
+    if not mounts_path.is_file():
+        return None
+    try:
+        resolved = target_dir.resolve()
+        target_str = resolved.as_posix()
+        lines = mounts_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+    best_len = -1
+    best_fs: str | None = None
+    for raw in lines:
+        parts = raw.split()
+        if len(parts) < 3:
+            continue
+        mnt_point, fs_type = parts[1], parts[2]
+        if target_str == mnt_point or mnt_point == "/" or target_str.startswith(mnt_point.rstrip("/") + "/"):
+            if len(mnt_point) > best_len:
+                best_len = len(mnt_point)
+                best_fs = fs_type
+    return best_fs
+
+
+def _resolve_container_disk_probe_dir(container_dir: Path | None = None) -> tuple[Path, str | None]:
+    """Select the writable directory on the container disk, preferring `/var/tmp` when `/tmp` is tmpfs."""
+    if container_dir is not None:
+        eff = Path(container_dir)
+        return eff, _parse_linux_mount_fstype(eff)
+    if os.name == "posix":
+        var_tmp = Path("/var/tmp")
+        if var_tmp.is_dir() and os.access(var_tmp, os.W_OK | os.X_OK):
+            fstype = _parse_linux_mount_fstype(var_tmp)
+            try:
+                if fstype != "tmpfs" and os.stat(var_tmp).st_dev == os.stat("/").st_dev:
+                    return var_tmp, fstype
+            except OSError:
+                pass
+    eff_tmp = Path(tempfile.gettempdir())
+    return eff_tmp, _parse_linux_mount_fstype(eff_tmp)
+
+
+def _read_back_probe_file(
+    probe_file: Path,
+    *,
+    bytes_written: int,
+    chunk_bytes: int,
+    read_deadline: float,
+    hard_deadline: float,
+    read_mode: str = "auto",
+) -> tuple[int, float, str]:
+    """Read `probe_file` avoiding the page cache when possible (`o_direct` -> `posix_fadvise_dontneed` -> `cached`)."""
+    read_chunk = min(chunk_bytes, max(4096, bytes_written))
+    if read_mode in ("auto", "o_direct") and hasattr(os, "O_DIRECT") and hasattr(os, "readv") and bytes_written >= 4096:
+        rfd: int | None = None
+        mm: mmap.mmap | None = None
+        try:
+            rfd = os.open(probe_file, os.O_RDONLY | os.O_DIRECT)
+            aligned_len = (read_chunk // 4096) * 4096
+            mm = mmap.mmap(-1, aligned_len)
+            t_r0 = time.monotonic()
+            total_read = 0
+            while total_read < bytes_written:
+                n = os.readv(rfd, [mm])
+                if n <= 0:
+                    break
+                total_read += n
+                if time.monotonic() >= min(read_deadline, hard_deadline):
+                    break
+            return total_read, max(1e-6, time.monotonic() - t_r0), "o_direct"
+        except OSError:
+            pass
+        finally:
+            if mm is not None:
+                mm.close()
+            if rfd is not None:
+                os.close(rfd)
+
+    if read_mode in ("auto", "posix_fadvise_dontneed") and hasattr(os, "posix_fadvise") and hasattr(os, "POSIX_FADV_DONTNEED"):
+        rfd_fa: int | None = None
+        try:
+            rfd_fa = os.open(probe_file, os.O_RDONLY)
+            os.posix_fadvise(rfd_fa, 0, 0, os.POSIX_FADV_DONTNEED)
+            t_r0 = time.monotonic()
+            total_read = 0
+            while total_read < bytes_written:
+                buf = os.read(rfd_fa, read_chunk)
+                if not buf:
+                    break
+                total_read += len(buf)
+                if time.monotonic() >= min(read_deadline, hard_deadline):
+                    break
+            return total_read, max(1e-6, time.monotonic() - t_r0), "posix_fadvise_dontneed"
+        except OSError:
+            pass
+        finally:
+            if rfd_fa is not None:
+                os.close(rfd_fa)
+
+    rfd_c = os.open(probe_file, os.O_RDONLY)
+    try:
+        t_r0 = time.monotonic()
+        total_read = 0
+        while total_read < bytes_written:
+            buf = os.read(rfd_c, read_chunk)
+            if not buf:
+                break
+            total_read += len(buf)
+            if time.monotonic() >= min(read_deadline, hard_deadline):
+                break
+        return total_read, max(1e-6, time.monotonic() - t_r0), "cached"
+    finally:
+        os.close(rfd_c)
+
+
+def _measure_target_disk_io(
+    label: str,
+    target_dir: Path,
+    *,
+    hard_deadline: float,
+    step_budget_seconds: float,
+    max_bytes_per_target: int,
+    chunk_bytes: int,
+    fstype: str | None,
+    read_mode: str = "auto",
+    _io_hook: Callable[[str, Path], None] | None = None,
+) -> dict[str, Any]:
+    """Measure sequential fsync write + uncached/cached read throughput for one directory within `hard_deadline`."""
+    base_doc: dict[str, Any] = {
+        "target": label,
+        "target_dir": str(target_dir),
+        "filesystem_type": fstype,
+        "bytes_written": 0,
+        "bytes_read": 0,
+        "write_seconds": 0.0,
+        "read_seconds": 0.0,
+        "write_mb_s": None,
+        "read_mb_s": None,
+        "read_method": None,
+        "status": "pending",
+    }
+    if not target_dir.is_dir():
+        reason = f"unreadable: directory '{target_dir}' does not exist"
+        return {**base_doc, "status": reason, "write_mb_s": reason, "read_mb_s": reason}
+
+    probe_file = target_dir / f".rdlab_disk_probe_{os.getpid()}_{uuid.uuid4().hex}.tmp"
+    result_holder: dict[str, Any] = {}
+    eff_chunk = max(4096, min(chunk_bytes, max_bytes_per_target))
+    eff_chunk = (eff_chunk // 4096) * 4096
+    unit = b"SESSION_ENV_DISK"
+    payload = unit * (eff_chunk // len(unit))
+
+    def _worker() -> None:
+        try:
+            if _io_hook is not None:
+                _io_hook("write_start", probe_file)
+            w_deadline = min(hard_deadline, time.monotonic() + step_budget_seconds)
+            wfd = os.open(probe_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            written = 0
+            t_w0 = time.monotonic()
+            try:
+                while written < max_bytes_per_target:
+                    to_write = min(len(payload), max_bytes_per_target - written)
+                    view = memoryview(payload)[:to_write]
+                    offset = 0
+                    while offset < to_write:
+                        n = os.write(wfd, view[offset:])
+                        offset += n
+                    written += to_write
+                    if time.monotonic() >= w_deadline:
+                        break
+                os.fsync(wfd)
+            finally:
+                os.close(wfd)
+            write_s = max(1e-6, time.monotonic() - t_w0)
+            if _io_hook is not None:
+                _io_hook("after_fsync", probe_file)
+
+            r_deadline = min(hard_deadline, time.monotonic() + step_budget_seconds)
+            bytes_read, read_s, read_method = _read_back_probe_file(
+                probe_file,
+                bytes_written=written,
+                chunk_bytes=eff_chunk,
+                read_deadline=r_deadline,
+                hard_deadline=hard_deadline,
+                read_mode=read_mode,
+            )
+            result_holder["doc"] = {
+                **base_doc,
+                "status": "ok",
+                "bytes_written": int(written),
+                "bytes_read": int(bytes_read),
+                "write_seconds": round(write_s, 6),
+                "read_seconds": round(read_s, 6),
+                "write_mb_s": round((written / 1_000_000.0) / write_s, 3),
+                "read_mb_s": round((bytes_read / 1_000_000.0) / read_s, 3),
+                "read_method": read_method,
+                "probe_file": str(probe_file),
+            }
+        except Exception as exc:
+            reason = f"unreadable: {type(exc).__name__}: {exc}"
+            result_holder["doc"] = {**base_doc, "status": reason, "write_mb_s": reason, "read_mb_s": reason}
+        finally:
+            try:
+                probe_file.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    try:
+        remaining = hard_deadline - time.monotonic()
+        if remaining <= 0.0:
+            reason = f"unreadable: disk probe hard bound ({DISK_THROUGHPUT_HARD_BOUND_SECONDS:g}s) exhausted"
+            return {**base_doc, "status": reason, "write_mb_s": reason, "read_mb_s": reason}
+        worker_t = threading.Thread(target=_worker, daemon=True)
+        worker_t.start()
+        worker_t.join(timeout=remaining)
+        if worker_t.is_alive():
+            reason = "unreadable: disk probe timed out at hard bound"
+            return {**base_doc, "status": reason, "write_mb_s": reason, "read_mb_s": reason}
+        doc = result_holder.get("doc")
+        if isinstance(doc, dict):
+            return doc
+        reason = "unreadable: disk probe worker returned no result"
+        return {**base_doc, "status": reason, "write_mb_s": reason, "read_mb_s": reason}
+    finally:
+        try:
+            probe_file.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def measure_session_disk_throughput(
+    *,
+    workspace_dir: Path | None = None,
+    container_dir: Path | None = None,
+    hard_bound_seconds: float = DISK_THROUGHPUT_HARD_BOUND_SECONDS,
+    step_budget_seconds: float = DISK_THROUGHPUT_STEP_BUDGET_SECONDS,
+    max_bytes_per_target: int = DISK_THROUGHPUT_CHUNK_BYTES * DISK_THROUGHPUT_MAX_CHUNKS_PER_TARGET,
+    chunk_bytes: int = DISK_THROUGHPUT_CHUNK_BYTES,
+    read_mode: str = "auto",
+    _io_hook: Callable[[str, Path], None] | None = None,
+) -> dict[str, Any]:
+    """Measure bounded sequential fsync write and read throughput for `/workspace` and the container disk."""
+    t_start = time.monotonic()
+    hard_deadline = t_start + max(0.05, float(hard_bound_seconds))
+    eff_workspace = Path(workspace_dir) if workspace_dir is not None else Path("/workspace")
+    ws_fstype = _parse_linux_mount_fstype(eff_workspace) if eff_workspace.is_dir() else None
+    eff_container, ct_fstype = _resolve_container_disk_probe_dir(container_dir)
+
+    workspace_rec = _measure_target_disk_io(
+        "workspace",
+        eff_workspace,
+        hard_deadline=hard_deadline,
+        step_budget_seconds=float(step_budget_seconds),
+        max_bytes_per_target=int(max_bytes_per_target),
+        chunk_bytes=int(chunk_bytes),
+        fstype=ws_fstype,
+        read_mode=read_mode,
+        _io_hook=_io_hook,
+    )
+    container_rec = _measure_target_disk_io(
+        "container_disk",
+        eff_container,
+        hard_deadline=hard_deadline,
+        step_budget_seconds=float(step_budget_seconds),
+        max_bytes_per_target=int(max_bytes_per_target),
+        chunk_bytes=int(chunk_bytes),
+        fstype=ct_fstype,
+        read_mode=read_mode,
+        _io_hook=_io_hook,
+    )
+    return {
+        "hard_bound_seconds": float(hard_bound_seconds),
+        "elapsed_seconds": round(max(0.0, time.monotonic() - t_start), 6),
+        "unit": "MB/s (1e6 bytes/s)",
+        "workspace": workspace_rec,
+        "container_disk": container_rec,
+    }
 
 
 def collect_and_write_session_env(
@@ -12106,6 +12600,10 @@ def collect_and_write_session_env(
     venv_python: Path | None = None,
     repo_dir: Path | None = None,
     sdpa_backend_requested: str | None = PINNED_SDPA_BACKEND,
+    probe_timeout: Any = None,
+    measure_disk: bool | None = None,
+    disk_workspace_dir: Path | None = None,
+    disk_container_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Write `session_env.json` at session start (`phase='start'`) and at session end (`phase='end'`).
 
@@ -12144,6 +12642,9 @@ def collect_and_write_session_env(
     cublas_ws_cfg = os.environ.get("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
     nvidia_tf32_override = os.environ.get("NVIDIA_TF32_OVERRIDE", "unset")
     python_hash_seed = os.environ.get("PYTHONHASHSEED", "unset")
+    probe_timeout_seconds, probe_timeout_source = resolve_session_env_probe_timeout_seconds(
+        probe_timeout
+    )
 
     if is_stub_or_dryrun:
         det_warn_only: bool | None = det_warn_only_env == "1"
@@ -12151,6 +12652,16 @@ def collect_and_write_session_env(
         fill_uninit_mem: bool = False
         sdpa_backend = sdpa_hook_raw or "math"
         cudnn_benchmark: Any = False
+        probe_timings: dict[str, Any] = {
+            "import_torch_seconds": None,
+            "cuda_query_seconds": None,
+            "determinism_setup_seconds": None,
+            "package_versions_seconds": None,
+            "total_seconds": None,
+            "timed_out": False,
+            "running_phase": None,
+            "phases_started": [],
+        }
         runtime_block = {
             "cuda_runtime": os.environ.get("FAKE_COLAB_CUDA_RUNTIME", "13.2"),
             "torch_version": os.environ.get("FAKE_COLAB_TORCH_VERSION", "2.14.1+cu132"),
@@ -12162,7 +12673,12 @@ def collect_and_write_session_env(
             ),
         }
     else:
-        probed = _query_judge_venv_runtime(work_dir=work_dir, venv_python=venv_python)
+        probed = _query_judge_venv_runtime(
+            work_dir=work_dir,
+            venv_python=venv_python,
+            timeout_seconds=probe_timeout_seconds,
+        )
+        probe_timings = dict(probed.get("probe_timings") or {})
         runtime_block = {
             "cuda_runtime": str(probed.get("cuda_runtime") or "unreadable: empty cuda_runtime"),
             "torch_version": str(probed.get("torch_version") or "unreadable: empty torch_version"),
@@ -12176,6 +12692,27 @@ def collect_and_write_session_env(
         cudnn_benchmark = probed.get("cudnn_benchmark")
         if cudnn_benchmark is None:
             cudnn_benchmark = "unreadable: torch.backends.cudnn.benchmark is None"
+
+    if (
+        phase == "end"
+        and isinstance(prior_session_env, Mapping)
+        and "disk_throughput" in prior_session_env
+        and measure_disk is not True
+    ):
+        disk_throughput_block = prior_session_env["disk_throughput"]
+    elif (phase == "start" and not is_stub_or_dryrun and measure_disk is not False) or measure_disk is True:
+        disk_throughput_block = measure_session_disk_throughput(
+            workspace_dir=disk_workspace_dir,
+            container_dir=disk_container_dir,
+        )
+    else:
+        disk_throughput_block = {
+            "hard_bound_seconds": DISK_THROUGHPUT_HARD_BOUND_SECONDS,
+            "elapsed_seconds": 0.0,
+            "unit": "MB/s (1e6 bytes/s)",
+            "workspace": {"status": "skipped_in_stub_or_dryrun", "write_mb_s": None, "read_mb_s": None, "read_method": None},
+            "container_disk": {"status": "skipped_in_stub_or_dryrun", "write_mb_s": None, "read_mb_s": None, "read_method": None},
+        }
 
     gpu_block = {
         "name": snap["name"],
@@ -12292,6 +12829,10 @@ def collect_and_write_session_env(
         "written_at_end": end_ts,
         "session_fingerprint_sha256": session_fp,
         "env_comparability_sha256": env_comparability_sha256,
+        "probe_timeout_seconds": probe_timeout_seconds,
+        "probe_timeout_source": probe_timeout_source,
+        "probe_timings": probe_timings,
+        "disk_throughput": disk_throughput_block,
         "host_cpu_model": host_cpu_model,
         "CUBLAS_WORKSPACE_CONFIG": cublas_ws_cfg,
         "NVIDIA_TF32_OVERRIDE": nvidia_tf32_override,
@@ -15074,6 +15615,11 @@ def build_vm_receipt_doc(
             else None
         ),
         "session_env": dict(session_env_report) if isinstance(session_env_report, Mapping) else session_env_report,
+        "disk_throughput": (
+            session_env_report.get("disk_throughput")
+            if isinstance(session_env_report, Mapping)
+            else None
+        ),
         "fill_uninitialized_memory": (
             bool(session_env_report.get("fill_uninitialized_memory", False))
             if isinstance(session_env_report, Mapping)
@@ -15423,6 +15969,9 @@ def main(argv: list[str] | None = None) -> int:
             getattr(args, "hf_download_max_workers", None),
             getattr(args, "hf_xet_num_concurrent_range_gets", None),
         )
+
+        current_step = "validate_session_env_probe_timeout"
+        resolve_session_env_probe_timeout_seconds()
 
         current_step = "check_upload_path_allowed"
         uploaded_item_files: list[Path] = []
@@ -16431,8 +16980,18 @@ def main(argv: list[str] | None = None) -> int:
             for sk in ("shard_spec", "shard_manifest_sha256", "shard_item_ids", "anchor_item_ids"):
                 fail_receipt[sk] = shard_info_report.get(sk)
                 status_fail_extra[sk] = shard_info_report.get(sk)
+        if session_env_report is None:
+            senv_disk_path = args.run_dir / SESSION_ENV_FILENAME
+            if senv_disk_path.is_file():
+                try:
+                    loaded_senv = json.loads(senv_disk_path.read_text(encoding="utf-8"))
+                    if isinstance(loaded_senv, dict):
+                        session_env_report = loaded_senv
+                except Exception:
+                    pass
         if session_env_report is not None:
             fail_receipt["session_env"] = session_env_report
+            fail_receipt["disk_throughput"] = session_env_report.get("disk_throughput")
             fail_receipt["session_fingerprint_sha256"] = session_env_report.get(
                 "session_fingerprint_sha256"
             )
