@@ -33,6 +33,9 @@ import vm_judges  # noqa: E402
 DEFAULT_LOCK_PATH = SCRIPT_DIR / "locks" / "vllm.lock.txt"
 DEFAULT_MEMORY_CAP_BYTES: int = 64 * 1024 * 1024 * 1024
 DEFAULT_CURRENT_BYTES: int = 0
+POD_2026_11_24_LIMIT_BYTES: int = 124_999_999_488
+POD_2026_11_24_CURRENT_BYTES_BEFORE_DROP: int = 93_410_516_992
+PER_JOB_PEAK_MULTI_JOB_NOTE: str = "only measured at jobs=1"
 DEFAULT_CGROUP_V2_ROOT = Path("/sys/fs/cgroup")
 FLASHINFER_CUDA_ARCH_LIST = "12.0f"
 FUSED_MOE_120_MODULE_NAME = "fused_moe_120"
@@ -431,6 +434,127 @@ def resolve_fused_moe_120_target_spec() -> dict[str, Any]:
     }
 
 
+def build_pod_reference(
+    *,
+    reserve_bytes: int = vm_judges.DEFAULT_JIT_BUILD_RESERVE_BYTES,
+    per_job_bytes_assumed: int = vm_judges.DEFAULT_JIT_BUILD_PER_JOB_BYTES,
+    measured_per_job_bytes: int | None = None,
+) -> dict[str, Any]:
+    """Evaluate `compute_jit_build_jobs` on the 2026-11-24 RunPod pod pre-drop memory readings."""
+    assumed_plan = vm_judges.compute_jit_build_jobs(
+        limit_bytes=POD_2026_11_24_LIMIT_BYTES,
+        current_bytes=POD_2026_11_24_CURRENT_BYTES_BEFORE_DROP,
+        reserve_bytes=int(reserve_bytes),
+        per_job_bytes=int(per_job_bytes_assumed),
+    )
+    eff_measured = (
+        int(measured_per_job_bytes)
+        if measured_per_job_bytes is not None and int(measured_per_job_bytes) > 0
+        else None
+    )
+    measured_plan = (
+        vm_judges.compute_jit_build_jobs(
+            limit_bytes=POD_2026_11_24_LIMIT_BYTES,
+            current_bytes=POD_2026_11_24_CURRENT_BYTES_BEFORE_DROP,
+            reserve_bytes=int(reserve_bytes),
+            per_job_bytes=eff_measured,
+        )
+        if eff_measured is not None
+        else None
+    )
+    return {
+        "pod_date": "2026-11-24",
+        "limit_bytes": POD_2026_11_24_LIMIT_BYTES,
+        "current_bytes": POD_2026_11_24_CURRENT_BYTES_BEFORE_DROP,
+        "reserve_bytes": int(reserve_bytes),
+        "per_job_bytes_assumed": int(per_job_bytes_assumed),
+        "jobs_before_drop": int(assumed_plan["jobs"]),
+        "raw_jobs_before_drop": int(assumed_plan["raw_jobs"]),
+        "measured_per_job_bytes": eff_measured,
+        "jobs_before_drop_with_measured_per_job": (
+            int(measured_plan["jobs"]) if measured_plan is not None else None
+        ),
+        "raw_jobs_before_drop_with_measured_per_job": (
+            int(measured_plan["raw_jobs"]) if measured_plan is not None else None
+        ),
+    }
+
+
+def enrich_jit_build_receipt(receipt: Mapping[str, Any]) -> dict[str, Any]:
+    """Populate `per_job_peak_*` and `pod_reference` beside the measured receipt fields."""
+    jobs = int(receipt["jobs"])
+    raw_peak = receipt.get("memory_peak_bytes")
+    memory_peak_bytes = (
+        int(raw_peak)
+        if isinstance(raw_peak, int) and not isinstance(raw_peak, bool)
+        else None
+    )
+    job_plan = receipt.get("job_plan") if isinstance(receipt.get("job_plan"), Mapping) else {}
+    reserve_bytes = int(
+        receipt["reserve_bytes"]
+        if receipt.get("reserve_bytes") is not None
+        else job_plan.get("reserve_bytes", vm_judges.DEFAULT_JIT_BUILD_RESERVE_BYTES)
+    )
+    per_job_bytes_assumed = int(
+        receipt["per_job_bytes_assumed"]
+        if receipt.get("per_job_bytes_assumed") is not None
+        else job_plan.get("per_job_bytes", vm_judges.DEFAULT_JIT_BUILD_PER_JOB_BYTES)
+    )
+    if jobs == 1:
+        per_job_peak_bytes = memory_peak_bytes
+        per_job_peak_note = None if memory_peak_bytes is not None else "memory.peak unavailable"
+    else:
+        per_job_peak_bytes = None
+        per_job_peak_note = PER_JOB_PEAK_MULTI_JOB_NOTE
+    per_job_peak_exceeds_assumption = (
+        bool(per_job_peak_bytes > per_job_bytes_assumed)
+        if per_job_peak_bytes is not None
+        else None
+    )
+    pod_reference = build_pod_reference(
+        reserve_bytes=reserve_bytes,
+        per_job_bytes_assumed=per_job_bytes_assumed,
+        measured_per_job_bytes=per_job_peak_bytes,
+    )
+    computed = {
+        "memory_peak_bytes": memory_peak_bytes,
+        "per_job_peak_bytes": per_job_peak_bytes,
+        "per_job_peak_note": per_job_peak_note,
+        "per_job_bytes_assumed": per_job_bytes_assumed,
+        "per_job_peak_exceeds_assumption": per_job_peak_exceeds_assumption,
+        "pod_reference": pod_reference,
+    }
+    ordered_keys = (
+        "versions",
+        "lock_sha256",
+        "targets",
+        "cap_bytes",
+        "jobs",
+        "memory_peak_bytes",
+        "per_job_peak_bytes",
+        "per_job_peak_note",
+        "per_job_bytes_assumed",
+        "per_job_peak_exceeds_assumption",
+        "pod_reference",
+        "build_seconds",
+        "wall_seconds",
+        "scope_mode",
+        "success",
+        "cache_dir",
+        "error",
+    )
+    out: dict[str, Any] = {}
+    for k in ordered_keys:
+        if k in computed:
+            out[k] = computed[k]
+        elif k in receipt:
+            out[k] = receipt[k]
+    for k, v in receipt.items():
+        if k not in out:
+            out[k] = v
+    return out
+
+
 def build_jit_rung_plan(
     *,
     cap_bytes: int,
@@ -459,6 +583,11 @@ def build_jit_rung_plan(
         nproc=nproc,
         overrides=budget["overrides"],
     )
+    pod_reference = build_pod_reference(
+        reserve_bytes=eff_reserve,
+        per_job_bytes_assumed=eff_per_job,
+        measured_per_job_bytes=None,
+    )
     eff_cache_dir = (
         validate_fresh_cache_dir(cache_dir).as_posix()
         if cache_dir is not None
@@ -481,11 +610,11 @@ def build_jit_rung_plan(
         "versions": versions,
         "pinned_packages": lock_info["pinned_packages"],
         "targets": [FUSED_MOE_120_MODULE_NAME],
-        "target_details": target_spec,
         "cap_bytes": int(cap_bytes),
         "current_bytes": int(current_bytes),
         "jobs": int(job_plan["jobs"]),
-        "job_plan": job_plan,
+        "per_job_bytes_assumed": eff_per_job,
+        "pod_reference": pod_reference,
         "log_line": vm_judges.format_jit_build_jobs_log_line(job_plan),
         "cache_dir": eff_cache_dir,
         "venv_dir": Path(venv_dir).as_posix() if venv_dir is not None else None,
@@ -495,6 +624,8 @@ def build_jit_rung_plan(
             "FLASHINFER_WORKSPACE_BASE": eff_cache_dir,
             **job_plan["env_values"],
         },
+        "job_plan": job_plan,
+        "target_details": target_spec,
         "toolkit_wiring": (
             "Synthetic CUDA_HOME staged from venv nvidia/cu13 wheel tree "
             "(CUDA_HOME, CUDA_PATH, FLASHINFER_NVCC=$CUDA_HOME/bin/nvcc, "
@@ -625,10 +756,11 @@ def write_jit_build_receipt(receipt_path: Path, receipt: Mapping[str, Any]) -> P
                 f"Receipt versions missing {ver_k!r}",
             )
     validate_fresh_cache_dir(Path(str(receipt["cache_dir"])))
+    enriched = enrich_jit_build_receipt(receipt)
     out_path = Path(receipt_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(
-        json.dumps(dict(receipt), indent=2, sort_keys=True) + "\n",
+        json.dumps(enriched, indent=2) + "\n",
         encoding="utf-8",
         newline="\n",
     )
@@ -665,7 +797,7 @@ def run_jit_build_rung(
             out_path = Path(receipt_path)
             out_path.parent.mkdir(parents=True, exist_ok=True)
             out_path.write_text(
-                json.dumps(plan, indent=2, sort_keys=True) + "\n",
+                json.dumps(plan, indent=2) + "\n",
                 encoding="utf-8",
                 newline="\n",
             )
@@ -744,22 +876,24 @@ def run_jit_build_rung(
         if build_s is None:
             build_s = worker_meta.get("build_seconds", wall_s)
         targets = jit_log_summary.get("jit_build_targets") or [FUSED_MOE_120_MODULE_NAME]
-        receipt: dict[str, Any] = {
-            "versions": venv_info["versions"],
-            "lock_sha256": venv_info["lock_sha256"],
-            "targets": targets,
-            "target_details": resolve_fused_moe_120_target_spec(),
-            "cap_bytes": int(cap_bytes),
-            "jobs": int(job_plan["jobs"]),
-            "job_plan": job_plan,
-            "scope_mode": eff_scope_mode,
-            "memory_peak_bytes": worker_meta.get("memory_peak_bytes"),
-            "build_seconds": round(float(build_s), 6),
-            "wall_seconds": wall_s,
-            "success": bool(int(getattr(res, "returncode", 1)) == 0 and worker_meta.get("success", False)),
-            "cache_dir": str(eff_cache_dir),
-            "error": worker_meta.get("error"),
-        }
+        receipt = enrich_jit_build_receipt(
+            {
+                "versions": venv_info["versions"],
+                "lock_sha256": venv_info["lock_sha256"],
+                "targets": targets,
+                "cap_bytes": int(cap_bytes),
+                "jobs": int(job_plan["jobs"]),
+                "memory_peak_bytes": worker_meta.get("memory_peak_bytes"),
+                "build_seconds": round(float(build_s), 6),
+                "wall_seconds": wall_s,
+                "scope_mode": eff_scope_mode,
+                "success": bool(int(getattr(res, "returncode", 1)) == 0 and worker_meta.get("success", False)),
+                "cache_dir": str(eff_cache_dir),
+                "error": worker_meta.get("error"),
+                "job_plan": job_plan,
+                "target_details": resolve_fused_moe_120_target_spec(),
+            }
+        )
         if receipt_path is not None:
             write_jit_build_receipt(receipt_path, receipt)
         return receipt
@@ -861,7 +995,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         timeout_seconds=float(args.timeout_seconds),
         plan_only=bool(args.plan_only),
     )
-    sys.stdout.write(json.dumps(result, indent=2, sort_keys=True) + "\n")
+    sys.stdout.write(json.dumps(result, indent=2) + "\n")
     sys.stdout.flush()
     if args.plan_only:
         return 0

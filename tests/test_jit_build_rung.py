@@ -194,7 +194,13 @@ def test_prepare_venv_cuda_home_and_scope_command_and_receipt_writer(
     }
     jit_build_rung.write_jit_build_receipt(receipt_path, receipt_payload)
     written = json.loads(receipt_path.read_text(encoding="utf-8"))
-    assert written == receipt_payload
+    for k, v in receipt_payload.items():
+        assert written[k] == v
+    assert written["per_job_peak_bytes"] is None
+    assert written["per_job_peak_note"] == "only measured at jobs=1"
+    assert written["per_job_bytes_assumed"] == 8 * 1024**3
+    assert written["per_job_peak_exceeds_assumption"] is None
+    assert written["pod_reference"]["jobs_before_drop"] == 1
 
     # Home cache dir (~/.cache/flashinfer) must be refused
     home_cache = Path.home() / ".cache" / "flashinfer"
@@ -389,5 +395,180 @@ def test_ensure_vllm_venv_and_run_jit_build_rung_mocked(
     with pytest.raises(jit_build_rung.JitBuildRungError) as exc_nvcc:
         jit_build_rung.prepare_venv_cuda_home(no_nvcc_venv, tmp_path / "ws_err2")
     assert exc_nvcc.value.code == "VENV_NVCC_MISSING"
+
+
+def test_receipt_writer_fills_per_job_peak_at_jobs_1_and_null_above_1(tmp_path: Path) -> None:
+    cache_dir = tmp_path / "fi_cache_jobs"
+
+    def _base(jobs: int, peak: int | None) -> dict[str, Any]:
+        return {
+            "versions": {"vllm": "0.34.0", "flashinfer": "0.7.3", "nvcc": "13.5.37"},
+            "targets": ["fused_moe_120"],
+            "cap_bytes": 64 * 1024**3,
+            "jobs": jobs,
+            "memory_peak_bytes": peak,
+            "build_seconds": 100.0,
+            "success": True,
+            "cache_dir": str(cache_dir),
+            "target_details": {"module_name": "fused_moe_120"},
+        }
+
+    # Case 1: jobs == 1, peak 10 GiB > assumed 8 GiB -> per_job_peak_exceeds_assumption True
+    p1 = tmp_path / "rec_1_hi.json"
+    jit_build_rung.write_jit_build_receipt(p1, _base(1, 10 * 1024**3))
+    r1_txt = p1.read_text(encoding="utf-8")
+    r1 = json.loads(r1_txt)
+    assert r1["per_job_peak_bytes"] == 10 * 1024**3
+    assert r1["per_job_peak_note"] is None
+    assert r1["per_job_bytes_assumed"] == 8 * 1024**3
+    assert r1["per_job_peak_exceeds_assumption"] is True
+    # Measured per-job fields sit right beside pod_reference before target_details
+    assert (
+        r1_txt.index('"memory_peak_bytes"')
+        < r1_txt.index('"per_job_peak_bytes"')
+        < r1_txt.index('"per_job_peak_note"')
+        < r1_txt.index('"per_job_bytes_assumed"')
+        < r1_txt.index('"per_job_peak_exceeds_assumption"')
+        < r1_txt.index('"pod_reference"')
+        < r1_txt.index('"target_details"')
+    )
+
+    # Case 2: jobs == 1, peak 6 GiB <= assumed 8 GiB -> per_job_peak_exceeds_assumption False
+    p2 = tmp_path / "rec_1_lo.json"
+    jit_build_rung.write_jit_build_receipt(p2, _base(1, 6 * 1024**3))
+    r2 = json.loads(p2.read_text(encoding="utf-8"))
+    assert r2["per_job_peak_bytes"] == 6 * 1024**3
+    assert r2["per_job_peak_note"] is None
+    assert r2["per_job_peak_exceeds_assumption"] is False
+
+    # Case 3: jobs == 1, peak None -> unavailable note, exceeds None
+    p3 = tmp_path / "rec_1_none.json"
+    jit_build_rung.write_jit_build_receipt(p3, _base(1, None))
+    r3 = json.loads(p3.read_text(encoding="utf-8"))
+    assert r3["per_job_peak_bytes"] is None
+    assert r3["per_job_peak_note"] == "memory.peak unavailable"
+    assert r3["per_job_peak_exceeds_assumption"] is None
+
+    # Case 4: jobs > 1 (jobs == 4) -> per_job_peak_bytes None, note "only measured at jobs=1", exceeds None
+    p4 = tmp_path / "rec_4.json"
+    jit_build_rung.write_jit_build_receipt(p4, _base(4, 24 * 1024**3))
+    r4 = json.loads(p4.read_text(encoding="utf-8"))
+    assert r4["memory_peak_bytes"] == 24 * 1024**3
+    assert r4["per_job_peak_bytes"] is None
+    assert r4["per_job_peak_note"] == "only measured at jobs=1"
+    assert r4["per_job_bytes_assumed"] == 8 * 1024**3
+    assert r4["per_job_peak_exceeds_assumption"] is None
+
+
+def test_pod_reference_hand_computed_in_receipt_and_plan_only(tmp_path: Path) -> None:
+    cache_dir = tmp_path / "fi_cache_pod"
+    # Hand computation for RunPod pod of 2026-11-24:
+    # limit = 124_999_999_488, current_before_drop = 93_410_516_992, reserve = 16 GiB (17_179_869_184)
+    # headroom = 124_999_999_488 - 93_410_516_992 - 17_179_869_184 = 14_409_613_312
+    # assumed per_job = 8 GiB (8_589_934_592) -> 14_409_613_312 // 8_589_934_592 = 1
+    assert jit_build_rung.POD_2026_11_24_LIMIT_BYTES == 124_999_999_488
+    assert jit_build_rung.POD_2026_11_24_CURRENT_BYTES_BEFORE_DROP == 93_410_516_992
+
+    # Measured peak = 6 GiB (6_442_450_944): 14_409_613_312 // 6_442_450_944 == 2
+    rec_6g_p = tmp_path / "rec_pod_6g.json"
+    jit_build_rung.write_jit_build_receipt(
+        rec_6g_p,
+        {
+            "versions": {"vllm": "0.34.0", "flashinfer": "0.7.3", "nvcc": "13.5.37"},
+            "targets": ["fused_moe_120"],
+            "cap_bytes": 64 * 1024**3,
+            "jobs": 1,
+            "memory_peak_bytes": 6 * 1024**3,
+            "build_seconds": 90.0,
+            "success": True,
+            "cache_dir": str(cache_dir),
+        },
+    )
+    rec_6g = json.loads(rec_6g_p.read_text(encoding="utf-8"))
+    assert rec_6g["pod_reference"] == {
+        "pod_date": "2026-11-24",
+        "limit_bytes": 124_999_999_488,
+        "current_bytes": 93_410_516_992,
+        "reserve_bytes": 17_179_869_184,
+        "per_job_bytes_assumed": 8_589_934_592,
+        "jobs_before_drop": 1,
+        "raw_jobs_before_drop": 1,
+        "measured_per_job_bytes": 6_442_450_944,
+        "jobs_before_drop_with_measured_per_job": 2,
+        "raw_jobs_before_drop_with_measured_per_job": 2,
+    }
+
+    # Measured peak = 16 GiB (17_179_869_184): 14_409_613_312 // 17_179_869_184 == 0 -> clamped to 1
+    rec_16g_p = tmp_path / "rec_pod_16g.json"
+    jit_build_rung.write_jit_build_receipt(
+        rec_16g_p,
+        {
+            "versions": {"vllm": "0.34.0", "flashinfer": "0.7.3", "nvcc": "13.5.37"},
+            "targets": ["fused_moe_120"],
+            "cap_bytes": 64 * 1024**3,
+            "jobs": 1,
+            "memory_peak_bytes": 16 * 1024**3,
+            "build_seconds": 90.0,
+            "success": True,
+            "cache_dir": str(cache_dir),
+        },
+    )
+    rec_16g = json.loads(rec_16g_p.read_text(encoding="utf-8"))
+    assert rec_16g["pod_reference"]["jobs_before_drop_with_measured_per_job"] == 1
+    assert rec_16g["pod_reference"]["raw_jobs_before_drop_with_measured_per_job"] == 0
+
+    # Multi-job receipt leaves jobs_before_drop_with_measured_per_job null
+    rec_multi_p = tmp_path / "rec_pod_multi.json"
+    jit_build_rung.write_jit_build_receipt(
+        rec_multi_p,
+        {
+            "versions": {"vllm": "0.34.0", "flashinfer": "0.7.3", "nvcc": "13.5.37"},
+            "targets": ["fused_moe_120"],
+            "cap_bytes": 64 * 1024**3,
+            "jobs": 6,
+            "memory_peak_bytes": 30 * 1024**3,
+            "build_seconds": 90.0,
+            "success": True,
+            "cache_dir": str(cache_dir),
+        },
+    )
+    rec_multi = json.loads(rec_multi_p.read_text(encoding="utf-8"))
+    assert rec_multi["pod_reference"]["jobs_before_drop"] == 1
+    assert rec_multi["pod_reference"]["measured_per_job_bytes"] is None
+    assert rec_multi["pod_reference"]["jobs_before_drop_with_measured_per_job"] is None
+
+    # `--plan-only` prints exact pod_reference too
+    env = dict(os.environ)
+    env["CUDA_VISIBLE_DEVICES"] = ""
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPTS_COLAB_DIR / "jit_build_rung.py"),
+            "--plan-only",
+            "--memory-max",
+            "64GiB",
+        ],
+        env=env,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    plan = json.loads(proc.stdout)
+    assert plan["per_job_bytes_assumed"] == 8_589_934_592
+    assert plan["pod_reference"] == {
+        "pod_date": "2026-11-24",
+        "limit_bytes": 124_999_999_488,
+        "current_bytes": 93_410_516_992,
+        "reserve_bytes": 17_179_869_184,
+        "per_job_bytes_assumed": 8_589_934_592,
+        "jobs_before_drop": 1,
+        "raw_jobs_before_drop": 1,
+        "measured_per_job_bytes": None,
+        "jobs_before_drop_with_measured_per_job": None,
+        "raw_jobs_before_drop_with_measured_per_job": None,
+    }
 
 
