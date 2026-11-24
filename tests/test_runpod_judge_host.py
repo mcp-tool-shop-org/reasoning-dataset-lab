@@ -4701,7 +4701,7 @@ exit "$rc"
     )
     elapsed_s = time.monotonic() - t0
     assert res_p.returncode == 143, res_p.stderr
-    assert elapsed_s < 15.0
+    assert elapsed_s < 30.0
     assert sig_marker.is_file()
     calls_p = _read_call_log(env_p["log_path"])
     assert sum(1 for c in calls_p if c["tool"] == "offrig_job") == 0

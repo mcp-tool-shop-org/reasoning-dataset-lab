@@ -4983,7 +4983,7 @@ PY
 runpod_open_pod() {
   local note_text="$1" check_err check_rc=0 vis_err vis_rc=0 img_err img_rc=0
   local plan_out plan_err plan_rc=0 plan_f_err
-  local launch_out_f launch_err_f launch_rc=0 launch_txt err_code
+  local launch_out_f launch_err_f launch_rc=0 launch_txt err_code _term_ticks=0
   local -a plan_args=() launch_fields=()
 
   if [[ "$SESSION_SMOKE_FLAG" -ne 1 ]] && [[ "$MODE" != "probe" ]] && (( WALL_SECONDS < RUNPOD_MIN_RUN_SECONDS )); then
@@ -5153,6 +5153,20 @@ PY
     kill -TERM "$EXEC_PID" 2>/dev/null || true
   fi
   while true; do
+    if [[ "${RUNPOD_LAUNCH_DEFERRED_SIGNAL:-0}" -eq 1 ]]; then
+      _term_ticks=0
+      while kill -0 "$EXEC_PID" 2>/dev/null && [[ "$(ps -o stat= -p "$EXEC_PID" 2>/dev/null | tr -d '[:space:]')" != Z* ]] && (( _term_ticks < 1300 )); do
+        kill -TERM "$EXEC_PID" 2>/dev/null || true
+        internal_poll_sleep 0.05
+        _term_ticks=$(( _term_ticks + 1 ))
+      done
+      if kill -0 "$EXEC_PID" 2>/dev/null && [[ "$(ps -o stat= -p "$EXEC_PID" 2>/dev/null | tr -d '[:space:]')" != Z* ]]; then
+        terminate_exec_tree "$EXEC_PID" "$EXEC_KILL_GRACE_SECONDS"
+      fi
+      launch_rc=0
+      wait "$EXEC_PID" 2>/dev/null || launch_rc=$?
+      break
+    fi
     prev_launch_sig="${RUNPOD_LAUNCH_SIGNAL_COUNT:-0}"
     launch_rc=0
     wait "$EXEC_PID" 2>/dev/null || launch_rc=$?
