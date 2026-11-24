@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
 import importlib.util
 import json
 import os
 import re
 import shlex
 import shutil
+import signal
 import stat
 import subprocess
 import sys
+import tempfile
+import threading
 import time
 import types
 from pathlib import Path
@@ -250,7 +254,7 @@ def test_fake_venv_python_timeout_names_running_phase_and_refuses(
         "#!/usr/bin/env bash\n"
         f"echo '{vm_judges.PROBE_PHASE_MARKER_PREFIX}import_torch'\n"
         f"echo '{vm_judges.PROBE_PHASE_MARKER_PREFIX}cuda_query'\n"
-        "sleep 8\n",
+        "sleep 0.8\n",
         encoding="utf-8",
         newline="\n",
     )
@@ -294,7 +298,7 @@ def test_fake_venv_python_timeout_names_running_phase_and_refuses(
 
     # Also test sleep before any phase marker (interpreter startup / import_torch stall)
     venv_early = tmp_path / "early_sleep_py"
-    venv_early.write_text("#!/usr/bin/env bash\nsleep 8\n", encoding="utf-8", newline="\n")
+    venv_early.write_text("#!/usr/bin/env bash\nsleep 0.8\n", encoding="utf-8", newline="\n")
     venv_early.chmod(venv_early.stat().st_mode | stat.S_IEXEC)
     probed_early = vm_judges._query_judge_venv_runtime(venv_python=venv_early, timeout_seconds=0.2)
     assert "import_torch" in probed_early["torch_version"]
@@ -803,11 +807,29 @@ def test_real_mode_unreadable_fields_refusal_preserved_and_fail_receipt(
     venv_py = work_dir / "venv-judge" / "bin" / "python"
     venv_py.parent.mkdir(parents=True, exist_ok=True)
     venv_py.write_text(
-        f"#!/usr/bin/env bash\necho '{vm_judges.PROBE_PHASE_MARKER_PREFIX}determinism_setup'\nsleep 8\n",
+        f"#!/usr/bin/env bash\necho '{vm_judges.PROBE_PHASE_MARKER_PREFIX}determinism_setup'\nsleep 0.8\n",
         encoding="utf-8",
         newline="\n",
     )
     venv_py.chmod(venv_py.stat().st_mode | stat.S_IEXEC)
+
+    main_ws = tmp_path / "main_ws_probe"
+    main_ct = tmp_path / "main_ct_probe"
+    main_ws.mkdir(parents=True, exist_ok=True)
+    main_ct.mkdir(parents=True, exist_ok=True)
+    orig_measure_disk = vm_judges.measure_session_disk_throughput
+    monkeypatch.setattr(
+        vm_judges,
+        "measure_session_disk_throughput",
+        lambda *a, **kw: orig_measure_disk(
+            *a,
+            **{
+                **kw,
+                "workspace_dir": kw.get("workspace_dir") or main_ws,
+                "container_dir": kw.get("container_dir") or main_ct,
+            },
+        ),
+    )
 
     vm_run_dir = tmp_path / "vm_run"
     vm_run_dir.mkdir(parents=True, exist_ok=True)
@@ -865,3 +887,592 @@ def test_real_mode_unreadable_fields_refusal_preserved_and_fail_receipt(
     assert isinstance(vm_receipt["session_env"], dict)
     assert isinstance(vm_receipt["disk_throughput"], dict)
     assert vm_receipt["disk_throughput"] == vm_receipt["session_env"]["disk_throughput"]
+
+
+def test_kill_process_group_best_effort_oserror_and_non_posix_branches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify `_kill_process_group_best_effort` swallows `OSError` and skips `killpg` when `os.name == 'nt'`."""
+    recorded_killpg: list[tuple[int, int]] = []
+    kill_calls = 0
+
+    class _FakeProc:
+        pid = 42424
+
+        def kill(self) -> None:
+            nonlocal kill_calls
+            kill_calls += 1
+            raise PermissionError("simulated proc.kill failure")
+
+    def _failing_killpg(pid: int, sig: int) -> None:
+        recorded_killpg.append((pid, sig))
+        raise ProcessLookupError("simulated os.killpg failure")
+
+    with monkeypatch.context() as mp:
+        mp.setattr(os, "name", "posix")
+        if hasattr(os, "killpg"):
+            mp.setattr(os, "killpg", _failing_killpg)
+        else:
+            mp.setattr(os, "killpg", _failing_killpg, raising=False)
+        vm_judges._kill_process_group_best_effort(_FakeProc())  # type: ignore[arg-type]
+
+    assert recorded_killpg == [(42424, signal.SIGKILL)]
+    assert kill_calls == 1
+
+    killpg_called_on_nt = False
+    nt_kill_calls = 0
+
+    class _FakeNtProc:
+        pid = 52525
+
+        def kill(self) -> None:
+            nonlocal nt_kill_calls
+            nt_kill_calls += 1
+
+    def _unexpected_killpg(_pid: int, _sig: int) -> None:
+        nonlocal killpg_called_on_nt
+        killpg_called_on_nt = True
+
+    with monkeypatch.context() as mp:
+        mp.setattr(os, "name", "nt")
+        mp.setattr(os, "killpg", _unexpected_killpg, raising=False)
+        vm_judges._kill_process_group_best_effort(_FakeNtProc())  # type: ignore[arg-type]
+
+    assert not killpg_called_on_nt
+    assert nt_kill_calls == 1
+
+
+def test_runtime_probe_second_communicate_drain_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify second `communicate(timeout=2.0)` `TimeoutExpired` drains cleanly within timeout + ~2s and names running phase."""
+    venv_py = tmp_path / "fake_drain_python"
+    venv_py.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8", newline="\n")
+    venv_py.chmod(venv_py.stat().st_mode | stat.S_IEXEC)
+
+    communicate_timeouts: list[Any] = []
+    kill_pids: list[int] = []
+
+    class _FakeDrainTimeoutPopen:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            self.pid = 51515
+            self.returncode = None
+
+        def communicate(self, timeout: float | None = None) -> tuple[bytes, bytes]:
+            communicate_timeouts.append(timeout)
+            if len(communicate_timeouts) == 1:
+                raise subprocess.TimeoutExpired(
+                    cmd="fake_drain_python",
+                    timeout=float(timeout or 0.1),
+                    output=f"{vm_judges.PROBE_PHASE_MARKER_PREFIX}cuda_query\n".encode("utf-8"),
+                    stderr=b"",
+                )
+            raise subprocess.TimeoutExpired(cmd="fake_drain_python", timeout=float(timeout or 2.0))
+
+    monkeypatch.setattr(subprocess, "Popen", _FakeDrainTimeoutPopen)
+    monkeypatch.setattr(vm_judges, "_kill_process_group_best_effort", lambda p: kill_pids.append(p.pid))
+
+    t0 = time.monotonic()
+    res = vm_judges._query_judge_venv_runtime(venv_python=venv_py, timeout_seconds=0.1)
+    elapsed = time.monotonic() - t0
+
+    assert elapsed < 2.1
+    assert communicate_timeouts == [0.1, 2.0]
+    assert kill_pids == [51515]
+    assert res["probe_timings"]["timed_out"] is True
+    assert res["probe_timings"]["running_phase"] == "cuda_query"
+    assert res["probe_timings"]["phases_started"] == ["cuda_query"]
+    assert "cuda_query" in res["torch_version"]
+
+
+def test_runtime_probe_monotonic_import_timestamp_guards(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify non-bool numeric and bounded-range checks protect `import_torch_seconds` from bool or out-of-range child timestamps."""
+    venv_py = tmp_path / "fake_mono_python"
+    venv_py.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8", newline="\n")
+    venv_py.chmod(venv_py.stat().st_mode | stat.S_IEXEC)
+
+    def _run_with_payload(payload: dict[str, Any]) -> dict[str, Any]:
+        encoded = (
+            f"{vm_judges.PROBE_PHASE_MARKER_PREFIX}import_torch\n"
+            f"{json.dumps(payload)}\n"
+        ).encode("utf-8")
+
+        class _FakeOkPopen:
+            def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+                self.pid = 61616
+                self.returncode = 0
+
+            def communicate(self, timeout: float | None = None) -> tuple[bytes, bytes]:
+                del timeout
+                return encoded, b""
+
+        mono_seq = iter([10.5, 11.5])
+        with monkeypatch.context() as mp:
+            mp.setattr(subprocess, "Popen", _FakeOkPopen)
+            mp.setattr(time, "monotonic", lambda: next(mono_seq, 11.5))
+            return vm_judges._query_judge_venv_runtime(venv_python=venv_py, timeout_seconds=5.0)
+
+    base_runtime = {
+        "cuda_runtime": "13.2",
+        "torch_version": "2.14.1+cu132",
+        "transformers_version": "5.19.0",
+        "bitsandbytes_version": "0.45.0",
+        "determinism_status": "enforced",
+        "determinism_warn_only": False,
+        "fill_uninitialized_memory": False,
+        "cudnn_benchmark": False,
+        "sdpa_backend": "math",
+    }
+
+    # Bool `_t_import_done_monotonic` must fail the `not isinstance(..., bool)` guard at `t_parent_start=0.5`
+    with monkeypatch.context() as mp:
+        encoded_bool = (
+            f"{vm_judges.PROBE_PHASE_MARKER_PREFIX}import_torch\n"
+            f"{json.dumps({**base_runtime, '_t_import_done_monotonic': True, 'phase_timings': {'import_torch_seconds': 0.125}})}\n"
+        ).encode("utf-8")
+
+        class _FakeBoolPopen:
+            def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+                self.pid = 61617
+                self.returncode = 0
+
+            def communicate(self, timeout: float | None = None) -> tuple[bytes, bytes]:
+                del timeout
+                return encoded_bool, b""
+
+        bool_mono = iter([0.5, 1.5])
+        mp.setattr(subprocess, "Popen", _FakeBoolPopen)
+        mp.setattr(time, "monotonic", lambda: next(bool_mono, 1.5))
+        res_bool = vm_judges._query_judge_venv_runtime(venv_python=venv_py, timeout_seconds=5.0)
+    assert res_bool["probe_timings"]["import_torch_seconds"] == 0.125
+
+    # Negative delta (`9.5 - 10.5 = -1.0 < 0.0`) must be ignored and keep child timing
+    res_neg = _run_with_payload(
+        {**base_runtime, "_t_import_done_monotonic": 9.5, "phase_timings": {"import_torch_seconds": 0.25}}
+    )
+    assert res_neg["probe_timings"]["import_torch_seconds"] == 0.25
+
+    # Delta exceeding `total_seconds + 0.05` (`15.0 - 10.5 = 4.5 > 1.05`) must be ignored
+    res_hi = _run_with_payload(
+        {**base_runtime, "_t_import_done_monotonic": 15.0, "phase_timings": {"import_torch_seconds": 0.375}}
+    )
+    assert res_hi["probe_timings"]["import_torch_seconds"] == 0.375
+
+
+def test_inprocess_runtime_probe_torch_failure_populates_timing_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify the in-process probe fallback populates `probe_timings` defaults when importing `torch` fails."""
+    monkeypatch.delenv("RDLAB_WORK_DIR", raising=False)
+    monkeypatch.delitem(sys.modules, "torch", raising=False)
+
+    fake_tf = types.ModuleType("transformers")
+    fake_tf.__version__ = "5.19.0"  # type: ignore[attr-defined]
+    fake_bnb = types.ModuleType("bitsandbytes")
+    fake_bnb.__version__ = "0.45.0"  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "transformers", fake_tf)
+    monkeypatch.setitem(sys.modules, "bitsandbytes", fake_bnb)
+
+    orig_import_module = importlib.import_module
+
+    def _fail_torch_import(name: str, package: str | None = None) -> Any:
+        if name == "torch":
+            raise ImportError("simulated missing torch")
+        return orig_import_module(name, package=package)
+
+    monkeypatch.setattr(importlib, "import_module", _fail_torch_import)
+
+    res = vm_judges._query_judge_venv_runtime(venv_python=None, work_dir=None)
+    assert res["torch_version"].startswith("unreadable: ImportError")
+    assert res["cuda_runtime"].startswith("unreadable: ImportError")
+    pt = res["probe_timings"]
+    assert isinstance(pt["import_torch_seconds"], float)
+    assert pt["cuda_query_seconds"] == 0.0
+    assert pt["determinism_setup_seconds"] == 0.0
+    assert pt["timed_out"] is False
+
+
+def test_parse_linux_mount_fstype_oserror_and_container_probe_dir_fallbacks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify `_parse_linux_mount_fstype` `OSError` return and all `_resolve_container_disk_probe_dir` fallback branches."""
+    mounts_file = tmp_path / "mounts"
+    mounts_file.write_text("/dev/root / ext4 rw 0 0\n", encoding="utf-8", newline="\n")
+
+    orig_read_text = Path.read_text
+
+    def _failing_read_text(self: Path, *args: Any, **kwargs: Any) -> str:
+        if self == mounts_file:
+            raise OSError("simulated unreadable mounts file")
+        return orig_read_text(self, *args, **kwargs)
+
+    with monkeypatch.context() as mp:
+        mp.setattr(Path, "read_text", _failing_read_text)
+        assert vm_judges._parse_linux_mount_fstype(tmp_path, mounts_path=mounts_file) is None
+
+    sys_tmp = tmp_path / "sys_tmp"
+    sys_tmp.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(sys_tmp))
+
+    # Branch 1: non-POSIX (`os.name != 'posix'`) skips `/var/tmp` check
+    with monkeypatch.context() as mp:
+        mp.setattr(os, "name", "nonposix")
+        chosen_nonposix, _ = vm_judges._resolve_container_disk_probe_dir()
+    assert chosen_nonposix == sys_tmp
+
+    # Branch 2: POSIX where `/var/tmp` is not writable (`os.access` False) falls back to `gettempdir()`
+    with monkeypatch.context() as mp:
+        mp.setattr(os, "name", "posix")
+        mp.setattr(os, "access", lambda *_a, **_kw: False)
+        chosen_noaccess, _ = vm_judges._resolve_container_disk_probe_dir()
+    assert chosen_noaccess == sys_tmp
+
+    # Branch 3: POSIX where `/var/tmp` is writable but its mount fstype is `tmpfs` falls back to `gettempdir()`
+    orig_is_dir = Path.is_dir
+    with monkeypatch.context() as mp:
+        mp.setattr(os, "name", "posix")
+        mp.setattr(
+            Path,
+            "is_dir",
+            lambda self, *a, **kw: True if self == Path("/var/tmp") else orig_is_dir(self, *a, **kw),
+        )
+        mp.setattr(os, "access", lambda p, *_a, **_kw: Path(p) == Path("/var/tmp"))
+        mp.setattr(
+            vm_judges,
+            "_parse_linux_mount_fstype",
+            lambda p, **_kw: "tmpfs" if p == Path("/var/tmp") else None,
+        )
+        chosen_tmpfs, _ = vm_judges._resolve_container_disk_probe_dir()
+    assert chosen_tmpfs == sys_tmp
+
+
+def test_read_back_probe_file_short_eof_breaks_and_unopened_fadvise_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify early EOF `break` across `o_direct`, `posix_fadvise_dontneed`, and `cached`, plus `rfd_fa is None` cleanup."""
+    short_file = tmp_path / "short_probe.bin"
+    short_file.write_bytes(b"S" * 4096)
+
+    # 1. `o_direct` short-EOF break (reads 4096, then `readv` returns 0 when `bytes_written=16384`)
+    readv_calls = 0
+    real_open = os.open
+
+    def _compat_odirect_open(path: Any, flags: int, *args: Any, **kwargs: Any) -> int:
+        o_dir = getattr(os, "O_DIRECT", 0)
+        eff_flags = flags & ~o_dir if o_dir else flags
+        return real_open(path, eff_flags, *args, **kwargs)
+
+    def _short_readv(fd: int, buffers: Any) -> int:
+        nonlocal readv_calls
+        readv_calls += 1
+        data = os.read(fd, len(buffers[0]))
+        if data:
+            buffers[0][: len(data)] = data
+        return len(data)
+
+    with monkeypatch.context() as mp:
+        if not hasattr(os, "O_DIRECT"):
+            mp.setattr(os, "O_DIRECT", 0x4000, raising=False)
+        mp.setattr(os, "open", _compat_odirect_open)
+        mp.setattr(os, "readv", _short_readv, raising=False)
+        now = time.monotonic()
+        n_od, _dt_od, method_od = vm_judges._read_back_probe_file(
+            short_file,
+            bytes_written=16384,
+            chunk_bytes=4096,
+            read_deadline=now + 0.4,
+            hard_deadline=now + 0.4,
+            read_mode="o_direct",
+        )
+    assert n_od == 4096
+    assert method_od == "o_direct"
+    assert readv_calls == 2
+
+    # 2. `posix_fadvise_dontneed` short-EOF break
+    fadvise_read_calls = 0
+    real_read = os.read
+
+    def _counting_read(fd: int, n: int) -> bytes:
+        nonlocal fadvise_read_calls
+        fadvise_read_calls += 1
+        return real_read(fd, n)
+
+    with monkeypatch.context() as mp:
+        if not hasattr(os, "POSIX_FADV_DONTNEED"):
+            mp.setattr(os, "POSIX_FADV_DONTNEED", 4, raising=False)
+        if not hasattr(os, "posix_fadvise"):
+            mp.setattr(os, "posix_fadvise", lambda *_a, **_kw: None, raising=False)
+        mp.setattr(os, "read", _counting_read)
+        now = time.monotonic()
+        n_fa, _dt_fa, method_fa = vm_judges._read_back_probe_file(
+            short_file,
+            bytes_written=16384,
+            chunk_bytes=4096,
+            read_deadline=now + 0.4,
+            hard_deadline=now + 0.4,
+            read_mode="posix_fadvise_dontneed",
+        )
+    assert n_fa == 4096
+    assert method_fa == "posix_fadvise_dontneed"
+    assert fadvise_read_calls == 2
+
+    # 3. `os.open` fails before `rfd_fa` is bound (`finally` takes `rfd_fa is None` branch), falling through to `cached` short-EOF break
+    open_calls = 0
+    cached_read_calls = 0
+
+    def _fail_first_open(path: Any, flags: int, *args: Any, **kwargs: Any) -> int:
+        nonlocal open_calls
+        open_calls += 1
+        if open_calls == 1:
+            raise OSError("simulated open failure for fadvise")
+        return real_open(path, flags, *args, **kwargs)
+
+    def _counting_cached_read(fd: int, n: int) -> bytes:
+        nonlocal cached_read_calls
+        cached_read_calls += 1
+        return real_read(fd, n)
+
+    with monkeypatch.context() as mp:
+        if not hasattr(os, "POSIX_FADV_DONTNEED"):
+            mp.setattr(os, "POSIX_FADV_DONTNEED", 4, raising=False)
+        if not hasattr(os, "posix_fadvise"):
+            mp.setattr(os, "posix_fadvise", lambda *_a, **_kw: None, raising=False)
+        mp.setattr(os, "open", _fail_first_open)
+        mp.setattr(os, "read", _counting_cached_read)
+        now = time.monotonic()
+        n_c, _dt_c, method_c = vm_judges._read_back_probe_file(
+            short_file,
+            bytes_written=16384,
+            chunk_bytes=4096,
+            read_deadline=now + 0.4,
+            hard_deadline=now + 0.4,
+            read_mode="posix_fadvise_dontneed",
+        )
+    assert open_calls == 2
+    assert n_c == 4096
+    assert method_c == "cached"
+    assert cached_read_calls == 2
+
+
+def test_measure_target_disk_io_unlink_oserror_and_empty_worker_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify `_measure_target_disk_io` swallows `unlink` `OSError` in worker and outer `finally`, and handles empty worker docs."""
+    ws_dir = tmp_path / "ws_unlink"
+    ct_dir = tmp_path / "ct_unlink"
+    ws_dir.mkdir(parents=True, exist_ok=True)
+    ct_dir.mkdir(parents=True, exist_ok=True)
+
+    unlink_attempts = 0
+    thread_exceptions: list[Any] = []
+    orig_unlink = Path.unlink
+
+    def _raising_probe_unlink(self: Path, *args: Any, **kwargs: Any) -> None:
+        nonlocal unlink_attempts
+        if self.name.startswith(".rdlab_disk_probe_"):
+            unlink_attempts += 1
+            try:
+                os.unlink(self)
+            except FileNotFoundError:
+                pass
+            raise OSError("simulated unlink error")
+        return orig_unlink(self, *args, **kwargs)
+
+    with monkeypatch.context() as mp:
+        mp.setattr(threading, "excepthook", lambda args: thread_exceptions.append(args.exc_value))
+        mp.setattr(Path, "unlink", _raising_probe_unlink)
+        res = vm_judges.measure_session_disk_throughput(
+            workspace_dir=ws_dir,
+            container_dir=ct_dir,
+            max_bytes_per_target=16 * 1024,
+            chunk_bytes=8 * 1024,
+        )
+
+    assert thread_exceptions == []
+    assert res["workspace"]["status"] == "ok"
+    assert res["container_disk"]["status"] == "ok"
+    assert unlink_attempts == 4
+    assert list(ws_dir.iterdir()) == []
+    assert list(ct_dir.iterdir()) == []
+
+    # Worker finishes without populating `result_holder["doc"]` -> unreadable fallback dict
+    class _NoOpFinishedThread:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            pass
+
+        def start(self) -> None:
+            pass
+
+        def join(self, timeout: float | None = None) -> None:
+            del timeout
+
+        def is_alive(self) -> bool:
+            return False
+
+    empty_dir = tmp_path / "empty_worker"
+    empty_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(vm_judges.threading, "Thread", _NoOpFinishedThread)
+    doc = vm_judges._measure_target_disk_io(
+        "workspace",
+        empty_dir,
+        hard_deadline=time.monotonic() + 2.0,
+        step_budget_seconds=1.0,
+        max_bytes_per_target=16 * 1024,
+        chunk_bytes=8 * 1024,
+        fstype="ext4",
+    )
+    assert doc["status"] == "unreadable: disk probe worker returned no result"
+    assert doc["write_mb_s"] == doc["status"]
+    assert doc["read_mb_s"] == doc["status"]
+
+
+def test_collect_session_env_stub_mode_initializes_null_probe_timings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify `collect_and_write_session_env` initializes null `probe_timings` in stub/dryrun mode."""
+    receipts_dir, _, _ = _make_receipts_and_items(tmp_path / "data")
+    monkeypatch.setenv("PATH", _fake_nvidia_smi_bin(tmp_path / "bin"))
+    monkeypatch.delenv("RDLAB_SESSION_ENV_PROBE_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.delenv("RDLAB_HOST", raising=False)
+
+    ws_dir = tmp_path / "ws_stub"
+    ct_dir = tmp_path / "ct_stub"
+    ws_dir.mkdir(parents=True, exist_ok=True)
+    ct_dir.mkdir(parents=True, exist_ok=True)
+
+    doc = vm_judges.collect_and_write_session_env(
+        tmp_path / "stub_run",
+        receipts_dir=receipts_dir,
+        mode="stub",
+        shard_spec="1/1",
+        phase="start",
+        dryrun=True,
+        repo_dir=REPO_ROOT,
+        disk_workspace_dir=ws_dir,
+        disk_container_dir=ct_dir,
+    )
+    assert doc["probe_timings"] == {
+        "import_torch_seconds": None,
+        "cuda_query_seconds": None,
+        "determinism_setup_seconds": None,
+        "package_versions_seconds": None,
+        "total_seconds": None,
+        "timed_out": False,
+        "running_phase": None,
+        "phases_started": [],
+    }
+    assert doc["disk_throughput"]["workspace"]["status"] == "skipped_in_stub_or_dryrun"
+    assert doc["probe_timeout_seconds"] == 30.0
+    assert doc["probe_timeout_source"] == "default"
+
+
+def test_main_fail_receipt_session_env_fallback_branches(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify `vm_judges.main` refusal handler covers absent, non-dict JSON, corrupt JSON, and in-memory `session_env` cases."""
+    receipts_dir, items_path, _ = _make_receipts_and_items(tmp_path / "data")
+    monkeypatch.setenv("PATH", _fake_nvidia_smi_bin(tmp_path / "bin"))
+    for k in list(os.environ):
+        if vm_judges.is_forbidden_counted_test_hook(k):
+            monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("RDLAB_RUN_ID", "test-fail-branches")
+    monkeypatch.setenv("RDLAB_JUDGE_LOCK_SHA256", vm_judges.EXPECTED_JUDGE_LOCK_SHA256)
+    monkeypatch.setenv("RDLAB_D3_LOCK_SHA256", vm_judges.EXPECTED_D3_LOCK_SHA256)
+    monkeypatch.setenv("RDLAB_CARD_TYPE", "A100")
+
+    def _run_main(run_name: str, *, mode: str = "time-one", dryrun: bool = True) -> tuple[int, dict[str, Any], Path]:
+        work_dir = tmp_path / f"{run_name}_work"
+        work_dir.mkdir(parents=True, exist_ok=True)
+        run_dir = tmp_path / f"{run_name}_run"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        case_items = tmp_path / f"{run_name}_items.jsonl"
+        shutil.copyfile(items_path, case_items)
+        argv = [
+            "--mode",
+            mode,
+            "--work-dir",
+            str(work_dir),
+            "--items-file",
+            str(case_items),
+            "--run-dir",
+            str(run_dir),
+            "--receipts-dir",
+            str(receipts_dir),
+            "--hf-home",
+            str(tmp_path / f"{run_name}_hf"),
+            "--repo-dir",
+            str(REPO_ROOT),
+            "--result-tar",
+            str(tmp_path / f"{run_name}_result.tar.gz"),
+            "--status-file",
+            str(tmp_path / f"{run_name}_status.json"),
+        ]
+        if dryrun:
+            argv.append("--dryrun")
+        rc = vm_judges.main(argv)
+        receipt = json.loads((run_dir / "vm_receipt.json").read_text(encoding="utf-8"))
+        return rc, receipt, run_dir
+
+    # Cases 1-3: early refusal before `session_env_start` (`session_env_report is None`)
+    monkeypatch.setenv("RDLAB_SESSION_ENV_PROBE_TIMEOUT_SECONDS", "0")
+
+    rc_absent, rec_absent, _ = _run_main("absent")
+    assert rc_absent == 2
+    assert rec_absent["failure_class"] == "SESSION_ENV_PROBE_TIMEOUT_INVALID"
+    assert "session_env" not in rec_absent
+
+    nondict_dir = tmp_path / "nondict_run"
+    nondict_dir.mkdir(parents=True, exist_ok=True)
+    (nondict_dir / vm_judges.SESSION_ENV_FILENAME).write_text("[1, 2, 3]\n", encoding="utf-8", newline="\n")
+    rc_nondict, rec_nondict, _ = _run_main("nondict")
+    assert rc_nondict == 2
+    assert rec_nondict["failure_class"] == "SESSION_ENV_PROBE_TIMEOUT_INVALID"
+    assert "session_env" not in rec_nondict
+
+    corrupt_dir = tmp_path / "corrupt_run"
+    corrupt_dir.mkdir(parents=True, exist_ok=True)
+    (corrupt_dir / vm_judges.SESSION_ENV_FILENAME).write_text("{corrupt-json\n", encoding="utf-8", newline="\n")
+    rc_corrupt, rec_corrupt, _ = _run_main("corrupt")
+    assert rc_corrupt == 2
+    assert rec_corrupt["failure_class"] == "SESSION_ENV_PROBE_TIMEOUT_INVALID"
+    assert "session_env" not in rec_corrupt
+
+    # Case 4: `session_env_start` succeeds (`session_env_report is not None`), then `run_device_check` refuses after tampering disk file
+    monkeypatch.delenv("RDLAB_SESSION_ENV_PROBE_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.delenv("RDLAB_HOST", raising=False)
+    later_run_dir = tmp_path / "later_run"
+    monkeypatch.setattr(vm_judges, "preflight_part_manifest", lambda *_a, **_kw: {"part_id": "test-part"})
+    monkeypatch.setattr(vm_judges, "ensure_vm_uv", lambda *_a, **_kw: ("uv", "0.13.5", {}))
+    monkeypatch.setattr(
+        vm_judges,
+        "sync_judge_venvs",
+        lambda *_a, **_kw: {"status": "ok", "uv_version": "0.13.5", "python_315": "3.15.1", "python_315_report": {}},
+    )
+    monkeypatch.setattr(
+        vm_judges,
+        "verify_vm_card_type",
+        lambda *_a, **_kw: {"card_type": "A100", "gpu_name": "NVIDIA A100-SXM4-40GB", "source": "test"},
+    )
+
+    def _tamper_disk_and_refuse(*_a: Any, **_kw: Any) -> dict[str, Any]:
+        (later_run_dir / vm_judges.SESSION_ENV_FILENAME).write_text(
+            json.dumps({"probe_timeout_seconds": 999.0}),
+            encoding="utf-8",
+            newline="\n",
+        )
+        raise vm_judges.RefusalError("DEVICE_CHECK_FAILED", "simulated later refusal")
+
+    monkeypatch.setattr(vm_judges, "run_device_check", _tamper_disk_and_refuse)
+    rc_later, rec_later, _ = _run_main("later", mode="time-one", dryrun=True)
+    assert rc_later == 2
+    assert rec_later["failure_class"] == "DEVICE_CHECK_FAILED"
+    assert rec_later["session_env"]["probe_timeout_seconds"] == 30.0
