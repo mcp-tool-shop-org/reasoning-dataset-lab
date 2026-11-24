@@ -2613,7 +2613,7 @@ def test_qwen36_unsharded_fresh_run_unchanged_against_cb2863aa(
     assert res["shard_manifest_sha256"] == "8cf89d07438abfed3932fefa7e59e9c5a87e7f43c6bd1e095f6e63f27517b1e2"
 
 
-# --- Part A: Memory-bounded flashinfer/vLLM JIT build job count, page-cache drop, and build telemetry ------------
+# --- Memory-bounded flashinfer/vLLM JIT build job count, page-cache drop, and build telemetry --------------------
 
 
 def _write_fake_cgroup_tree(

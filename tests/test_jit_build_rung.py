@@ -52,6 +52,7 @@ def test_plan_only_cli_prints_versions_targets_cap_and_jobs_without_compiling(
     assert plan["compiled"] is False
     assert plan["gpu_required"] is False
     assert plan["cuda_visible_devices"] == ""
+    assert plan["lock_path"] == "scripts/colab/locks/vllm.lock.txt"
     assert plan["versions"] == {
         "flashinfer": "0.7.3",
         "nvcc": "13.5.37",

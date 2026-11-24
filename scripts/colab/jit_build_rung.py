@@ -442,7 +442,7 @@ def build_jit_rung_plan(
     reserve_bytes: int | None = None,
     per_job_bytes: int | None = None,
 ) -> dict[str, Any]:
-    """Resolve lockfile versions, target metadata, memory cap, and Part A bounded job count without compiling."""
+    """Resolve lockfile versions, target metadata, memory cap, and `compute_jit_build_jobs` bounded job count without compiling."""
     lock_info = parse_vllm_lock_versions(lock_path)
     installed = inspect_venv_installed_versions(Path(venv_dir)) if venv_dir is not None else None
     versions = installed or dict(lock_info["versions"])
@@ -464,13 +464,18 @@ def build_jit_rung_plan(
         if cache_dir is not None
         else "<fresh_temp_dir>/flashinfer_workspace"
     )
+    raw_lock_p = Path(lock_info["lock_path"]).resolve()
+    try:
+        rel_lock_str = raw_lock_p.relative_to(REPO_ROOT.resolve()).as_posix()
+    except ValueError:
+        rel_lock_str = raw_lock_p.as_posix()
     target_spec = resolve_fused_moe_120_target_spec()
     return {
         "mode": "plan_only",
         "compiled": False,
         "gpu_required": False,
         "cuda_visible_devices": "",
-        "lock_path": Path(lock_info["lock_path"]).as_posix(),
+        "lock_path": rel_lock_str,
         "lock_sha256": lock_info["lock_sha256"],
         "version_source": version_source,
         "versions": versions,
@@ -780,7 +785,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--cap-bytes",
         type=int,
         default=None,
-        help="Memory cap in bytes applied to the build scope and Part A job calculation.",
+        help="Memory cap in bytes applied to the build scope and compute_jit_build_jobs job calculation.",
     )
     parser.add_argument(
         "--memory-max",
