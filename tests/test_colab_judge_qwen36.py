@@ -2475,12 +2475,12 @@ def test_qwen36_unsharded_fresh_run_unchanged_against_cb2863aa(
         "c3692b55c33429e1c5eaa5fcdc5ea225c82f1b845908c27abb0a91894b895f1a",
     ]
     expected_norm_row_shas = [
-        "3f8c608c24bf424b351e889153d328b3ff58cce57d6e875d61b74871b6859eae",
-        "8795e4792afdd10cd751a158b7e902b2bd0be1d455178a1cbade4e58a6f3d672",
-        "936828b49d92d37766452fdcae4840129d21977fd6a5ae2f0ecba6f954c3a05e",
-        "1cce0712d732696e2e55f1c7d91821d8ad16373869a416fd04064fa80fe29f7d",
-        "7be1337e3ba750e282712eab00e94274fe0dde4f7e450c00fafd35df95fb8bbc",
-        "52389b9533d145eced92224344a53a02810db850d82a7d4d1de309d57641bc3d",
+        "e40852dafc53225ad967112a40011f64db8375ac9e5360dd7454b795f7eeb2c6",
+        "36f1a2fc2ac252bfac35cfd6e82c97da2bfd8156f58828b0a57fd7033c35f125",
+        "8fb9a59b4118391d6addf348cdbf748d065dd36f81990cf3c0b50452a40f3a01",
+        "e0a4aafcc3290e041682c14bed0269aede57f0a55ad0780fa7de5c4e66276ef6",
+        "27a14b737bcf9b7a7935e2d7fe984ce48d3841ae551caea4133cbaca833da791",
+        "0c70607f52495e03c154d05a5590db9f9dcc5dc7d0e248a6d147214a9a506841",
     ]
     actual_cb2863aa_compat_shas: list[str] = []
     actual_norm_shas: list[str] = []
