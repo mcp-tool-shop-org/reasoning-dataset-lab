@@ -99,6 +99,7 @@ DEFAULT_GPU_GATE_TIMEOUT_SECONDS = 60.0
 DEFAULT_FIRST_LOAD_TIMEOUT_SECONDS = 1800.0
 DEFAULT_JUDGE_CHILD_TIMEOUT_SECONDS = 600.0
 DEFAULT_DOWNLOAD_CHILD_TIMEOUT_SECONDS = 900.0
+DOWNLOAD_ZERO_FILES = "DOWNLOAD_ZERO_FILES"
 DEFAULT_CHILD_WALL_MARGIN_SECONDS = 60.0
 CHILD_GROUP_SIGTERM_GRACE_SECONDS = 0.5
 DEVICE_CHECK_VENVS: tuple[str, ...] = ("venv-judge", "venv-d3")
@@ -2310,6 +2311,8 @@ def sync_judge_venvs(
 
 def _ensure_dryrun_venv_python_wrapper(venv_python: Path) -> None:
     """Create a lightweight executable `<venv>/bin/python` wrapper in dryrun/hermetic test mode if absent."""
+    if venv_python.exists():
+        return
     venv_dir = venv_python.parent.parent
     is_d3_venv = "d3" in venv_dir.name.lower()
     hf_hub_ver = "1.33.0" if is_d3_venv else "2.4.0"
@@ -2630,8 +2633,6 @@ def _ensure_dryrun_venv_python_wrapper(venv_python: Path) -> None:
             encoding="utf-8",
             newline="\n",
         )
-    if venv_python.exists():
-        return
     venv_python.parent.mkdir(parents=True, exist_ok=True)
     py_exe = str(Path(sys.executable)).replace("\\", "/")
     site_pkgs_posix = site_pkgs.as_posix()
@@ -3379,7 +3380,17 @@ def build_download_child_env(
         for k, v in source_env.items()
         if not k.startswith("HF_TOKEN")
         and k != "HUGGING_FACE_HUB_TOKEN"
-        and k not in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")
+        and k
+        not in (
+            "HF_HUB_OFFLINE",
+            "TRANSFORMERS_OFFLINE",
+            "HF_HUB_CACHE",
+            "HUGGINGFACE_HUB_CACHE",
+            "TRANSFORMERS_CACHE",
+            "HF_ASSETS_CACHE",
+            "HF_XET_CACHE",
+            "HF_HUB_ENABLE_HF_TRANSFER",
+        )
     }
     child_env["HF_HOME"] = str(hf_home)
     if int(hf_xet_num_concurrent_range_gets) == 0:
@@ -3389,7 +3400,11 @@ def build_download_child_env(
             int(hf_xet_num_concurrent_range_gets)
         )
     py_paths: list[str] = []
-    if venv_dir is not None and (venv_dir / "site-packages").is_dir():
+    if (
+        venv_dir is not None
+        and (venv_dir / "site-packages").is_dir()
+        and not (venv_dir / "lib").is_dir()
+    ):
         py_paths.append(str(venv_dir / "site-packages"))
     py_paths.append(str(repo_dir / "src"))
     existing_py_path = child_env.get("PYTHONPATH", "")
@@ -3412,7 +3427,16 @@ def build_judge_child_env(
     child_env: dict[str, str] = {
         k: v
         for k, v in source_env.items()
-        if not k.startswith("HF_TOKEN") and k != "HUGGING_FACE_HUB_TOKEN"
+        if not k.startswith("HF_TOKEN")
+        and k != "HUGGING_FACE_HUB_TOKEN"
+        and k
+        not in (
+            "HF_HUB_CACHE",
+            "HUGGINGFACE_HUB_CACHE",
+            "TRANSFORMERS_CACHE",
+            "HF_ASSETS_CACHE",
+            "HF_XET_CACHE",
+        )
     }
     child_env["HF_HUB_OFFLINE"] = "1"
     child_env["HF_DEACTIVATE_ASYNC_LOAD"] = "1"
@@ -3591,6 +3615,7 @@ def download_all_judge_weights(
     remaining_wall_seconds: float | None = None,
     wall_deadline_monotonic: float | None = None,
     wall_margin_seconds: float | None = None,
+    allow_patterns: Sequence[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Download each judge at its pinned 40-char revision in a short-lived per-judge child subprocess in that judge's synced venv (`venv-d3` for `d3-mini`, `venv-judge` for the other four), emitting `judge_download_start` / `judge_download` progress lines."""
     _ensure_repo_imports(repo_dir)
@@ -3629,12 +3654,9 @@ def download_all_judge_weights(
         expected_hub_ver = expected_stack["huggingface_hub"]
         expected_xet_ver = expected_stack["hf_xet"]
 
-        is_hermetic_work = (
-            dryrun
-            or resolve_content_dir() != DEFAULT_CONTENT_DIR
-            or eff_work_dir != DEFAULT_CONTENT_DIR / "rdlab_work"
-        )
-        if is_hermetic_work:
+        if not venv_python.exists() and (
+            dryrun or os.environ.get("FAKE_COLAB_ENABLE_FAKE_HF_DOWNLOAD") == "1"
+        ):
             _ensure_dryrun_venv_python_wrapper(venv_python)
         if not venv_python.exists():
             raise RefusalError(
@@ -3719,6 +3741,8 @@ def download_all_judge_weights(
         ]
         if dryrun:
             child_cmd.append("--dryrun")
+        for pat in allow_patterns or ():
+            child_cmd.extend(["--allow-pattern", str(pat)])
 
         child_env = build_download_child_env(
             hf_home,
@@ -4069,11 +4093,36 @@ def download_all_judge_weights(
                 failure_cls="DOWNLOAD_STACK_VERSION_MISMATCH",
             )
 
+        raw_files_dl = done_doc.get("files_downloaded")
+        if (
+            isinstance(raw_files_dl, bool)
+            or not isinstance(raw_files_dl, int)
+            or raw_files_dl < 0
+        ):
+            _fail_download_postcheck(
+                f"Invalid files_downloaded={raw_files_dl!r} in {done_file.name}"
+            )
+        files_downloaded = int(raw_files_dl)
+        if files_downloaded == 0:
+            check_rec_dir: Path | None = receipts_dir
+            if check_rec_dir is None and not dryrun:
+                repo_rec_dir = eff_repo_dir / "scripts" / "colab" / "receipts"
+                owner, repo = str(spec.repo_id).split("/", 1)
+                if (repo_rec_dir / f"{owner}__{repo}.sha256.json").is_file():
+                    check_rec_dir = repo_rec_dir
+            if check_rec_dir is not None:
+                _, rec_doc = check_judge_receipt_static(spec, receipts_dir=check_rec_dir)
+                if len(rec_doc["files"]) > 0:
+                    _fail_download_postcheck(
+                        f"{DOWNLOAD_ZERO_FILES}: judge={judge_id} ({spec.repo_id} @ {spec.revision}) "
+                        f"reported files_downloaded=0 while receipt lists {len(rec_doc['files'])} file(s)",
+                        failure_cls=DOWNLOAD_ZERO_FILES,
+                    )
+
         returned_snap = done_doc.get("snapshot_dir")
         snap_bytes = _judge_snapshot_bytes_on_disk(spec, hf_home, returned_snap)
         if snap_bytes == 0 and isinstance(done_doc.get("bytes"), int) and done_doc["bytes"] > 0:
             snap_bytes = int(done_doc["bytes"])
-        files_downloaded = int(done_doc.get("files_downloaded") or 0)
         elapsed_s = max(0.0, time.monotonic() - t0)
         end_iso = _utc_now_iso()
         cumulative_bytes += snap_bytes

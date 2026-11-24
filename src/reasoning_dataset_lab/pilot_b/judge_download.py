@@ -132,6 +132,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip live network download unless _IS_FAKE_HF_HUB is active.",
     )
+    parser.add_argument(
+        "--allow-pattern",
+        action="append",
+        default=None,
+        help="Optional snapshot_download allow_patterns glob (repeatable).",
+    )
     return parser
 
 
@@ -181,6 +187,13 @@ def main_download_runner(argv: Sequence[str] | None = None) -> int:
         )
         if accepts_mw:
             dl_kwargs["max_workers"] = int(args.max_workers)
+        if args.allow_pattern:
+            accepts_ap = "allow_patterns" in sig.parameters or any(
+                p.kind == inspect.Parameter.VAR_KEYWORD
+                for p in sig.parameters.values()
+            )
+            if accepts_ap:
+                dl_kwargs["allow_patterns"] = [str(p) for p in args.allow_pattern]
         returned_snap = dl_fn(**dl_kwargs)
 
     elapsed_s = max(0.0, time.monotonic() - t0)
