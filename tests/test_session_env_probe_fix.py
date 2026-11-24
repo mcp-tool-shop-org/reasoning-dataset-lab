@@ -135,7 +135,7 @@ def _extract_step_envs(stdout_text: str) -> dict[str, dict[str, str]]:
 
 def _make_clean_repo_for_dry(tmp_path: Path) -> Path:
     status = subprocess.run(
-        ["git", "-C", str(REPO_ROOT), "status", "--porcelain", "--untracked-files=all", "--", "src", "scripts/colab"],
+        ["git", "-C", str(REPO_ROOT), "status", "--porcelain", "--untracked-files=all"],
         stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
@@ -417,7 +417,12 @@ def test_launcher_forwards_timeout_env_both_hosts_refuses_invalid_and_keeps_cola
 
     def _run_dry(host: str, *, out_dir: Path, extra_env: dict[str, str] | None = None, extra_args: list[str] | None = None) -> subprocess.CompletedProcess[str]:
         env_map = {**base_env, **(extra_env or {})}
-        exports = " ".join(f"{k}={shlex.quote(v)}" for k, v in sorted(env_map.items()))
+        clean_env = {
+            "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            "HOME": str(tmp_path),
+            "TERM": "dumb",
+            **env_map,
+        }
         args = extra_args if extra_args is not None else [
             "--host", host,
             "--dry",
@@ -430,13 +435,16 @@ def test_launcher_forwards_timeout_env_both_hosts_refuses_invalid_and_keeps_cola
             "--receipts-dir", _to_bash_path(receipts_dir),
             "--out-dir", _to_bash_path(out_dir),
         ]
-        cmd_str = (
-            "export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; "
-            "unset RDLAB_SESSION_ENV_PROBE_TIMEOUT_SECONDS; "
-            f"{exports} bash {shlex.quote(launch_posix)} "
-            + " ".join(shlex.quote(a) for a in args)
+        cmd_str = f"bash {shlex.quote(launch_posix)} " + " ".join(shlex.quote(a) for a in args)
+        return subprocess.run(
+            ["bash", "-c", cmd_str],
+            env=clean_env,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
         )
-        return subprocess.run(["bash", "-c", cmd_str], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60, check=False)
 
     # 1. When set, forwarded in `--env` of `run` step on both RunPod and Colab
     for host in ("runpod", "colab"):
@@ -630,7 +638,13 @@ def test_bounded_disk_throughput_probe_methods_cleanup_and_receipts(
     assert resolved_dir.is_dir()
     with monkeypatch.context() as mp:
         real_stat = os.stat
-        mp.setattr(os, "stat", lambda p: (_ for _ in ()).throw(OSError("stat denied")) if str(p) == "/var/tmp" else real_stat(p))
+        mp.setattr(
+            os,
+            "stat",
+            lambda p, *a, **kw: (_ for _ in ()).throw(OSError("stat denied"))
+            if str(p) == "/"
+            else real_stat(p, *a, **kw),
+        )
         fallback_dir, _ = vm_judges._resolve_container_disk_probe_dir()
         assert fallback_dir.is_dir()
 
