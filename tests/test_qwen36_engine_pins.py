@@ -51,6 +51,8 @@ EXPECTED_RESOLVED_ENGINE_FIELDS: tuple[str, ...] = (
     "cudagraph_capture_sizes",
     "num_gpu_blocks",
     "num_mamba_blocks",
+    "kv_cache_size_tokens",
+    "kv_cache_max_concurrency",
 )
 
 
@@ -107,6 +109,8 @@ def _make_full_fake_engine(*, max_num_batched_tokens: int) -> Any:
                     mamba_ssm_cache_dtype="float32",
                     num_gpu_blocks=4096,
                     num_mamba_blocks=785,
+                    kv_cache_size_tokens=6430720,
+                    kv_cache_max_concurrency=785.0,
                 ),
                 compilation_config=SimpleNamespace(
                     cudagraph_capture_sizes=(1, 2, 4, 8),
@@ -191,17 +195,61 @@ def _install_fake_runtime(
     return state
 
 
+def _iter_llm_call_nodes(tree: ast.AST) -> list[ast.Call]:
+    """Find `LLM(...)` calls, including `from ... import LLM as X`, `import vllm as V`, and simple rebindings."""
+    llm_names: set[str] = {"LLM"}
+    vllm_mod_names: set[str] = {"vllm"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            mod = node.module or ""
+            for alias in node.names:
+                if alias.name == "LLM":
+                    llm_names.add(alias.asname or alias.name)
+                elif alias.name == "llm" and (mod == "vllm" or mod.startswith("vllm.")):
+                    vllm_mod_names.add(alias.asname or alias.name)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "vllm":
+                    vllm_mod_names.add(alias.asname or "vllm")
+                elif alias.name.startswith("vllm."):
+                    vllm_mod_names.add(alias.asname or alias.name.split(".")[0])
+
+    def _is_llm_expr(expr: ast.AST | None) -> bool:
+        if isinstance(expr, ast.Name):
+            return expr.id in llm_names
+        if isinstance(expr, ast.Attribute):
+            if expr.attr == "LLM":
+                return True
+            if isinstance(expr.value, ast.Name) and expr.value.id in vllm_mod_names:
+                return expr.attr in llm_names
+        return False
+
+    changed = True
+    while changed:
+        changed = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign) and _is_llm_expr(node.value):
+                for tgt in node.targets:
+                    if isinstance(tgt, ast.Name) and tgt.id not in llm_names:
+                        llm_names.add(tgt.id)
+                        changed = True
+            elif isinstance(node, ast.AnnAssign) and _is_llm_expr(node.value):
+                if isinstance(node.target, ast.Name) and node.target.id not in llm_names:
+                    llm_names.add(node.target.id)
+                    changed = True
+
+    calls: list[ast.Call] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and _is_llm_expr(node.func):
+            calls.append(node)
+    return calls
+
+
 def _find_missing_llm_engine_pin_calls(source: str, filename: str) -> list[tuple[str, int, tuple[str, ...]]]:
     """Return `(filename, lineno, missing_keywords)` for any `LLM(...)` call missing a required pin keyword."""
     tree = ast.parse(source, filename=filename)
     missing_calls: list[tuple[str, int, tuple[str, ...]]] = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        is_llm_name = isinstance(node.func, ast.Name) and node.func.id == "LLM"
-        is_llm_attr = isinstance(node.func, ast.Attribute) and node.func.attr == "LLM"
-        if not (is_llm_name or is_llm_attr):
-            continue
+    for node in _iter_llm_call_nodes(tree):
         present_kw = {kw.arg for kw in node.keywords if kw.arg is not None}
         missing = tuple(kw for kw in REQUIRED_LLM_ENGINE_PIN_KEYWORDS if kw not in present_kw)
         if missing:
@@ -211,14 +259,7 @@ def _find_missing_llm_engine_pin_calls(source: str, filename: str) -> list[tuple
 
 def _count_llm_calls(source: str, filename: str) -> int:
     tree = ast.parse(source, filename=filename)
-    count = 0
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Call) and (
-            (isinstance(node.func, ast.Name) and node.func.id == "LLM")
-            or (isinstance(node.func, ast.Attribute) and node.func.attr == "LLM")
-        ):
-            count += 1
-    return count
+    return len(_iter_llm_call_nodes(tree))
 
 
 def test_qwen36_engine_pin_constants() -> None:
@@ -391,6 +432,8 @@ def test_resolved_engine_config_reader_complete_partial_raising_and_nonmutating(
         "cudagraph_capture_sizes": [1, 2, 4, 8],
         "num_gpu_blocks": 4096,
         "num_mamba_blocks": 785,
+        "kv_cache_size_tokens": 6430720,
+        "kv_cache_max_concurrency": 785.0,
     }
     json.dumps(full_cfg, allow_nan=False)
     full_cfg["cudagraph_capture_sizes"].append(999)
@@ -433,6 +476,8 @@ def test_resolved_engine_config_reader_complete_partial_raising_and_nonmutating(
         "cudagraph_capture_sizes": "unavailable",
         "num_gpu_blocks": "unavailable",
         "num_mamba_blocks": "unavailable",
+        "kv_cache_size_tokens": "unavailable",
+        "kv_cache_max_concurrency": "unavailable",
     }
 
     empty_cfg = read_qwen36_resolved_engine_config(SimpleNamespace())
@@ -480,6 +525,8 @@ def test_both_engine_field_dicts_record_pins_and_resolved_config(
         "cudagraph_capture_sizes": [1, 2, 4, 8],
         "num_gpu_blocks": 4096,
         "num_mamba_blocks": 785,
+        "kv_cache_size_tokens": 6430720,
+        "kv_cache_max_concurrency": 785.0,
     }
     live_pins["resolved_engine_config"]["cudagraph_capture_sizes"].append(999)
     assert transport._resolved_engine_config is not None
@@ -539,3 +586,168 @@ def test_both_engine_field_dicts_record_pins_and_resolved_config(
         assert pins["max_num_batched_tokens_rule"] == "min(16384, max_num_seqs * max_model_len)"
         assert pins["enable_prefix_caching"] is False
         assert pins["resolved_engine_config"] == unavailable_qwen36_resolved_engine_config()
+
+
+def test_resolved_engine_config_records_kv_cache_capacity_and_unavailable_cases(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    receipts_dir, hf_home, _ = _seed_qwen36_snapshot(tmp_path)
+    _install_fake_runtime(
+        monkeypatch,
+        hf_home,
+        llm_engine_factory=lambda kw: SimpleNamespace(
+            vllm_config=SimpleNamespace(
+                scheduler_config=SimpleNamespace(
+                    max_num_seqs=1,
+                    max_num_batched_tokens=kw["max_num_batched_tokens"],
+                ),
+                cache_config=SimpleNamespace(
+                    enable_prefix_caching=False,
+                    block_size=16,
+                    mamba_block_size=8192,
+                    cache_dtype="auto",
+                    mamba_cache_dtype="bfloat16",
+                    mamba_ssm_cache_dtype="float32",
+                    num_gpu_blocks=17408,
+                    kv_cache_size_tokens=278528,
+                    kv_cache_max_concurrency=21.25,
+                ),
+                compilation_config=SimpleNamespace(cudagraph_capture_sizes=[1, 2]),
+            )
+        ),
+    )
+    monkeypatch.setenv(bakeoff_judge.QWEN36_MAX_NEW_TOKENS_ENV_VAR, "4096")
+
+    spec = JUDGE_SPECS[QWEN36_ID]
+    prompt = Qwen36ChoiceAdapter(spec).assemble_prompt(
+        JudgeInputItem(item_id="synth-cap-0", material="1. Fact C.", claim="Claim C."),
+        order="AB",
+        pass_mode=CONTRA,
+    )
+    transport = VllmJudgeTransport(receipts_dir=receipts_dir, hf_home=hf_home, device="cuda")
+    transport.verify_ready(spec)
+    live_resp = transport.generate(spec, prompt, seed=1)
+    resolved = live_resp.library_pins["resolved_engine_config"]
+    assert resolved["kv_cache_size_tokens"] == 278528
+    assert resolved["kv_cache_max_concurrency"] == 21.25
+    assert resolved["num_mamba_blocks"] == "unavailable"
+    cfg_lines = [
+        json.loads(ln.removeprefix("QWEN36_RESOLVED_ENGINE_CONFIG "))
+        for ln in capsys.readouterr().out.splitlines()
+        if ln.startswith("QWEN36_RESOLVED_ENGINE_CONFIG ")
+    ]
+    assert len(cfg_lines) == 1
+    assert cfg_lines[0]["kv_cache_size_tokens"] == 278528
+    assert cfg_lines[0]["kv_cache_max_concurrency"] == 21.25
+
+    # Missing, None, non-finite, and raising cases record "unavailable" without raising.
+    absent_engine = SimpleNamespace(
+        llm_engine=SimpleNamespace(vllm_config=SimpleNamespace(cache_config=SimpleNamespace(num_gpu_blocks=100)))
+    )
+    absent_cfg = read_qwen36_resolved_engine_config(absent_engine)
+    assert absent_cfg["num_gpu_blocks"] == 100
+    assert absent_cfg["kv_cache_size_tokens"] == "unavailable"
+    assert absent_cfg["kv_cache_max_concurrency"] == "unavailable"
+
+    class _RaisingCapacityCacheConfig:
+        @property
+        def kv_cache_size_tokens(self) -> int:
+            raise RuntimeError("capacity read error")
+
+        @property
+        def kv_cache_max_concurrency(self) -> float:
+            return float("inf")
+
+    raising_cfg = read_qwen36_resolved_engine_config(
+        SimpleNamespace(llm_engine=SimpleNamespace(vllm_config=SimpleNamespace(cache_config=_RaisingCapacityCacheConfig())))
+    )
+    assert raising_cfg["kv_cache_size_tokens"] == "unavailable"
+    assert raising_cfg["kv_cache_max_concurrency"] == "unavailable"
+
+    none_cfg = read_qwen36_resolved_engine_config(
+        SimpleNamespace(
+            llm_engine=SimpleNamespace(
+                vllm_config=SimpleNamespace(
+                    cache_config=SimpleNamespace(kv_cache_size_tokens=None, kv_cache_max_concurrency=float("nan"))
+                )
+            )
+        )
+    )
+    assert none_cfg["kv_cache_size_tokens"] == "unavailable"
+    assert none_cfg["kv_cache_max_concurrency"] == "unavailable"
+
+    stub_unavail = unavailable_qwen36_resolved_engine_config()
+    assert stub_unavail["kv_cache_size_tokens"] == "unavailable"
+    assert stub_unavail["kv_cache_max_concurrency"] == "unavailable"
+
+
+def test_ast_guard_catches_aliased_llm_imports() -> None:
+    missing_alias_src = (
+        "from vllm import LLM as X\n"
+        'X(model="x", max_num_seqs=1, max_num_batched_tokens=8192)\n'
+    )
+    assert _count_llm_calls(missing_alias_src, "alias_missing.py") == 1
+    assert _find_missing_llm_engine_pin_calls(missing_alias_src, "alias_missing.py") == [
+        ("alias_missing.py", 2, ("enable_prefix_caching",)),
+    ]
+
+    local_alias_src = (
+        "def load_engine():\n"
+        "    from vllm import LLM as LocalLLM\n"
+        '    return LocalLLM(model="x")\n'
+    )
+    assert _find_missing_llm_engine_pin_calls(local_alias_src, "local_alias.py") == [
+        ("local_alias.py", 3, ("max_num_seqs", "max_num_batched_tokens", "enable_prefix_caching")),
+    ]
+
+    submodule_alias_src = (
+        "from vllm.entrypoints.llm import LLM as EntryLLM\n"
+        'EntryLLM(model="x", enable_prefix_caching=False)\n'
+    )
+    assert _find_missing_llm_engine_pin_calls(submodule_alias_src, "submodule_alias.py") == [
+        ("submodule_alias.py", 2, ("max_num_seqs", "max_num_batched_tokens")),
+    ]
+
+    mod_alias_src = 'import vllm as v\nv.LLM(model="x")\n'
+    assert _find_missing_llm_engine_pin_calls(mod_alias_src, "mod_alias.py") == [
+        ("mod_alias.py", 2, ("max_num_seqs", "max_num_batched_tokens", "enable_prefix_caching")),
+    ]
+
+    submod_alias_src = 'from vllm.entrypoints import llm as le\nle.LLM(model="x")\n'
+    assert _find_missing_llm_engine_pin_calls(submod_alias_src, "submod_alias.py") == [
+        ("submod_alias.py", 2, ("max_num_seqs", "max_num_batched_tokens", "enable_prefix_caching")),
+    ]
+
+    rebound_alias_src = (
+        "from vllm import LLM\n"
+        "EngineCtor = LLM\n"
+        "TypedCtor: Any = EngineCtor\n"
+        'EngineCtor(model="x", max_num_seqs=1)\n'
+        'TypedCtor(model="x", max_num_seqs=1, enable_prefix_caching=False)\n'
+    )
+    assert _find_missing_llm_engine_pin_calls(rebound_alias_src, "rebound_alias.py") == [
+        ("rebound_alias.py", 4, ("max_num_batched_tokens", "enable_prefix_caching")),
+        ("rebound_alias.py", 5, ("max_num_batched_tokens",)),
+    ]
+
+    mod_rebound_src = (
+        "import vllm\n"
+        "CtorFromMod = vllm.LLM\n"
+        'CtorFromMod(model="x")\n'
+    )
+    assert _find_missing_llm_engine_pin_calls(mod_rebound_src, "mod_rebound.py") == [
+        ("mod_rebound.py", 3, ("max_num_seqs", "max_num_batched_tokens", "enable_prefix_caching")),
+    ]
+
+    compliant_alias_src = (
+        "from vllm import LLM as X\n"
+        'X(model="x", max_num_seqs=1, max_num_batched_tokens=16384, enable_prefix_caching=False)\n'
+    )
+    assert _count_llm_calls(compliant_alias_src, "alias_ok.py") == 1
+    assert _find_missing_llm_engine_pin_calls(compliant_alias_src, "alias_ok.py") == []
+
+    unrelated_src = "class Helper:\n    pass\nHelper()\n"
+    assert _count_llm_calls(unrelated_src, "unrelated.py") == 0
+    assert _find_missing_llm_engine_pin_calls(unrelated_src, "unrelated.py") == []

@@ -9830,6 +9830,19 @@ def compute_qwen36_max_num_batched_tokens(max_model_len: int) -> int:
     return min(QWEN36_MAX_NUM_BATCHED_TOKENS_CAP, QWEN36_MAX_NUM_SEQS * int(max_model_len))
 
 
+# In vllm==0.34.0 V1 multiprocess mode (vllm/envs.py:169, 1527-1528; vllm/v1/engine/llm_engine.py:136-138, 170),
+# EngineCore._make_ready_response (vllm/v1/engine/core.py:2098-2117) and MPClient._apply_ready_response
+# (vllm/v1/engine/core_client.py:881-924) sync back from the engine core onto vllm_config only
+# model_config.max_model_len (:899-901), cache_config.num_gpu_blocks (:905-907), cache_config.block_size (:912),
+# cache_config.mamba_block_size (:913), cache_config.kv_cache_size_tokens (vllm/config/cache.py:354-357;
+# core_client.py:915-919), and cache_config.kv_cache_max_concurrency (vllm/config/cache.py:358-359;
+# core_client.py:920-924). The remaining exposed fields below (max_num_seqs at vllm/config/scheduler.py:61,
+# max_num_batched_tokens at vllm/config/scheduler.py:47, enable_prefix_caching at vllm/config/cache.py:267 and
+# vllm/model_executor/models/config.py:1094-1118, cache_dtype/mamba_cache_dtype/mamba_ssm_cache_dtype at
+# vllm/config/cache.py:245, 306, 310, and cudagraph_capture_sizes at vllm/config/compilation.py:751 and
+# vllm/config/vllm.py:2406-2408, 2547-2548) are the front end's computed values on llm.llm_engine.vllm_config
+# (vllm/entrypoints/llm.py:352-354; vllm/v1/engine/llm_engine.py:69); num_mamba_blocks is not exposed on
+# CacheConfig in v0.34.0 (vllm/config/cache.py:182-462) and resolves to "unavailable".
 QWEN36_RESOLVED_ENGINE_CONFIG_PATHS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("max_num_seqs", ("llm_engine", "vllm_config", "scheduler_config", "max_num_seqs")),
     ("max_num_batched_tokens", ("llm_engine", "vllm_config", "scheduler_config", "max_num_batched_tokens")),
@@ -9842,6 +9855,8 @@ QWEN36_RESOLVED_ENGINE_CONFIG_PATHS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("cudagraph_capture_sizes", ("llm_engine", "vllm_config", "compilation_config", "cudagraph_capture_sizes")),
     ("num_gpu_blocks", ("llm_engine", "vllm_config", "cache_config", "num_gpu_blocks")),
     ("num_mamba_blocks", ("llm_engine", "vllm_config", "cache_config", "num_mamba_blocks")),
+    ("kv_cache_size_tokens", ("llm_engine", "vllm_config", "cache_config", "kv_cache_size_tokens")),
+    ("kv_cache_max_concurrency", ("llm_engine", "vllm_config", "cache_config", "kv_cache_max_concurrency")),
 )
 
 
