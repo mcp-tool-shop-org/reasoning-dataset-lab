@@ -8602,6 +8602,13 @@ QWEN36_SEED_VARIANT_PATTERN = re.compile(r"\A[a-z0-9][a-z0-9_-]{0,31}\Z")
 QWEN36_PROMPT_TOKEN_CAP = 4096
 QWEN36_GPU_MEMORY_UTILIZATION = 0.90
 QWEN36_ENFORCE_EAGER = False
+# Requests run one at a time, and vLLM's memory-tier default can exceed a hybrid model's Mamba cache blocks.
+QWEN36_MAX_NUM_SEQS = 1
+# Cap for min(16384, max_num_seqs * max_model_len) (vllm/engine/arg_utils.py:3258-3261), pinned instead of resolved from the GPU memory tier.
+QWEN36_MAX_NUM_BATCHED_TOKENS_CAP = 16384
+QWEN36_MAX_NUM_BATCHED_TOKENS_RULE = "min(16384, max_num_seqs * max_model_len)"
+# Run-to-run reproducibility on a hybrid model is worth more than prefill speed at batch 1.
+QWEN36_ENABLE_PREFIX_CACHING = False
 QWEN36_LOGPROBS_MODE = "raw_logprobs"
 QWEN36_LOGPROBS_BASIS = (
     "vllm==0.34.0 default logprobs_mode='raw_logprobs': top-20 logprobs from raw logits before "
@@ -9818,6 +9825,55 @@ class Qwen36ChoiceAdapter(BaseJudgeAdapter):
         )
 
 
+def compute_qwen36_max_num_batched_tokens(max_model_len: int) -> int:
+    """Compute `min(16384, max_num_seqs * max_model_len)` for Qwen3.6 vLLM engine startup."""
+    return min(QWEN36_MAX_NUM_BATCHED_TOKENS_CAP, QWEN36_MAX_NUM_SEQS * int(max_model_len))
+
+
+QWEN36_RESOLVED_ENGINE_CONFIG_PATHS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("max_num_seqs", ("llm_engine", "vllm_config", "scheduler_config", "max_num_seqs")),
+    ("max_num_batched_tokens", ("llm_engine", "vllm_config", "scheduler_config", "max_num_batched_tokens")),
+    ("enable_prefix_caching", ("llm_engine", "vllm_config", "cache_config", "enable_prefix_caching")),
+    ("block_size", ("llm_engine", "vllm_config", "cache_config", "block_size")),
+    ("mamba_block_size", ("llm_engine", "vllm_config", "cache_config", "mamba_block_size")),
+    ("kv_cache_dtype", ("llm_engine", "vllm_config", "cache_config", "cache_dtype")),
+    ("mamba_cache_dtype", ("llm_engine", "vllm_config", "cache_config", "mamba_cache_dtype")),
+    ("mamba_ssm_cache_dtype", ("llm_engine", "vllm_config", "cache_config", "mamba_ssm_cache_dtype")),
+    ("cudagraph_capture_sizes", ("llm_engine", "vllm_config", "compilation_config", "cudagraph_capture_sizes")),
+    ("num_gpu_blocks", ("llm_engine", "vllm_config", "cache_config", "num_gpu_blocks")),
+    ("num_mamba_blocks", ("llm_engine", "vllm_config", "cache_config", "num_mamba_blocks")),
+)
+
+
+def _read_resolved_engine_field(llm: Any, attr_path: tuple[str, ...]) -> Any:
+    cur = llm
+    try:
+        for attr in attr_path:
+            cur = getattr(cur, attr)
+        if cur is None:
+            return "unavailable"
+        if isinstance(cur, (bool, int, float, str)):
+            json.dumps(cur, allow_nan=False)
+            return cur
+        if isinstance(cur, (list, tuple)):
+            copied = list(cur)
+            json.dumps(copied, allow_nan=False)
+            return copied
+        return "unavailable"
+    except Exception:
+        return "unavailable"
+
+
+def read_qwen36_resolved_engine_config(llm: Any) -> dict[str, Any]:
+    """Read resolved diagnostic fields from `vllm.LLM` public config objects without mutating the engine."""
+    return {field: _read_resolved_engine_field(llm, path) for field, path in QWEN36_RESOLVED_ENGINE_CONFIG_PATHS}
+
+
+def unavailable_qwen36_resolved_engine_config() -> dict[str, str]:
+    """Return `resolved_engine_config` with every field set to `'unavailable'` for stub runs."""
+    return {field: "unavailable" for field, _ in QWEN36_RESOLVED_ENGINE_CONFIG_PATHS}
+
+
 class VllmJudgeTransport:
     """Offline, in-process, batch-1 vLLM transport for `Qwen/Qwen3.6-35B-A3B` (`venv-vllm`)."""
 
@@ -9846,6 +9902,8 @@ class VllmJudgeTransport:
         self._tokenizer: Any = None
         self._llm: Any = None
         self._max_model_len: int | None = None
+        self._max_num_batched_tokens: int | None = None
+        self._resolved_engine_config: dict[str, Any] | None = None
 
     def verify_ready(self, spec: JudgeSpec, *, allow_remote_code_reviewed: str | None = None) -> str:
         check_remote_code_gate(spec, allow_remote_code_reviewed=allow_remote_code_reviewed)
@@ -9910,6 +9968,7 @@ class VllmJudgeTransport:
             )
         max_new_tokens = resolve_qwen36_max_new_tokens(require_explicit=is_real_mode(self.window_mode))
         max_model_len = QWEN36_PROMPT_TOKEN_CAP + max_new_tokens
+        max_num_batched_tokens = compute_qwen36_max_num_batched_tokens(max_model_len)
         self._ensure_tokenizer_loaded(spec)
         from vllm import LLM
 
@@ -9923,8 +9982,15 @@ class VllmJudgeTransport:
             gpu_memory_utilization=QWEN36_GPU_MEMORY_UTILIZATION,
             enforce_eager=QWEN36_ENFORCE_EAGER,
             logprobs_mode=QWEN36_LOGPROBS_MODE,
+            max_num_seqs=QWEN36_MAX_NUM_SEQS,
+            max_num_batched_tokens=max_num_batched_tokens,
+            enable_prefix_caching=QWEN36_ENABLE_PREFIX_CACHING,
         )
         self._max_model_len = max_model_len
+        self._max_num_batched_tokens = max_num_batched_tokens
+        resolved_cfg = read_qwen36_resolved_engine_config(self._llm)
+        self._resolved_engine_config = resolved_cfg
+        print(f"QWEN36_RESOLVED_ENGINE_CONFIG {json.dumps(resolved_cfg, sort_keys=True)}", flush=True)
 
     def _decode_token_id(self, token_id: int) -> str:
         assert self._tokenizer is not None
@@ -9977,7 +10043,11 @@ class VllmJudgeTransport:
         rendered_prompt, checked_tok_ids = self.check_prompt_within_cap(spec, prompt)
         self._ensure_loaded(spec)
         assert self._llm is not None and self._tokenizer is not None and self._verified_digest is not None
-        assert self._max_model_len is not None
+        assert (
+            self._max_model_len is not None
+            and self._max_num_batched_tokens is not None
+            and self._resolved_engine_config is not None
+        )
         import tokenizers
         import torch
         import transformers
@@ -10055,6 +10125,11 @@ class VllmJudgeTransport:
             "enable_thinking": True,
             "language_model_only": True,
             "max_model_len": int(self._max_model_len),
+            "max_num_seqs": QWEN36_MAX_NUM_SEQS,
+            "max_num_batched_tokens": int(self._max_num_batched_tokens),
+            "max_num_batched_tokens_rule": QWEN36_MAX_NUM_BATCHED_TOKENS_RULE,
+            "enable_prefix_caching": QWEN36_ENABLE_PREFIX_CACHING,
+            "resolved_engine_config": json.loads(json.dumps(self._resolved_engine_config)),
             "prompt_token_cap": QWEN36_PROMPT_TOKEN_CAP,
             "gpu_memory_utilization": QWEN36_GPU_MEMORY_UTILIZATION,
             "enforce_eager": QWEN36_ENFORCE_EAGER,
@@ -10101,6 +10176,7 @@ def qwen36_fake_response(
     recorded_seed_variant = seed_variant if seed_variant is not None else QWEN36_SEED_VARIANT_UNSET
     call_seed = derive_qwen36_call_seed(prompt.item_id, prompt.order, seed_variant=seed_variant)
     max_new_tokens = resolve_qwen36_max_new_tokens()
+    max_model_len = QWEN36_PROMPT_TOKEN_CAP + max_new_tokens
     pins_extra: dict[str, Any] = {
         "backend": "vllm",
         "vllm": "0.34.0 (pinned-not-loaded)",
@@ -10108,7 +10184,12 @@ def qwen36_fake_response(
         "transformers": "5.22.2 (pinned-not-loaded)",
         "enable_thinking": True,
         "language_model_only": True,
-        "max_model_len": QWEN36_PROMPT_TOKEN_CAP + max_new_tokens,
+        "max_model_len": max_model_len,
+        "max_num_seqs": QWEN36_MAX_NUM_SEQS,
+        "max_num_batched_tokens": compute_qwen36_max_num_batched_tokens(max_model_len),
+        "max_num_batched_tokens_rule": QWEN36_MAX_NUM_BATCHED_TOKENS_RULE,
+        "enable_prefix_caching": QWEN36_ENABLE_PREFIX_CACHING,
+        "resolved_engine_config": unavailable_qwen36_resolved_engine_config(),
         "prompt_token_cap": QWEN36_PROMPT_TOKEN_CAP,
         "gpu_memory_utilization": QWEN36_GPU_MEMORY_UTILIZATION,
         "enforce_eager": QWEN36_ENFORCE_EAGER,

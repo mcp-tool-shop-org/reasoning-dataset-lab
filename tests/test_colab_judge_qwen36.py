@@ -295,6 +295,9 @@ def test_vllm_transport_sampling_and_first_answer_token_logprobs(
         "gpu_memory_utilization": 0.90,
         "enforce_eager": False,
         "logprobs_mode": "raw_logprobs",
+        "max_num_seqs": 1,
+        "max_num_batched_tokens": 8192,
+        "enable_prefix_caching": False,
     }
     assert recorded["chat_template_call"]["enable_thinking"] is True
     assert recorded["chat_template_call"]["add_generation_prompt"] is True
@@ -315,6 +318,11 @@ def test_vllm_transport_sampling_and_first_answer_token_logprobs(
     assert resp.library_pins["transformers"] == "5.22.2"
     assert resp.library_pins["torch"] == "2.14.0"
     assert resp.library_pins["max_model_len"] == 8192
+    assert resp.library_pins["max_num_seqs"] == 1
+    assert resp.library_pins["max_num_batched_tokens"] == 8192
+    assert resp.library_pins["max_num_batched_tokens_rule"] == "min(16384, max_num_seqs * max_model_len)"
+    assert resp.library_pins["enable_prefix_caching"] is False
+    assert resp.library_pins["resolved_engine_config"] == bakeoff_judge.unavailable_qwen36_resolved_engine_config()
     assert resp.library_pins["prompt_token_cap"] == 4096
     assert resp.library_pins["gpu_memory_utilization"] == 0.90
     assert resp.library_pins["enforce_eager"] is False
@@ -504,6 +512,11 @@ def test_telemetry_fields_quantiles_and_max_new_tokens_override(
             "repetition_penalty": 1.0,
         }
         assert r["library_pins"]["max_model_len"] == 6144
+        assert r["library_pins"]["max_num_seqs"] == 1
+        assert r["library_pins"]["max_num_batched_tokens"] == 6144
+        assert r["library_pins"]["max_num_batched_tokens_rule"] == "min(16384, max_num_seqs * max_model_len)"
+        assert r["library_pins"]["enable_prefix_caching"] is False
+        assert r["library_pins"]["resolved_engine_config"] == bakeoff_judge.unavailable_qwen36_resolved_engine_config()
         assert r["library_pins"]["gpu_memory_utilization"] == 0.90
         assert r["library_pins"]["enforce_eager"] is False
         assert r["library_pins"]["logprobs_mode"] == "raw_logprobs"
@@ -2453,7 +2466,7 @@ def test_qwen36_unsharded_fresh_run_unchanged_against_cb2863aa(
     assert anchor_file.read_bytes() == row_bytes
 
     rows = [json.loads(ln) for ln in row_bytes.decode("utf-8").splitlines() if ln.strip()]
-    expected_norm_row_shas = [
+    expected_norm_row_shas_cb2863aa = [
         "de7dcf4626223a5828a9e8e31c8baa0ca9f3e433b03f9d4c93588492591253c9",
         "112cf0cf7eea52fc6cdd864ef85bc31c3b0c95dd909354bf69cbe09f93f6a313",
         "f24269e59a4198675064e43543af4ee8e18d6dd33486a95025d026e4ba34a2ad",
@@ -2461,6 +2474,15 @@ def test_qwen36_unsharded_fresh_run_unchanged_against_cb2863aa(
         "1fd11fc08383bd62b9b98b146da25b5b1ff7b730f00745567dec0a3d5ed2d0d7",
         "c3692b55c33429e1c5eaa5fcdc5ea225c82f1b845908c27abb0a91894b895f1a",
     ]
+    expected_norm_row_shas = [
+        "3f8c608c24bf424b351e889153d328b3ff58cce57d6e875d61b74871b6859eae",
+        "8795e4792afdd10cd751a158b7e902b2bd0be1d455178a1cbade4e58a6f3d672",
+        "936828b49d92d37766452fdcae4840129d21977fd6a5ae2f0ecba6f954c3a05e",
+        "1cce0712d732696e2e55f1c7d91821d8ad16373869a416fd04064fa80fe29f7d",
+        "7be1337e3ba750e282712eab00e94274fe0dde4f7e450c00fafd35df95fb8bbc",
+        "52389b9533d145eced92224344a53a02810db850d82a7d4d1de309d57641bc3d",
+    ]
+    actual_cb2863aa_compat_shas: list[str] = []
     actual_norm_shas: list[str] = []
     actual_raw_shas: list[str] = []
     for r in rows:
@@ -2475,6 +2497,20 @@ def test_qwen36_unsharded_fresh_run_unchanged_against_cb2863aa(
         body["library_pins"] = pins
         norm_canon = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
         actual_norm_shas.append(hashlib.sha256(norm_canon.encode("utf-8")).hexdigest())
+        compat_pins = dict(pins)
+        for added_key in (
+            "max_num_seqs",
+            "max_num_batched_tokens",
+            "max_num_batched_tokens_rule",
+            "enable_prefix_caching",
+            "resolved_engine_config",
+        ):
+            compat_pins.pop(added_key, None)
+        body_compat = dict(body)
+        body_compat["library_pins"] = compat_pins
+        compat_canon = json.dumps(body_compat, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        actual_cb2863aa_compat_shas.append(hashlib.sha256(compat_canon.encode("utf-8")).hexdigest())
+    assert actual_cb2863aa_compat_shas == expected_norm_row_shas_cb2863aa
     assert actual_norm_shas == expected_norm_row_shas
 
     rows_sha = hashlib.sha256(row_bytes).hexdigest()
