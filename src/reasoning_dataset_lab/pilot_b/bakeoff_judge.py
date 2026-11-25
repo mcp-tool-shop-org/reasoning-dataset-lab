@@ -47,11 +47,8 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-import contextlib
 import datetime
 import hashlib
-import importlib
-import importlib.metadata
 import json
 import math
 import os
@@ -10387,7 +10384,7 @@ def scan_flashinfer_workspace_build_entered(
     raw_dirs: list[Path | str | None] = list(workspace_dirs) if workspace_dirs is not None else []
     if workspace_dirs is None:
         try:
-            fi_env = importlib.import_module("flashinfer.jit.env")
+            from flashinfer.jit import env as fi_env
             raw_dirs.extend(
                 [
                     getattr(fi_env, "FLASHINFER_WORKSPACE_DIR", None),
@@ -10457,11 +10454,11 @@ class FlashInferRunNinjaGuard:
         if self._installed:
             return
         try:
-            cpp_ext_mod = importlib.import_module("flashinfer.jit.cpp_ext")
+            from flashinfer.jit import cpp_ext as cpp_ext_mod
         except Exception:
             cpp_ext_mod = None
         try:
-            core_mod = importlib.import_module("flashinfer.jit.core")
+            from flashinfer.jit import core as core_mod
         except Exception:
             core_mod = None
         guard = self
@@ -10510,8 +10507,8 @@ def verify_qwen36_prebuilt_kernels_before_llm(
     if not had_arch:
         os.environ["FLASHINFER_CUDA_ARCH_LIST"] = QWEN36_FLASHINFER_CUDA_ARCH_LIST
     try:
-        fi_fused_moe = importlib.import_module("flashinfer.jit.fused_moe")
-        fi_env = importlib.import_module("flashinfer.jit.env")
+        from flashinfer.jit import env as fi_env
+        from flashinfer.jit import fused_moe as fi_fused_moe
     except Exception as exc:
         raise refused_error(
             JUDGE_PREBUILT_KERNELS_MISSING,
@@ -10521,7 +10518,7 @@ def verify_qwen36_prebuilt_kernels_before_llm(
 
     if not had_arch:
         try:
-            fi_core = importlib.import_module("flashinfer.jit.core")
+            from flashinfer.jit import core as fi_core
             refresh_fn = getattr(fi_core, "refresh_current_compilation_context", None)
             if callable(refresh_fn):
                 refresh_fn()

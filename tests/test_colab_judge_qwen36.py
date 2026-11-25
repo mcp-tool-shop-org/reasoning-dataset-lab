@@ -693,7 +693,9 @@ def _install_fake_aot_flashinfer(
         get_library_path=lambda: so_path,
     )
     fi_mod = ModuleType("flashinfer")
+    fi_mod.__path__ = []  # type: ignore[attr-defined]
     fi_jit = ModuleType("flashinfer.jit")
+    fi_jit.__path__ = []  # type: ignore[attr-defined]
     fi_env = SimpleNamespace(
         FLASHINFER_AOT_PROVIDERS=(provider,),
         FLASHINFER_WORKSPACE_DIR=ws_dir,
@@ -707,6 +709,11 @@ def _install_fake_aot_flashinfer(
         refresh_current_compilation_context=lambda: None,
     )
     fi_fused = SimpleNamespace(gen_cutlass_fused_moe_sm120_module=lambda use_fast_build=False: spec_obj)
+    fi_mod.jit = fi_jit  # type: ignore[attr-defined]
+    fi_jit.env = fi_env  # type: ignore[attr-defined]
+    fi_jit.cpp_ext = fi_cpp_ext  # type: ignore[attr-defined]
+    fi_jit.core = fi_core  # type: ignore[attr-defined]
+    fi_jit.fused_moe = fi_fused  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "flashinfer", fi_mod)
     monkeypatch.setitem(sys.modules, "flashinfer.jit", fi_jit)
     monkeypatch.setitem(sys.modules, "flashinfer.jit.env", fi_env)
@@ -4162,6 +4169,7 @@ def test_pre_llm_aot_check_records_telemetry_and_refuses_before_llm(
         pass_mode=CONTRA,
         window_mode="stub",
         fake_transport=False,
+        vram_probe=lambda: 0,
         run_canary=False,
         progress_file=prog_full,
         synthetic_items=False,
@@ -4461,6 +4469,9 @@ def test_prebuilt_aot_and_guard_edge_branches(
     guard_missing = bakeoff_judge.FlashInferRunNinjaGuard()
     monkeypatch.setitem(sys.modules, "flashinfer.jit.cpp_ext", None)  # type: ignore[arg-type]
     monkeypatch.setitem(sys.modules, "flashinfer.jit.core", None)  # type: ignore[arg-type]
+    if "flashinfer.jit" in sys.modules:
+        monkeypatch.delattr(sys.modules["flashinfer.jit"], "cpp_ext", raising=False)
+        monkeypatch.delattr(sys.modules["flashinfer.jit"], "core", raising=False)
     guard_missing.install()
     guard_missing.install()
     guard_missing.uninstall()
@@ -4468,6 +4479,8 @@ def test_prebuilt_aot_and_guard_edge_branches(
 
     # verify_qwen36_prebuilt_kernels_before_llm error branches
     monkeypatch.setitem(sys.modules, "flashinfer.jit.fused_moe", None)  # type: ignore[arg-type]
+    if "flashinfer.jit" in sys.modules:
+        monkeypatch.delattr(sys.modules["flashinfer.jit"], "fused_moe", raising=False)
     with pytest.raises(RdlabError) as exc_imp:
         bakeoff_judge.verify_qwen36_prebuilt_kernels_before_llm()
     assert exc_imp.value.code == "JUDGE_PREBUILT_KERNELS_MISSING"
