@@ -3957,7 +3957,7 @@ def _ensure_executable_shim_file(path: Path, body: str) -> None:
 
 
 def _build_engine_stop_sitecustomize_source(self_dir: Path | str | None = None) -> str:
-    """Return stdlib-only `sitecustomize.py` source so spawned `EngineCore` processes record named stop codes."""
+    """Return stdlib-only `sitecustomize.py` source so spawned `EngineCore` processes record named stop codes on escape."""
     codes_literal = repr(QWEN36_NAMED_CHILD_STOP_CODES)
     self_dir_expr = f"os.path.realpath({str(self_dir)!r})" if self_dir is not None else "os.path.realpath(os.path.dirname(os.path.abspath(sys.modules[__name__].__spec__.origin)))"
     return f'''"""Runtime hook for spawned judge worker subprocesses: record named Qwen3.6 stop codes before exit."""
@@ -3977,19 +3977,24 @@ _STOP_ENV_VAR = {QWEN36_ENGINE_STOP_ENV_VAR!r}
 _JIT_STOP_CODE = "JUDGE_JIT_BUILD_ENTERED"
 _NAMED_STOP_CODES = {codes_literal}
 _SELF_DIR = {self_dir_expr}
+_SENTINEL_ATTR = "_rdlab_qwen36_engine_stop_installed"
+_VISITED_ATTR = "_rdlab_qwen36_sitecustomize_visited"
 
 
 def _record_stop(code: str, source: str, detail: str) -> None:
     raw = os.environ.get(_STOP_ENV_VAR, "").strip()
     if not raw or not code:
         return
+    p = Path(raw)
     try:
-        p = Path(raw)
         p.parent.mkdir(parents=True, exist_ok=True)
         with p.open("a", encoding="utf-8", newline="\\n") as fh:
             fh.write(json.dumps({{"code": str(code), "source": str(source), "detail": str(detail)[:500], "pid": os.getpid()}}, sort_keys=True) + "\\n")
-    except Exception:
-        pass
+    except Exception as exc:
+        try:
+            sys.stderr.write(f"QWEN36_ENGINE_STOP_WRITE_FAILED path={{p}} error={{type(exc).__name__}}: {{exc}}\\n")
+        except Exception:
+            pass
 
 
 def _classify_exc(exc: BaseException | None) -> tuple[str, str, str] | None:
@@ -4017,20 +4022,6 @@ def _classify_exc(exc: BaseException | None) -> tuple[str, str, str] | None:
 
 
 def _patch_flashinfer_module(mod: object, fullname: str) -> None:
-    if fullname == "flashinfer.jit.core" and hasattr(mod, "MissingJITCacheError"):
-        cls = getattr(mod, "MissingJITCacheError")
-        if not getattr(cls, "_rdlab_stop_wrapped", False):
-            orig_init = cls.__init__
-
-            def _wrapped_init(self_exc, *args, **kwargs):
-                detail = str(args[0]) if args else str(kwargs.get("message") or "MissingJITCacheError")
-                _record_stop(_JIT_STOP_CODE, "MissingJITCacheError", detail)
-                return orig_init(self_exc, *args, **kwargs)
-
-            cls._rdlab_orig_init = orig_init
-            cls._rdlab_stop_wrapped = True
-            cls.__init__ = _wrapped_init
-
     if hasattr(mod, "run_ninja"):
         fn = getattr(mod, "run_ninja")
         if not getattr(fn, "_rdlab_stop_wrapped", False):
@@ -4044,6 +4035,8 @@ def _patch_flashinfer_module(mod: object, fullname: str) -> None:
 
 
 class _FlashInferStopFinder(importlib.abc.MetaPathFinder):
+    _rdlab_stop_finder = True
+
     def __init__(self) -> None:
         self._busy: set[str] = set()
 
@@ -4071,7 +4064,7 @@ class _FlashInferStopFinder(importlib.abc.MetaPathFinder):
 def _install_hooks() -> None:
     if not os.environ.get(_STOP_ENV_VAR, "").strip():
         return
-    if not any(isinstance(f, _FlashInferStopFinder) for f in sys.meta_path):
+    if not any(getattr(f, "_rdlab_stop_finder", False) for f in sys.meta_path):
         sys.meta_path.insert(0, _FlashInferStopFinder())
     for loaded_name in ("flashinfer.jit.core", "flashinfer.jit.cpp_ext"):
         loaded_mod = sys.modules.get(loaded_name)
@@ -4106,16 +4099,18 @@ def _install_hooks() -> None:
         sys.excepthook = _wrapped_excepthook
 
 
-def _chain_downstream_sitecustomize() -> None:
+def _chain_downstream_sitecustomize(visited: set[str]) -> None:
     for entry in list(sys.path):
         cand_dir = entry or os.getcwd()
         try:
-            if os.path.realpath(cand_dir) == _SELF_DIR:
-                continue
+            real_cand_dir = os.path.realpath(cand_dir)
         except OSError:
+            continue
+        if real_cand_dir in visited:
             continue
         cand_file = os.path.join(cand_dir, "sitecustomize.py")
         if os.path.isfile(cand_file):
+            visited.add(real_cand_dir)
             spec = importlib.util.spec_from_file_location("_rdlab_downstream_sitecustomize", cand_file)
             if spec is not None and spec.loader is not None:
                 mod = importlib.util.module_from_spec(spec)
@@ -4123,8 +4118,15 @@ def _chain_downstream_sitecustomize() -> None:
             break
 
 
-_install_hooks()
-_chain_downstream_sitecustomize()
+_visited = getattr(sys, _VISITED_ATTR, None)
+if not isinstance(_visited, set):
+    _visited = set()
+    setattr(sys, _VISITED_ATTR, _visited)
+_visited.add(_SELF_DIR)
+if not getattr(sys, _SENTINEL_ATTR, False):
+    setattr(sys, _SENTINEL_ATTR, True)
+    _install_hooks()
+_chain_downstream_sitecustomize(_visited)
 '''
 
 

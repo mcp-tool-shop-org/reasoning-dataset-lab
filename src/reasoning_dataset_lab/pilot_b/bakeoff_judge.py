@@ -10799,7 +10799,10 @@ def record_qwen36_engine_stop_code(
         eff_path.parent.mkdir(parents=True, exist_ok=True)
         with eff_path.open("a", encoding="utf-8", newline="\n") as fh:
             fh.write(json.dumps(entry, sort_keys=True) + "\n")
-    except OSError:
+    except OSError as exc:
+        sys.stderr.write(
+            f"QWEN36_ENGINE_STOP_WRITE_FAILED path={eff_path} error={type(exc).__name__}: {exc}\n"
+        )
         return eff_path
     return eff_path
 
@@ -10856,43 +10859,8 @@ def _classify_engine_exception_stop_code(exc: BaseException | None) -> tuple[str
     return None
 
 
-def _patch_flashinfer_module_for_engine_stop(
-    mod: Any,
-    fullname: str,
-    record_fn: Callable[[str, str, str], Any],
-) -> None:
-    """Hook `MissingJITCacheError` and `run_ninja` in a loaded `flashinfer.jit.*` module."""
-    if fullname == "flashinfer.jit.core" and hasattr(mod, "MissingJITCacheError"):
-        cls = mod.MissingJITCacheError
-        if not getattr(cls, "_rdlab_stop_wrapped", False):
-            orig_init = cls.__init__
-
-            def _wrapped_init(self_exc: Any, *args: Any, **kwargs: Any) -> Any:
-                try:
-                    detail = str(args[0]) if args else str(kwargs.get("message") or "MissingJITCacheError")
-                except Exception:
-                    detail = "MissingJITCacheError"
-                record_fn(JUDGE_JIT_BUILD_ENTERED, "MissingJITCacheError", detail)
-                return orig_init(self_exc, *args, **kwargs)
-
-            cls._rdlab_orig_init = orig_init
-            cls._rdlab_stop_wrapped = True
-            cls.__init__ = _wrapped_init
-
-    if hasattr(mod, "run_ninja"):
-        fn = mod.run_ninja
-        if not getattr(fn, "_rdlab_stop_wrapped", False):
-            def _wrapped_run_ninja(*_args: Any, **_kwargs: Any) -> Any:
-                record_fn(JUDGE_JIT_BUILD_ENTERED, f"{fullname}.run_ninja", "FlashInfer attempted to invoke run_ninja in EngineCore subprocess.")
-                raise RuntimeError(f"{JUDGE_JIT_BUILD_ENTERED}: FlashInfer attempted to invoke run_ninja in EngineCore subprocess.")
-
-            _wrapped_run_ninja._rdlab_orig_run_ninja = fn  # type: ignore[attr-defined]
-            _wrapped_run_ninja._rdlab_stop_wrapped = True  # type: ignore[attr-defined]
-            mod.run_ninja = _wrapped_run_ninja
-
-
 def build_qwen36_engine_stop_sitecustomize_source() -> str:
-    """Build stdlib-only `sitecustomize.py` source so spawned `EngineCore` subprocesses record named stops."""
+    """Build stdlib-only `sitecustomize.py` source so spawned `EngineCore` subprocesses record named stops on escape."""
     codes_literal = repr(QWEN36_NAMED_CHILD_STOP_CODES)
     return f'''"""Runtime hook for spawned judge worker subprocesses: record named Qwen3.6 stop codes before exit."""
 
@@ -10911,19 +10879,24 @@ _STOP_ENV_VAR = {QWEN36_ENGINE_STOP_ENV_VAR!r}
 _JIT_STOP_CODE = {JUDGE_JIT_BUILD_ENTERED!r}
 _NAMED_STOP_CODES = {codes_literal}
 _SELF_DIR = os.path.realpath(os.path.dirname(__file__))
+_SENTINEL_ATTR = "_rdlab_qwen36_engine_stop_installed"
+_VISITED_ATTR = "_rdlab_qwen36_sitecustomize_visited"
 
 
 def _record_stop(code: str, source: str, detail: str) -> None:
     raw = os.environ.get(_STOP_ENV_VAR, "").strip()
     if not raw or not code:
         return
+    p = Path(raw)
     try:
-        p = Path(raw)
         p.parent.mkdir(parents=True, exist_ok=True)
         with p.open("a", encoding="utf-8", newline="\\n") as fh:
             fh.write(json.dumps({{"code": str(code), "source": str(source), "detail": str(detail)[:500], "pid": os.getpid()}}, sort_keys=True) + "\\n")
-    except Exception:
-        pass
+    except Exception as exc:
+        try:
+            sys.stderr.write(f"QWEN36_ENGINE_STOP_WRITE_FAILED path={{p}} error={{type(exc).__name__}}: {{exc}}\\n")
+        except Exception:
+            pass
 
 
 def _classify_exc(exc: BaseException | None) -> tuple[str, str, str] | None:
@@ -10951,20 +10924,6 @@ def _classify_exc(exc: BaseException | None) -> tuple[str, str, str] | None:
 
 
 def _patch_flashinfer_module(mod: object, fullname: str) -> None:
-    if fullname == "flashinfer.jit.core" and hasattr(mod, "MissingJITCacheError"):
-        cls = getattr(mod, "MissingJITCacheError")
-        if not getattr(cls, "_rdlab_stop_wrapped", False):
-            orig_init = cls.__init__
-
-            def _wrapped_init(self_exc, *args, **kwargs):
-                detail = str(args[0]) if args else str(kwargs.get("message") or "MissingJITCacheError")
-                _record_stop(_JIT_STOP_CODE, "MissingJITCacheError", detail)
-                return orig_init(self_exc, *args, **kwargs)
-
-            cls._rdlab_orig_init = orig_init
-            cls._rdlab_stop_wrapped = True
-            cls.__init__ = _wrapped_init
-
     if hasattr(mod, "run_ninja"):
         fn = getattr(mod, "run_ninja")
         if not getattr(fn, "_rdlab_stop_wrapped", False):
@@ -10978,6 +10937,8 @@ def _patch_flashinfer_module(mod: object, fullname: str) -> None:
 
 
 class _FlashInferStopFinder(importlib.abc.MetaPathFinder):
+    _rdlab_stop_finder = True
+
     def __init__(self) -> None:
         self._busy: set[str] = set()
 
@@ -11005,7 +10966,7 @@ class _FlashInferStopFinder(importlib.abc.MetaPathFinder):
 def _install_hooks() -> None:
     if not os.environ.get(_STOP_ENV_VAR, "").strip():
         return
-    if not any(isinstance(f, _FlashInferStopFinder) for f in sys.meta_path):
+    if not any(getattr(f, "_rdlab_stop_finder", False) for f in sys.meta_path):
         sys.meta_path.insert(0, _FlashInferStopFinder())
     for loaded_name in ("flashinfer.jit.core", "flashinfer.jit.cpp_ext"):
         loaded_mod = sys.modules.get(loaded_name)
@@ -11040,16 +11001,18 @@ def _install_hooks() -> None:
         sys.excepthook = _wrapped_excepthook
 
 
-def _chain_downstream_sitecustomize() -> None:
+def _chain_downstream_sitecustomize(visited: set[str]) -> None:
     for entry in list(sys.path):
         cand_dir = entry or os.getcwd()
         try:
-            if os.path.realpath(cand_dir) == _SELF_DIR:
-                continue
+            real_cand_dir = os.path.realpath(cand_dir)
         except OSError:
+            continue
+        if real_cand_dir in visited:
             continue
         cand_file = os.path.join(cand_dir, "sitecustomize.py")
         if os.path.isfile(cand_file):
+            visited.add(real_cand_dir)
             spec = importlib.util.spec_from_file_location("_rdlab_downstream_sitecustomize", cand_file)
             if spec is not None and spec.loader is not None:
                 mod = importlib.util.module_from_spec(spec)
@@ -11057,8 +11020,15 @@ def _chain_downstream_sitecustomize() -> None:
             break
 
 
-_install_hooks()
-_chain_downstream_sitecustomize()
+_visited = getattr(sys, _VISITED_ATTR, None)
+if not isinstance(_visited, set):
+    _visited = set()
+    setattr(sys, _VISITED_ATTR, _visited)
+_visited.add(_SELF_DIR)
+if not getattr(sys, _SENTINEL_ATTR, False):
+    setattr(sys, _SENTINEL_ATTR, True)
+    _install_hooks()
+_chain_downstream_sitecustomize(_visited)
 '''
 
 
@@ -11235,17 +11205,6 @@ class FlashInferBuildShimGuard:
             proc_cls.run = _guarded_base_process_run  # type: ignore[method-assign]
 
         try:
-            fi_core_mod = sys.modules.get("flashinfer.jit.core")
-            if fi_core_mod is not None:
-                _patch_flashinfer_module_for_engine_stop(
-                    fi_core_mod,
-                    "flashinfer.jit.core",
-                    lambda c, s, d: record_qwen36_engine_stop_code(c, source=s, detail=d),
-                )
-        except Exception:
-            pass
-
-        try:
             import ninja as ninja_pkg
 
             self._ninja_pkg = ninja_pkg
@@ -11268,12 +11227,6 @@ class FlashInferBuildShimGuard:
         if self._orig_base_process_run is not None:
             multiprocessing.process.BaseProcess.run = self._orig_base_process_run  # type: ignore[method-assign]
             self._orig_base_process_run = None
-        fi_core_mod = sys.modules.get("flashinfer.jit.core")
-        if fi_core_mod is not None and hasattr(fi_core_mod, "MissingJITCacheError"):
-            cls = fi_core_mod.MissingJITCacheError
-            if getattr(cls, "_rdlab_stop_wrapped", False) and hasattr(cls, "_rdlab_orig_init"):
-                cls.__init__ = cls._rdlab_orig_init
-                cls._rdlab_stop_wrapped = False
         if self._ninja_pkg is not None:
             self._ninja_pkg.BIN_DIR = self._orig_ninja_bin_dir
             self._ninja_pkg = None
@@ -11687,9 +11640,18 @@ class VllmJudgeTransport:
             shim_marker_path=marker_p,
         )
         engine_stops = read_qwen36_engine_stop_records(stop_p)
-        scan["engine_stop_records"] = engine_stops
         missing_jit_exc = _find_missing_jit_cache_error(chain_from)
         engine_jit_stop = any(str(rec.get("code") or "").strip() == JUDGE_JIT_BUILD_ENTERED for rec in engine_stops)
+        if missing_jit_exc is not None and not engine_jit_stop:
+            record_qwen36_engine_stop_code(
+                JUDGE_JIT_BUILD_ENTERED,
+                source=type(missing_jit_exc).__name__,
+                detail=str(missing_jit_exc),
+                stop_file=stop_p,
+            )
+            engine_stops = read_qwen36_engine_stop_records(stop_p)
+            engine_jit_stop = any(str(rec.get("code") or "").strip() == JUDGE_JIT_BUILD_ENTERED for rec in engine_stops)
+        scan["engine_stop_records"] = engine_stops
         scan["disable_jit_triggered"] = bool(missing_jit_exc is not None)
         scan["engine_stop_triggered"] = bool(engine_jit_stop)
         if missing_jit_exc is not None or engine_jit_stop:

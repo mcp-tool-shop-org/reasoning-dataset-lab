@@ -2340,6 +2340,7 @@ PY
 }
 
 verify_and_close_run_outputs() {
+  # Explicit shell RUN_FAILURE_CLASS assignments below are kept as defense in depth alongside run_records.classify_launcher_failure_class.
   if [[ "$EXEC_RC" -eq 124 ]] || [[ "$EXEC_RC" -eq 137 ]]; then
     RUN_WHY="wall-clock timeout exceeded (${WALL_SECONDS}s)"
     if [[ -z "$RUN_FAILURE_CLASS" ]]; then

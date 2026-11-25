@@ -123,6 +123,15 @@ def _spawn_engine_core_missing_jit_cache_worker(mode: str, fi_pkg_dir: str) -> N
             code = "JUDGE_PREBUILT_KERNELS_MISSING"
 
         raise _PrebuiltStop("missing prebuilt sm_120 .so")
+    if mode == "catch_and_recover_missing_jit":
+        if fi_pkg_dir and fi_pkg_dir not in sys.path:
+            sys.path.insert(0, fi_pkg_dir)
+        from flashinfer.jit import core as fi_core  # type: ignore[import-not-found]
+
+        try:
+            raise fi_core.MissingJITCacheError("probed optional AOT cache")
+        except fi_core.MissingJITCacheError:
+            return
     raise RuntimeError(f"unknown worker mode: {mode}")
 
 
@@ -5873,32 +5882,30 @@ def test_engine_core_unchained_failure_reports_jit_build_entered(
     assert bakeoff_judge._classify_engine_exception_stop_code(RuntimeError("JUDGE_CUDA_HOME_MISSING in child"))[0] == "JUDGE_CUDA_HOME_MISSING"
     assert bakeoff_judge._classify_engine_exception_stop_code(ValueError("unrelated")) is None
 
-    # Direct coverage of _patch_flashinfer_module_for_engine_stop (MissingJITCacheError + run_ninja) & BaseProcess.run hook
-    direct_stop = tmp_path / "direct_patch_stop.jsonl"
-    monkeypatch.setenv("RDLAB_JUDGE_ENGINE_STOP_FILE", str(direct_stop))
+    # Parent-side escaping MissingJITCacheError via verify_no_build_entered records engine_stop_records as JUDGE_JIT_BUILD_ENTERED
+    parent_stop = tmp_path / "parent_escape_stop.jsonl"
+    monkeypatch.setenv("RDLAB_JUDGE_ENGINE_STOP_FILE", str(parent_stop))
 
     class _FakeCoreMod:
         class MissingJITCacheError(RuntimeError):
             pass
 
-        @staticmethod
-        def run_ninja(*_a: Any, **_kw: Any) -> None:
-            return None
+    t_parent = bakeoff_judge.VllmJudgeTransport(receipts_dir=env["receipts_dir"], hf_home=env["hf_home"], device="cuda")
+    t_parent._build_shim_guard = bakeoff_judge.FlashInferBuildShimGuard(default_cuda_home=fake_cuda)
+    t_parent._build_shim_guard.install()
+    try:
+        with pytest.raises(RdlabError) as exc_parent_escape:
+            t_parent.verify_no_build_entered(
+                workspace_dirs=[],
+                chain_from=RuntimeError("parent wrap") if False else _FakeCoreMod.MissingJITCacheError("escaped in parent"),
+            )
+        assert exc_parent_escape.value.code == "JUDGE_JIT_BUILD_ENTERED"
+        assert bakeoff_judge.read_qwen36_engine_stop_records(t_parent._build_shim_guard.engine_stop_path)
+    finally:
+        t_parent._build_shim_guard.uninstall()
 
-    recorded_direct: list[tuple[str, str, str]] = []
-    bakeoff_judge._patch_flashinfer_module_for_engine_stop(
-        _FakeCoreMod,
-        "flashinfer.jit.core",
-        lambda c, s, d: recorded_direct.append((c, s, d)),
-    )
-    _FakeCoreMod.MissingJITCacheError("cache miss")
-    with pytest.raises(RuntimeError, match="JUDGE_JIT_BUILD_ENTERED"):
-        _FakeCoreMod.run_ninja()
-    assert any(r[1] == "MissingJITCacheError" for r in recorded_direct)
-    assert any(r[1].endswith(".run_ninja") for r in recorded_direct)
-
-    # Also exercise FlashInferBuildShimGuard wrapping already-loaded flashinfer.jit.core & BaseProcess.run
-    monkeypatch.setitem(sys.modules, "flashinfer.jit.core", _FakeCoreMod)
+    # Exercise FlashInferBuildShimGuard wrapping BaseProcess.run
+    monkeypatch.setenv("RDLAB_JUDGE_ENGINE_STOP_FILE", str(tmp_path / "bp_stop.jsonl"))
     g_bp = bakeoff_judge.FlashInferBuildShimGuard(default_cuda_home=fake_cuda)
     g_bp.install()
     try:
@@ -6038,11 +6045,203 @@ def test_shim_symlink_oserror_refuses_with_named_code(
     assert exc_vm.value.failure_class == "JUDGE_JIT_SHIM_SYMLINK_FAILED"
 
 
+def test_dual_sitecustomize_hooks_do_not_recurse_and_chain_downstream(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Staging both `vm_judges` and `bakeoff_judge` `sitecustomize.py` hooks does not recurse, installs one finder, and runs downstream."""
+    fake_cuda = tmp_path / "dual_cuda"
+    (fake_cuda / "include").mkdir(parents=True, exist_ok=True)
+    (fake_cuda / "lib64").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("CUDA_HOME", str(fake_cuda))
+
+    downstream_dir = tmp_path / "downstream_sc"
+    downstream_dir.mkdir(parents=True, exist_ok=True)
+    downstream_marker = tmp_path / "downstream_marker.txt"
+    (downstream_dir / "sitecustomize.py").write_text(
+        f"from pathlib import Path\nwith Path({str(downstream_marker)!r}).open('a', encoding='utf-8') as fh:\n    fh.write('downstream_ran\\n')\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    stop_file = tmp_path / "dual_stop.jsonl"
+    vm_env: dict[str, str] = {
+        "CUDA_HOME": str(fake_cuda),
+        "PATH": "/usr/bin",
+        "PYTHONPATH": str(downstream_dir),
+    }
+    vm_judges.stage_qwen36_no_compile_shim(
+        tmp_path / "vm_shim",
+        tmp_path / "vm_marker.log",
+        vm_env,
+        default_cuda_home=fake_cuda,
+        engine_stop_file=stop_file,
+    )
+    monkeypatch.setenv("PYTHONPATH", vm_env["PYTHONPATH"])
+    monkeypatch.setenv("RDLAB_JIT_SHIM_MARKER_FILE", str(tmp_path / "bj_marker.log"))
+    monkeypatch.setenv("RDLAB_JUDGE_ENGINE_STOP_FILE", vm_env["RDLAB_JUDGE_ENGINE_STOP_FILE"])
+
+    guard = bakeoff_judge.FlashInferBuildShimGuard(default_cuda_home=fake_cuda)
+    guard.install()
+    try:
+        proc = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import json, sys; print(json.dumps({'finders': sum(1 for f in sys.meta_path if type(f).__name__ == '_FlashInferStopFinder')}))",
+            ],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    finally:
+        guard.uninstall()
+
+    assert proc.returncode == 0, f"stderr={proc.stderr!r} stdout={proc.stdout!r}"
+    assert "RecursionError" not in proc.stderr, proc.stderr
+    assert json.loads(proc.stdout.strip())["finders"] == 1
+    assert downstream_marker.read_text(encoding="utf-8") == "downstream_ran\n"
 
 
+def test_caught_missing_jit_cache_error_leaves_no_stop_record_and_uncaught_refuses(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A caught and recovered `MissingJITCacheError` writes no stop record and does not refuse, while an uncaught one still refuses."""
+    fake_cuda = tmp_path / "recov_cuda"
+    (fake_cuda / "include").mkdir(parents=True, exist_ok=True)
+    (fake_cuda / "lib64").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("CUDA_HOME", str(fake_cuda))
+
+    fi_disk_pkg = tmp_path / "recov_fi_pkg"
+    (fi_disk_pkg / "flashinfer" / "jit").mkdir(parents=True, exist_ok=True)
+    (fi_disk_pkg / "flashinfer" / "__init__.py").write_text("", encoding="utf-8")
+    (fi_disk_pkg / "flashinfer" / "jit" / "__init__.py").write_text("", encoding="utf-8")
+    (fi_disk_pkg / "flashinfer" / "jit" / "core.py").write_text(
+        "class MissingJITCacheError(RuntimeError):\n    pass\n\ndef run_ninja(*_a, **_kw):\n    return None\n",
+        encoding="utf-8",
+    )
+
+    good_resp = SimpleNamespace(
+        outputs=[
+            SimpleNamespace(
+                text="<think>R</think>\nA",
+                token_ids=[10, 11, 12, 13, 32],
+                finish_reason="stop",
+                logprobs=[
+                    {10: SimpleNamespace(decoded_token="<think>", logprob=-0.01)},
+                    {11: SimpleNamespace(decoded_token="R", logprob=-0.01)},
+                    {12: SimpleNamespace(decoded_token="</think>", logprob=-0.01)},
+                    {13: SimpleNamespace(decoded_token="\n", logprob=-0.01)},
+                    {32: SimpleNamespace(decoded_token="A", logprob=-0.1)},
+                ],
+            )
+        ],
+        prompt_token_ids=[1, 2, 3],
+    )
+    work_dir = tmp_path / "recov_work"
+    env = _setup_fake_vllm_env(tmp_path / "recov_vllm", monkeypatch, responses=[good_resp, good_resp])
+    monkeypatch.setattr(bakeoff_judge, "pin_and_read_sdpa_backend", lambda *_a, **_kw: "math")
+    monkeypatch.setenv(bakeoff_judge.QWEN36_MAX_NEW_TOKENS_ENV_VAR, "4096")
+    monkeypatch.setenv("RDLAB_WORK_DIR", str(work_dir))
+    monkeypatch.delenv("RDLAB_JIT_SHIM_MARKER_FILE", raising=False)
+    monkeypatch.delenv("RDLAB_JUDGE_ENGINE_STOP_FILE", raising=False)
+
+    orig_llm = sys.modules["vllm"].LLM
+
+    class _RecoveringEngineCoreLLM(orig_llm):  # type: ignore[misc,valid-type]
+        def __init__(self, **kwargs: Any) -> None:
+            ctx = multiprocessing.get_context("spawn")
+            p = ctx.Process(
+                target=_spawn_engine_core_missing_jit_cache_worker,
+                args=("catch_and_recover_missing_jit", str(fi_disk_pkg)),
+            )
+            p.start()
+            p.join(timeout=30)
+            assert p.exitcode == 0
+            super().__init__(**kwargs)
+
+    monkeypatch.setattr(sys.modules["vllm"], "LLM", _RecoveringEngineCoreLLM)
+    items_dir = tmp_path / "recov_items"
+    items_dir.mkdir(parents=True, exist_ok=True)
+    _write_items_jsonl(items_dir / "items.jsonl", _synth_items(1))
+
+    res = run_bakeoff_judge(
+        judge=QWEN36_ID,
+        part_dir=items_dir,
+        output_dir=tmp_path / "recov_out",
+        receipts_dir=env["receipts_dir"],
+        hf_home=env["hf_home"],
+        device="cuda",
+        pass_mode=CONTRA,
+        window_mode="stub",
+        fake_transport=False,
+        vram_probe=lambda: 0,
+        run_canary=False,
+        synthetic_items=False,
+    )
+    assert res["row_count"] == 2
+    for jl in work_dir.rglob("*.jsonl"):
+        assert bakeoff_judge.read_qwen36_engine_stop_records(jl) == []
+
+    # Direct subprocess check for vm_judges sitecustomize: caught MissingJITCacheError writes no record, escaping one does.
+    vm_stop = tmp_path / "vm_escape_stop.jsonl"
+    vm_env: dict[str, str] = {"CUDA_HOME": str(fake_cuda), "PATH": "/usr/bin"}
+    vm_judges.stage_qwen36_no_compile_shim(
+        tmp_path / "vm_recov_shim",
+        tmp_path / "vm_recov_marker.log",
+        vm_env,
+        default_cuda_home=fake_cuda,
+        engine_stop_file=vm_stop,
+    )
+    sub_env = os.environ.copy()
+    sub_env["PYTHONPATH"] = f"{vm_env['PYTHONPATH']}{os.pathsep}{fi_disk_pkg}"
+    sub_env["RDLAB_JUDGE_ENGINE_STOP_FILE"] = str(vm_stop)
+    p_caught = subprocess.run(
+        [sys.executable, "-c", "from flashinfer.jit import core\ntry:\n    raise core.MissingJITCacheError('ok')\nexcept core.MissingJITCacheError:\n    pass"],
+        env=sub_env,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert p_caught.returncode == 0, p_caught.stderr
+    assert bakeoff_judge.read_qwen36_engine_stop_records(vm_stop) == []
+
+    p_escape = subprocess.run(
+        [sys.executable, "-c", "from flashinfer.jit import core\nraise core.MissingJITCacheError('escaped jit miss')"],
+        env=sub_env,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert p_escape.returncode != 0
+    recs = bakeoff_judge.read_qwen36_engine_stop_records(vm_stop)
+    assert recs and recs[0]["code"] == "JUDGE_JIT_BUILD_ENTERED"
 
 
-
-
-
+def test_engine_stop_file_write_oserror_logs_one_stderr_line(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`record_qwen36_engine_stop_code` logs one stderr diagnostic naming file and error when writing fails."""
+    blocker = tmp_path / "blocker_file"
+    blocker.write_text("x", encoding="utf-8")
+    bad_stop = blocker / "stop.jsonl"
+    _ = capsys.readouterr()
+    bakeoff_judge.record_qwen36_engine_stop_code(
+        "JUDGE_JIT_BUILD_ENTERED",
+        source="unit",
+        detail="cannot mkdir under file",
+        stop_file=bad_stop,
+    )
+    err_lines = [ln for ln in capsys.readouterr().err.splitlines() if ln.strip()]
+    assert len(err_lines) == 1
+    assert str(bad_stop.resolve()) in err_lines[0]
+    assert "NotADirectoryError" in err_lines[0] or "FileExistsError" in err_lines[0] or "OSError" in err_lines[0]
 
