@@ -7,6 +7,7 @@ import hashlib
 import io
 import json
 import math
+import os
 from pathlib import Path
 import sys
 from types import ModuleType, SimpleNamespace
@@ -34,6 +35,27 @@ from reasoning_dataset_lab.pilot_b.bakeoff_judge import (  # noqa: E402
 REPO_ROOT = Path(__file__).resolve().parents[1]
 QWEN36_ID = "qwen3.6-35b-a3b"
 CONTRA = "three_way_contradicted"
+_QWEN36_SHIM_ENV_KEYS: tuple[str, ...] = (
+    "PATH",
+    "NINJA",
+    "FLASHINFER_NVCC",
+    "CUDACXX",
+    "CUDA_HOME",
+    "CUDA_PATH",
+    "RDLAB_JIT_SHIM_MARKER_FILE",
+    "FLASHINFER_DISABLE_JIT",
+    "FLASHINFER_CUDA_ARCH_LIST",
+)
+
+
+@pytest.fixture(autouse=True)
+def _restore_qwen36_shim_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Restore shim compiler/CUDA env vars after every test even if FlashInferBuildShimGuard stays installed."""
+    for key in _QWEN36_SHIM_ENV_KEYS:
+        if key in os.environ:
+            monkeypatch.setenv(key, os.environ[key])
+        else:
+            monkeypatch.delenv(key, raising=False)
 REQUIRED_LLM_ENGINE_PIN_KEYWORDS: tuple[str, ...] = (
     "max_num_seqs",
     "max_num_batched_tokens",

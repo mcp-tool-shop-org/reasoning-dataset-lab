@@ -58,6 +58,27 @@ QWEN36_REPO = "Qwen/Qwen3.6-35B-A3B"
 QWEN36_REV = "345d467b117d1fd5eda9b879a5988de9ae5f47a7"
 CONTRA = "three_way_contradicted"
 INTERNAL = ("supported", "unsupported", "cannot_tell")
+_QWEN36_SHIM_ENV_KEYS: tuple[str, ...] = (
+    "PATH",
+    "NINJA",
+    "FLASHINFER_NVCC",
+    "CUDACXX",
+    "CUDA_HOME",
+    "CUDA_PATH",
+    "RDLAB_JIT_SHIM_MARKER_FILE",
+    "FLASHINFER_DISABLE_JIT",
+    "FLASHINFER_CUDA_ARCH_LIST",
+)
+
+
+@pytest.fixture(autouse=True)
+def _restore_qwen36_shim_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Restore shim compiler/CUDA env vars after every test even if FlashInferBuildShimGuard stays installed."""
+    for key in _QWEN36_SHIM_ENV_KEYS:
+        if key in os.environ:
+            monkeypatch.setenv(key, os.environ[key])
+        else:
+            monkeypatch.delenv(key, raising=False)
 
 
 def _spawn_engine_core_ninja_worker(tool: str, args: list[str], q: Any) -> None:
@@ -5520,6 +5541,35 @@ def test_fired_qwen36_stops_report_named_failure_class_never_none(
     for code in vm_judges.QWEN36_NAMED_CHILD_STOP_CODES:
         assert vm_judges.classify_judge_child_stop_code(f"{code}: blocked\n") == code
     assert vm_judges.classify_judge_child_stop_code("plain ValueError traceback") is None
+
+    # 4. Stale inherited CUDA_PATH (e.g. from an earlier unclosed test shim) never leaks into fake_vm_real_mode_shim
+    stale_env = fake_colab.setup_fake_colab_environment(
+        tmp_path / "e2e_stale_cuda_env", uv_python_315_found=True
+    )
+    stale_out = tmp_path / "e2e_stale_cuda_out"
+    stale_exports = (
+        f"export CUDA_PATH='{_to_wsl_path(tmp_path / 'deleted_shim_dir')}'; "
+        + _pm_real_mode_exports(
+            stale_env,
+            open_lock=tmp_path / "e2e_stale_cuda.lock",
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+            items_file=items,
+            part_dir=None,
+        )
+        + f"export FAKE_COLAB_REAL_MODE_SHIM='{_to_wsl_path(REAL_MODE_SHIM_PY)}'; "
+        + f"export FAKE_COLAB_KEEP_UPLOADS_DIR='{_to_wsl_path(tmp_path / 'e2e_stale_kept')}'; "
+        + f"export FAKE_COLAB_VM_HF_SEED='{_to_wsl_path(hf_home)}'; "
+        + f"export FAKE_COLAB_VM_DENY_ROOTS='{_to_wsl_path(tmp_path)}'; "
+        + q36_exports
+    )
+    stale_proc = _pm_run_launcher(
+        stale_exports,
+        f"--time-one --synthetic-items --out-dir '{_to_wsl_path(stale_out)}' --run-id rdlab-d5c-qwen36-g4-time-03",
+        timeout=300,
+    )
+    assert stale_proc.returncode == 0, stale_proc.stdout + stale_proc.stderr
+
 
 
 
