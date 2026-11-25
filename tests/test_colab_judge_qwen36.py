@@ -3359,7 +3359,7 @@ def test_weights_page_cache_drop_syncs_dirty_pages_before_drop(
     prog_1 = tmp_path / "prog_sync.jsonl"
     res_1 = vm_judges.drop_verified_snapshots_page_cache(
         hf_home,
-        only_judge_ids=("nli-deberta-v3-large",),
+        only_judge_ids=("mu-judge",),
         repo_dir=REPO_ROOT,
         progress_path=prog_1,
         cgroup_root=cg_root,
@@ -3368,6 +3368,7 @@ def test_weights_page_cache_drop_syncs_dirty_pages_before_drop(
     )
     assert dirty_state["events"] == ["sync", "drop"]
     assert res_1["method"] == "drop_caches"
+    assert res_1["snapshot_files_count"] >= 1
     assert res_1["sync_ran"] is True
     assert res_1["sync_method"] == "os.sync"
     assert isinstance(res_1["sync_seconds"], float) and res_1["sync_seconds"] >= 0.0
@@ -3380,14 +3381,27 @@ def test_weights_page_cache_drop_syncs_dirty_pages_before_drop(
     assert rec_1["sync_method"] == "os.sync"
     assert rec_1["sync_seconds"] == res_1["sync_seconds"]
 
-    # Also exercise per-file fdatasync fallback when os.sync is absent, plus OSError tolerance in sync_fn.
+    # Also exercise per-file fdatasync fallback when os.sync is absent, custom sync_fn, plus OSError tolerance.
+    res_fn = vm_judges.drop_verified_snapshots_page_cache(
+        hf_home,
+        only_judge_ids=("mu-judge",),
+        repo_dir=REPO_ROOT,
+        progress_path=tmp_path / "prog_syncfn.jsonl",
+        cgroup_root=cg_root,
+        proc_cgroup_path=proc_cg,
+        drop_caches_path=drop_caches_file,
+        sync_fn=lambda: None,
+    )
+    assert res_fn["sync_ran"] is True
+    assert res_fn["sync_method"] == "sync_fn"
+
     monkeypatch.setattr(os, "sync", None, raising=False)
     fdatasync_fds: list[int] = []
     monkeypatch.setattr(os, "fdatasync", lambda fd: fdatasync_fds.append(fd), raising=False)
     mem_cur_file.write_text("93410516992\n", encoding="utf-8")
     res_2 = vm_judges.drop_verified_snapshots_page_cache(
         hf_home,
-        only_judge_ids=("nli-deberta-v3-large",),
+        only_judge_ids=("mu-judge",),
         repo_dir=REPO_ROOT,
         progress_path=tmp_path / "prog_fdatasync.jsonl",
         cgroup_root=cg_root,
@@ -3395,8 +3409,8 @@ def test_weights_page_cache_drop_syncs_dirty_pages_before_drop(
         drop_caches_path=drop_caches_file,
     )
     assert res_2["sync_ran"] is True
-    assert res_2["sync_method"].startswith("fdatasync(")
-    assert len(fdatasync_fds) == res_2["snapshot_files_count"]
+    assert res_2["sync_method"] == f"fdatasync({res_2['snapshot_files_count']})"
+    assert len(fdatasync_fds) == res_2["snapshot_files_count"] >= 1
 
     def _failing_sync() -> None:
         raise OSError("simulated sync io error")

@@ -478,8 +478,6 @@ def collect_ninja_unit_timings(cache_dir: Path | None) -> dict[str, Any]:
         return empty
     all_durations: list[float] = []
     for log_path in sorted(root.rglob(".ninja_log")):
-        if not log_path.is_file():
-            continue
         per_target = parse_ninja_log(log_path)
         all_durations.extend(per_target.values())
     if not all_durations:

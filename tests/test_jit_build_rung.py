@@ -801,6 +801,19 @@ def test_rung_worker_refuses_when_cgroup_memory_max_differs_from_cap(
     assert rec_ok["median_seconds_per_unit"] == 30.0
     assert rec_ok["max_seconds_per_unit"] == 40.0
 
+    # Also cover defense-in-depth fallback when a worker exits without reporting scope_memory_max_bytes
+    receipt_no_meta = tmp_path / "receipt_no_meta.json"
+    with pytest.raises(jit_build_rung.JitBuildRungError) as exc_nometa:
+        jit_build_rung.run_jit_build_rung(
+            venv_dir=venv_ok,
+            cap_bytes=requested_cap,
+            cache_dir=cache_ok,
+            receipt_path=receipt_no_meta,
+            runner=lambda *_a, **_kw: SimpleNamespace(returncode=1, stdout="", stderr="no meta"),
+        )
+    assert exc_nometa.value.code == "RUNG_CAP_NOT_ENFORCED"
+    assert json.loads(receipt_no_meta.read_text(encoding="utf-8"))["error_code"] == "RUNG_CAP_NOT_ENFORCED"
+
 
 def test_receipt_and_plan_only_build_time_projection_from_fake_ninja_log(
     tmp_path: Path,
