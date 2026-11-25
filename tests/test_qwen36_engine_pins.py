@@ -37,25 +37,31 @@ QWEN36_ID = "qwen3.6-35b-a3b"
 CONTRA = "three_way_contradicted"
 _QWEN36_SHIM_ENV_KEYS: tuple[str, ...] = (
     "PATH",
+    "PYTHONPATH",
     "NINJA",
     "FLASHINFER_NVCC",
     "CUDACXX",
     "CUDA_HOME",
     "CUDA_PATH",
     "RDLAB_JIT_SHIM_MARKER_FILE",
+    "RDLAB_JUDGE_ENGINE_STOP_FILE",
     "FLASHINFER_DISABLE_JIT",
     "FLASHINFER_CUDA_ARCH_LIST",
 )
 
 
 @pytest.fixture(autouse=True)
-def _restore_qwen36_shim_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Restore shim compiler/CUDA env vars after every test even if FlashInferBuildShimGuard stays installed."""
-    for key in _QWEN36_SHIM_ENV_KEYS:
-        if key in os.environ:
-            monkeypatch.setenv(key, os.environ[key])
-        else:
-            monkeypatch.delenv(key, raising=False)
+def _restore_qwen36_shim_env() -> Any:
+    """Restore shim compiler/CUDA/PYTHONPATH env vars after every test even if FlashInferBuildShimGuard stays installed."""
+    saved = {key: os.environ.get(key) for key in _QWEN36_SHIM_ENV_KEYS}
+    try:
+        yield
+    finally:
+        for key, prev in saved.items():
+            if prev is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = prev
 REQUIRED_LLM_ENGINE_PIN_KEYWORDS: tuple[str, ...] = (
     "max_num_seqs",
     "max_num_batched_tokens",

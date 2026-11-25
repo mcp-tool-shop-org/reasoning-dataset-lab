@@ -405,6 +405,7 @@ def find_synthetic_in_run_dir(run_dir: Path) -> str | None:
     return None
 
 
+FAILURE_CLASS_MISSING = "FAILURE_CLASS_MISSING"
 _LEADING_BRACKET_CODE_RE = re.compile(r"^\[([A-Za-z][A-Za-z0-9_]{2,})\]")
 _LEADING_COLON_CODE_RE = re.compile(r"^(no_capacity|[A-Z][A-Z0-9_]{2,}):")
 _EMBEDDED_UPPER_CODE_RE = re.compile(r"\b([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)\b")
@@ -414,13 +415,13 @@ _LAUNCHER_WHY_SUBSTRING_RULES: tuple[tuple[str, str], ...] = (
     ("RDLAB_RECEIPTS_DIR or --receipts-dir is missing", "RECEIPTS_DIR_MISSING"),
     ("lock file or device.py SHA-256 verification failed", "LOCK_OR_DEVICE_SHA256_FAILED"),
     ("staging of items, receipts, or repo bundle failed", "RIG_STAGING_FAILED"),
-    ("wall-clock timeout exceeded", "WALL_CLOCK_TIMEOUT"),
+    ("wall-clock timeout exceeded", "VM_EXEC_TIMEOUT"),
     ("status.json missing after VM run", "VM_STATUS_MISSING"),
     ("VM status.json is stale", "VM_STATUS_STALE"),
     ("VM status.json reported failure", "VM_STATUS_FAILED"),
     ("probe exited non-zero", "VM_PROBE_EXEC_FAILED"),
-    ("colab exec exited non-zero", "COLAB_EXEC_FAILED"),
-    ("runpod offrig exec exited non-zero", "RUNPOD_EXEC_FAILED"),
+    ("colab exec exited non-zero", "VM_EXEC_FAILED"),
+    ("runpod offrig exec exited non-zero", "VM_EXEC_FAILED"),
     ("result.tar.gz missing after VM run", "RESULT_TAR_MISSING"),
     ("rig log guard or result tar verification failed", "RIG_OUTPUT_VERIFY_FAILED"),
     ("still present as [?] on server after colab stop", "COLAB_STOP_ORPHAN_PRESENT"),
@@ -477,7 +478,7 @@ def classify_launcher_failure_class(why: str | None) -> str:
         embedded_match = _EMBEDDED_UPPER_CODE_RE.search(text)
         if embedded_match is not None:
             return embedded_match.group(1)
-    return "LAUNCHER_FAILED"
+    return FAILURE_CLASS_MISSING
 
 
 def _clean_failure_class_token(value: Any) -> str:

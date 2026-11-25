@@ -60,25 +60,31 @@ CONTRA = "three_way_contradicted"
 INTERNAL = ("supported", "unsupported", "cannot_tell")
 _QWEN36_SHIM_ENV_KEYS: tuple[str, ...] = (
     "PATH",
+    "PYTHONPATH",
     "NINJA",
     "FLASHINFER_NVCC",
     "CUDACXX",
     "CUDA_HOME",
     "CUDA_PATH",
     "RDLAB_JIT_SHIM_MARKER_FILE",
+    "RDLAB_JUDGE_ENGINE_STOP_FILE",
     "FLASHINFER_DISABLE_JIT",
     "FLASHINFER_CUDA_ARCH_LIST",
 )
 
 
 @pytest.fixture(autouse=True)
-def _restore_qwen36_shim_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Restore shim compiler/CUDA env vars after every test even if FlashInferBuildShimGuard stays installed."""
-    for key in _QWEN36_SHIM_ENV_KEYS:
-        if key in os.environ:
-            monkeypatch.setenv(key, os.environ[key])
-        else:
-            monkeypatch.delenv(key, raising=False)
+def _restore_qwen36_shim_env() -> Any:
+    """Restore shim compiler/CUDA/PYTHONPATH env vars after every test even if FlashInferBuildShimGuard stays installed."""
+    saved = {key: os.environ.get(key) for key in _QWEN36_SHIM_ENV_KEYS}
+    try:
+        yield
+    finally:
+        for key, prev in saved.items():
+            if prev is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = prev
 
 
 def _spawn_engine_core_ninja_worker(tool: str, args: list[str], q: Any) -> None:
@@ -91,6 +97,33 @@ def _spawn_engine_core_ninja_worker(tool: str, args: list[str], q: Any) -> None:
         check=False,
     )
     q.put((int(proc.returncode), proc.stderr or "", proc.stdout or ""))
+
+
+def _spawn_engine_core_missing_jit_cache_worker(mode: str, fi_pkg_dir: str) -> None:
+    """Spawned EngineCore-style worker that fails on JIT/named refusal and suppresses stderr."""
+    import io
+
+    sys.stderr = io.StringIO()
+    if mode == "raise_missing_jit":
+        if fi_pkg_dir and fi_pkg_dir not in sys.path:
+            sys.path.insert(0, fi_pkg_dir)
+        from flashinfer.jit import core as fi_core  # type: ignore[import-not-found]
+
+        raise fi_core.MissingJITCacheError(
+            "JIT compilation is disabled via FLASHINFER_DISABLE_JIT environment variable"
+        )
+    if mode == "raise_run_ninja":
+        if fi_pkg_dir and fi_pkg_dir not in sys.path:
+            sys.path.insert(0, fi_pkg_dir)
+        from flashinfer.jit import core as fi_core  # type: ignore[import-not-found]
+
+        fi_core.run_ninja("/tmp/b", "/tmp/b/build.ninja", False)
+    if mode == "raise_named_stop":
+        class _PrebuiltStop(RuntimeError):
+            code = "JUDGE_PREBUILT_KERNELS_MISSING"
+
+        raise _PrebuiltStop("missing prebuilt sm_120 .so")
+    raise RuntimeError(f"unknown worker mode: {mode}")
 
 
 def _synth_items(n: int = 10) -> list[JudgeInputItem]:
@@ -3063,20 +3096,22 @@ def test_jit_build_env_set_before_llm_constructor_and_records_peak_and_seconds(
     transport = bakeoff_judge.VllmJudgeTransport(receipts_dir=receipts_dir, hf_home=hf_home, device="cuda")
     transport.verify_ready(spec)
     transport._ensure_loaded(spec)
-
-    assert observed_during_llm_init["env"] == {
-        "MAX_JOBS": "1",
-        "FLASHINFER_JIT_PREBUILD_MAX_JOBS": "1",
-        "FLASHINFER_NVCC_THREADS": "1",
-        "NVCC_THREADS": "1",
-    }
-    assert transport._cgroup_memory_peak_bytes == 98_765_432_100
-    assert transport._jit_build_summary == {
-        "jit_build_seconds": 42.25,
-        "jit_build_targets": ["fused_moe_120"],
-        "jit_build_entries": [{"toolchain": "nvcc", "name": "fused_moe_120", "seconds": 42.25}],
-    }
-    assert isinstance(transport._llm_init_seconds, float) and transport._llm_init_seconds >= 0.0
+    try:
+        assert observed_during_llm_init["env"] == {
+            "MAX_JOBS": "1",
+            "FLASHINFER_JIT_PREBUILD_MAX_JOBS": "1",
+            "FLASHINFER_NVCC_THREADS": "1",
+            "NVCC_THREADS": "1",
+        }
+        assert transport._cgroup_memory_peak_bytes == 98_765_432_100
+        assert transport._jit_build_summary == {
+            "jit_build_seconds": 42.25,
+            "jit_build_targets": ["fused_moe_120"],
+            "jit_build_entries": [{"toolchain": "nvcc", "name": "fused_moe_120", "seconds": 42.25}],
+        }
+        assert isinstance(transport._llm_init_seconds, float) and transport._llm_init_seconds >= 0.0
+    finally:
+        transport.close_build_guard()
 
     # 1a) run_bakeoff_judge with VllmJudgeTransport propagates load_done + judge_done build telemetry (both log present & absent)
     bj_items_dir = tmp_path / "bj_items"
@@ -3954,16 +3989,18 @@ def test_jit_build_jobs_reading_taken_immediately_before_llm_constructor(
 
     monkeypatch.setattr(transport, "_ensure_tokenizer_loaded", _dirty_during_tok)
     transport._ensure_loaded(spec)
-
-    # Verify cgroup read ran AFTER tokenizer_loaded and IMMEDIATELY BEFORE llm_init, flipping MAX_JOBS 8 -> 1
-    tok_idx = next(i for i, ev in enumerate(events) if ev[0] == "tokenizer_loaded")
-    read_idx = next(i for i, ev in enumerate(events) if ev[0] == "read_cgroup")
-    llm_idx = next(i for i, ev in enumerate(events) if ev[0] == "llm_init")
-    assert tok_idx < read_idx < llm_idx
-    assert events[read_idx] == ("read_cgroup", 90 * 1024**3)
-    assert events[llm_idx] == ("llm_init", "1")
-    child_recs = [json.loads(ln) for ln in child_prog.read_text(encoding="utf-8").splitlines() if ln.strip()]
-    assert any(r.get("kind") == "jit_build_jobs" and r.get("stage") == "before_llm" and r.get("jobs") == 1 for r in child_recs)
+    try:
+        # Verify cgroup read ran AFTER tokenizer_loaded and IMMEDIATELY BEFORE llm_init, flipping MAX_JOBS 8 -> 1
+        tok_idx = next(i for i, ev in enumerate(events) if ev[0] == "tokenizer_loaded")
+        read_idx = next(i for i, ev in enumerate(events) if ev[0] == "read_cgroup")
+        llm_idx = next(i for i, ev in enumerate(events) if ev[0] == "llm_init")
+        assert tok_idx < read_idx < llm_idx
+        assert events[read_idx] == ("read_cgroup", 90 * 1024**3)
+        assert events[llm_idx] == ("llm_init", "1")
+        child_recs = [json.loads(ln) for ln in child_prog.read_text(encoding="utf-8").splitlines() if ln.strip()]
+        assert any(r.get("kind") == "jit_build_jobs" and r.get("stage") == "before_llm" and r.get("jobs") == 1 for r in child_recs)
+    finally:
+        transport.close_build_guard()
 
 
 def test_weights_sync_start_logged_and_deadline_timeout_never_fails_run(
@@ -5628,8 +5665,8 @@ def test_every_launcher_failed_outcome_has_named_failure_class(tmp_path: Path) -
     )
     assert run_records.classify_launcher_failure_class("[REPO_TREE_DIRTY] dirty tree") == "REPO_TREE_DIRTY"
     assert run_records.classify_launcher_failure_class("detected LOG_GUARD_CLAIM_LEAK in logs") == "LOG_GUARD_CLAIM_LEAK"
-    assert run_records.classify_launcher_failure_class("unexpected plain text") == "LAUNCHER_FAILED"
-    assert run_records.classify_launcher_failure_class("") == "LAUNCHER_FAILED"
+    assert run_records.classify_launcher_failure_class("unexpected plain text") == "FAILURE_CLASS_MISSING"
+    assert run_records.classify_launcher_failure_class("") == "FAILURE_CLASS_MISSING"
 
     # End-to-end launcher failure paths that previously left failure_class=none
     receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "fc_rec")
@@ -5688,6 +5725,291 @@ def test_every_launcher_failed_outcome_has_named_failure_class(tmp_path: Path) -
     assert "failure_class=VM_STATUS_MISSING" in p3.stderr, p3.stderr
     assert "failure_class=none" not in p3.stderr, p3.stderr
     assert json.loads((out_del_status / "outcome.draft.json").read_text(encoding="utf-8"))["failure_class"] == "VM_STATUS_MISSING"
+
+
+def test_engine_core_unchained_failure_reports_jit_build_entered(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unchained parent `Engine core initialization failed` after an EngineCore JIT refusal still reports `JUDGE_JIT_BUILD_ENTERED`."""
+    fake_cuda = tmp_path / "ec_cuda"
+    (fake_cuda / "include").mkdir(parents=True, exist_ok=True)
+    (fake_cuda / "lib64").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("CUDA_HOME", str(fake_cuda))
+
+    # Real importable flashinfer package on disk so spawned EngineCore exercises sitecustomize MetaPathFinder + BaseProcess hooks.
+    fi_disk_pkg = tmp_path / "disk_fi_pkg"
+    (fi_disk_pkg / "flashinfer" / "jit").mkdir(parents=True, exist_ok=True)
+    (fi_disk_pkg / "flashinfer" / "__init__.py").write_text("", encoding="utf-8")
+    (fi_disk_pkg / "flashinfer" / "jit" / "__init__.py").write_text("", encoding="utf-8")
+    (fi_disk_pkg / "flashinfer" / "jit" / "core.py").write_text(
+        "class MissingJITCacheError(RuntimeError):\n    pass\n\ndef run_ninja(*_a, **_kw):\n    return None\n",
+        encoding="utf-8",
+    )
+
+    downstream_dir = tmp_path / "downstream_sc"
+    downstream_dir.mkdir(parents=True, exist_ok=True)
+    downstream_flag = tmp_path / "downstream_ran.txt"
+    (downstream_dir / "sitecustomize.py").write_text(
+        f"from pathlib import Path\nPath({str(downstream_flag)!r}).write_text('ok\\n', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    existing_pp = os.environ.get("PYTHONPATH", "")
+    monkeypatch.setenv("PYTHONPATH", f"{downstream_dir}{os.pathsep}{existing_pp}" if existing_pp else str(downstream_dir))
+
+    work_dir = tmp_path / "ec_work"
+    env = _setup_fake_vllm_env(tmp_path / "ec_vllm", monkeypatch, responses=[])
+    monkeypatch.setenv(bakeoff_judge.QWEN36_MAX_NEW_TOKENS_ENV_VAR, "4096")
+    monkeypatch.setenv("RDLAB_WORK_DIR", str(work_dir))
+    monkeypatch.delenv("RDLAB_JIT_SHIM_MARKER_FILE", raising=False)
+    monkeypatch.delenv("RDLAB_JUDGE_ENGINE_STOP_FILE", raising=False)
+
+    orig_llm = sys.modules["vllm"].LLM
+    worker_mode = {"value": "raise_missing_jit"}
+
+    class _UnchainedEngineCoreLLM(orig_llm):  # type: ignore[misc,valid-type]
+        def __init__(self, **kwargs: Any) -> None:
+            _ = kwargs
+            ctx = multiprocessing.get_context("spawn")
+            p = ctx.Process(
+                target=_spawn_engine_core_missing_jit_cache_worker,
+                args=(worker_mode["value"], str(fi_disk_pkg)),
+            )
+            p.start()
+            p.join(timeout=30)
+            assert p.exitcode != 0
+            # Real vLLM raises a brand-new RuntimeError with NO cause chained (`from None`).
+            raise RuntimeError(f"Engine core initialization failed. Failed core proc(s): {{'EngineCore': {p.exitcode}}}") from None
+
+    monkeypatch.setattr(sys.modules["vllm"], "LLM", _UnchainedEngineCoreLLM)
+    items_dir = tmp_path / "ec_items"
+    items_dir.mkdir(parents=True, exist_ok=True)
+    _write_items_jsonl(items_dir / "items.jsonl", _synth_items(1))
+
+    with pytest.raises(RdlabError) as exc_jit:
+        run_bakeoff_judge(
+            judge=QWEN36_ID,
+            part_dir=items_dir,
+            output_dir=tmp_path / "ec_out",
+            receipts_dir=env["receipts_dir"],
+            hf_home=env["hf_home"],
+            device="cuda",
+            pass_mode=CONTRA,
+            window_mode="stub",
+            fake_transport=False,
+            vram_probe=lambda: 0,
+            run_canary=False,
+            synthetic_items=False,
+        )
+    assert exc_jit.value.code == "JUDGE_JIT_BUILD_ENTERED"
+    assert exc_jit.value.__cause__ is not None
+    assert exc_jit.value.__cause__.__cause__ is None and exc_jit.value.__cause__.__context__ is None
+    assert "engine_stop_records=" in str(exc_jit.value)
+    assert downstream_flag.is_file()
+
+    # Non-JIT named stop from spawned EngineCore (e.g. JUDGE_PREBUILT_KERNELS_MISSING) also propagates via stop file
+    worker_mode["value"] = "raise_named_stop"
+    with pytest.raises(RdlabError) as exc_named:
+        run_bakeoff_judge(
+            judge=QWEN36_ID,
+            part_dir=items_dir,
+            output_dir=tmp_path / "ec_out_named",
+            receipts_dir=env["receipts_dir"],
+            hf_home=env["hf_home"],
+            device="cuda",
+            pass_mode=CONTRA,
+            window_mode="stub",
+            fake_transport=False,
+            vram_probe=lambda: 0,
+            run_canary=False,
+            synthetic_items=False,
+        )
+    assert exc_named.value.code == "JUDGE_PREBUILT_KERNELS_MISSING"
+
+    # Unit checks for vm_judges.classify_judge_child_stop_code & engine_stop_file / 16KB tail
+    assert (
+        vm_judges.classify_judge_child_stop_code(
+            "RuntimeError: Engine core initialization failed\n",
+            "",
+            engine_stop_codes=("JUDGE_JIT_BUILD_ENTERED",),
+        )
+        == "JUDGE_JIT_BUILD_ENTERED"
+    )
+    padded_err = (
+        "flashinfer.jit.core.MissingJITCacheError: JIT compilation is disabled via FLASHINFER_DISABLE_JIT\n"
+        + ("frame_line\n" * 600)
+        + "RuntimeError: Engine core initialization failed.\n"
+    )
+    tailed_err = vm_judges._scrub_and_tail(padded_err, max_bytes=vm_judges.JUDGE_CHILD_STDERR_TAIL_BYTES)
+    assert "MissingJITCacheError" in tailed_err
+    assert vm_judges.classify_judge_child_stop_code(tailed_err, "") == "JUDGE_JIT_BUILD_ENTERED"
+
+    # vm_judges.build_judge_child_env + stage_qwen36_no_compile_shim propagate RDLAB_JUDGE_ENGINE_STOP_FILE and py_hook/sitecustomize.py
+    stop_file_vm = tmp_path / "vm_work" / "jit_shim" / "q36_engine_stop.jsonl"
+    stop_file_vm.parent.mkdir(parents=True, exist_ok=True)
+    stop_file_vm.write_text("stale\n", encoding="utf-8")
+    cenv = vm_judges.build_judge_child_env(
+        tmp_path / "hf",
+        REPO_ROOT,
+        base_env={"CUDA_HOME": str(fake_cuda), "PATH": "/usr/bin"},
+        judge_id=QWEN36_ID,
+        venv_name=vm_judges.VLLM_VENV_NAME,
+        jit_shim_dir=tmp_path / "vm_shim_ec",
+        jit_shim_marker_file=tmp_path / "vm_work" / "jit_shim" / "q36_marker.log",
+        engine_stop_file=stop_file_vm,
+    )
+    assert not stop_file_vm.exists()
+    assert cenv["RDLAB_JUDGE_ENGINE_STOP_FILE"] == str(stop_file_vm.resolve())
+    assert (tmp_path / "vm_shim_ec" / "py_hook" / "sitecustomize.py").is_file()
+    assert cenv["PYTHONPATH"].split(os.pathsep)[0] == str((tmp_path / "vm_shim_ec" / "py_hook").resolve())
+
+    # Helper edge cases for read_qwen36_engine_stop_records / record_qwen36_engine_stop_code / _classify_engine_exception_stop_code
+    assert bakeoff_judge.record_qwen36_engine_stop_code("JUDGE_JIT_BUILD_ENTERED", stop_file="") is None
+    assert bakeoff_judge.read_qwen36_engine_stop_records(tmp_path / "nonexistent_stop.jsonl") == []
+    tab_stop = tmp_path / "tab_stop.jsonl"
+    tab_stop.write_text("\nJUDGE_JIT_BUILD_ENTERED\trun_ninja\tbad\n{\"code\":\"\"}\n", encoding="utf-8")
+    tab_recs = bakeoff_judge.read_qwen36_engine_stop_records(tab_stop)
+    assert tab_recs == [{"code": "JUDGE_JIT_BUILD_ENTERED", "source": "run_ninja", "detail": "bad"}]
+    assert bakeoff_judge._classify_engine_exception_stop_code(RuntimeError("JUDGE_CUDA_HOME_MISSING in child"))[0] == "JUDGE_CUDA_HOME_MISSING"
+    assert bakeoff_judge._classify_engine_exception_stop_code(ValueError("unrelated")) is None
+
+    # Direct coverage of _patch_flashinfer_module_for_engine_stop (MissingJITCacheError + run_ninja) & BaseProcess.run hook
+    direct_stop = tmp_path / "direct_patch_stop.jsonl"
+    monkeypatch.setenv("RDLAB_JUDGE_ENGINE_STOP_FILE", str(direct_stop))
+
+    class _FakeCoreMod:
+        class MissingJITCacheError(RuntimeError):
+            pass
+
+        @staticmethod
+        def run_ninja(*_a: Any, **_kw: Any) -> None:
+            return None
+
+    recorded_direct: list[tuple[str, str, str]] = []
+    bakeoff_judge._patch_flashinfer_module_for_engine_stop(
+        _FakeCoreMod,
+        "flashinfer.jit.core",
+        lambda c, s, d: recorded_direct.append((c, s, d)),
+    )
+    _FakeCoreMod.MissingJITCacheError("cache miss")
+    with pytest.raises(RuntimeError, match="JUDGE_JIT_BUILD_ENTERED"):
+        _FakeCoreMod.run_ninja()
+    assert any(r[1] == "MissingJITCacheError" for r in recorded_direct)
+    assert any(r[1].endswith(".run_ninja") for r in recorded_direct)
+
+    # Also exercise FlashInferBuildShimGuard wrapping already-loaded flashinfer.jit.core & BaseProcess.run
+    monkeypatch.setitem(sys.modules, "flashinfer.jit.core", _FakeCoreMod)
+    g_bp = bakeoff_judge.FlashInferBuildShimGuard(default_cuda_home=fake_cuda)
+    g_bp.install()
+    try:
+        import multiprocessing.process as _mp_proc
+
+        class _FakeProc(_mp_proc.BaseProcess):
+            def run(self) -> None:
+                raise RuntimeError("MissingJITCacheError in BaseProcess")
+
+        with pytest.raises(RuntimeError, match="MissingJITCacheError"):
+            _mp_proc.BaseProcess.run(_FakeProc())
+    finally:
+        g_bp.uninstall()
+
+
+@pytest.mark.parametrize(
+    ("hook_env", "expected_class"),
+    [
+        ("export FAKE_COLAB_FORCE_RUN_EXEC_RC=124;", "VM_EXEC_TIMEOUT"),
+        ("export FAKE_COLAB_DELETE_STATUS_FILE=1;", "VM_STATUS_MISSING"),
+        ("export FAKE_COLAB_FORCE_RUN_EXEC_RC=1;", "VM_EXEC_FAILED"),
+        ("export FAKE_COLAB_DELETE_RESULT_TAR=1;", "RESULT_TAR_MISSING"),
+    ],
+)
+def test_launcher_four_post_exec_exits_and_parametrized_failed_outcomes_never_none(
+    tmp_path: Path,
+    hook_env: str,
+    expected_class: str,
+) -> None:
+    """All four post-exec launcher exit paths report their named `failure_class`, and non-ok outcomes never print `none`."""
+    from reasoning_dataset_lab.pilot_b import run_records
+
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "rec")
+    items = _make_synthetic_public_items(tmp_path / "items", count=2)
+    fc_env = fake_colab.setup_fake_colab_environment(tmp_path / "fc")
+    out_dir = tmp_path / "out"
+    exports = (
+        _base_launcher_exports(
+            fc_env,
+            open_lock=tmp_path / "post_exec.lock",
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+            items_file=items,
+        )
+        + f" export FAKE_COLAB_DISK_FREE_BYTES=220000000000; {hook_env} "
+    )
+    proc = _pm_run_launcher(
+        exports,
+        f"--stub --out-dir '{_to_wsl_path(out_dir)}' --run-id post-{expected_class.lower()}",
+    )
+    assert proc.returncode != 0
+    assert f"failure_class={expected_class}" in proc.stderr, proc.stderr
+    assert "failure_class=none" not in proc.stderr, proc.stderr
+    outcome_doc = json.loads((out_dir / "outcome.draft.json").read_text(encoding="utf-8"))
+    assert outcome_doc["outcome"] == "failed"
+    assert outcome_doc["failure_class"] == expected_class
+
+
+@pytest.mark.parametrize("outcome_val", ["failed", "stopped_rate_reread", "stopped_cost_cap", "aborted"])
+@pytest.mark.parametrize("raw_why", ["", "none", "unexpected launcher failure without prefix"])
+def test_non_ok_outcome_never_resolves_to_none(outcome_val: str, raw_why: str) -> None:
+    """When `outcome != ok/probe` and no upstream class exists, `resolve_outcome_failure_class` returns `FAILURE_CLASS_MISSING`, never `none`."""
+    from reasoning_dataset_lab.pilot_b import run_records
+
+    resolved = run_records.resolve_outcome_failure_class(
+        outcome=outcome_val,
+        explicit_failure_class="",
+        run_dir=None,
+        shutdown_failure_class="",
+        why=raw_why,
+    )
+    assert resolved == run_records.FAILURE_CLASS_MISSING
+    assert resolved and resolved.lower() != "none"
+
+
+def test_shim_symlink_oserror_refuses_with_named_code(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`os.symlink` OSError in CUDA shim staging refuses with named `JUDGE_JIT_SHIM_SYMLINK_FAILED`, never bare `OSError`."""
+    cuda_root = tmp_path / "cuda_sym"
+    (cuda_root / "include").mkdir(parents=True, exist_ok=True)
+    (cuda_root / "lib64").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("CUDA_HOME", str(cuda_root))
+    monkeypatch.delenv("RDLAB_JIT_SHIM_MARKER_FILE", raising=False)
+    monkeypatch.delenv("RDLAB_JUDGE_ENGINE_STOP_FILE", raising=False)
+    monkeypatch.delenv("RDLAB_WORK_DIR", raising=False)
+    iso_tmp = tmp_path / "iso_sym_tmp"
+    iso_tmp.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(bakeoff_judge.tempfile, "tempdir", str(iso_tmp))
+
+    def _boom_symlink(_src: str, _dst: str) -> None:
+        raise OSError("Operation not permitted")
+
+    monkeypatch.setattr(bakeoff_judge.os, "symlink", _boom_symlink)
+    guard = bakeoff_judge.FlashInferBuildShimGuard(default_cuda_home=cuda_root)
+    with pytest.raises(RdlabError) as exc_bj:
+        guard.install()
+    assert exc_bj.value.code == "JUDGE_JIT_SHIM_SYMLINK_FAILED"
+    assert not any((iso_tmp / "rdlab-jit-shim-markers").glob("*")) if (iso_tmp / "rdlab-jit-shim-markers").exists() else True
+
+    monkeypatch.setattr(vm_judges.os, "symlink", _boom_symlink)
+    with pytest.raises(vm_judges.RefusalError) as exc_vm:
+        vm_judges.stage_qwen36_no_compile_shim(
+            tmp_path / "vm_sym_shim",
+            tmp_path / "vm_sym_marker.log",
+            {"CUDA_HOME": str(cuda_root), "PATH": "/usr/bin"},
+            default_cuda_home=cuda_root,
+        )
+    assert exc_vm.value.failure_class == "JUDGE_JIT_SHIM_SYMLINK_FAILED"
+
 
 
 

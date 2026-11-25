@@ -3053,6 +3053,13 @@ def main(argv: list[str] | None = None) -> int:
                     encoding="utf-8",
                     newline="\n",
                 )
+        if os.environ.get("FAKE_COLAB_DELETE_RESULT_TAR") == "1" and step == "run":
+            result_tar_p = vm_fs / "result.tar.gz"
+            if result_tar_p.is_file():
+                result_tar_p.unlink()
+        forced_run_rc = os.environ.get("FAKE_COLAB_FORCE_RUN_EXEC_RC", "").strip()
+        if step == "run" and forced_run_rc:
+            return int(forced_run_rc)
         if os.environ.get("FAKE_COLAB_FORCE_EXEC_RC_ZERO") == "1":
             return 0
         return proc.returncode

@@ -3165,6 +3165,9 @@ def test_stale_gate_status_fails_at_6243174e_and_passes_after_fix_and_crashed_ru
     head_status_block_end = (
         'if [[ ! -f "$OUT_DIR/result.tar.gz" ]]; then\n'
         '  RUN_WHY="result.tar.gz missing after VM run"\n'
+        '  if [[ -z "$RUN_FAILURE_CLASS" ]]; then\n'
+        '    RUN_FAILURE_CLASS="RESULT_TAR_MISSING"\n'
+        '  fi\n'
         '  exit 1\n'
         'fi\n'
     )
@@ -14494,6 +14497,7 @@ RIG_ONLY_AND_VM_INTERNAL_RDLAB_ENV_ALLOWLIST: dict[str, str] = {
     # VM-internal variables (set by `vm_judges.py` for child processes or used as unit-test overrides on the VM):
     "RDLAB_ACTIVE_VENV_NAME": "vm-internal: set by `vm_judges.py` when spawning venv child subprocesses",
     "RDLAB_JIT_SHIM_MARKER_FILE": "vm-internal: set by `vm_judges.py` when spawning a Qwen3.6 judge child subprocess to record refusing `ninja`/`nvcc` shim invocations",
+    "RDLAB_JUDGE_ENGINE_STOP_FILE": "vm-internal: set by `vm_judges.py` and `bakeoff_judge.py` so EngineCore subprocesses record named stop codes under the work dir",
     "RDLAB_JUDGE_CHILD_PROGRESS_FILE": "vm-internal: set by `vm_judges.py` when spawning a judge child subprocess",
     "RDLAB_VM_CONTENT_DIR": "vm-internal: `/content` root override used by `fake_colab` and unit tests",
     "RDLAB_GATE_STATUS_FILE": "vm-internal: `/content/gate_status.json` path override used in unit tests",
