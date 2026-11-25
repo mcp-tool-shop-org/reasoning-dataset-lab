@@ -2340,12 +2340,19 @@ PY
 }
 
 verify_and_close_run_outputs() {
+  # Explicit shell RUN_FAILURE_CLASS assignments below are kept as defense in depth alongside run_records.classify_launcher_failure_class.
   if [[ "$EXEC_RC" -eq 124 ]] || [[ "$EXEC_RC" -eq 137 ]]; then
     RUN_WHY="wall-clock timeout exceeded (${WALL_SECONDS}s)"
+    if [[ -z "$RUN_FAILURE_CLASS" ]]; then
+      RUN_FAILURE_CLASS="VM_EXEC_TIMEOUT"
+    fi
     exit "$EXEC_RC"
   fi
 if [[ ! -f "$OUT_DIR/status.json" ]]; then
   RUN_WHY="status.json missing after VM run (exec_rc=$EXEC_RC)"
+  if [[ -z "$RUN_FAILURE_CLASS" ]]; then
+    RUN_FAILURE_CLASS="VM_STATUS_MISSING"
+  fi
   if [[ "$EXEC_RC" -ne 0 ]]; then
     exit "$EXEC_RC"
   fi
@@ -2398,10 +2405,16 @@ if [[ "$EXEC_RC" -ne 0 ]]; then
   else
     RUN_WHY="runpod offrig exec exited non-zero ($EXEC_RC)"
   fi
+  if [[ -z "$RUN_FAILURE_CLASS" ]]; then
+    RUN_FAILURE_CLASS="VM_EXEC_FAILED"
+  fi
   exit "$EXEC_RC"
 fi
 if [[ ! -f "$OUT_DIR/result.tar.gz" ]]; then
   RUN_WHY="result.tar.gz missing after VM run"
+  if [[ -z "$RUN_FAILURE_CLASS" ]]; then
+    RUN_FAILURE_CLASS="RESULT_TAR_MISSING"
+  fi
   exit 1
 fi
 # Extract result.tar.gz, run log guard on all kept logs and outputs, and write outputs-closed.json before any key read.
@@ -3892,23 +3905,15 @@ payload["kit_launch_judges_sh_sha256"] = os.environ.get("RDLAB_OUTCOME_KIT_LAUNC
 # not_sent; null when the VM never reached that step (a refusal on the rig, a cap stop before it, no status fetched).
 payload["kit_vm_script_check"] = None
 _kit_status_p = out_path.parent / "status.json"
-_kit_status_failure_class = ""
-_vm_receipt_failure_class = ""
 if _kit_status_p.is_file():
     try:
         _kit_status_doc = json.loads(_kit_status_p.read_text(encoding="utf-8"))
-        if isinstance(_kit_status_doc, dict):
-            if _kit_status_doc.get("kit_vm_script_check") in ("passed", "refused", "not_sent"):
-                payload["kit_vm_script_check"] = _kit_status_doc["kit_vm_script_check"]
-            _kit_status_failure_class = str(_kit_status_doc.get("failure_class") or "").strip()
-    except Exception:
-        pass
-_vm_receipt_p = out_path.parent / "vm_receipt.json"
-if _vm_receipt_p.is_file():
-    try:
-        _vm_receipt_doc = json.loads(_vm_receipt_p.read_text(encoding="utf-8"))
-        if isinstance(_vm_receipt_doc, dict):
-            _vm_receipt_failure_class = str(_vm_receipt_doc.get("failure_class") or "").strip()
+        if isinstance(_kit_status_doc, dict) and _kit_status_doc.get("kit_vm_script_check") in (
+            "passed",
+            "refused",
+            "not_sent",
+        ):
+            payload["kit_vm_script_check"] = _kit_status_doc["kit_vm_script_check"]
     except Exception:
         pass
 jdone_dir = out_path.parent / "judge_done"
@@ -3916,7 +3921,11 @@ repo_root_arg = sys.argv[19].strip() if len(sys.argv) > 19 else ""
 repo_src = (Path(repo_root_arg) if repo_root_arg else Path.cwd()) / "src"
 if str(repo_src) not in sys.path:
     sys.path.insert(0, str(repo_src))
-from reasoning_dataset_lab.pilot_b.run_records import read_unverified_passes  # noqa: E402
+from reasoning_dataset_lab.pilot_b.run_records import (  # noqa: E402
+    FAILURE_CLASS_MISSING,
+    read_unverified_passes,
+    resolve_outcome_failure_class,
+)
 
 default_pmode = str(payload["pass_mode"]) if payload["pass_mode"] != "per_judge" else "binary"
 unverified_malformed = False
@@ -3968,9 +3977,15 @@ if until_step_val:
     payload["until"] = until_step_val
     if outcome == "ok":
         payload["stopped_after"] = until_step_val
-failure_class_val = os.environ.get("RDLAB_FAILURE_CLASS", "").strip()
-if not failure_class_val and outcome != "ok":
-    failure_class_val = _kit_status_failure_class or _vm_receipt_failure_class
+failure_class_val = resolve_outcome_failure_class(
+    outcome=outcome,
+    explicit_failure_class=os.environ.get("RDLAB_FAILURE_CLASS", ""),
+    run_dir=out_path.parent,
+    shutdown_failure_class=os.environ.get("RDLAB_OUTCOME_SHUTDOWN_FAILURE_CLASS", ""),
+    why=why,
+)
+if outcome not in ("ok", "probe") and (not failure_class_val or str(failure_class_val).strip().lower() == "none"):
+    failure_class_val = FAILURE_CLASS_MISSING
 if failure_class_val:
     payload["failure_class"] = failure_class_val
 live_usage_rate_raw = os.environ.get("RDLAB_LIVE_USAGE_RATE", "").strip()
@@ -4014,9 +4029,14 @@ payload["anchor_item_ids"] = anchor_item_ids_val
 payload["loop_order"] = loop_env
 out_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8", newline="\n")
 # The run summary on stderr: what the outcome draft books.
+summary_failure_class = (
+    (payload.get("failure_class") or "none")
+    if outcome in ("ok", "probe")
+    else (payload.get("failure_class") or FAILURE_CLASS_MISSING)
+)
 sys.stderr.write(
     f"[outcome] id={run_id} outcome={outcome} cost={'unknown' if cost is None else format(cost, 'g')} cost_basis={cost_basis} "
-    f"failure_class={payload.get('failure_class') or 'none'} runtime_s={runtime_seconds}\n"
+    f"failure_class={summary_failure_class} runtime_s={runtime_seconds}\n"
 )
 PY
 }

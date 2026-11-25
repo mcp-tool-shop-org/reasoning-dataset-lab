@@ -403,3 +403,112 @@ def find_synthetic_in_run_dir(run_dir: Path) -> str | None:
             if reason is not None:
                 return reason
     return None
+
+
+FAILURE_CLASS_MISSING = "FAILURE_CLASS_MISSING"
+_LEADING_BRACKET_CODE_RE = re.compile(r"^\[([A-Za-z][A-Za-z0-9_]{2,})\]")
+_LEADING_COLON_CODE_RE = re.compile(r"^(no_capacity|[A-Z][A-Z0-9_]{2,}):")
+_EMBEDDED_UPPER_CODE_RE = re.compile(r"\b([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)\b")
+_LAUNCHER_WHY_SUBSTRING_RULES: tuple[tuple[str, str], ...] = (
+    ("requires --p0a-part-dir", "P0A_PART_DIR_REQUIRED"),
+    ("requires --part-dir", "PART_DIR_REQUIRED"),
+    ("RDLAB_RECEIPTS_DIR or --receipts-dir is missing", "RECEIPTS_DIR_MISSING"),
+    ("lock file or device.py SHA-256 verification failed", "LOCK_OR_DEVICE_SHA256_FAILED"),
+    ("staging of items, receipts, or repo bundle failed", "RIG_STAGING_FAILED"),
+    ("wall-clock timeout exceeded", "VM_EXEC_TIMEOUT"),
+    ("status.json missing after VM run", "VM_STATUS_MISSING"),
+    ("VM status.json is stale", "VM_STATUS_STALE"),
+    ("VM status.json reported failure", "VM_STATUS_FAILED"),
+    ("probe exited non-zero", "VM_PROBE_EXEC_FAILED"),
+    ("colab exec exited non-zero", "VM_EXEC_FAILED"),
+    ("runpod offrig exec exited non-zero", "VM_EXEC_FAILED"),
+    ("result.tar.gz missing after VM run", "RESULT_TAR_MISSING"),
+    ("rig log guard or result tar verification failed", "RIG_OUTPUT_VERIFY_FAILED"),
+    ("still present as [?] on server after colab stop", "COLAB_STOP_ORPHAN_PRESENT"),
+    ("still present after colab stop", "COLAB_STOP_SESSION_STILL_PRESENT"),
+    ("interrupted by signal", "INTERRUPTED_BY_SIGNAL"),
+    ("stopped by watcher", "STOPPED_BY_WATCHER"),
+    ("colab upload failed", "COLAB_UPLOAD_FAILED"),
+    ("colab sessions lists", "COLAB_NEW_FAILED_SESSION_LISTED"),
+    ("colab new failed", "COLAB_NEW_FAILED"),
+    ("offrig put failed", "OFFRIG_PUT_FAILED"),
+    ("offrig plan failed", "OFFRIG_PLAN_FAILED"),
+    ("offrig launch-and-wait failed", "OFFRIG_LAUNCH_FAILED"),
+    ("RunPod GPU card gate refused", "RUNPOD_GPU_GATE_REFUSED"),
+    ("directories on pod", "RUNPOD_MKDIR_FAILED"),
+    ("probe.json missing", "PROBE_JSON_MISSING"),
+    ("probe.json verification or log guard failed", "PROBE_VERIFY_FAILED"),
+    ("VM alive probe failed on RunPod", "RUNPOD_ALIVE_PROBE_FAILED"),
+    ("VM gate refused", "VM_GATE_REFUSED"),
+    ("VM gate failed", "VM_GATE_FAILED"),
+    ("VM liveness gate", "VM_GATE_FAILED"),
+    ("offrig watchdog deadline reserve exhausted", "OFFRIG_DEADLINE_RESERVE_EXHAUSTED"),
+    ("already exists in colab sessions", "COLAB_SESSION_ALREADY_EXISTS"),
+    ("colab sessions did not list", "COLAB_SESSION_NOT_LISTED"),
+    ("requires both --anchor-items", "LOCK_CHECK_ANCHOR_ITEMS_INVALID"),
+    ("cannot specify both --counted-items and --counted-manifest", "LOCK_CHECK_COUNTED_SOURCE_INVALID"),
+    ("requires --counted-items or --counted-manifest", "LOCK_CHECK_COUNTED_SOURCE_MISSING"),
+    ("upload path refused by key/sealed-store guard", "FORBIDDEN_KEY_OR_SEALED_UPLOAD"),
+    ("counted manifest file does not exist", "COUNTED_MANIFEST_NOT_FOUND"),
+    ("items file does not exist", "ITEMS_FILE_NOT_FOUND"),
+    ("refused by field allow-list guard", "ITEMS_FIELD_NOT_ALLOWED"),
+    ("lock-check two-input validation failed", "LOCK_CHECK_INPUT_INVALID"),
+    ("RDLAB_ITEMS_FILE or --items-file is required", "ITEMS_FILE_MISSING"),
+    ("synthetic items check refused", "SYNTHETIC_ITEMS_REFUSED"),
+    ("part files refused before session open", "PART_PREFLIGHT_REFUSED"),
+    ("a forwarded test hook or item limit in a real window", "TEST_HOOK_IN_COUNTED_MODE"),
+    ("could not initialise the mid-run rate re-read state", "RATE_REREAD_INIT_FAILED"),
+    ("window exited before completion", "LAUNCHER_EXITED_BEFORE_COMPLETION"),
+)
+
+
+def classify_launcher_failure_class(why: str | None) -> str:
+    """Derive a stable non-empty named `failure_class` from a launcher `why` string."""
+    text = str(why or "").strip()
+    if text:
+        bracket_match = _LEADING_BRACKET_CODE_RE.match(text)
+        if bracket_match is not None:
+            return bracket_match.group(1)
+        colon_match = _LEADING_COLON_CODE_RE.match(text)
+        if colon_match is not None:
+            return colon_match.group(1)
+        for needle, code in _LAUNCHER_WHY_SUBSTRING_RULES:
+            if needle in text:
+                return code
+        embedded_match = _EMBEDDED_UPPER_CODE_RE.search(text)
+        if embedded_match is not None:
+            return embedded_match.group(1)
+    return FAILURE_CLASS_MISSING
+
+
+def _clean_failure_class_token(value: Any) -> str:
+    token = str(value or "").strip()
+    return "" if token.lower() == "none" else token
+
+
+def resolve_outcome_failure_class(
+    *,
+    outcome: str,
+    explicit_failure_class: str = "",
+    run_dir: Path | None = None,
+    shutdown_failure_class: str = "",
+    why: str = "",
+) -> str | None:
+    """Return a non-empty named `failure_class` for any non-OK outcome, or `None` on `ok`/`probe`."""
+    explicit_clean = _clean_failure_class_token(explicit_failure_class)
+    if str(outcome or "").strip() in ("ok", "probe"):
+        return explicit_clean or None
+    if explicit_clean:
+        return explicit_clean
+    if run_dir is not None:
+        base_dir = Path(run_dir)
+        for fname in ("status.json", "vm_receipt.json", "gate_status.json"):
+            doc = _read_json_mapping_quiet(base_dir / fname)
+            fc = _clean_failure_class_token(doc.get("failure_class")) if doc is not None else ""
+            if fc:
+                return fc
+    sd_clean = _clean_failure_class_token(shutdown_failure_class)
+    if sd_clean:
+        return sd_clean
+    return classify_launcher_failure_class(why)
+

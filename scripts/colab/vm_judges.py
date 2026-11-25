@@ -575,6 +575,7 @@ PINNED_PYTHON_INSTALL_TIMEOUT_SECONDS = 120.0
 DEFAULT_VM_PYTHON_TEMP_DIR = Path("/tmp/rdlab-python-315")
 CU132_INDEX_URL = "https://download.pytorch.org/whl/cu132"
 SUBPROCESS_TAIL_BYTES = 4096
+JUDGE_CHILD_STDERR_TAIL_BYTES = 16384
 # A refusal that comes from a subprocess keeps the last FAILURE_TAIL_LINES lines of its stderr (of stdout when stderr
 # is empty) in status.json, vm_receipt.json and vm.log, so the exception type and message are never cut off.
 FAILURE_TAIL_LINES = 40
@@ -3880,7 +3881,9 @@ def build_download_child_env(
 QWEN36_FLASHINFER_CUDA_ARCH_LIST = "12.0f"
 QWEN36_FLASHINFER_DISABLE_JIT = "1"
 QWEN36_JIT_SHIM_MARKER_ENV_VAR = "RDLAB_JIT_SHIM_MARKER_FILE"
+QWEN36_ENGINE_STOP_ENV_VAR = "RDLAB_JUDGE_ENGINE_STOP_FILE"
 JUDGE_CUDA_HOME_MISSING = "JUDGE_CUDA_HOME_MISSING"
+JUDGE_JIT_SHIM_SYMLINK_FAILED = "JUDGE_JIT_SHIM_SYMLINK_FAILED"
 DEFAULT_UNIX_CUDA_HOME = Path("/usr/local/cuda")
 JUDGE_JIT_BUILD_ENTERED_MARKER_LINE = "JUDGE_JIT_BUILD_ENTERED: runtime compilation forbidden on judge pod"
 QWEN36_NAMED_CHILD_STOP_CODES: tuple[str, ...] = (
@@ -3888,6 +3891,7 @@ QWEN36_NAMED_CHILD_STOP_CODES: tuple[str, ...] = (
     "JUDGE_PREBUILT_KERNELS_MISSING",
     "JUDGE_CUDA_HOME_MISSING",
     "JUDGE_GPU_COMPUTE_CAP_MISMATCH",
+    JUDGE_JIT_SHIM_SYMLINK_FAILED,
 )
 
 
@@ -3896,14 +3900,21 @@ def classify_judge_child_stop_code(
     stdout_text: str = "",
     *,
     shim_invocations: Sequence[str] = (),
+    engine_stop_codes: Sequence[str] = (),
 ) -> str | None:
     """Return the named Qwen3.6 stop code when a judge child fails on a guarded stop."""
+    for raw_code in engine_stop_codes:
+        tok = str(raw_code or "").strip()
+        if tok in QWEN36_NAMED_CHILD_STOP_CODES:
+            return tok
     if shim_invocations:
         return "JUDGE_JIT_BUILD_ENTERED"
     combined = f"{stderr_text}\n{stdout_text}"
     for code in QWEN36_NAMED_CHILD_STOP_CODES:
         if code in combined:
             return code
+    if "MissingJITCacheError" in combined or "FLASHINFER_DISABLE_JIT" in combined:
+        return "JUDGE_JIT_BUILD_ENTERED"
     return None
 
 
@@ -3945,14 +3956,189 @@ def _ensure_executable_shim_file(path: Path, body: str) -> None:
         pass
 
 
+def _build_engine_stop_sitecustomize_source(self_dir: Path | str | None = None) -> str:
+    """Return stdlib-only `sitecustomize.py` source so spawned `EngineCore` processes record named stop codes on escape."""
+    codes_literal = repr(QWEN36_NAMED_CHILD_STOP_CODES)
+    self_dir_expr = f"os.path.realpath({str(self_dir)!r})" if self_dir is not None else "os.path.realpath(os.path.dirname(os.path.abspath(sys.modules[__name__].__spec__.origin)))"
+    return f'''"""Runtime hook for spawned judge worker subprocesses: record named Qwen3.6 stop codes before exit."""
+
+from __future__ import annotations
+
+import importlib.abc
+import importlib.machinery
+import importlib.util
+import json
+import multiprocessing.process
+import os
+import sys
+from pathlib import Path
+
+_STOP_ENV_VAR = {QWEN36_ENGINE_STOP_ENV_VAR!r}
+_JIT_STOP_CODE = "JUDGE_JIT_BUILD_ENTERED"
+_NAMED_STOP_CODES = {codes_literal}
+_SELF_DIR = {self_dir_expr}
+_SENTINEL_ATTR = "_rdlab_qwen36_engine_stop_installed"
+_VISITED_ATTR = "_rdlab_qwen36_sitecustomize_visited"
+
+
+def _record_stop(code: str, source: str, detail: str) -> None:
+    raw = os.environ.get(_STOP_ENV_VAR, "").strip()
+    if not raw or not code:
+        return
+    p = Path(raw)
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with p.open("a", encoding="utf-8", newline="\\n") as fh:
+            fh.write(json.dumps({{"code": str(code), "source": str(source), "detail": str(detail)[:500], "pid": os.getpid()}}, sort_keys=True) + "\\n")
+    except Exception as exc:
+        try:
+            sys.stderr.write(f"QWEN36_ENGINE_STOP_WRITE_FAILED path={{p}} error={{type(exc).__name__}}: {{exc}}\\n")
+        except Exception:
+            pass
+
+
+def _classify_exc(exc: BaseException | None) -> tuple[str, str, str] | None:
+    cur = exc
+    seen: set[int] = set()
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        msg = str(cur)
+        for attr in ("code", "failure_class"):
+            val = str(getattr(cur, attr, "") or "").strip()
+            if val in _NAMED_STOP_CODES:
+                return val, type(cur).__name__, msg
+        if (
+            type(cur).__name__ == "MissingJITCacheError"
+            or "MissingJITCacheError" in msg
+            or "FLASHINFER_DISABLE_JIT" in msg
+            or _JIT_STOP_CODE in msg
+        ):
+            return _JIT_STOP_CODE, type(cur).__name__, msg
+        for code in _NAMED_STOP_CODES:
+            if code in msg:
+                return code, type(cur).__name__, msg
+        cur = cur.__cause__ if cur.__cause__ is not None else cur.__context__
+    return None
+
+
+def _patch_flashinfer_module(mod: object, fullname: str) -> None:
+    if hasattr(mod, "run_ninja"):
+        fn = getattr(mod, "run_ninja")
+        if not getattr(fn, "_rdlab_stop_wrapped", False):
+            def _wrapped_run_ninja(*_args, **_kwargs):
+                _record_stop(_JIT_STOP_CODE, f"{{fullname}}.run_ninja", "FlashInfer attempted to invoke run_ninja in EngineCore subprocess.")
+                raise RuntimeError(f"{{_JIT_STOP_CODE}}: FlashInfer attempted to invoke run_ninja in EngineCore subprocess.")
+
+            _wrapped_run_ninja._rdlab_orig_run_ninja = fn
+            _wrapped_run_ninja._rdlab_stop_wrapped = True
+            setattr(mod, "run_ninja", _wrapped_run_ninja)
+
+
+class _FlashInferStopFinder(importlib.abc.MetaPathFinder):
+    _rdlab_stop_finder = True
+
+    def __init__(self) -> None:
+        self._busy: set[str] = set()
+
+    def find_spec(self, fullname: str, path, target=None):
+        if fullname not in ("flashinfer.jit.core", "flashinfer.jit.cpp_ext") or fullname in self._busy:
+            return None
+        self._busy.add(fullname)
+        try:
+            spec = importlib.machinery.PathFinder.find_spec(fullname, path)
+            if spec is None or spec.loader is None:
+                return spec
+            loader = spec.loader
+            orig_exec = loader.exec_module
+
+            def _exec_module(module) -> None:
+                orig_exec(module)
+                _patch_flashinfer_module(module, fullname)
+
+            loader.exec_module = _exec_module
+            return spec
+        finally:
+            self._busy.discard(fullname)
+
+
+def _install_hooks() -> None:
+    if not os.environ.get(_STOP_ENV_VAR, "").strip():
+        return
+    if not any(getattr(f, "_rdlab_stop_finder", False) for f in sys.meta_path):
+        sys.meta_path.insert(0, _FlashInferStopFinder())
+    for loaded_name in ("flashinfer.jit.core", "flashinfer.jit.cpp_ext"):
+        loaded_mod = sys.modules.get(loaded_name)
+        if loaded_mod is not None:
+            _patch_flashinfer_module(loaded_mod, loaded_name)
+    proc_cls = multiprocessing.process.BaseProcess
+    if not getattr(proc_cls.run, "_rdlab_stop_wrapped", False):
+        orig_run = proc_cls.run
+
+        def _wrapped_proc_run(self_proc):
+            try:
+                return orig_run(self_proc)
+            except BaseException as exc:
+                matched = _classify_exc(exc)
+                if matched is not None:
+                    _record_stop(matched[0], matched[1], matched[2])
+                raise
+
+        _wrapped_proc_run._rdlab_orig_run = orig_run
+        _wrapped_proc_run._rdlab_stop_wrapped = True
+        proc_cls.run = _wrapped_proc_run
+
+    orig_excepthook = sys.excepthook
+    if not getattr(orig_excepthook, "_rdlab_stop_wrapped", False):
+        def _wrapped_excepthook(exc_type, exc_val, exc_tb):
+            matched = _classify_exc(exc_val)
+            if matched is not None:
+                _record_stop(matched[0], matched[1], matched[2])
+            return orig_excepthook(exc_type, exc_val, exc_tb)
+
+        _wrapped_excepthook._rdlab_stop_wrapped = True
+        sys.excepthook = _wrapped_excepthook
+
+
+def _chain_downstream_sitecustomize(visited: set[str]) -> None:
+    for entry in list(sys.path):
+        cand_dir = entry or os.getcwd()
+        try:
+            real_cand_dir = os.path.realpath(cand_dir)
+        except OSError:
+            continue
+        if real_cand_dir in visited:
+            continue
+        cand_file = os.path.join(cand_dir, "sitecustomize.py")
+        if os.path.isfile(cand_file):
+            visited.add(real_cand_dir)
+            spec = importlib.util.spec_from_file_location("_rdlab_downstream_sitecustomize", cand_file)
+            if spec is not None and spec.loader is not None:
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+            break
+
+
+_visited = getattr(sys, _VISITED_ATTR, None)
+if not isinstance(_visited, set):
+    _visited = set()
+    setattr(sys, _VISITED_ATTR, _visited)
+_visited.add(_SELF_DIR)
+if not getattr(sys, _SENTINEL_ATTR, False):
+    setattr(sys, _SENTINEL_ATTR, True)
+    _install_hooks()
+_chain_downstream_sitecustomize(_visited)
+'''
+
+
 def stage_qwen36_no_compile_shim(
     shim_root: Path,
     marker_file: Path,
     child_env: MutableMapping[str, str],
     *,
     default_cuda_home: Path | None = None,
+    engine_stop_file: Path | None = None,
 ) -> dict[str, str]:
-    """Stage refusing `ninja` and `nvcc` shims first on `PATH` and compiler env vars for every spawned child."""
+    """Stage refusing `ninja` and `nvcc` shims first on `PATH`, EngineCore stop hooks, and compiler env vars for every spawned child."""
     cuda_src = resolve_cuda_home_for_shim(child_env, default_cuda_home=default_cuda_home)
     shim_root_resolved = Path(shim_root).resolve()
     bin_dir = shim_root_resolved / "bin"
@@ -4002,8 +4188,19 @@ def stage_qwen36_no_compile_shim(
         if sub_src.exists() and not sub_dst.exists():
             try:
                 os.symlink(str(sub_src), str(sub_dst))
-            except OSError:
-                pass
+            except OSError as exc:
+                raise RefusalError(
+                    JUDGE_JIT_SHIM_SYMLINK_FAILED,
+                    f"Failed to symlink CUDA toolkit subdirectory {sub_src} -> {sub_dst} in no-compile shim: {type(exc).__name__}: {exc}.",
+                    hint="Ensure the work directory supports symbolic links and CUDA_HOME/CUDA_PATH is readable.",
+                ) from exc
+
+    py_hook_dir = shim_root_resolved / "py_hook"
+    py_hook_dir.mkdir(parents=True, exist_ok=True)
+    _ensure_executable_shim_file(py_hook_dir / "sitecustomize.py", _build_engine_stop_sitecustomize_source(py_hook_dir))
+    old_py_path = child_env.get("PYTHONPATH", "")
+    py_parts = [p for p in old_py_path.split(os.pathsep) if p and p != str(py_hook_dir)]
+    child_env["PYTHONPATH"] = os.pathsep.join([str(py_hook_dir), *py_parts])
 
     old_path = child_env.get("PATH", "")
     path_parts = [p for p in old_path.split(os.pathsep) if p and p != str(bin_dir)]
@@ -4016,13 +4213,21 @@ def stage_qwen36_no_compile_shim(
     child_env["CUDA_HOME"] = str(shim_root_resolved)
     child_env["CUDA_PATH"] = str(shim_root_resolved)
     child_env[QWEN36_JIT_SHIM_MARKER_ENV_VAR] = str(marker_resolved)
+    if engine_stop_file is not None:
+        stop_resolved = Path(engine_stop_file).resolve()
+        stop_resolved.parent.mkdir(parents=True, exist_ok=True)
+        if stop_resolved.exists():
+            stop_resolved.unlink()
+        child_env[QWEN36_ENGINE_STOP_ENV_VAR] = str(stop_resolved)
     child_env["FLASHINFER_DISABLE_JIT"] = QWEN36_FLASHINFER_DISABLE_JIT
     return {
         "shim_root": str(shim_root_resolved),
         "bin_dir": str(bin_dir),
+        "py_hook_dir": str(py_hook_dir),
         "ninja_shim": ninja_bin,
         "nvcc_shim": nvcc_bin,
         "marker_file": str(marker_resolved),
+        "engine_stop_file": str(Path(engine_stop_file).resolve()) if engine_stop_file is not None else "",
         "cuda_src": str(cuda_src),
     }
 
@@ -4038,6 +4243,7 @@ def build_judge_child_env(
     jit_shim_dir: Path | None = None,
     jit_shim_marker_file: Path | None = None,
     default_cuda_home: Path | None = None,
+    engine_stop_file: Path | None = None,
 ) -> dict[str, str]:
     """Build the judge child subprocess environment, dropping `HF_TOKEN*` and `HUGGING_FACE_HUB_TOKEN` and setting `HF_HUB_OFFLINE=1`."""
     source_env = os.environ if base_env is None else base_env
@@ -4071,12 +4277,19 @@ def build_judge_child_env(
     if judge_id == QWEN36_JUDGE_ID or venv_name == VLLM_VENV_NAME:
         child_env["FLASHINFER_CUDA_ARCH_LIST"] = QWEN36_FLASHINFER_CUDA_ARCH_LIST
         child_env["FLASHINFER_DISABLE_JIT"] = QWEN36_FLASHINFER_DISABLE_JIT
+        if engine_stop_file is not None:
+            stop_resolved = Path(engine_stop_file).resolve()
+            stop_resolved.parent.mkdir(parents=True, exist_ok=True)
+            if stop_resolved.exists():
+                stop_resolved.unlink()
+            child_env[QWEN36_ENGINE_STOP_ENV_VAR] = str(stop_resolved)
         if jit_shim_dir is not None and jit_shim_marker_file is not None:
             stage_qwen36_no_compile_shim(
                 jit_shim_dir,
                 jit_shim_marker_file,
                 child_env,
                 default_cuda_home=default_cuda_home,
+                engine_stop_file=engine_stop_file,
             )
     return child_env
 
@@ -9251,6 +9464,11 @@ def _run_judges_pipeline_body(
             venv_name=venv_name,
             jit_shim_dir=(eff_work_dir / "jit_shim" / pass_key_j) if stage_live_shim else None,
             jit_shim_marker_file=(eff_work_dir / "jit_shim" / f"{pass_key_j}_marker.log") if stage_live_shim else None,
+            engine_stop_file=(
+                (eff_work_dir / "jit_shim" / f"{pass_key_j}_engine_stop.jsonl")
+                if (not dryrun and norm_mode not in STUB_OR_DRYRUN_MODES and (venv_name == VLLM_VENV_NAME or judge_id == QWEN36_JUDGE_ID))
+                else None
+            ),
         )
         jit_build_log_path: Path | None = None
         if venv_name == "venv-vllm" or judge_id == QWEN36_JUDGE_ID:
@@ -9372,8 +9590,12 @@ def _run_judges_pipeline_body(
         mem_info = read_vm_memory_snapshot(proc_meminfo_path=proc_meminfo_path)
         mem_avail_bytes = mem_info.get("mem_available_bytes")
 
+        is_qwen36_child = venv_name == VLLM_VENV_NAME or judge_id == QWEN36_JUDGE_ID
         stdout_tail = _scrub_and_tail(child_res["stdout"] or "")
-        stderr_tail = _scrub_and_tail(child_res["stderr"] or "")
+        stderr_tail = _scrub_and_tail(
+            child_res["stderr"] or "",
+            max_bytes=(JUDGE_CHILD_STDERR_TAIL_BYTES if is_qwen36_child else SUBPROCESS_TAIL_BYTES),
+        )
         if _ACTIVE_VM_LOG_PATH is not None:
             try:
                 _ACTIVE_VM_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -9487,6 +9709,27 @@ def _run_judges_pipeline_body(
                 shim_lines = []
             if shim_lines:
                 failure_build_extra["jit_shim_invocations"] = shim_lines[:10]
+        engine_stop_records: list[dict[str, Any]] = []
+        engine_stop_codes: list[str] = []
+        engine_stop_str = child_env.get(QWEN36_ENGINE_STOP_ENV_VAR, "").strip()
+        if engine_stop_str and Path(engine_stop_str).is_file():
+            try:
+                for raw_sl in Path(engine_stop_str).read_text(encoding="utf-8", errors="replace").splitlines():
+                    sl = raw_sl.strip()
+                    if not sl:
+                        continue
+                    try:
+                        sobj = json.loads(sl)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(sobj, Mapping) and str(sobj.get("code") or "").strip():
+                        rec = dict(sobj)
+                        engine_stop_records.append(rec)
+                        engine_stop_codes.append(str(rec["code"]).strip())
+            except OSError:
+                pass
+            if engine_stop_records:
+                failure_build_extra["engine_stop_records"] = engine_stop_records[:10]
 
         if child_res["timed_out"]:
             gpu_mem_mib = read_gpu_memory_used_mib(dryrun=dryrun)
@@ -9633,6 +9876,7 @@ def _run_judges_pipeline_body(
                     child_res["stderr"] or "",
                     child_res["stdout"] or "",
                     shim_invocations=failure_build_extra.get("jit_shim_invocations", ()),
+                    engine_stop_codes=engine_stop_codes,
                 )
             )
             failure_class = "JUDGE_CHILD_OOM" if is_oom else (named_child_stop or "JUDGE_CHILD_FAILED")

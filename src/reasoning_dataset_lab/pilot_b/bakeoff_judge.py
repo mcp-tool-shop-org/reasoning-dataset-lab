@@ -10368,8 +10368,17 @@ JUDGE_PREBUILT_KERNELS_MISSING: str = "JUDGE_PREBUILT_KERNELS_MISSING"
 JUDGE_JIT_BUILD_ENTERED: str = "JUDGE_JIT_BUILD_ENTERED"
 JUDGE_GPU_COMPUTE_CAP_MISMATCH: str = "JUDGE_GPU_COMPUTE_CAP_MISMATCH"
 JUDGE_CUDA_HOME_MISSING: str = "JUDGE_CUDA_HOME_MISSING"
+JUDGE_JIT_SHIM_SYMLINK_FAILED: str = "JUDGE_JIT_SHIM_SYMLINK_FAILED"
+QWEN36_NAMED_CHILD_STOP_CODES: tuple[str, ...] = (
+    JUDGE_JIT_BUILD_ENTERED,
+    JUDGE_PREBUILT_KERNELS_MISSING,
+    JUDGE_CUDA_HOME_MISSING,
+    JUDGE_GPU_COMPUTE_CAP_MISMATCH,
+    JUDGE_JIT_SHIM_SYMLINK_FAILED,
+)
 DEFAULT_UNIX_CUDA_HOME: Path = Path("/usr/local/cuda")
 QWEN36_JIT_SHIM_MARKER_ENV_VAR: str = "RDLAB_JIT_SHIM_MARKER_FILE"
+QWEN36_ENGINE_STOP_ENV_VAR: str = "RDLAB_JUDGE_ENGINE_STOP_FILE"
 JUDGE_JIT_BUILD_ENTERED_MARKER_LINE: str = "JUDGE_JIT_BUILD_ENTERED: runtime compilation forbidden on judge pod"
 _LIBCUDART_SO_NAME_RE: re.Pattern[str] = re.compile(r"^libcudart\.so(?:\.[0-9]+)*$")
 _COMPUTE_CAP_RE: re.Pattern[str] = re.compile(r"^\s*([0-9]+)\.([0-9]+)\s*$")
@@ -10762,11 +10771,273 @@ def resolve_fallback_jit_shim_marker_path(*, marker_dir: Path | None = None) -> 
     return (base_dir / f"jit_shim_marker_{os.getpid()}_{time.monotonic_ns()}.log").resolve()
 
 
+def resolve_fallback_engine_stop_path(*, marker_dir: Path | None = None) -> Path:
+    """Return an engine-stop record path under `marker_dir`, `RDLAB_WORK_DIR`, or system temp dir (never `output_dir`/`run_dir`)."""
+    marker_path = resolve_fallback_jit_shim_marker_path(marker_dir=marker_dir)
+    return (marker_path.parent / f"engine_stop_{os.getpid()}_{time.monotonic_ns()}.jsonl").resolve()
+
+
+def record_qwen36_engine_stop_code(
+    code: str,
+    *,
+    source: str = "engine_core",
+    detail: str = "",
+    stop_file: Path | str | None = None,
+) -> Path | None:
+    """Append one named stop record for cross-process EngineCore failures to `stop_file` or `RDLAB_JUDGE_ENGINE_STOP_FILE`."""
+    raw_path = str(stop_file).strip() if stop_file is not None else os.environ.get(QWEN36_ENGINE_STOP_ENV_VAR, "").strip()
+    if not raw_path:
+        return None
+    eff_path = Path(raw_path).resolve()
+    entry = {
+        "code": str(code).strip(),
+        "source": str(source).strip() or "engine_core",
+        "detail": str(detail)[:500],
+        "pid": os.getpid(),
+    }
+    try:
+        eff_path.parent.mkdir(parents=True, exist_ok=True)
+        with eff_path.open("a", encoding="utf-8", newline="\n") as fh:
+            fh.write(json.dumps(entry, sort_keys=True) + "\n")
+    except OSError as exc:
+        sys.stderr.write(
+            f"QWEN36_ENGINE_STOP_WRITE_FAILED path={eff_path} error={type(exc).__name__}: {exc}\n"
+        )
+        return eff_path
+    return eff_path
+
+
+def read_qwen36_engine_stop_records(stop_file: Path | str | None = None) -> list[dict[str, Any]]:
+    """Read structured named stop records written by an EngineCore child process."""
+    if stop_file is not None:
+        eff_path: Path | None = Path(stop_file)
+    else:
+        raw_env = os.environ.get(QWEN36_ENGINE_STOP_ENV_VAR, "").strip()
+        eff_path = Path(raw_env) if raw_env else None
+    if eff_path is None or not eff_path.is_file():
+        return []
+    records: list[dict[str, Any]] = []
+    for raw_ln in eff_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = raw_ln.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            parts = line.split("\t")
+            code = parts[0].strip() if parts else ""
+            if code:
+                records.append({"code": code, "source": parts[1] if len(parts) > 1 else "raw", "detail": parts[2] if len(parts) > 2 else line})
+            continue
+        if isinstance(obj, Mapping) and str(obj.get("code") or "").strip():
+            records.append(dict(obj))
+    return records
+
+
+def _classify_engine_exception_stop_code(exc: BaseException | None) -> tuple[str, str, str] | None:
+    """Return `(stop_code, exc_type_name, detail)` if any exception in the chain matches a named Qwen3.6 stop."""
+    cur: BaseException | None = exc
+    seen: set[int] = set()
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        msg = str(cur)
+        for attr_name in ("code", "failure_class"):
+            attr_val = str(getattr(cur, attr_name, "") or "").strip()
+            if attr_val in QWEN36_NAMED_CHILD_STOP_CODES:
+                return attr_val, type(cur).__name__, msg
+        if (
+            type(cur).__name__ == "MissingJITCacheError"
+            or "MissingJITCacheError" in msg
+            or "FLASHINFER_DISABLE_JIT" in msg
+            or JUDGE_JIT_BUILD_ENTERED in msg
+        ):
+            return JUDGE_JIT_BUILD_ENTERED, type(cur).__name__, msg
+        for code in QWEN36_NAMED_CHILD_STOP_CODES:
+            if code in msg:
+                return code, type(cur).__name__, msg
+        cur = cur.__cause__ if cur.__cause__ is not None else cur.__context__
+    return None
+
+
+def build_qwen36_engine_stop_sitecustomize_source() -> str:
+    """Build stdlib-only `sitecustomize.py` source so spawned `EngineCore` subprocesses record named stops on escape."""
+    codes_literal = repr(QWEN36_NAMED_CHILD_STOP_CODES)
+    return f'''"""Runtime hook for spawned judge worker subprocesses: record named Qwen3.6 stop codes before exit."""
+
+from __future__ import annotations
+
+import importlib.abc
+import importlib.machinery
+import importlib.util
+import json
+import multiprocessing.process
+import os
+import sys
+from pathlib import Path
+
+_STOP_ENV_VAR = {QWEN36_ENGINE_STOP_ENV_VAR!r}
+_JIT_STOP_CODE = {JUDGE_JIT_BUILD_ENTERED!r}
+_NAMED_STOP_CODES = {codes_literal}
+_SELF_DIR = os.path.realpath(os.path.dirname(__file__))
+_SENTINEL_ATTR = "_rdlab_qwen36_engine_stop_installed"
+_VISITED_ATTR = "_rdlab_qwen36_sitecustomize_visited"
+
+
+def _record_stop(code: str, source: str, detail: str) -> None:
+    raw = os.environ.get(_STOP_ENV_VAR, "").strip()
+    if not raw or not code:
+        return
+    p = Path(raw)
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with p.open("a", encoding="utf-8", newline="\\n") as fh:
+            fh.write(json.dumps({{"code": str(code), "source": str(source), "detail": str(detail)[:500], "pid": os.getpid()}}, sort_keys=True) + "\\n")
+    except Exception as exc:
+        try:
+            sys.stderr.write(f"QWEN36_ENGINE_STOP_WRITE_FAILED path={{p}} error={{type(exc).__name__}}: {{exc}}\\n")
+        except Exception:
+            pass
+
+
+def _classify_exc(exc: BaseException | None) -> tuple[str, str, str] | None:
+    cur = exc
+    seen: set[int] = set()
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        msg = str(cur)
+        for attr in ("code", "failure_class"):
+            val = str(getattr(cur, attr, "") or "").strip()
+            if val in _NAMED_STOP_CODES:
+                return val, type(cur).__name__, msg
+        if (
+            type(cur).__name__ == "MissingJITCacheError"
+            or "MissingJITCacheError" in msg
+            or "FLASHINFER_DISABLE_JIT" in msg
+            or _JIT_STOP_CODE in msg
+        ):
+            return _JIT_STOP_CODE, type(cur).__name__, msg
+        for code in _NAMED_STOP_CODES:
+            if code in msg:
+                return code, type(cur).__name__, msg
+        cur = cur.__cause__ if cur.__cause__ is not None else cur.__context__
+    return None
+
+
+def _patch_flashinfer_module(mod: object, fullname: str) -> None:
+    if hasattr(mod, "run_ninja"):
+        fn = getattr(mod, "run_ninja")
+        if not getattr(fn, "_rdlab_stop_wrapped", False):
+            def _wrapped_run_ninja(*_args, **_kwargs):
+                _record_stop(_JIT_STOP_CODE, f"{{fullname}}.run_ninja", "FlashInfer attempted to invoke run_ninja in EngineCore subprocess.")
+                raise RuntimeError(f"{{_JIT_STOP_CODE}}: FlashInfer attempted to invoke run_ninja in EngineCore subprocess.")
+
+            _wrapped_run_ninja._rdlab_orig_run_ninja = fn
+            _wrapped_run_ninja._rdlab_stop_wrapped = True
+            setattr(mod, "run_ninja", _wrapped_run_ninja)
+
+
+class _FlashInferStopFinder(importlib.abc.MetaPathFinder):
+    _rdlab_stop_finder = True
+
+    def __init__(self) -> None:
+        self._busy: set[str] = set()
+
+    def find_spec(self, fullname: str, path, target=None):
+        if fullname not in ("flashinfer.jit.core", "flashinfer.jit.cpp_ext") or fullname in self._busy:
+            return None
+        self._busy.add(fullname)
+        try:
+            spec = importlib.machinery.PathFinder.find_spec(fullname, path)
+            if spec is None or spec.loader is None:
+                return spec
+            loader = spec.loader
+            orig_exec = loader.exec_module
+
+            def _exec_module(module) -> None:
+                orig_exec(module)
+                _patch_flashinfer_module(module, fullname)
+
+            loader.exec_module = _exec_module
+            return spec
+        finally:
+            self._busy.discard(fullname)
+
+
+def _install_hooks() -> None:
+    if not os.environ.get(_STOP_ENV_VAR, "").strip():
+        return
+    if not any(getattr(f, "_rdlab_stop_finder", False) for f in sys.meta_path):
+        sys.meta_path.insert(0, _FlashInferStopFinder())
+    for loaded_name in ("flashinfer.jit.core", "flashinfer.jit.cpp_ext"):
+        loaded_mod = sys.modules.get(loaded_name)
+        if loaded_mod is not None:
+            _patch_flashinfer_module(loaded_mod, loaded_name)
+    proc_cls = multiprocessing.process.BaseProcess
+    if not getattr(proc_cls.run, "_rdlab_stop_wrapped", False):
+        orig_run = proc_cls.run
+
+        def _wrapped_proc_run(self_proc):
+            try:
+                return orig_run(self_proc)
+            except BaseException as exc:
+                matched = _classify_exc(exc)
+                if matched is not None:
+                    _record_stop(matched[0], matched[1], matched[2])
+                raise
+
+        _wrapped_proc_run._rdlab_orig_run = orig_run
+        _wrapped_proc_run._rdlab_stop_wrapped = True
+        proc_cls.run = _wrapped_proc_run
+
+    orig_excepthook = sys.excepthook
+    if not getattr(orig_excepthook, "_rdlab_stop_wrapped", False):
+        def _wrapped_excepthook(exc_type, exc_val, exc_tb):
+            matched = _classify_exc(exc_val)
+            if matched is not None:
+                _record_stop(matched[0], matched[1], matched[2])
+            return orig_excepthook(exc_type, exc_val, exc_tb)
+
+        _wrapped_excepthook._rdlab_stop_wrapped = True
+        sys.excepthook = _wrapped_excepthook
+
+
+def _chain_downstream_sitecustomize(visited: set[str]) -> None:
+    for entry in list(sys.path):
+        cand_dir = entry or os.getcwd()
+        try:
+            real_cand_dir = os.path.realpath(cand_dir)
+        except OSError:
+            continue
+        if real_cand_dir in visited:
+            continue
+        cand_file = os.path.join(cand_dir, "sitecustomize.py")
+        if os.path.isfile(cand_file):
+            visited.add(real_cand_dir)
+            spec = importlib.util.spec_from_file_location("_rdlab_downstream_sitecustomize", cand_file)
+            if spec is not None and spec.loader is not None:
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+            break
+
+
+_visited = getattr(sys, _VISITED_ATTR, None)
+if not isinstance(_visited, set):
+    _visited = set()
+    setattr(sys, _VISITED_ATTR, _visited)
+_visited.add(_SELF_DIR)
+if not getattr(sys, _SENTINEL_ATTR, False):
+    setattr(sys, _SENTINEL_ATTR, True)
+    _install_hooks()
+_chain_downstream_sitecustomize(_visited)
+'''
+
+
 class FlashInferBuildShimGuard:
-    """Stages refusing `ninja`/`nvcc` shims in `PATH`, `NINJA`, `FLASHINFER_NVCC`, `CUDACXX`, `CUDA_HOME`, `CUDA_PATH`, and `FLASHINFER_DISABLE_JIT`."""
+    """Stages refusing `ninja`/`nvcc` shims, `FLASHINFER_DISABLE_JIT`, and EngineCore stop hooks for every spawned child."""
 
     _ENV_KEYS: tuple[str, ...] = (
         "PATH",
+        "PYTHONPATH",
         "NINJA",
         "FLASHINFER_NVCC",
         "CUDACXX",
@@ -10774,6 +11045,7 @@ class FlashInferBuildShimGuard:
         "CUDA_PATH",
         "FLASHINFER_DISABLE_JIT",
         QWEN36_JIT_SHIM_MARKER_ENV_VAR,
+        QWEN36_ENGINE_STOP_ENV_VAR,
     )
 
     def __init__(
@@ -10788,11 +11060,14 @@ class FlashInferBuildShimGuard:
         self._installed: bool = False
         self._saved_env: dict[str, str | None] = {}
         self._owns_fallback_marker: bool = False
+        self._owns_fallback_engine_stop: bool = False
         self.shim_root: Path | None = None
         self.shim_bin_dir: Path | None = None
         self.marker_path: Path | None = None
+        self.engine_stop_path: Path | None = None
         self._ninja_pkg: Any = None
         self._orig_ninja_bin_dir: str | None = None
+        self._orig_base_process_run: Any = None
 
     @staticmethod
     def _write_exec(path: Path, body: str) -> None:
@@ -10806,18 +11081,51 @@ class FlashInferBuildShimGuard:
         if self._installed:
             return
         cuda_src = resolve_cuda_home_for_shim(default_cuda_home=self._default_cuda_home)
-        self._temp_dir = tempfile.TemporaryDirectory(prefix="rdlab-jit-shim-")
-        root = Path(self._temp_dir.name).resolve()
+        temp_dir = tempfile.TemporaryDirectory(prefix="rdlab-jit-shim-")
+        root = Path(temp_dir.name).resolve()
         bin_dir = root / "bin"
         bin_dir.mkdir(parents=True, exist_ok=True)
         existing_marker = os.environ.get(QWEN36_JIT_SHIM_MARKER_ENV_VAR, "").strip()
         if existing_marker:
             marker_p = Path(existing_marker).resolve()
-            self._owns_fallback_marker = False
+            owns_fallback_marker = False
         else:
             marker_p = resolve_fallback_jit_shim_marker_path(marker_dir=self._marker_dir)
-            self._owns_fallback_marker = True
+            owns_fallback_marker = True
         marker_p.parent.mkdir(parents=True, exist_ok=True)
+
+        existing_stop = os.environ.get(QWEN36_ENGINE_STOP_ENV_VAR, "").strip()
+        if existing_stop:
+            stop_p = Path(existing_stop).resolve()
+            owns_fallback_stop = False
+        else:
+            stop_p = resolve_fallback_engine_stop_path(marker_dir=self._marker_dir)
+            owns_fallback_stop = True
+        stop_p.parent.mkdir(parents=True, exist_ok=True)
+
+        for sub in ("include", "lib64", "lib"):
+            sub_src = cuda_src / sub
+            sub_dst = root / sub
+            if sub == "lib" and (root / "lib64").exists():
+                continue
+            if sub_src.exists() and not sub_dst.exists():
+                try:
+                    os.symlink(str(sub_src), str(sub_dst))
+                except OSError as exc:
+                    temp_dir.cleanup()
+                    if owns_fallback_marker and marker_p.is_file() and marker_p.stat().st_size == 0:
+                        marker_p.unlink()
+                    if owns_fallback_stop and stop_p.is_file() and stop_p.stat().st_size == 0:
+                        stop_p.unlink()
+                    raise refused_error(
+                        JUDGE_JIT_SHIM_SYMLINK_FAILED,
+                        f"Failed to symlink CUDA toolkit subdirectory {sub_src} -> {sub_dst} in no-compile shim: {type(exc).__name__}: {exc}.",
+                        "Ensure the shim directory supports symbolic links and CUDA_HOME/CUDA_PATH is readable.",
+                    ) from exc
+
+        self._temp_dir = temp_dir
+        self._owns_fallback_marker = owns_fallback_marker
+        self._owns_fallback_engine_stop = owns_fallback_stop
 
         ninja_sh = bin_dir / "ninja"
         self._write_exec(
@@ -10851,18 +11159,21 @@ class FlashInferBuildShimGuard:
             ),
         )
 
-        for sub in ("include", "lib64", "lib"):
-            sub_src = cuda_src / sub
-            sub_dst = root / sub
-            if sub == "lib" and (root / "lib64").exists():
-                continue
-            if sub_src.exists() and not sub_dst.exists():
-                os.symlink(str(sub_src), str(sub_dst))
+        py_hook_dir = root / "py_hook"
+        py_hook_dir.mkdir(parents=True, exist_ok=True)
+        (py_hook_dir / "sitecustomize.py").write_text(
+            build_qwen36_engine_stop_sitecustomize_source(),
+            encoding="utf-8",
+            newline="\n",
+        )
 
         self._saved_env = {k: os.environ.get(k) for k in self._ENV_KEYS}
         old_path = os.environ.get("PATH", "")
         parts = [p for p in old_path.split(os.pathsep) if p and p != str(bin_dir)]
         os.environ["PATH"] = os.pathsep.join([str(bin_dir), *parts])
+        old_pypath = os.environ.get("PYTHONPATH", "")
+        py_parts = [p for p in old_pypath.split(os.pathsep) if p and p != str(py_hook_dir)]
+        os.environ["PYTHONPATH"] = os.pathsep.join([str(py_hook_dir), *py_parts])
         ninja_bin = str(ninja_sh)
         nvcc_bin = str(nvcc_sh)
         os.environ["NINJA"] = ninja_bin
@@ -10872,6 +11183,26 @@ class FlashInferBuildShimGuard:
         os.environ["CUDA_PATH"] = str(root)
         os.environ["FLASHINFER_DISABLE_JIT"] = QWEN36_FLASHINFER_DISABLE_JIT
         os.environ[QWEN36_JIT_SHIM_MARKER_ENV_VAR] = str(marker_p)
+        os.environ[QWEN36_ENGINE_STOP_ENV_VAR] = str(stop_p)
+
+        import multiprocessing.process
+
+        proc_cls = multiprocessing.process.BaseProcess
+        if not getattr(proc_cls.run, "_rdlab_base_proc_wrapped", False):
+            orig_run = proc_cls.run
+            self._orig_base_process_run = orig_run
+
+            def _guarded_base_process_run(proc_self: Any) -> Any:
+                try:
+                    return orig_run(proc_self)
+                except BaseException as exc:
+                    matched = _classify_engine_exception_stop_code(exc)
+                    if matched is not None:
+                        record_qwen36_engine_stop_code(matched[0], source=matched[1], detail=matched[2])
+                    raise
+
+            _guarded_base_process_run._rdlab_base_proc_wrapped = True  # type: ignore[attr-defined]
+            proc_cls.run = _guarded_base_process_run  # type: ignore[method-assign]
 
         try:
             import ninja as ninja_pkg
@@ -10885,11 +11216,17 @@ class FlashInferBuildShimGuard:
         self.shim_root = root
         self.shim_bin_dir = bin_dir
         self.marker_path = marker_p
+        self.engine_stop_path = stop_p
         self._installed = True
 
     def uninstall(self) -> None:
         if not self._installed:
             return
+        import multiprocessing.process
+
+        if self._orig_base_process_run is not None:
+            multiprocessing.process.BaseProcess.run = self._orig_base_process_run  # type: ignore[method-assign]
+            self._orig_base_process_run = None
         if self._ninja_pkg is not None:
             self._ninja_pkg.BIN_DIR = self._orig_ninja_bin_dir
             self._ninja_pkg = None
@@ -10905,9 +11242,14 @@ class FlashInferBuildShimGuard:
         if self._owns_fallback_marker and self.marker_path is not None and self.marker_path.is_file():
             if self.marker_path.stat().st_size == 0:
                 self.marker_path.unlink()
+        if self._owns_fallback_engine_stop and self.engine_stop_path is not None and self.engine_stop_path.is_file():
+            if self.engine_stop_path.stat().st_size == 0:
+                self.engine_stop_path.unlink()
         self._owns_fallback_marker = False
+        self._owns_fallback_engine_stop = False
         self.shim_root = None
         self.shim_bin_dir = None
+        self.engine_stop_path = None
         self._installed = False
 
 
@@ -10939,6 +11281,11 @@ class FlashInferRunNinjaGuard:
         def _guarded_run_ninja(*args: Any, **kwargs: Any) -> Any:
             guard.run_ninja_called = True
             guard.calls.append({"args": [str(a) for a in args], "kwargs": {str(k): str(v) for k, v in kwargs.items()}})
+            record_qwen36_engine_stop_code(
+                JUDGE_JIT_BUILD_ENTERED,
+                source="run_ninja",
+                detail="FlashInfer attempted to invoke run_ninja during judge execution.",
+            )
             raise refused_error(
                 JUDGE_JIT_BUILD_ENTERED,
                 "FlashInfer attempted to invoke run_ninja during judge execution.",
@@ -11282,23 +11629,56 @@ class VllmJudgeTransport:
         workspace_dirs: Sequence[Path | str | None] | None = None,
         chain_from: BaseException | None = None,
     ) -> dict[str, Any]:
-        """Verify neither `run_ninja`, `FLASHINFER_DISABLE_JIT`, the `ninja`/`nvcc` shims, nor the FlashInfer workspace indicates a JIT build was entered."""
+        """Verify neither `run_ninja`, `FLASHINFER_DISABLE_JIT`, EngineCore stops, the `ninja`/`nvcc` shims, nor the FlashInfer workspace indicates a JIT build was entered."""
         guard_called = bool(self._run_ninja_guard is not None and self._run_ninja_guard.run_ninja_called)
         marker_p = self._build_shim_guard.marker_path if self._build_shim_guard is not None else None
+        stop_p = self._build_shim_guard.engine_stop_path if self._build_shim_guard is not None else None
         scan = scan_flashinfer_workspace_build_entered(
             workspace_dirs=workspace_dirs,
             baseline=self._workspace_baseline,
             run_ninja_called=bool(guard_called or self._build_entered),
             shim_marker_path=marker_p,
         )
+        engine_stops = read_qwen36_engine_stop_records(stop_p)
         missing_jit_exc = _find_missing_jit_cache_error(chain_from)
+        engine_jit_stop = any(str(rec.get("code") or "").strip() == JUDGE_JIT_BUILD_ENTERED for rec in engine_stops)
+        if missing_jit_exc is not None and not engine_jit_stop:
+            record_qwen36_engine_stop_code(
+                JUDGE_JIT_BUILD_ENTERED,
+                source=type(missing_jit_exc).__name__,
+                detail=str(missing_jit_exc),
+                stop_file=stop_p,
+            )
+            engine_stops = read_qwen36_engine_stop_records(stop_p)
+            engine_jit_stop = any(str(rec.get("code") or "").strip() == JUDGE_JIT_BUILD_ENTERED for rec in engine_stops)
+        scan["engine_stop_records"] = engine_stops
         scan["disable_jit_triggered"] = bool(missing_jit_exc is not None)
-        if missing_jit_exc is not None:
+        scan["engine_stop_triggered"] = bool(engine_jit_stop)
+        if missing_jit_exc is not None or engine_jit_stop:
             scan["build_entered"] = True
         self._build_scan_report = scan
         self._build_entered = bool(scan["build_entered"])
         if self._prebuilt_jit_cache_info is not None:
             self._prebuilt_jit_cache_info["build_entered"] = self._build_entered
+        other_stop = next(
+            (
+                rec
+                for rec in engine_stops
+                if str(rec.get("code") or "").strip() in QWEN36_NAMED_CHILD_STOP_CODES
+                and str(rec.get("code") or "").strip() != JUDGE_JIT_BUILD_ENTERED
+            ),
+            None,
+        )
+        if other_stop is not None and not self._build_entered:
+            other_code = str(other_stop["code"]).strip()
+            other_exc = refused_error(
+                other_code,
+                f"EngineCore subprocess reported {other_code} ({other_stop.get('source')}: {other_stop.get('detail')}).",
+                "Inspect EngineCore stop details and prebuilt kernel / CUDA configuration.",
+            )
+            if chain_from is not None:
+                raise other_exc from chain_from
+            raise other_exc
         if self._build_entered:
             if isinstance(chain_from, RdlabError) and chain_from.code == JUDGE_JIT_BUILD_ENTERED:
                 raise chain_from
@@ -11309,6 +11689,7 @@ class VllmJudgeTransport:
                     f"FlashInfer JIT build entered unexpectedly during judge run: "
                     f"run_ninja_called={scan['run_ninja_called']}, "
                     f"disable_jit_triggered={scan['disable_jit_triggered']}{disable_detail}, "
+                    f"engine_stop_records={engine_stops[:3]}, "
                     f"shim_invocations={scan['shim_invocations'][:3]}, "
                     f"ninja_logs={scan['ninja_logs'][:3]}, "
                     f"cached_ops_dirs={scan['cached_ops_dirs'][:3]}."
