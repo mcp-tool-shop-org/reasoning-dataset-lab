@@ -3616,7 +3616,11 @@ def test_jit_build_jobs_page_cache_heavy_cgroup_uses_anon_plus_shmem(
     def _fake_child(_cmd: list[str], *, env: dict[str, str], timeout_seconds: float) -> dict[str, Any]:
         _ = timeout_seconds
         Path(env["RDLAB_JUDGE_CHILD_PROGRESS_FILE"]).parent.mkdir(parents=True, exist_ok=True)
-        Path(env["RDLAB_JUDGE_CHILD_PROGRESS_FILE"]).write_text('{"kind":"load_done"}\n', encoding="utf-8")
+        Path(env["RDLAB_JUDGE_CHILD_PROGRESS_FILE"]).write_text(
+            json.dumps({"kind": "jit_build_jobs", "stage": "before_llm", "jobs": 8, "current_bytes": 93_410_516_992, "nonreclaimable_bytes": expected_nonrec, "used_bytes": expected_nonrec, "used_source": "memory.stat:anon+shmem+file_dirty+file_writeback+kernel"}) + "\n"
+            + '{"kind":"load_done"}\n',
+            encoding="utf-8",
+        )
         rows_f = run_dir / "rows" / vm_judges.rows_filename_for_pass(QWEN36_ID, "three_way_contradicted")
         rows_f.parent.mkdir(parents=True, exist_ok=True)
         rows_b = b'{"id":"synth-0","seconds":0.1,"state":"parsed"}\n'
@@ -3652,12 +3656,13 @@ def test_jit_build_jobs_page_cache_heavy_cgroup_uses_anon_plus_shmem(
         for ln in progress_path.read_text(encoding="utf-8").splitlines()
         if ln.strip() and json.loads(ln).get("kind") == "jit_build_jobs"
     ]
-    assert len(jit_recs) == 1
+    assert len(jit_recs) == 2
     assert jit_recs[0]["jobs"] == 8
     assert jit_recs[0]["current_bytes"] == 93_410_516_992
     assert jit_recs[0]["nonreclaimable_bytes"] == expected_nonrec
     assert jit_recs[0]["used_bytes"] == expected_nonrec
     assert jit_recs[0]["used_source"] == "memory.stat:anon+shmem+file_dirty+file_writeback+kernel"
+    assert jit_recs[1]["stage"] == "before_llm"
 
 
 def test_jit_build_jobs_memory_stat_missing_falls_back_to_memory_current(
@@ -3913,6 +3918,40 @@ def test_weights_sync_start_logged_and_deadline_timeout_never_fails_run(
     assert eff_to == vm_judges.DEFAULT_WEIGHTS_SYNC_TIMEOUT_SECONDS
     assert ov_to is None
     assert "WEIGHTS_SYNC_TIMEOUT_INVALID" in vm_log.read_text(encoding="utf-8")
+    assert vm_judges.resolve_weights_sync_timeout_seconds(timeout_seconds=0.25) == (0.25, None)
+
+    # Bounded fdatasync timeout + OSError tolerance in default fdatasync loop
+    slow_fdatasync_done = threading.Event()
+    monkeypatch.setattr(os, "fdatasync", lambda _fd: slow_fdatasync_done.wait(timeout=2.0), raising=False)
+    try:
+        res_fdatasync_to = vm_judges.drop_verified_snapshots_page_cache(
+            hf_home,
+            only_judge_ids=("mu-judge",),
+            repo_dir=REPO_ROOT,
+            progress_path=prog,
+            cgroup_root=cg_root,
+            proc_cgroup_path=proc_cg,
+            drop_caches_path=drop_caches,
+            sync_timeout_seconds=0.05,
+        )
+    finally:
+        slow_fdatasync_done.set()
+    assert res_fdatasync_to["sync_timed_out"] is True
+    assert res_fdatasync_to["method"] == "drop_caches"
+
+    monkeypatch.setattr(os, "fdatasync", lambda _fd: (_ for _ in ()).throw(OSError("fdatasync io err")), raising=False)
+    res_fdatasync_err = vm_judges.drop_verified_snapshots_page_cache(
+        hf_home,
+        only_judge_ids=("mu-judge",),
+        repo_dir=REPO_ROOT,
+        progress_path=prog,
+        cgroup_root=cg_root,
+        proc_cgroup_path=proc_cg,
+        drop_caches_path=drop_caches,
+        sync_timeout_seconds=1.0,
+    )
+    assert res_fdatasync_err["sync_ran"] is False
+    assert "OSError: fdatasync io err" in str(res_fdatasync_err["sync_error"])
 
 
 def test_pytest_guard_skips_real_drop_caches_even_when_sync_fn_injected(

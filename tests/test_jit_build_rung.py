@@ -1068,6 +1068,11 @@ def test_rung_strips_inherited_cgroup_env_outside_test_mode_and_help_mentions_pa
             plan_only=True,
         )
     assert exc_align.value.code == "CAP_NOT_PAGE_ALIGNED"
+    with pytest.MonkeyPatch.context() as mp_sc:
+        mp_sc.setattr(os, "sysconf", lambda _name: (_ for _ in ()).throw(OSError("no sysconf")), raising=False)
+        assert jit_build_rung.system_page_size_bytes() == 4096
+        mp_sc.setattr(os, "sysconf", lambda _name: 0, raising=False)
+        assert jit_build_rung.system_page_size_bytes() == 4096
 
     env = dict(os.environ)
     env["CUDA_VISIBLE_DEVICES"] = ""
