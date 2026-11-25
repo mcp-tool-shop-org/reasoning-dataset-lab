@@ -4482,6 +4482,7 @@ def test_prebuilt_aot_and_guard_edge_branches(
     with pytest.raises(RdlabError):
         bakeoff_judge.verify_qwen36_prebuilt_kernels_before_llm()
 
+    monkeypatch.setattr(sys.modules["flashinfer.jit.env"], "get_aot_artifacts", None)
     monkeypatch.setattr(fi_fused, "gen_cutlass_fused_moe_sm120_module", lambda **_kw: SimpleNamespace(name="fused_moe_120", is_aot=True))
     with pytest.raises(RdlabError):
         bakeoff_judge.verify_qwen36_prebuilt_kernels_before_llm()
