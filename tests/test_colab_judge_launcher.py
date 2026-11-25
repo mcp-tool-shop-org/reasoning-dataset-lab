@@ -14493,6 +14493,7 @@ RIG_ONLY_AND_VM_INTERNAL_RDLAB_ENV_ALLOWLIST: dict[str, str] = {
     "RDLAB_RUNPOD_MAX_WORST_CASE_USD": "rig-only: optional maximum worst-case total USD ceiling enforced before `offrig_launch`",
     # VM-internal variables (set by `vm_judges.py` for child processes or used as unit-test overrides on the VM):
     "RDLAB_ACTIVE_VENV_NAME": "vm-internal: set by `vm_judges.py` when spawning venv child subprocesses",
+    "RDLAB_JIT_SHIM_MARKER_FILE": "vm-internal: set by `vm_judges.py` when spawning a Qwen3.6 judge child subprocess to record refusing `ninja`/`nvcc` shim invocations",
     "RDLAB_JUDGE_CHILD_PROGRESS_FILE": "vm-internal: set by `vm_judges.py` when spawning a judge child subprocess",
     "RDLAB_VM_CONTENT_DIR": "vm-internal: `/content` root override used by `fake_colab` and unit tests",
     "RDLAB_GATE_STATUS_FILE": "vm-internal: `/content/gate_status.json` path override used in unit tests",
