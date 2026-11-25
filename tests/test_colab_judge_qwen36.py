@@ -5470,7 +5470,7 @@ def test_fired_qwen36_stops_report_named_failure_class_never_none(
 
     monkeypatch.setattr(bakeoff_judge, "prepare_qwen36_no_compile_process_env", _raise_unchained)
     part_dir = _make_builder_part(tmp_path / "cli_part")
-    rc_unchained = bakeoff_judge.main(
+    rc_unchained = bakeoff_judge.main_judge_runner(
         [
             "--part-dir",
             str(part_dir),
@@ -5496,7 +5496,7 @@ def test_fired_qwen36_stops_report_named_failure_class_never_none(
             ) from inner
 
     monkeypatch.setattr(bakeoff_judge, "prepare_qwen36_no_compile_process_env", _raise_chained)
-    rc_chained = bakeoff_judge.main(
+    rc_chained = bakeoff_judge.main_judge_runner(
         [
             "--part-dir",
             str(part_dir),
