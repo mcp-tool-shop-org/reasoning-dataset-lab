@@ -47,8 +47,11 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+import contextlib
 import datetime
 import hashlib
+import importlib
+import importlib.metadata
 import json
 import math
 import os
@@ -4890,6 +4893,7 @@ def resolve_child_heartbeat_interval_seconds(interval_seconds: float | None = No
 
 
 _PROCESS_START_MONOTONIC: float = time.monotonic()
+_CHILD_PROGRESS_LOCK: threading.Lock = threading.Lock()
 
 
 def _append_child_progress_line(
@@ -5084,7 +5088,7 @@ def run_bakeoff_judge(
         if progress_file is not None
         else (Path(env_prog) if env_prog else None)
     )
-    progress_lock = threading.Lock()
+    progress_lock = _CHILD_PROGRESS_LOCK
     child_start_mono = time.monotonic()
     _append_child_progress_line(
         eff_progress_file,
@@ -5171,573 +5175,661 @@ def run_bakeoff_judge(
             for it in items:
                 for ord_mode in ("AB", "BA"):
                     check_cap_fn(spec, adapter.assemble_prompt(it, order=ord_mode, pass_mode=pass_mode))
+    if transport is not None and eff_progress_file is not None:
+        setattr(transport, "_progress_file", eff_progress_file)
     ensure_loaded_fn = getattr(transport, "_ensure_loaded", None)
-    if callable(ensure_loaded_fn):
-        ensure_loaded_fn(spec)
-    load_wall_seconds = round(max(0.0, time.monotonic() - child_start_mono), 6)
-    load_done_payload: dict[str, Any] = {
-        "kind": "load_done",
-        "judge_id": spec.judge_id,
-        "device": device,
-        "load_seconds": load_wall_seconds,
-        "rss_bytes": _read_process_rss_bytes(),
-    }
-    if spec.judge_id == QWEN36_JUDGE_ID and transport is not None:
-        jit_plan = getattr(transport, "_jit_build_plan", None)
-        if isinstance(jit_plan, Mapping):
-            load_done_payload["jit_build_jobs"] = {
-                "jobs": jit_plan.get("jobs"),
-                "limit_bytes": jit_plan.get("limit_bytes"),
-                "current_bytes": jit_plan.get("current_bytes"),
-                "nonreclaimable_bytes": jit_plan.get("nonreclaimable_bytes"),
-                "used_bytes": jit_plan.get("used_bytes"),
-                "used_source": jit_plan.get("used_source"),
-                "source": jit_plan.get("source"),
-            }
-        cg_peak = getattr(transport, "_cgroup_memory_peak_bytes", None)
-        if cg_peak is not None:
-            load_done_payload["cgroup_memory_peak_bytes"] = int(cg_peak)
-        llm_init_s = getattr(transport, "_llm_init_seconds", None)
-        jit_sum = getattr(transport, "_jit_build_summary", None) or {}
-        jit_s = jit_sum.get("jit_build_seconds")
-        jit_targets = jit_sum.get("jit_build_targets") or []
-        if llm_init_s is not None:
-            load_done_payload["llm_init_seconds"] = float(llm_init_s)
-        if jit_s is not None:
-            load_done_payload["jit_build_seconds"] = float(jit_s)
-            load_done_payload["jit_build_targets"] = list(jit_targets)
-            load_done_payload["build_wall_seconds"] = float(jit_s)
-            load_done_payload["build_seconds_source"] = "flashinfer_jit_build_log"
-        elif llm_init_s is not None:
-            load_done_payload["build_wall_seconds"] = float(llm_init_s)
-            load_done_payload["build_seconds_source"] = "llm_init"
-    _append_child_progress_line(
-        eff_progress_file,
-        load_done_payload,
-        lock=progress_lock,
-    )
-    schedule = load_or_create_schedule(
-        resolved_out,
-        items,
-        seed=schedule_seed,
-        items_sha256=items_sha256,
-    )
-
-    manifest_doc: dict[str, Any] | None = None
-    manifest_file_sha256: str | None = None
-    shard_item_ids: list[str] = [it.item_id for it in items]
-    anchor_item_ids: list[str] = []
-    if shard_k is not None:
-        target_manifest_path = Path(eff_manifest_path_raw) if eff_manifest_path_raw else (resolved_out / SHARD_MANIFEST_FILENAME)
-        if not target_manifest_path.is_file():
-            built_manifest = build_shard_manifest(
-                items,
-                schedule,
-                num_shards=shard_n if shard_n is not None else 1,
-                pass_mode=pass_mode,
-            )
-            write_shard_manifest(built_manifest, target_manifest_path)
-        manifest_doc, manifest_file_sha256 = verify_shard_manifest(
-            target_manifest_path,
-            expected_sha256=eff_manifest_sha,
-            expected_num_shards=shard_n,
+    verify_no_build_fn = getattr(transport, "verify_no_build_entered", None)
+    close_guard_fn = getattr(transport, "close_build_guard", None)
+    try:
+        if callable(ensure_loaded_fn):
+            ensure_loaded_fn(spec)
+        load_wall_seconds = round(max(0.0, time.monotonic() - child_start_mono), 6)
+        load_done_payload: dict[str, Any] = {
+            "kind": "load_done",
+            "judge_id": spec.judge_id,
+            "device": device,
+            "load_seconds": load_wall_seconds,
+            "rss_bytes": _read_process_rss_bytes(),
+        }
+        if spec.judge_id == QWEN36_JUDGE_ID and transport is not None:
+            jit_plan = getattr(transport, "_jit_build_plan", None)
+            if isinstance(jit_plan, Mapping):
+                load_done_payload["jit_build_jobs"] = {
+                    "jobs": jit_plan.get("jobs"),
+                    "limit_bytes": jit_plan.get("limit_bytes"),
+                    "current_bytes": jit_plan.get("current_bytes"),
+                    "nonreclaimable_bytes": jit_plan.get("nonreclaimable_bytes"),
+                    "used_bytes": jit_plan.get("used_bytes"),
+                    "used_source": jit_plan.get("used_source"),
+                    "selected_cgroup_path": jit_plan.get("selected_cgroup_path"),
+                    "cgroup_chain": jit_plan.get("cgroup_chain"),
+                    "source": jit_plan.get("source"),
+                }
+            prebuilt_info = getattr(transport, "_prebuilt_jit_cache_info", None)
+            if isinstance(prebuilt_info, Mapping):
+                load_done_payload["prebuilt_jit_cache"] = dict(prebuilt_info)
+                load_done_payload["build_entered"] = bool(
+                    getattr(transport, "_build_entered", prebuilt_info.get("build_entered", False))
+                )
+            cg_peak = getattr(transport, "_cgroup_memory_peak_bytes", None)
+            if cg_peak is not None:
+                load_done_payload["cgroup_memory_peak_bytes"] = int(cg_peak)
+            llm_init_s = getattr(transport, "_llm_init_seconds", None)
+            jit_sum = getattr(transport, "_jit_build_summary", None) or {}
+            jit_s = jit_sum.get("jit_build_seconds")
+            jit_targets = jit_sum.get("jit_build_targets") or []
+            if llm_init_s is not None:
+                load_done_payload["llm_init_seconds"] = float(llm_init_s)
+            if jit_s is not None:
+                load_done_payload["jit_build_seconds"] = float(jit_s)
+                load_done_payload["jit_build_targets"] = list(jit_targets)
+                load_done_payload["build_wall_seconds"] = float(jit_s)
+                load_done_payload["build_seconds_source"] = "flashinfer_jit_build_log"
+            elif llm_init_s is not None:
+                load_done_payload["build_wall_seconds"] = float(llm_init_s)
+                load_done_payload["build_seconds_source"] = "llm_init"
+        _append_child_progress_line(
+            eff_progress_file,
+            load_done_payload,
+            lock=progress_lock,
         )
-        local_manifest_copy = resolved_out / SHARD_MANIFEST_FILENAME
-        if target_manifest_path.resolve() != local_manifest_copy.resolve():
-            write_shard_manifest(manifest_doc, local_manifest_copy)
-        raw_shard_list = manifest_doc.get("shards", {}).get(str(shard_k))
-        if not isinstance(raw_shard_list, list):
-            raise refused_error(
-                "SHARD_SPEC_OUT_OF_RANGE",
-                f"Shard k={shard_k} not present in shard_manifest.json shards.",
-                "Check RDLAB_SHARD=k/n against shard_manifest.json.",
+        schedule = load_or_create_schedule(
+            resolved_out,
+            items,
+            seed=schedule_seed,
+            items_sha256=items_sha256,
+        )
+
+        manifest_doc: dict[str, Any] | None = None
+        manifest_file_sha256: str | None = None
+        shard_item_ids: list[str] = [it.item_id for it in items]
+        anchor_item_ids: list[str] = []
+        if shard_k is not None:
+            target_manifest_path = Path(eff_manifest_path_raw) if eff_manifest_path_raw else (resolved_out / SHARD_MANIFEST_FILENAME)
+            if not target_manifest_path.is_file():
+                built_manifest = build_shard_manifest(
+                    items,
+                    schedule,
+                    num_shards=shard_n if shard_n is not None else 1,
+                    pass_mode=pass_mode,
+                )
+                write_shard_manifest(built_manifest, target_manifest_path)
+            manifest_doc, manifest_file_sha256 = verify_shard_manifest(
+                target_manifest_path,
+                expected_sha256=eff_manifest_sha,
+                expected_num_shards=shard_n,
             )
-        shard_item_ids = [str(iid) for iid in raw_shard_list if str(iid) in items_by_id]
-        raw_manifest_anchors = [str(iid) for iid in manifest_doc.get("anchor_item_ids", [])]
-        anchor_item_ids = [iid for iid in raw_manifest_anchors if iid in items_by_id]
-        if str(eff_window_mode or "").strip().lower() in ("counted", "counted-stub", "counted_stub"):
-            _check_low_margin_canary_conflicts(
-                manifest_doc,
-                refusal_code="SHARD_MANIFEST_INVALID",
-                doc_label="shard_manifest.json",
-            )
-            manifest_canaries = _resolve_low_margin_or_canary_field(
-                manifest_doc,
-                "low_margin_item_ids",
-                "canary_item_ids",
-                refusal_code="SHARD_MANIFEST_INVALID",
-                doc_label="shard_manifest.json",
-            )
-            if not isinstance(manifest_canaries, list) or not manifest_canaries:
+            local_manifest_copy = resolved_out / SHARD_MANIFEST_FILENAME
+            if target_manifest_path.resolve() != local_manifest_copy.resolve():
+                write_shard_manifest(manifest_doc, local_manifest_copy)
+            raw_shard_list = manifest_doc.get("shards", {}).get(str(shard_k))
+            if not isinstance(raw_shard_list, list):
                 raise refused_error(
-                    "SHARD_MANIFEST_CANARY_MISSING",
-                    "Counted window refuses shard_manifest.json without low_margin_item_ids (or alias canary_item_ids) from lock-check telemetry.",
-                    "Build shard_manifest.json with lock_check_telemetry_path or low_margin_item_ids before running a counted shard.",
+                    "SHARD_SPEC_OUT_OF_RANGE",
+                    f"Shard k={shard_k} not present in shard_manifest.json shards.",
+                    "Check RDLAB_SHARD=k/n against shard_manifest.json.",
                 )
-            missing_anchors = [iid for iid in raw_manifest_anchors if iid not in items_by_id]
-            if missing_anchors or not raw_manifest_anchors:
-                raise refused_error(
-                    "SHARD_MANIFEST_ANCHOR_MISSING",
-                    f"Counted shard requires all {len(raw_manifest_anchors)} manifest anchor items in part_dir (kept={len(anchor_item_ids)}, "
-                    f"manifest={len(raw_manifest_anchors)}, missing={missing_anchors[:5]}).",
-                    "Ensure the lock-check --anchor-items were drawn from the counted part so all 50 anchors are present.",
+            shard_item_ids = [str(iid) for iid in raw_shard_list if str(iid) in items_by_id]
+            raw_manifest_anchors = [str(iid) for iid in manifest_doc.get("anchor_item_ids", [])]
+            anchor_item_ids = [iid for iid in raw_manifest_anchors if iid in items_by_id]
+            if str(eff_window_mode or "").strip().lower() in ("counted", "counted-stub", "counted_stub"):
+                _check_low_margin_canary_conflicts(
+                    manifest_doc,
+                    refusal_code="SHARD_MANIFEST_INVALID",
+                    doc_label="shard_manifest.json",
                 )
-            manifest_all_ids = [
-                str(iid)
-                for iid in (
-                    manifest_doc.get("all_item_ids")
-                    or manifest_doc.get("shard_by_item", {}).keys()
+                manifest_canaries = _resolve_low_margin_or_canary_field(
+                    manifest_doc,
+                    "low_margin_item_ids",
+                    "canary_item_ids",
+                    refusal_code="SHARD_MANIFEST_INVALID",
+                    doc_label="shard_manifest.json",
                 )
-            ]
-            if set(manifest_all_ids) != set(items_by_id.keys()):
-                raise refused_error(
-                    "SHARD_MANIFEST_COUNTED_ITEMS_MISMATCH",
-                    f"Shard manifest all_item_ids ({len(set(manifest_all_ids))} items) do not match counted part items ({len(items_by_id)} items).",
-                    "Rebuild shard_manifest.json from the full counted part's item IDs, never from the 50 anchors.",
-                )
-            eff_golden_path_raw = (
-                str(golden_anchor_manifest_path) if golden_anchor_manifest_path is not None else ""
-            ).strip() or os.environ.get("RDLAB_GOLDEN_ANCHOR_MANIFEST", "").strip()
-            resolved_golden_path: Path | None = None
-            if eff_golden_path_raw:
-                cand_gp = Path(eff_golden_path_raw)
-                if cand_gp.is_file():
-                    resolved_golden_path = cand_gp
-            else:
-                for cand_gp in (
-                    resolved_out / GOLDEN_ANCHOR_MANIFEST_FILENAME,
-                    target_manifest_path.parent / GOLDEN_ANCHOR_MANIFEST_FILENAME,
-                ):
+                if not isinstance(manifest_canaries, list) or not manifest_canaries:
+                    raise refused_error(
+                        "SHARD_MANIFEST_CANARY_MISSING",
+                        "Counted window refuses shard_manifest.json without low_margin_item_ids (or alias canary_item_ids) from lock-check telemetry.",
+                        "Build shard_manifest.json with lock_check_telemetry_path or low_margin_item_ids before running a counted shard.",
+                    )
+                missing_anchors = [iid for iid in raw_manifest_anchors if iid not in items_by_id]
+                if missing_anchors or not raw_manifest_anchors:
+                    raise refused_error(
+                        "SHARD_MANIFEST_ANCHOR_MISSING",
+                        f"Counted shard requires all {len(raw_manifest_anchors)} manifest anchor items in part_dir (kept={len(anchor_item_ids)}, "
+                        f"manifest={len(raw_manifest_anchors)}, missing={missing_anchors[:5]}).",
+                        "Ensure the lock-check --anchor-items were drawn from the counted part so all 50 anchors are present.",
+                    )
+                manifest_all_ids = [
+                    str(iid)
+                    for iid in (
+                        manifest_doc.get("all_item_ids")
+                        or manifest_doc.get("shard_by_item", {}).keys()
+                    )
+                ]
+                if set(manifest_all_ids) != set(items_by_id.keys()):
+                    raise refused_error(
+                        "SHARD_MANIFEST_COUNTED_ITEMS_MISMATCH",
+                        f"Shard manifest all_item_ids ({len(set(manifest_all_ids))} items) do not match counted part items ({len(items_by_id)} items).",
+                        "Rebuild shard_manifest.json from the full counted part's item IDs, never from the 50 anchors.",
+                    )
+                eff_golden_path_raw = (
+                    str(golden_anchor_manifest_path) if golden_anchor_manifest_path is not None else ""
+                ).strip() or os.environ.get("RDLAB_GOLDEN_ANCHOR_MANIFEST", "").strip()
+                resolved_golden_path: Path | None = None
+                if eff_golden_path_raw:
+                    cand_gp = Path(eff_golden_path_raw)
                     if cand_gp.is_file():
                         resolved_golden_path = cand_gp
-                        break
-            if resolved_golden_path is None:
-                raise refused_error(
-                    "GOLDEN_ANCHOR_MANIFEST_MISSING",
-                    "Counted window refuses sharded execution without a golden anchor manifest file on disk from the lock-check window.",
-                    "Record golden_anchor_manifest.json from the lock-check window before starting counted shards.",
+                else:
+                    for cand_gp in (
+                        resolved_out / GOLDEN_ANCHOR_MANIFEST_FILENAME,
+                        target_manifest_path.parent / GOLDEN_ANCHOR_MANIFEST_FILENAME,
+                    ):
+                        if cand_gp.is_file():
+                            resolved_golden_path = cand_gp
+                            break
+                if resolved_golden_path is None:
+                    raise refused_error(
+                        "GOLDEN_ANCHOR_MANIFEST_MISSING",
+                        "Counted window refuses sharded execution without a golden anchor manifest file on disk from the lock-check window.",
+                        "Record golden_anchor_manifest.json from the lock-check window before starting counted shards.",
+                    )
+                try:
+                    gm_doc = json.loads(resolved_golden_path.read_text(encoding="utf-8"))
+                except Exception as exc:
+                    raise refused_error(
+                        "LOCK_CHECK_ANCHOR_ITEMS_INVALID",
+                        f"Malformed JSON in golden anchor manifest '{resolved_golden_path}': {exc}.",
+                        "Regenerate golden_anchor_manifest.json from the lock-check window.",
+                    ) from exc
+                if not isinstance(gm_doc, Mapping):
+                    raise refused_error(
+                        "LOCK_CHECK_ANCHOR_ITEMS_INVALID",
+                        f"Golden anchor manifest '{resolved_golden_path}' root must be a JSON object.",
+                        "Regenerate golden_anchor_manifest.json from the lock-check window.",
+                    )
+                _check_low_margin_canary_conflicts(
+                    gm_doc,
+                    refusal_code="LOCK_CHECK_ANCHOR_ITEMS_INVALID",
+                    doc_label=str(resolved_golden_path),
                 )
-            try:
-                gm_doc = json.loads(resolved_golden_path.read_text(encoding="utf-8"))
-            except Exception as exc:
-                raise refused_error(
-                    "LOCK_CHECK_ANCHOR_ITEMS_INVALID",
-                    f"Malformed JSON in golden anchor manifest '{resolved_golden_path}': {exc}.",
-                    "Regenerate golden_anchor_manifest.json from the lock-check window.",
-                ) from exc
-            if not isinstance(gm_doc, Mapping):
-                raise refused_error(
-                    "LOCK_CHECK_ANCHOR_ITEMS_INVALID",
-                    f"Golden anchor manifest '{resolved_golden_path}' root must be a JSON object.",
-                    "Regenerate golden_anchor_manifest.json from the lock-check window.",
+                raw_gm_strat = gm_doc["stratified_anchor_item_ids"] if gm_doc.get("stratified_anchor_item_ids") is not None else []
+                raw_gm_can = _resolve_low_margin_or_canary_field(
+                    gm_doc,
+                    "low_margin_item_ids",
+                    "canary_item_ids",
+                    default=[],
+                    refusal_code="LOCK_CHECK_ANCHOR_ITEMS_INVALID",
+                    doc_label=str(resolved_golden_path),
                 )
-            _check_low_margin_canary_conflicts(
-                gm_doc,
-                refusal_code="LOCK_CHECK_ANCHOR_ITEMS_INVALID",
-                doc_label=str(resolved_golden_path),
-            )
-            raw_gm_strat = gm_doc["stratified_anchor_item_ids"] if gm_doc.get("stratified_anchor_item_ids") is not None else []
-            raw_gm_can = _resolve_low_margin_or_canary_field(
-                gm_doc,
-                "low_margin_item_ids",
-                "canary_item_ids",
-                default=[],
-                refusal_code="LOCK_CHECK_ANCHOR_ITEMS_INVALID",
-                doc_label=str(resolved_golden_path),
-            )
-            gm_strat = [str(x) for x in raw_gm_strat] if isinstance(raw_gm_strat, Sequence) and not isinstance(raw_gm_strat, (str, bytes)) else []
-            gm_can = [str(x) for x in raw_gm_can] if isinstance(raw_gm_can, Sequence) and not isinstance(raw_gm_can, (str, bytes)) else []
-            raw_gm_anchors = gm_doc["anchor_item_ids"] if gm_doc.get("anchor_item_ids") is not None else [*gm_strat, *gm_can]
-            gm_anchors = [str(x) for x in raw_gm_anchors] if isinstance(raw_gm_anchors, Sequence) and not isinstance(raw_gm_anchors, (str, bytes)) else []
-            if len(gm_anchors) != DEFAULT_ANCHOR_ITEMS_COUNT or len(set(gm_anchors)) != DEFAULT_ANCHOR_ITEMS_COUNT:
-                raise refused_error(
-                    "LOCK_CHECK_ANCHOR_ITEMS_INVALID",
-                    f"Golden anchor manifest '{resolved_golden_path}' must hold {DEFAULT_ANCHOR_ITEMS_COUNT} unique anchors, got {len(gm_anchors)}.",
-                    "Ensure golden_anchor_manifest.json contains 50 unique anchor item IDs.",
-                )
-            if len(raw_manifest_anchors) != DEFAULT_ANCHOR_ITEMS_COUNT or set(gm_anchors) != set(raw_manifest_anchors) or gm_anchors != raw_manifest_anchors:
-                raise refused_error(
-                    "SHARD_MANIFEST_ANCHOR_MISMATCH",
-                    f"Counted shard anchor IDs in shard_manifest.json ({len(raw_manifest_anchors)} items) do not match golden_anchor_manifest.json ({len(gm_anchors)} items).",
-                    "Ensure shard_manifest.json was built from the same golden_anchor_manifest.json with the exact 50 anchor item IDs.",
-                )
-            expected_golden_sha = str(manifest_doc.get("golden_anchor_manifest_file_sha256") or "").strip().lower()
-            actual_golden_file_sha = hashlib.sha256(resolved_golden_path.read_bytes()).hexdigest().lower()
-            if not expected_golden_sha:
-                if str(manifest_doc.get("golden_anchor_manifest_sha256") or "").strip():
+                gm_strat = [str(x) for x in raw_gm_strat] if isinstance(raw_gm_strat, Sequence) and not isinstance(raw_gm_strat, (str, bytes)) else []
+                gm_can = [str(x) for x in raw_gm_can] if isinstance(raw_gm_can, Sequence) and not isinstance(raw_gm_can, (str, bytes)) else []
+                raw_gm_anchors = gm_doc["anchor_item_ids"] if gm_doc.get("anchor_item_ids") is not None else [*gm_strat, *gm_can]
+                gm_anchors = [str(x) for x in raw_gm_anchors] if isinstance(raw_gm_anchors, Sequence) and not isinstance(raw_gm_anchors, (str, bytes)) else []
+                if len(gm_anchors) != DEFAULT_ANCHOR_ITEMS_COUNT or len(set(gm_anchors)) != DEFAULT_ANCHOR_ITEMS_COUNT:
+                    raise refused_error(
+                        "LOCK_CHECK_ANCHOR_ITEMS_INVALID",
+                        f"Golden anchor manifest '{resolved_golden_path}' must hold {DEFAULT_ANCHOR_ITEMS_COUNT} unique anchors, got {len(gm_anchors)}.",
+                        "Ensure golden_anchor_manifest.json contains 50 unique anchor item IDs.",
+                    )
+                if len(raw_manifest_anchors) != DEFAULT_ANCHOR_ITEMS_COUNT or set(gm_anchors) != set(raw_manifest_anchors) or gm_anchors != raw_manifest_anchors:
+                    raise refused_error(
+                        "SHARD_MANIFEST_ANCHOR_MISMATCH",
+                        f"Counted shard anchor IDs in shard_manifest.json ({len(raw_manifest_anchors)} items) do not match golden_anchor_manifest.json ({len(gm_anchors)} items).",
+                        "Ensure shard_manifest.json was built from the same golden_anchor_manifest.json with the exact 50 anchor item IDs.",
+                    )
+                expected_golden_sha = str(manifest_doc.get("golden_anchor_manifest_file_sha256") or "").strip().lower()
+                actual_golden_file_sha = hashlib.sha256(resolved_golden_path.read_bytes()).hexdigest().lower()
+                if not expected_golden_sha:
+                    if str(manifest_doc.get("golden_anchor_manifest_sha256") or "").strip():
+                        raise refused_error(
+                            "SHARD_MANIFEST_GOLDEN_SHA_MISSING",
+                            "shard_manifest.json has only the old field golden_anchor_manifest_sha256 and no "
+                            "golden_anchor_manifest_file_sha256: it predates the golden file SHA-256 field, so the golden "
+                            "anchor manifest it was built against cannot be bound to a file.",
+                            "Rebuild shard_manifest.json from the lock-check window (the current build writes golden_anchor_manifest_file_sha256).",
+                        )
                     raise refused_error(
                         "SHARD_MANIFEST_GOLDEN_SHA_MISSING",
-                        "shard_manifest.json has only the old field golden_anchor_manifest_sha256 and no "
-                        "golden_anchor_manifest_file_sha256: it predates the golden file SHA-256 field, so the golden "
-                        "anchor manifest it was built against cannot be bound to a file.",
+                        "shard_manifest.json has no golden_anchor_manifest_file_sha256, so the golden anchor manifest it was "
+                        "built against cannot be bound to a file.",
                         "Rebuild shard_manifest.json from the lock-check window (the current build writes golden_anchor_manifest_file_sha256).",
                     )
-                raise refused_error(
-                    "SHARD_MANIFEST_GOLDEN_SHA_MISSING",
-                    "shard_manifest.json has no golden_anchor_manifest_file_sha256, so the golden anchor manifest it was "
-                    "built against cannot be bound to a file.",
-                    "Rebuild shard_manifest.json from the lock-check window (the current build writes golden_anchor_manifest_file_sha256).",
-                )
-            if actual_golden_file_sha != expected_golden_sha:
-                raise refused_error(
-                    "SHARD_MANIFEST_GOLDEN_SHA_MISMATCH",
-                    f"Counted shard golden anchor manifest file SHA-256 ({actual_golden_file_sha}) does not match "
-                    f"shard_manifest.json golden_anchor_manifest_file_sha256 ({expected_golden_sha or 'missing'}).",
-                    "Pass the exact golden_anchor_manifest.json file whose SHA-256 is recorded in shard_manifest.json.",
-                )
-
-    shard_item_id_set = set(shard_item_ids)
-    active_item_id_set = set(str(x) for x in active_item_ids) if active_item_ids is not None else shard_item_id_set
-    effective_target_item_ids = shard_item_id_set & active_item_id_set
-    anchor_item_id_set = set(anchor_item_ids)
-    is_subblock_invocation = active_item_ids is not None and effective_target_item_ids != shard_item_id_set
-
-    judge_done_dir = resolved_out / "judge_done"
-    judge_done_path = judge_done_dir / judge_done_filename_for_pass(spec.judge_id, pass_mode)  # per (judge, mode) pass
-    judge_done_tmp = judge_done_dir / f".{judge_done_path.name}.tmp"
-    prev_load_history: list[float] = []
-    prev_canary_start_records: list[dict[str, Any]] | None = None
-    prev_done_doc: dict[str, Any] = {}
-    if judge_done_path.is_file():
-        try:
-            loaded_done = json.loads(judge_done_path.read_text(encoding="utf-8"))
-            if isinstance(loaded_done, dict):
-                prev_done_doc = loaded_done
-                prev_load_history = [
-                    float(x) for x in (loaded_done.get("load_wall_seconds_history") or [])
-                ]
-                if isinstance(loaded_done.get("canary_start_records"), list) and loaded_done["canary_start_records"]:
-                    prev_canary_start_records = [
-                        dict(r) for r in loaded_done["canary_start_records"] if isinstance(r, Mapping)
-                    ]
-        except Exception:
-            prev_load_history = []
-
-    # Resolve canary items present in this item set
-    canary_cfg = load_canary_config(canary_config_path) if (run_canary or canary_config_path is not None) else {}
-    canary_wanted_ids = [str(iid) for iid in canary_cfg.get("canary_item_ids", []) if str(iid) in items_by_id]
-    canary_items = [items_by_id[iid] for iid in canary_wanted_ids]
-    canary_tol = float(canary_cfg.get("canary_logprob_tolerance", 0.0))
-    canary_start_records: list[dict[str, Any]] | None = prev_canary_start_records
-    if canary_start_records is None and run_canary and canary_items and not anchor_prefix_only:
-        canary_start_records = _run_canary_snapshot(
-            spec=spec,
-            adapter=adapter,
-            transport=transport,
-            canary_items=canary_items,
-            pass_mode=pass_mode,
-            seed=schedule.seed,
-        )
-
-    rows_dir = resolved_out / ROWS_DIRNAME
-    rows_dir.mkdir(parents=True, exist_ok=True)
-    row_path = rows_dir / row_filename
-    gen_path = resolved_out / GENERATIONS_FILENAME
-
-    anchor_row_path: Path | None = None
-    completed_anchor_keys: set[tuple[str, str]] = set()
-    if eff_shard_spec is not None and anchor_item_ids:
-        anchor_dir = resolved_out / ANCHOR_ROWS_DIRNAME
-        anchor_dir.mkdir(parents=True, exist_ok=True)
-        anchor_row_path = anchor_dir / row_filename
-        if anchor_row_path.is_file():
-            for raw_ln in anchor_row_path.read_text(encoding="utf-8").splitlines():
-                if not raw_ln.strip():
-                    continue
-                parsed_ar = json.loads(raw_ln)
-                if isinstance(parsed_ar, dict) and parsed_ar.get("item_id") and parsed_ar.get("order"):
-                    completed_anchor_keys.add((str(parsed_ar["item_id"]), str(parsed_ar["order"])))
-
-    completed_keys: set[tuple[str, str]] = set()
-    existing_row_objs: list[dict[str, Any]] = []
-    discarded_incomplete_item_ids: list[str] = []
-    verified_recovery: dict[str, Any] | None = None
-    if row_path.is_file():
-        raw_existing_rows = [
-            parsed_row
-            for raw_ln in row_path.read_text(encoding="utf-8").splitlines()
-            if raw_ln.strip()
-            for parsed_row in (json.loads(raw_ln),)
-            if isinstance(parsed_row, dict)
-            and parsed_row.get("item_id")
-            and parsed_row.get("order")
-            and parsed_row.get("run_status") != "failed_to_run"
-        ]
-        orders_by_item: dict[str, set[str]] = {}
-        item_completion_order: list[str] = []
-        for r in raw_existing_rows:
-            iid = str(r["item_id"])
-            ord_s = str(r["order"])
-            orders_by_item.setdefault(iid, set()).add(ord_s)
-            if orders_by_item[iid] >= {"AB", "BA"} and iid not in item_completion_order:
-                item_completion_order.append(iid)
-        incomplete_iids = sorted(iid for iid, ords in orders_by_item.items() if ords != {"AB", "BA"})
-        if incomplete_iids:
-            discarded_incomplete_item_ids = incomplete_iids
-            existing_row_objs = [r for r in raw_existing_rows if str(r["item_id"]) not in set(incomplete_iids)]
-            with row_path.open("w", encoding="utf-8", newline="\n") as rewrite_fh:
-                for r in existing_row_objs:
-                    rewrite_fh.write(_canonical_json_line(r) + "\n")
-                rewrite_fh.flush()
-        else:
-            existing_row_objs = raw_existing_rows
-        completed_keys = {(str(r["item_id"]), str(r["order"])) for r in existing_row_objs}
-
-        prev_fps = {
-            str(r.get("session_fingerprint_sha256") or "").strip()
-            for r in existing_row_objs
-            if str(r.get("session_fingerprint_sha256") or "").strip()
-        }
-        is_cross_session_resume = eff_replacement_session or (
-            bool(eff_session_fp) and bool(prev_fps) and (eff_session_fp not in prev_fps)
-        )
-        if is_cross_session_resume and item_completion_order and resume_overlap_pairs > 0:
-            overlap_iids = item_completion_order[-min(int(resume_overlap_pairs), len(item_completion_order)) :]
-            existing_by_key = {(str(r["item_id"]), str(r["order"])): r for r in existing_row_objs}
-            mismatches: list[str] = []
-            for ov_iid in overlap_iids:
-                ov_item = items_by_id[ov_iid]
-                for ov_ord in ("AB", "BA"):
-                    ord_mode_ov: OrderMode = "AB" if ov_ord == "AB" else "BA"
-                    prev_row = existing_by_key[(ov_iid, ov_ord)]
-                    ov_prompt = adapter.assemble_prompt(ov_item, order=ord_mode_ov, pass_mode=pass_mode)
-                    ov_resp = transport.generate(spec, ov_prompt, seed=schedule.seed)
-                    new_out_sha = ov_resp.output_token_ids_sha256 or compute_response_output_token_ids_sha256(
-                        spec.judge_id,
-                        ov_resp.tokens,
-                        system_one_result=ov_resp.system_one_result,
+                if actual_golden_file_sha != expected_golden_sha:
+                    raise refused_error(
+                        "SHARD_MANIFEST_GOLDEN_SHA_MISMATCH",
+                        f"Counted shard golden anchor manifest file SHA-256 ({actual_golden_file_sha}) does not match "
+                        f"shard_manifest.json golden_anchor_manifest_file_sha256 ({expected_golden_sha or 'missing'}).",
+                        "Pass the exact golden_anchor_manifest.json file whose SHA-256 is recorded in shard_manifest.json.",
                     )
-                    prev_out_sha = str(prev_row.get("output_token_ids_sha256") or "")
-                    if prev_out_sha and new_out_sha != prev_out_sha:
-                        mismatches.append(f"{ov_iid}:{ov_ord} (prev={prev_out_sha[:12]} vs new={new_out_sha[:12]})")
-            if mismatches:
-                row_path.unlink(missing_ok=True)
-                raise refused_error(
-                    "RECOVERY_OVERLAP_MISMATCH",
-                    f"Replacement session 3-item-pair overlap check failed for judge '{spec.judge_id}' on "
-                    f"{len(mismatches)} call(s): {', '.join(mismatches)}; partial shard discarded.",
-                    "Restart the shard from scratch on a verified session environment.",
-                )
-            verified_recovery = {
-                "verified": True,
-                "overlap_item_ids": overlap_iids,
-                "overlap_calls": len(overlap_iids) * 2,
-                "discarded_incomplete_item_ids": discarded_incomplete_item_ids,
-            }
 
-    unparseable_count = sum(1 for r in existing_row_objs if r.get("state") == "unparseable")
-    length_stop_count = sum(1 for r in existing_row_objs if r.get("state") == "length_stop")
-    aborted_count = sum(1 for r in existing_row_objs if r.get("state") == "aborted")
-    parsed_count = sum(1 for r in existing_row_objs if r.get("state") == "parsed")
-    verdict_disagreement_count = sum(
-        1
-        for r in existing_row_objs
-        for resumed_argmax in (_resolve_resumed_argmax_verdict(r, judge_id=spec.judge_id, pass_mode=pass_mode),)
-        if resumed_argmax is not None and str(r.get("raw_verdict")) != resumed_argmax
-    )
-    probs_missing_count = sum(1 for r in existing_row_objs if spec.judge_id == QWEN36_JUDGE_ID and r.get("state") == "parsed" and r.get("choice_probabilities") is None)
-    failed_to_run_count = 0
-    vram_peak_overall = max((int(r.get("vram_peak_mib", 0)) for r in existing_row_objs), default=0)
-    total_seconds = sum(float(r.get("seconds", 0.0)) for r in existing_row_objs)
-    calls_so_far = len(existing_row_objs)
-    polarity_map = POLARITY_MAP_BY_JUDGE.get(spec.judge_id, {"inverted": "false"})
-    eff_hb_interval = resolve_child_heartbeat_interval_seconds(heartbeat_interval_seconds)
+        shard_item_id_set = set(shard_item_ids)
+        active_item_id_set = set(str(x) for x in active_item_ids) if active_item_ids is not None else shard_item_id_set
+        effective_target_item_ids = shard_item_id_set & active_item_id_set
+        anchor_item_id_set = set(anchor_item_ids)
+        is_subblock_invocation = active_item_ids is not None and effective_target_item_ids != shard_item_id_set
 
-    # Item 8 & Part E.1: Run anchor items not in this shard's main schedule as an anchor_rows prefix
-    # (all 50 anchors on shards 2..n, plus any canary anchors on shard 1 that belong to shards 2..n).
-    prefix_anchor_ids = (
-        anchor_item_ids
-        if (shard_k is not None and shard_k >= 2)
-        else [iid for iid in anchor_item_ids if iid not in shard_item_id_set]
-    )
-    if anchor_row_path is not None and shard_k is not None and prefix_anchor_ids:
-        with anchor_row_path.open("a", encoding="utf-8", newline="\n") as arf:
-            for anc_idx, anc_iid in enumerate(anchor_item_ids):
-                if anc_iid not in prefix_anchor_ids:
-                    continue
-                anc_item = items_by_id[anc_iid]
-                for anc_ord_idx, anc_order in enumerate(("AB", "BA")):
-                    if (anc_iid, anc_order) in completed_anchor_keys:
-                        continue
-                    anc_ord_mode: OrderMode = "AB" if anc_order == "AB" else "BA"
-                    anc_ordered_mat = swap_material_facts_order(anc_item.material, anc_ord_mode)
-                    anc_hop1, anc_hop2, anc_marker = extract_hop_and_marker_lines(anc_ordered_mat, anc_item.claim)
-                    anc_prompt = adapter.assemble_prompt(anc_item, order=anc_ord_mode, pass_mode=pass_mode)
-                    anc_prompt_toks = _count_prompt_tokens(transport, spec, anc_prompt)
-                    anc_t0 = time.monotonic()
-                    anc_resp = transport.generate(spec, anc_prompt, seed=schedule.seed)
-                    anc_elapsed = anc_resp.seconds if anc_resp.seconds > 0 else max(0.0001, time.monotonic() - anc_t0)
-                    anc_readout = adapter.parse_response(anc_resp, pass_mode=pass_mode)
-                    anc_top5 = [lp.to_dict() for lp in anc_readout.verdict_top_logprobs[:5]]
-                    anc_top20_src = (
-                        anc_resp.verdict_top_logprobs[:20]
-                        if anc_resp.verdict_top_logprobs
-                        else anc_readout.verdict_top_logprobs[:20]
-                    )
-                    anc_top20 = [lp.to_dict() for lp in anc_top20_src]
-                    anc_slot = -(anc_idx * 2 + anc_ord_idx + 1)
-                    anc_call_id = f"{spec.judge_id}:{pass_mode}:anchor:{anc_idx:04d}:{anc_iid}:{anc_ord_mode}"
-                    anc_receipt_payload = {
-                        "arm": spec.judge_id,
-                        "prompt": anc_call_id,
-                        "prompt_sha256": anc_prompt.prompt_sha256,
-                        "model_digest": anc_resp.model_digest,
-                        "tokens": list(anc_resp.tokens),
-                        "top": anc_top5,
-                        "done_reason": anc_readout.done_reason,
-                    }
-                    anc_receipt_sha = hashlib.sha256(
-                        _canonical_json_line(anc_receipt_payload).encode("utf-8")
-                    ).hexdigest()
-                    anc_in_sha = anc_resp.input_token_ids_sha256 or compute_prompt_input_token_ids_sha256(
-                        spec.judge_id, anc_prompt.prompt_text
-                    )
-                    anc_out_sha = anc_resp.output_token_ids_sha256 or compute_response_output_token_ids_sha256(
-                        spec.judge_id,
-                        anc_resp.tokens,
-                        system_one_result=anc_resp.system_one_result,
-                    )
-                    anc_in_cnt = int(anc_resp.input_token_count) if (anc_resp.input_token_count or 0) > 0 else anc_prompt_toks
-                    anc_out_cnt = int(anc_resp.output_token_count) if (anc_resp.output_token_count or 0) > 0 else len(anc_resp.tokens)
-                    anc_stop_rsn = anc_resp.stop_reason or ("max_new_tokens" if anc_readout.done_reason == "length" else "eos")
-                    anc_margin = (
-                        anc_resp.min_top2_logit_margin
-                        if anc_resp.min_top2_logit_margin is not None
-                        else compute_min_top2_logit_margin_from_logprobs(anc_readout.verdict_top_logprobs)
-                    )
-                    anc_verdict_margin = (
-                        anc_resp.verdict_token_margin
-                        if anc_resp.verdict_token_margin is not None
-                        else compute_min_top2_logit_margin_from_logprobs(anc_readout.verdict_top_logprobs)
-                    )
-                    anc_row_obj = _build_sealed_row_with_sha256(
-                        {
-                            "judge_id": spec.judge_id,
-                            "judge_label": spec.judge_label,
-                            "item_id": anc_iid,
-                            "order": anc_ord_mode,
-                            "pass_number": 1 if anc_ord_mode == "AB" else 2,
-                            "slot_index": anc_slot,
-                            "pass_mode": pass_mode,
-                            "model_revision": spec.revision,
-                            "model_digest": anc_resp.model_digest,
-                            "prompt_sha256": anc_prompt.prompt_sha256,
-                            "input_token_ids_sha256": anc_in_sha,
-                            "output_token_ids_sha256": anc_out_sha,
-                            "input_token_count": anc_in_cnt,
-                            "output_token_count": anc_out_cnt,
-                            "stop_reason": anc_stop_rsn,
-                            "min_top2_logit_margin": anc_margin,
-                            "verdict_token_margin": anc_verdict_margin,
-                            "verdict_parse_status": anc_readout.state,
-                            "shard_spec": eff_shard_spec,
-                            "session_fingerprint_sha256": eff_session_fp,
-                            "done_reason": anc_readout.done_reason,
-                            "state": anc_readout.state,
-                            "raw_generation": anc_resp.raw_text,
-                            "raw_verdict": anc_readout.raw_verdict,
-                            "confidence": round(anc_readout.p_yes, 6) if anc_readout.p_yes is not None else None,
-                            "choice_probabilities": anc_readout.choice_probabilities,
-                            "top_logprobs": anc_top5,
-                            "top_20_logprobs": anc_top20,
-                            "polarity_map": polarity_map,
-                            "hop1_line_index": anc_hop1,
-                            "hop2_line_index": anc_hop2,
-                            "marker_line_index": anc_marker,
-                            "seconds": round(anc_elapsed, 6),
-                            "vram_peak_mib": 0,
-                            "receipt_sha256": anc_receipt_sha,
-                        }
-                    )
-                    arf.write(_canonical_json_line(anc_row_obj) + "\n")
-                    arf.flush()
-                    completed_anchor_keys.add((anc_iid, anc_order))
-
-    row_mode = "a" if existing_row_objs else "w"
-    with row_path.open(row_mode, encoding="utf-8", newline="\n") as rf, gen_path.open("a", encoding="utf-8", newline="\n") as gf:
-        for call_idx, entry in enumerate(schedule.entries):
-            if anchor_prefix_only and shard_k is not None and shard_k >= 2:
-                continue
-            if anchor_prefix_only and entry.item_id not in anchor_item_id_set:
-                continue
-            if entry.item_id not in effective_target_item_ids:
-                continue
-            if (entry.item_id, entry.order) in completed_keys:
-                continue
-            item = items_by_id[entry.item_id]
-            item_idx = item_index_by_id[entry.item_id]
-            ordered_mat = swap_material_facts_order(item.material, entry.order)
-            hop1_idx, hop2_idx, marker_idx = extract_hop_and_marker_lines(ordered_mat, item.claim)
-            prompt = adapter.assemble_prompt(item, order=entry.order, pass_mode=pass_mode)
-            prompt_tokens_count = _count_prompt_tokens(transport, spec, prompt)
-            _append_child_progress_line(
-                eff_progress_file,
-                {
-                    "kind": "call_start",
-                    "judge_id": spec.judge_id,
-                    "device": device,
-                    "index": call_idx,
-                    "item_index": item_idx,
-                    "order": entry.order,
-                    "prompt_tokens": prompt_tokens_count,
-                },
-                lock=progress_lock,
-            )
-            vram_before = check_vram_guard(
-                vram_halt_mib=vram_halt_mib,
-                vram_probe=vram_probe,
-                halt_pid=halt_pid,
-                pid_killer=pid_killer,
-            )
-            t0 = time.monotonic()
-            hb_stop = threading.Event()
-            hb_thread: threading.Thread | None = None
-            if eff_progress_file is not None and eff_hb_interval > 0:
-                def _hb_loop(
-                    _call_idx: int = call_idx,
-                    _t0: float = t0,
-                    _stop: threading.Event = hb_stop,
-                ) -> None:
-                    while not _stop.wait(eff_hb_interval):
-                        elapsed_hb = round(max(0.0001, time.monotonic() - _t0), 6)
-                        raw_cur_toks = getattr(transport, "current_output_tokens", None)
-                        cur_toks = (
-                            int(raw_cur_toks)
-                            if isinstance(raw_cur_toks, int) and not isinstance(raw_cur_toks, bool)
-                            else None
-                        )
-                        _append_child_progress_line(
-                            eff_progress_file,
-                            {
-                                "kind": "heartbeat",
-                                "judge_id": spec.judge_id,
-                                "device": device,
-                                "index": _call_idx,
-                                "seconds": elapsed_hb,
-                                "seconds_so_far": elapsed_hb,
-                                "output_tokens": cur_toks,
-                                "rss_bytes": _read_process_rss_bytes(),
-                            },
-                            lock=progress_lock,
-                        )
-
-                hb_thread = threading.Thread(
-                    target=_hb_loop,
-                    name=f"rdlab-judge-hb-{call_idx}",
-                    daemon=True,
-                )
-                hb_thread.start()
-
+        judge_done_dir = resolved_out / "judge_done"
+        judge_done_path = judge_done_dir / judge_done_filename_for_pass(spec.judge_id, pass_mode)  # per (judge, mode) pass
+        judge_done_tmp = judge_done_dir / f".{judge_done_path.name}.tmp"
+        prev_load_history: list[float] = []
+        prev_canary_start_records: list[dict[str, Any]] | None = None
+        prev_done_doc: dict[str, Any] = {}
+        if judge_done_path.is_file():
             try:
-                resp = transport.generate(spec, prompt, seed=schedule.seed)
+                loaded_done = json.loads(judge_done_path.read_text(encoding="utf-8"))
+                if isinstance(loaded_done, dict):
+                    prev_done_doc = loaded_done
+                    prev_load_history = [
+                        float(x) for x in (loaded_done.get("load_wall_seconds_history") or [])
+                    ]
+                    if isinstance(loaded_done.get("canary_start_records"), list) and loaded_done["canary_start_records"]:
+                        prev_canary_start_records = [
+                            dict(r) for r in loaded_done["canary_start_records"] if isinstance(r, Mapping)
+                        ]
             except Exception:
-                hb_stop.set()
-                if hb_thread is not None:
-                    hb_thread.join(timeout=1.0)
-                failed_elapsed = max(0.0001, time.monotonic() - t0)
-                total_seconds += failed_elapsed
-                failed_to_run_count += 1
+                prev_load_history = []
+
+        # Resolve canary items present in this item set
+        canary_cfg = load_canary_config(canary_config_path) if (run_canary or canary_config_path is not None) else {}
+        canary_wanted_ids = [str(iid) for iid in canary_cfg.get("canary_item_ids", []) if str(iid) in items_by_id]
+        canary_items = [items_by_id[iid] for iid in canary_wanted_ids]
+        canary_tol = float(canary_cfg.get("canary_logprob_tolerance", 0.0))
+        canary_start_records: list[dict[str, Any]] | None = prev_canary_start_records
+        if canary_start_records is None and run_canary and canary_items and not anchor_prefix_only:
+            canary_start_records = _run_canary_snapshot(
+                spec=spec,
+                adapter=adapter,
+                transport=transport,
+                canary_items=canary_items,
+                pass_mode=pass_mode,
+                seed=schedule.seed,
+            )
+
+        rows_dir = resolved_out / ROWS_DIRNAME
+        rows_dir.mkdir(parents=True, exist_ok=True)
+        row_path = rows_dir / row_filename
+        gen_path = resolved_out / GENERATIONS_FILENAME
+
+        anchor_row_path: Path | None = None
+        completed_anchor_keys: set[tuple[str, str]] = set()
+        if eff_shard_spec is not None and anchor_item_ids:
+            anchor_dir = resolved_out / ANCHOR_ROWS_DIRNAME
+            anchor_dir.mkdir(parents=True, exist_ok=True)
+            anchor_row_path = anchor_dir / row_filename
+            if anchor_row_path.is_file():
+                for raw_ln in anchor_row_path.read_text(encoding="utf-8").splitlines():
+                    if not raw_ln.strip():
+                        continue
+                    parsed_ar = json.loads(raw_ln)
+                    if isinstance(parsed_ar, dict) and parsed_ar.get("item_id") and parsed_ar.get("order"):
+                        completed_anchor_keys.add((str(parsed_ar["item_id"]), str(parsed_ar["order"])))
+
+        completed_keys: set[tuple[str, str]] = set()
+        existing_row_objs: list[dict[str, Any]] = []
+        discarded_incomplete_item_ids: list[str] = []
+        verified_recovery: dict[str, Any] | None = None
+        if row_path.is_file():
+            raw_existing_rows = [
+                parsed_row
+                for raw_ln in row_path.read_text(encoding="utf-8").splitlines()
+                if raw_ln.strip()
+                for parsed_row in (json.loads(raw_ln),)
+                if isinstance(parsed_row, dict)
+                and parsed_row.get("item_id")
+                and parsed_row.get("order")
+                and parsed_row.get("run_status") != "failed_to_run"
+            ]
+            orders_by_item: dict[str, set[str]] = {}
+            item_completion_order: list[str] = []
+            for r in raw_existing_rows:
+                iid = str(r["item_id"])
+                ord_s = str(r["order"])
+                orders_by_item.setdefault(iid, set()).add(ord_s)
+                if orders_by_item[iid] >= {"AB", "BA"} and iid not in item_completion_order:
+                    item_completion_order.append(iid)
+            incomplete_iids = sorted(iid for iid, ords in orders_by_item.items() if ords != {"AB", "BA"})
+            if incomplete_iids:
+                discarded_incomplete_item_ids = incomplete_iids
+                existing_row_objs = [r for r in raw_existing_rows if str(r["item_id"]) not in set(incomplete_iids)]
+                with row_path.open("w", encoding="utf-8", newline="\n") as rewrite_fh:
+                    for r in existing_row_objs:
+                        rewrite_fh.write(_canonical_json_line(r) + "\n")
+                    rewrite_fh.flush()
+            else:
+                existing_row_objs = raw_existing_rows
+            completed_keys = {(str(r["item_id"]), str(r["order"])) for r in existing_row_objs}
+
+            prev_fps = {
+                str(r.get("session_fingerprint_sha256") or "").strip()
+                for r in existing_row_objs
+                if str(r.get("session_fingerprint_sha256") or "").strip()
+            }
+            is_cross_session_resume = eff_replacement_session or (
+                bool(eff_session_fp) and bool(prev_fps) and (eff_session_fp not in prev_fps)
+            )
+            if is_cross_session_resume and item_completion_order and resume_overlap_pairs > 0:
+                overlap_iids = item_completion_order[-min(int(resume_overlap_pairs), len(item_completion_order)) :]
+                existing_by_key = {(str(r["item_id"]), str(r["order"])): r for r in existing_row_objs}
+                mismatches: list[str] = []
+                for ov_iid in overlap_iids:
+                    ov_item = items_by_id[ov_iid]
+                    for ov_ord in ("AB", "BA"):
+                        ord_mode_ov: OrderMode = "AB" if ov_ord == "AB" else "BA"
+                        prev_row = existing_by_key[(ov_iid, ov_ord)]
+                        ov_prompt = adapter.assemble_prompt(ov_item, order=ord_mode_ov, pass_mode=pass_mode)
+                        ov_resp = transport.generate(spec, ov_prompt, seed=schedule.seed)
+                        new_out_sha = ov_resp.output_token_ids_sha256 or compute_response_output_token_ids_sha256(
+                            spec.judge_id,
+                            ov_resp.tokens,
+                            system_one_result=ov_resp.system_one_result,
+                        )
+                        prev_out_sha = str(prev_row.get("output_token_ids_sha256") or "")
+                        if prev_out_sha and new_out_sha != prev_out_sha:
+                            mismatches.append(f"{ov_iid}:{ov_ord} (prev={prev_out_sha[:12]} vs new={new_out_sha[:12]})")
+                if mismatches:
+                    row_path.unlink(missing_ok=True)
+                    raise refused_error(
+                        "RECOVERY_OVERLAP_MISMATCH",
+                        f"Replacement session 3-item-pair overlap check failed for judge '{spec.judge_id}' on "
+                        f"{len(mismatches)} call(s): {', '.join(mismatches)}; partial shard discarded.",
+                        "Restart the shard from scratch on a verified session environment.",
+                    )
+                verified_recovery = {
+                    "verified": True,
+                    "overlap_item_ids": overlap_iids,
+                    "overlap_calls": len(overlap_iids) * 2,
+                    "discarded_incomplete_item_ids": discarded_incomplete_item_ids,
+                }
+
+        unparseable_count = sum(1 for r in existing_row_objs if r.get("state") == "unparseable")
+        length_stop_count = sum(1 for r in existing_row_objs if r.get("state") == "length_stop")
+        aborted_count = sum(1 for r in existing_row_objs if r.get("state") == "aborted")
+        parsed_count = sum(1 for r in existing_row_objs if r.get("state") == "parsed")
+        verdict_disagreement_count = sum(
+            1
+            for r in existing_row_objs
+            for resumed_argmax in (_resolve_resumed_argmax_verdict(r, judge_id=spec.judge_id, pass_mode=pass_mode),)
+            if resumed_argmax is not None and str(r.get("raw_verdict")) != resumed_argmax
+        )
+        probs_missing_count = sum(1 for r in existing_row_objs if spec.judge_id == QWEN36_JUDGE_ID and r.get("state") == "parsed" and r.get("choice_probabilities") is None)
+        failed_to_run_count = 0
+        vram_peak_overall = max((int(r.get("vram_peak_mib", 0)) for r in existing_row_objs), default=0)
+        total_seconds = sum(float(r.get("seconds", 0.0)) for r in existing_row_objs)
+        calls_so_far = len(existing_row_objs)
+        polarity_map = POLARITY_MAP_BY_JUDGE.get(spec.judge_id, {"inverted": "false"})
+        eff_hb_interval = resolve_child_heartbeat_interval_seconds(heartbeat_interval_seconds)
+
+        # Item 8 & Part E.1: Run anchor items not in this shard's main schedule as an anchor_rows prefix
+        # (all 50 anchors on shards 2..n, plus any canary anchors on shard 1 that belong to shards 2..n).
+        prefix_anchor_ids = (
+            anchor_item_ids
+            if (shard_k is not None and shard_k >= 2)
+            else [iid for iid in anchor_item_ids if iid not in shard_item_id_set]
+        )
+        if anchor_row_path is not None and shard_k is not None and prefix_anchor_ids:
+            with anchor_row_path.open("a", encoding="utf-8", newline="\n") as arf:
+                for anc_idx, anc_iid in enumerate(anchor_item_ids):
+                    if anc_iid not in prefix_anchor_ids:
+                        continue
+                    anc_item = items_by_id[anc_iid]
+                    for anc_ord_idx, anc_order in enumerate(("AB", "BA")):
+                        if (anc_iid, anc_order) in completed_anchor_keys:
+                            continue
+                        anc_ord_mode: OrderMode = "AB" if anc_order == "AB" else "BA"
+                        anc_ordered_mat = swap_material_facts_order(anc_item.material, anc_ord_mode)
+                        anc_hop1, anc_hop2, anc_marker = extract_hop_and_marker_lines(anc_ordered_mat, anc_item.claim)
+                        anc_prompt = adapter.assemble_prompt(anc_item, order=anc_ord_mode, pass_mode=pass_mode)
+                        anc_prompt_toks = _count_prompt_tokens(transport, spec, anc_prompt)
+                        anc_t0 = time.monotonic()
+                        anc_resp = transport.generate(spec, anc_prompt, seed=schedule.seed)
+                        anc_elapsed = anc_resp.seconds if anc_resp.seconds > 0 else max(0.0001, time.monotonic() - anc_t0)
+                        anc_readout = adapter.parse_response(anc_resp, pass_mode=pass_mode)
+                        anc_top5 = [lp.to_dict() for lp in anc_readout.verdict_top_logprobs[:5]]
+                        anc_top20_src = (
+                            anc_resp.verdict_top_logprobs[:20]
+                            if anc_resp.verdict_top_logprobs
+                            else anc_readout.verdict_top_logprobs[:20]
+                        )
+                        anc_top20 = [lp.to_dict() for lp in anc_top20_src]
+                        anc_slot = -(anc_idx * 2 + anc_ord_idx + 1)
+                        anc_call_id = f"{spec.judge_id}:{pass_mode}:anchor:{anc_idx:04d}:{anc_iid}:{anc_ord_mode}"
+                        anc_receipt_payload = {
+                            "arm": spec.judge_id,
+                            "prompt": anc_call_id,
+                            "prompt_sha256": anc_prompt.prompt_sha256,
+                            "model_digest": anc_resp.model_digest,
+                            "tokens": list(anc_resp.tokens),
+                            "top": anc_top5,
+                            "done_reason": anc_readout.done_reason,
+                        }
+                        anc_receipt_sha = hashlib.sha256(
+                            _canonical_json_line(anc_receipt_payload).encode("utf-8")
+                        ).hexdigest()
+                        anc_in_sha = anc_resp.input_token_ids_sha256 or compute_prompt_input_token_ids_sha256(
+                            spec.judge_id, anc_prompt.prompt_text
+                        )
+                        anc_out_sha = anc_resp.output_token_ids_sha256 or compute_response_output_token_ids_sha256(
+                            spec.judge_id,
+                            anc_resp.tokens,
+                            system_one_result=anc_resp.system_one_result,
+                        )
+                        anc_in_cnt = int(anc_resp.input_token_count) if (anc_resp.input_token_count or 0) > 0 else anc_prompt_toks
+                        anc_out_cnt = int(anc_resp.output_token_count) if (anc_resp.output_token_count or 0) > 0 else len(anc_resp.tokens)
+                        anc_stop_rsn = anc_resp.stop_reason or ("max_new_tokens" if anc_readout.done_reason == "length" else "eos")
+                        anc_margin = (
+                            anc_resp.min_top2_logit_margin
+                            if anc_resp.min_top2_logit_margin is not None
+                            else compute_min_top2_logit_margin_from_logprobs(anc_readout.verdict_top_logprobs)
+                        )
+                        anc_verdict_margin = (
+                            anc_resp.verdict_token_margin
+                            if anc_resp.verdict_token_margin is not None
+                            else compute_min_top2_logit_margin_from_logprobs(anc_readout.verdict_top_logprobs)
+                        )
+                        anc_row_obj = _build_sealed_row_with_sha256(
+                            {
+                                "judge_id": spec.judge_id,
+                                "judge_label": spec.judge_label,
+                                "item_id": anc_iid,
+                                "order": anc_ord_mode,
+                                "pass_number": 1 if anc_ord_mode == "AB" else 2,
+                                "slot_index": anc_slot,
+                                "pass_mode": pass_mode,
+                                "model_revision": spec.revision,
+                                "model_digest": anc_resp.model_digest,
+                                "prompt_sha256": anc_prompt.prompt_sha256,
+                                "input_token_ids_sha256": anc_in_sha,
+                                "output_token_ids_sha256": anc_out_sha,
+                                "input_token_count": anc_in_cnt,
+                                "output_token_count": anc_out_cnt,
+                                "stop_reason": anc_stop_rsn,
+                                "min_top2_logit_margin": anc_margin,
+                                "verdict_token_margin": anc_verdict_margin,
+                                "verdict_parse_status": anc_readout.state,
+                                "shard_spec": eff_shard_spec,
+                                "session_fingerprint_sha256": eff_session_fp,
+                                "done_reason": anc_readout.done_reason,
+                                "state": anc_readout.state,
+                                "raw_generation": anc_resp.raw_text,
+                                "raw_verdict": anc_readout.raw_verdict,
+                                "confidence": round(anc_readout.p_yes, 6) if anc_readout.p_yes is not None else None,
+                                "choice_probabilities": anc_readout.choice_probabilities,
+                                "top_logprobs": anc_top5,
+                                "top_20_logprobs": anc_top20,
+                                "polarity_map": polarity_map,
+                                "hop1_line_index": anc_hop1,
+                                "hop2_line_index": anc_hop2,
+                                "marker_line_index": anc_marker,
+                                "seconds": round(anc_elapsed, 6),
+                                "vram_peak_mib": 0,
+                                "receipt_sha256": anc_receipt_sha,
+                            }
+                        )
+                        arf.write(_canonical_json_line(anc_row_obj) + "\n")
+                        arf.flush()
+                        completed_anchor_keys.add((anc_iid, anc_order))
+
+        row_mode = "a" if existing_row_objs else "w"
+        with row_path.open(row_mode, encoding="utf-8", newline="\n") as rf, gen_path.open("a", encoding="utf-8", newline="\n") as gf:
+            for call_idx, entry in enumerate(schedule.entries):
+                if anchor_prefix_only and shard_k is not None and shard_k >= 2:
+                    continue
+                if anchor_prefix_only and entry.item_id not in anchor_item_id_set:
+                    continue
+                if entry.item_id not in effective_target_item_ids:
+                    continue
+                if (entry.item_id, entry.order) in completed_keys:
+                    continue
+                item = items_by_id[entry.item_id]
+                item_idx = item_index_by_id[entry.item_id]
+                ordered_mat = swap_material_facts_order(item.material, entry.order)
+                hop1_idx, hop2_idx, marker_idx = extract_hop_and_marker_lines(ordered_mat, item.claim)
+                prompt = adapter.assemble_prompt(item, order=entry.order, pass_mode=pass_mode)
+                prompt_tokens_count = _count_prompt_tokens(transport, spec, prompt)
+                _append_child_progress_line(
+                    eff_progress_file,
+                    {
+                        "kind": "call_start",
+                        "judge_id": spec.judge_id,
+                        "device": device,
+                        "index": call_idx,
+                        "item_index": item_idx,
+                        "order": entry.order,
+                        "prompt_tokens": prompt_tokens_count,
+                    },
+                    lock=progress_lock,
+                )
+                vram_before = check_vram_guard(
+                    vram_halt_mib=vram_halt_mib,
+                    vram_probe=vram_probe,
+                    halt_pid=halt_pid,
+                    pid_killer=pid_killer,
+                )
+                t0 = time.monotonic()
+                hb_stop = threading.Event()
+                hb_thread: threading.Thread | None = None
+                if eff_progress_file is not None and eff_hb_interval > 0:
+                    def _hb_loop(
+                        _call_idx: int = call_idx,
+                        _t0: float = t0,
+                        _stop: threading.Event = hb_stop,
+                    ) -> None:
+                        while not _stop.wait(eff_hb_interval):
+                            elapsed_hb = round(max(0.0001, time.monotonic() - _t0), 6)
+                            raw_cur_toks = getattr(transport, "current_output_tokens", None)
+                            cur_toks = (
+                                int(raw_cur_toks)
+                                if isinstance(raw_cur_toks, int) and not isinstance(raw_cur_toks, bool)
+                                else None
+                            )
+                            _append_child_progress_line(
+                                eff_progress_file,
+                                {
+                                    "kind": "heartbeat",
+                                    "judge_id": spec.judge_id,
+                                    "device": device,
+                                    "index": _call_idx,
+                                    "seconds": elapsed_hb,
+                                    "seconds_so_far": elapsed_hb,
+                                    "output_tokens": cur_toks,
+                                    "rss_bytes": _read_process_rss_bytes(),
+                                },
+                                lock=progress_lock,
+                            )
+
+                    hb_thread = threading.Thread(
+                        target=_hb_loop,
+                        name=f"rdlab-judge-hb-{call_idx}",
+                        daemon=True,
+                    )
+                    hb_thread.start()
+
+                try:
+                    resp = transport.generate(spec, prompt, seed=schedule.seed)
+                except Exception:
+                    hb_stop.set()
+                    if hb_thread is not None:
+                        hb_thread.join(timeout=1.0)
+                    failed_elapsed = max(0.0001, time.monotonic() - t0)
+                    total_seconds += failed_elapsed
+                    failed_to_run_count += 1
+                    calls_so_far += 1
+                    _append_child_progress_line(
+                        eff_progress_file,
+                        {
+                            "kind": "call_done",
+                            "judge_id": spec.judge_id,
+                            "device": device,
+                            "index": call_idx,
+                            "item_index": item_idx,
+                            "order": entry.order,
+                            "seconds": round(failed_elapsed, 6),
+                            "prompt_tokens": prompt_tokens_count,
+                            "output_tokens": 0,
+                            "state": "failed_to_run",
+                        },
+                        lock=progress_lock,
+                    )
+                    failed_wall_s = round(max(0.0, time.monotonic() - child_start_mono), 6)
+                    _append_child_progress_line(
+                        eff_progress_file,
+                        {
+                            "kind": "child_end",
+                            "judge_id": spec.judge_id,
+                            "device": device,
+                            "counts_by_state": {
+                                "parsed": parsed_count,
+                                "unparseable": unparseable_count,
+                                "length_stop": length_stop_count,
+                                "aborted": aborted_count,
+                                "failed_to_run": failed_to_run_count,
+                            },
+                            "total_seconds": failed_wall_s,
+                            "elapsed_seconds": failed_wall_s,
+                        },
+                        lock=progress_lock,
+                    )
+                    raise
+                else:
+                    hb_stop.set()
+                    if hb_thread is not None:
+                        hb_thread.join(timeout=1.0)
+                elapsed = resp.seconds if resp.seconds > 0 else max(0.0001, time.monotonic() - t0)
+                vram_after = check_vram_guard(
+                    vram_halt_mib=vram_halt_mib,
+                    vram_probe=vram_probe,
+                    halt_pid=halt_pid,
+                    pid_killer=pid_killer,
+                )
+                call_vram_peak = max(vram_before, vram_after)
+                vram_peak_overall = max(vram_peak_overall, call_vram_peak)
+                total_seconds += elapsed
+
+                if resp.model_digest != verified_digest:
+                    raise refused_error(
+                        "BAKEOFF_JUDGE_DIGEST_MISMATCH",
+                        f"Stop rule triggered: model_digest changed mid-run from '{verified_digest}' to '{resp.model_digest}'.",
+                        "Ensure the loaded judge model remains pinned throughout the run.",
+                    )
+
+                readout = adapter.parse_response(resp, pass_mode=pass_mode)
+                if readout.state == "length_stop":
+                    length_stop_count += 1
+                elif readout.state == "aborted":
+                    aborted_count += 1
+                elif readout.state == "unparseable":
+                    unparseable_count += 1
+                else:
+                    parsed_count += 1
+                    if readout.raw_verdict is not None and readout.argmax_verdict is not None and readout.raw_verdict != readout.argmax_verdict:
+                        verdict_disagreement_count += 1
+                    if spec.judge_id == QWEN36_JUDGE_ID and readout.choice_probabilities is None:
+                        probs_missing_count += 1
+
                 calls_so_far += 1
+                bad_calls = unparseable_count + length_stop_count + aborted_count
+                will_halt_error_rate = calls_so_far >= error_rate_min_calls and (bad_calls / calls_so_far) > error_rate_stop
                 _append_child_progress_line(
                     eff_progress_file,
                     {
@@ -5747,397 +5839,382 @@ def run_bakeoff_judge(
                         "index": call_idx,
                         "item_index": item_idx,
                         "order": entry.order,
-                        "seconds": round(failed_elapsed, 6),
+                        "seconds": round(elapsed, 6),
                         "prompt_tokens": prompt_tokens_count,
-                        "output_tokens": 0,
-                        "state": "failed_to_run",
+                        "output_tokens": int(len(resp.tokens)),
+                        "state": readout.state,
                     },
                     lock=progress_lock,
                 )
-                failed_wall_s = round(max(0.0, time.monotonic() - child_start_mono), 6)
-                _append_child_progress_line(
-                    eff_progress_file,
-                    {
-                        "kind": "child_end",
-                        "judge_id": spec.judge_id,
-                        "device": device,
-                        "counts_by_state": {
-                            "parsed": parsed_count,
-                            "unparseable": unparseable_count,
-                            "length_stop": length_stop_count,
-                            "aborted": aborted_count,
-                            "failed_to_run": failed_to_run_count,
-                        },
-                        "total_seconds": failed_wall_s,
-                        "elapsed_seconds": failed_wall_s,
-                    },
-                    lock=progress_lock,
+
+                call_id = f"{spec.judge_id}:{pass_mode}:{entry.slot_index:04d}:{item.item_id}:{entry.order}"
+                top5_dicts = [lp.to_dict() for lp in readout.verdict_top_logprobs[:5]]
+                top20_source = resp.verdict_top_logprobs[:20] if resp.verdict_top_logprobs else readout.verdict_top_logprobs[:20]
+                top20_dicts = [lp.to_dict() for lp in top20_source]
+
+                receipt_payload = {
+                    "arm": spec.judge_id,
+                    "prompt": call_id,
+                    "prompt_sha256": prompt.prompt_sha256,
+                    "model_digest": resp.model_digest,
+                    "tokens": list(resp.tokens),
+                    "top": top5_dicts,
+                    "done_reason": readout.done_reason,
+                }
+                receipt_sha256 = hashlib.sha256(
+                    _canonical_json_line(receipt_payload).encode("utf-8")
+                ).hexdigest()
+
+                pins_with_determinism = dict(resp.library_pins)
+                pins_with_determinism.setdefault("dtype", effective_dtype)
+                pins_with_determinism.setdefault(
+                    "cublas_workspace_config",
+                    os.environ.get("CUBLAS_WORKSPACE_CONFIG", CUBLAS_WORKSPACE_CONFIG_VALUE),
                 )
-                raise
-            else:
-                hb_stop.set()
-                if hb_thread is not None:
-                    hb_thread.join(timeout=1.0)
-            elapsed = resp.seconds if resp.seconds > 0 else max(0.0001, time.monotonic() - t0)
-            vram_after = check_vram_guard(
-                vram_halt_mib=vram_halt_mib,
-                vram_probe=vram_probe,
-                halt_pid=halt_pid,
-                pid_killer=pid_killer,
-            )
-            call_vram_peak = max(vram_before, vram_after)
-            vram_peak_overall = max(vram_peak_overall, call_vram_peak)
-            total_seconds += elapsed
+                pins_with_determinism.setdefault("deterministic_algorithms", det_status)
+                pins_with_determinism.setdefault("fill_uninitialized_memory", False)
+                pins_with_determinism.setdefault("attn_implementation", PINNED_ATTN_IMPLEMENTATION)
+                pins_with_determinism.setdefault("sdpa_backend", pin_and_read_sdpa_backend())
 
-            if resp.model_digest != verified_digest:
-                raise refused_error(
-                    "BAKEOFF_JUDGE_DIGEST_MISMATCH",
-                    f"Stop rule triggered: model_digest changed mid-run from '{verified_digest}' to '{resp.model_digest}'.",
-                    "Ensure the loaded judge model remains pinned throughout the run.",
+                in_tok_sha = resp.input_token_ids_sha256 or compute_prompt_input_token_ids_sha256(
+                    spec.judge_id, prompt.prompt_text
+                )
+                out_tok_sha = resp.output_token_ids_sha256 or compute_response_output_token_ids_sha256(
+                    spec.judge_id,
+                    resp.tokens,
+                    system_one_result=resp.system_one_result,
+                )
+                in_tok_cnt = int(resp.input_token_count) if (resp.input_token_count or 0) > 0 else prompt_tokens_count
+                out_tok_cnt = int(resp.output_token_count) if (resp.output_token_count or 0) > 0 else len(resp.tokens)
+                stop_rsn = resp.stop_reason or ("max_new_tokens" if readout.done_reason == "length" else "eos")
+                min_margin = (
+                    resp.min_top2_logit_margin
+                    if resp.min_top2_logit_margin is not None
+                    else compute_min_top2_logit_margin_from_logprobs(readout.verdict_top_logprobs)
+                )
+                verdict_margin = (
+                    resp.verdict_token_margin
+                    if resp.verdict_token_margin is not None
+                    else compute_min_top2_logit_margin_from_logprobs(readout.verdict_top_logprobs)
                 )
 
-            readout = adapter.parse_response(resp, pass_mode=pass_mode)
-            if readout.state == "length_stop":
-                length_stop_count += 1
-            elif readout.state == "aborted":
-                aborted_count += 1
-            elif readout.state == "unparseable":
-                unparseable_count += 1
-            else:
-                parsed_count += 1
-                if readout.raw_verdict is not None and readout.argmax_verdict is not None and readout.raw_verdict != readout.argmax_verdict:
-                    verdict_disagreement_count += 1
-                if spec.judge_id == QWEN36_JUDGE_ID and readout.choice_probabilities is None:
-                    probs_missing_count += 1
-
-            calls_so_far += 1
-            bad_calls = unparseable_count + length_stop_count + aborted_count
-            will_halt_error_rate = calls_so_far >= error_rate_min_calls and (bad_calls / calls_so_far) > error_rate_stop
-            _append_child_progress_line(
-                eff_progress_file,
-                {
-                    "kind": "call_done",
-                    "judge_id": spec.judge_id,
-                    "device": device,
-                    "index": call_idx,
-                    "item_index": item_idx,
+                gen_obj: dict[str, Any] = {
+                    "arm": spec.judge_id,
+                    "prompt": call_id,
+                    "item_id": item.item_id,
                     "order": entry.order,
-                    "seconds": round(elapsed, 6),
-                    "prompt_tokens": prompt_tokens_count,
-                    "output_tokens": int(len(resp.tokens)),
+                    "pass_mode": pass_mode,
+                    "prompt_sha256": prompt.prompt_sha256,
+                    "input_token_ids_sha256": in_tok_sha,
+                    "output_token_ids_sha256": out_tok_sha,
+                    "input_token_count": in_tok_cnt,
+                    "output_token_count": out_tok_cnt,
+                    "stop_reason": stop_rsn,
+                    "min_top2_logit_margin": min_margin,
+                    "verdict_token_margin": verdict_margin,
+                    "model_digest": resp.model_digest,
+                    "tokens": list(resp.tokens),
+                    "top": top5_dicts,
+                    "top_20": top20_dicts,
+                    "done_reason": readout.done_reason,
+                    "server_binary": resp.server_binary,
+                    "library_pins": pins_with_determinism,
+                    "polarity_map": polarity_map,
+                    "hop1_line_index": hop1_idx,
+                    "hop2_line_index": hop2_idx,
+                    "marker_line_index": marker_idx,
+                    "receipt_sha256": receipt_sha256,
+                }
+                gf.write(_canonical_json_line(gen_obj) + "\n")
+                gf.flush()
+
+                base_row_obj: dict[str, Any] = {
+                    "judge_id": spec.judge_id,
+                    "judge_label": spec.judge_label,
+                    "item_id": item.item_id,
+                    "order": entry.order,
+                    "pass_number": entry.pass_number,
+                    "slot_index": entry.slot_index,
+                    "pass_mode": pass_mode,
+                    "model_revision": spec.revision,
+                    "model_digest": resp.model_digest,
+                    "prompt_sha256": prompt.prompt_sha256,
+                    "input_token_ids_sha256": in_tok_sha,
+                    "output_token_ids_sha256": out_tok_sha,
+                    "input_token_count": in_tok_cnt,
+                    "output_token_count": out_tok_cnt,
+                    "stop_reason": stop_rsn,
+                    "min_top2_logit_margin": min_margin,
+                    "verdict_token_margin": verdict_margin,
+                    "verdict_parse_status": readout.state,
+                    "shard_spec": eff_shard_spec,
+                    "session_fingerprint_sha256": eff_session_fp,
+                    "done_reason": readout.done_reason,
                     "state": readout.state,
-                },
-                lock=progress_lock,
-            )
+                    "raw_generation": resp.raw_text,
+                    "raw_verdict": readout.raw_verdict,
+                    "confidence": round(readout.p_yes, 6) if readout.p_yes is not None else None,
+                    "choice_probabilities": readout.choice_probabilities, **two_question_row_fields(readout, pass_mode),
+                    **qwen36_row_fields(
+                        spec,
+                        resp,
+                        readout=readout,
+                        item_id=item.item_id,
+                        order=entry.order,
+                        in_tok_cnt=in_tok_cnt,
+                        out_tok_cnt=out_tok_cnt,
+                        stop_rsn=stop_rsn,
+                        library_pins=pins_with_determinism,
+                    ),
+                    "top_logprobs": top5_dicts,
+                    "top_20_logprobs": top20_dicts,
+                    "polarity_map": polarity_map,
+                    "hop1_line_index": hop1_idx,
+                    "hop2_line_index": hop2_idx,
+                    "marker_line_index": marker_idx,
+                    "seconds": round(elapsed, 6),
+                    "vram_peak_mib": call_vram_peak,
+                    "receipt_sha256": receipt_sha256,
+                }
+                if synthetic_items:
+                    base_row_obj["synthetic_items"] = True
+                if will_halt_error_rate:
+                    base_row_obj["run_status"] = "failed_to_run"
+                    base_row_obj["partial_counts"] = {
+                        "calls_count": calls_so_far,
+                        "parsed_count": parsed_count,
+                        "unparseable_count": unparseable_count,
+                        "length_stop_count": length_stop_count,
+                        "aborted_count": aborted_count,
+                    }
+                row_obj = _build_sealed_row_with_sha256(base_row_obj)
+                rf.write(_canonical_json_line(row_obj) + "\n")
+                rf.flush()
+                if not will_halt_error_rate:
+                    completed_keys.add((entry.item_id, entry.order))
 
-            call_id = f"{spec.judge_id}:{pass_mode}:{entry.slot_index:04d}:{item.item_id}:{entry.order}"
-            top5_dicts = [lp.to_dict() for lp in readout.verdict_top_logprobs[:5]]
-            top20_source = resp.verdict_top_logprobs[:20] if resp.verdict_top_logprobs else readout.verdict_top_logprobs[:20]
-            top20_dicts = [lp.to_dict() for lp in top20_source]
+                if (
+                    anchor_row_path is not None
+                    and shard_k == 1
+                    and item.item_id in anchor_item_id_set
+                    and (item.item_id, entry.order) not in completed_anchor_keys
+                    and not will_halt_error_rate
+                ):
+                    with anchor_row_path.open("a", encoding="utf-8", newline="\n") as arf:
+                        arf.write(_canonical_json_line(row_obj) + "\n")
+                        arf.flush()
+                    completed_anchor_keys.add((item.item_id, entry.order))
 
-            receipt_payload = {
-                "arm": spec.judge_id,
-                "prompt": call_id,
-                "prompt_sha256": prompt.prompt_sha256,
-                "model_digest": resp.model_digest,
-                "tokens": list(resp.tokens),
-                "top": top5_dicts,
-                "done_reason": readout.done_reason,
-            }
-            receipt_sha256 = hashlib.sha256(
-                _canonical_json_line(receipt_payload).encode("utf-8")
-            ).hexdigest()
+                if will_halt_error_rate:
+                    failed_wall_s = round(max(0.0, time.monotonic() - child_start_mono), 6)
+                    _append_child_progress_line(
+                        eff_progress_file,
+                        {
+                            "kind": "child_end",
+                            "judge_id": spec.judge_id,
+                            "device": device,
+                            "counts_by_state": {
+                                "parsed": parsed_count,
+                                "unparseable": unparseable_count,
+                                "length_stop": length_stop_count,
+                                "aborted": aborted_count,
+                                "failed_to_run": failed_to_run_count,
+                            },
+                            "total_seconds": failed_wall_s,
+                            "elapsed_seconds": failed_wall_s,
+                        },
+                        lock=progress_lock,
+                    )
+                    raise refused_error(
+                        "BAKEOFF_JUDGE_ERROR_RATE_STOP",
+                        f"Stop rule triggered for '{spec.judge_id}': unparseable ({unparseable_count}) + length_stop "
+                        f"({length_stop_count}) + aborted ({aborted_count}) = {bad_calls}/{calls_so_far} ({bad_calls / calls_so_far:.1%}) > {error_rate_stop:.1%}.",
+                        "Inspect prompt formatting and max_new_tokens settings before continuing.",
+                    )
 
-            pins_with_determinism = dict(resp.library_pins)
-            pins_with_determinism.setdefault("dtype", effective_dtype)
-            pins_with_determinism.setdefault(
-                "cublas_workspace_config",
-                os.environ.get("CUBLAS_WORKSPACE_CONFIG", CUBLAS_WORKSPACE_CONFIG_VALUE),
-            )
-            pins_with_determinism.setdefault("deterministic_algorithms", det_status)
-            pins_with_determinism.setdefault("fill_uninitialized_memory", False)
-            pins_with_determinism.setdefault("attn_implementation", PINNED_ATTN_IMPLEMENTATION)
-            pins_with_determinism.setdefault("sdpa_backend", pin_and_read_sdpa_backend())
-
-            in_tok_sha = resp.input_token_ids_sha256 or compute_prompt_input_token_ids_sha256(
-                spec.judge_id, prompt.prompt_text
-            )
-            out_tok_sha = resp.output_token_ids_sha256 or compute_response_output_token_ids_sha256(
-                spec.judge_id,
-                resp.tokens,
-                system_one_result=resp.system_one_result,
-            )
-            in_tok_cnt = int(resp.input_token_count) if (resp.input_token_count or 0) > 0 else prompt_tokens_count
-            out_tok_cnt = int(resp.output_token_count) if (resp.output_token_count or 0) > 0 else len(resp.tokens)
-            stop_rsn = resp.stop_reason or ("max_new_tokens" if readout.done_reason == "length" else "eos")
-            min_margin = (
-                resp.min_top2_logit_margin
-                if resp.min_top2_logit_margin is not None
-                else compute_min_top2_logit_margin_from_logprobs(readout.verdict_top_logprobs)
-            )
-            verdict_margin = (
-                resp.verdict_token_margin
-                if resp.verdict_token_margin is not None
-                else compute_min_top2_logit_margin_from_logprobs(readout.verdict_top_logprobs)
-            )
-
-            gen_obj: dict[str, Any] = {
-                "arm": spec.judge_id,
-                "prompt": call_id,
-                "item_id": item.item_id,
-                "order": entry.order,
-                "pass_mode": pass_mode,
-                "prompt_sha256": prompt.prompt_sha256,
-                "input_token_ids_sha256": in_tok_sha,
-                "output_token_ids_sha256": out_tok_sha,
-                "input_token_count": in_tok_cnt,
-                "output_token_count": out_tok_cnt,
-                "stop_reason": stop_rsn,
-                "min_top2_logit_margin": min_margin,
-                "verdict_token_margin": verdict_margin,
-                "model_digest": resp.model_digest,
-                "tokens": list(resp.tokens),
-                "top": top5_dicts,
-                "top_20": top20_dicts,
-                "done_reason": readout.done_reason,
-                "server_binary": resp.server_binary,
-                "library_pins": pins_with_determinism,
-                "polarity_map": polarity_map,
-                "hop1_line_index": hop1_idx,
-                "hop2_line_index": hop2_idx,
-                "marker_line_index": marker_idx,
-                "receipt_sha256": receipt_sha256,
-            }
-            gf.write(_canonical_json_line(gen_obj) + "\n")
-            gf.flush()
-
-            base_row_obj: dict[str, Any] = {
+        child_wall_elapsed_s = round(max(0.0, time.monotonic() - child_start_mono), 6)
+        _append_child_progress_line(
+            eff_progress_file,
+            {
+                "kind": "child_end",
                 "judge_id": spec.judge_id,
-                "judge_label": spec.judge_label,
-                "item_id": item.item_id,
-                "order": entry.order,
-                "pass_number": entry.pass_number,
-                "slot_index": entry.slot_index,
+                "device": device,
+                "counts_by_state": {
+                    "parsed": parsed_count,
+                    "unparseable": unparseable_count,
+                    "length_stop": length_stop_count,
+                    "aborted": aborted_count,
+                    "failed_to_run": failed_to_run_count,
+                },
+                "total_seconds": child_wall_elapsed_s,
+                "elapsed_seconds": child_wall_elapsed_s,
+            },
+            lock=progress_lock,
+        )
+
+        all_shard_items_complete = all(
+            (iid, ord_s) in completed_keys
+            for iid in shard_item_ids
+            for ord_s in ("AB", "BA")
+        )
+        canary_summary: dict[str, Any] | None = None
+        if (
+            run_canary
+            and canary_start_records is not None
+            and not anchor_prefix_only
+            and (not is_subblock_invocation or all_shard_items_complete)
+        ):
+            canary_end_records = _run_canary_snapshot(
+                spec=spec,
+                adapter=adapter,
+                transport=transport,
+                canary_items=canary_items,
+                pass_mode=pass_mode,
+                seed=schedule.seed,
+            )
+            canary_summary = _compare_canary_snapshots(
+                canary_start_records,
+                canary_end_records,
+                judge_id=spec.judge_id,
+                logprob_tolerance=canary_tol,
+            )
+
+        row_bytes = row_path.read_bytes()
+        rows_sha256 = hashlib.sha256(row_bytes).hexdigest()
+        final_row_objs = [
+            json.loads(ln)
+            for ln in row_bytes.decode("utf-8").splitlines()
+            if ln.strip()
+        ]
+        all_row_sha256s = [
+            str(r.get("row_sha256") or compute_row_body_sha256(r))
+            for r in final_row_objs
+            if isinstance(r, dict)
+        ]
+
+        if verified_recovery is None and isinstance(prev_done_doc.get("verified_recovery"), dict):
+            verified_recovery = prev_done_doc["verified_recovery"]
+        if not discarded_incomplete_item_ids and isinstance(prev_done_doc.get("discarded_incomplete_item_ids"), list):
+            discarded_incomplete_item_ids = [str(x) for x in prev_done_doc["discarded_incomplete_item_ids"]]
+        load_history = (
+            list(prev_load_history)
+            if anchor_prefix_only
+            else [*prev_load_history, load_wall_seconds]
+        )
+
+        call_seconds_vals = [
+            float(r["seconds"])
+            for r in final_row_objs
+            if isinstance(r, dict) and isinstance(r.get("seconds"), (int, float)) and not isinstance(r.get("seconds"), bool)
+        ]
+        thinking_len_vals = [
+            float(r["thinking_token_count"])
+            for r in final_row_objs
+            if isinstance(r, dict)
+            and isinstance(r.get("thinking_token_count"), (int, float))
+            and not isinstance(r.get("thinking_token_count"), bool)
+        ]
+        call_seconds_quantiles = _compute_quantiles(call_seconds_vals)
+        thinking_length_quantiles = _compute_quantiles(thinking_len_vals)
+        qwen36_summary_extra: dict[str, Any] = {}
+        if spec.judge_id == QWEN36_JUDGE_ID:
+            qwen36_summary_extra["max_new_tokens"] = resolve_qwen36_max_new_tokens(require_explicit=is_real_qwen36)
+            qwen36_summary_extra["seed_variant"] = eff_qwen36_seed_variant_recorded
+            qwen36_summary_extra["thinking_length_quantiles"] = thinking_length_quantiles
+            qwen36_summary_extra["call_seconds_quantiles"] = call_seconds_quantiles
+            if transport is not None:
+                cg_peak = getattr(transport, "_cgroup_memory_peak_bytes", None)
+                if cg_peak is not None:
+                    qwen36_summary_extra["cgroup_memory_peak_bytes"] = int(cg_peak)
+                llm_init_s = getattr(transport, "_llm_init_seconds", None)
+                jit_sum = getattr(transport, "_jit_build_summary", None) or {}
+                jit_s = jit_sum.get("jit_build_seconds")
+                jit_targets = jit_sum.get("jit_build_targets") or []
+                if llm_init_s is not None:
+                    qwen36_summary_extra["llm_init_seconds"] = float(llm_init_s)
+                if jit_s is not None:
+                    qwen36_summary_extra["jit_build_seconds"] = float(jit_s)
+                    qwen36_summary_extra["jit_build_targets"] = list(jit_targets)
+                    qwen36_summary_extra["build_wall_seconds"] = float(jit_s)
+                    qwen36_summary_extra["build_seconds_source"] = "flashinfer_jit_build_log"
+                elif llm_init_s is not None:
+                    qwen36_summary_extra["build_wall_seconds"] = float(llm_init_s)
+                    qwen36_summary_extra["build_seconds_source"] = "llm_init"
+                if callable(verify_no_build_fn):
+                    verify_no_build_fn()
+                prebuilt_info = getattr(transport, "_prebuilt_jit_cache_info", None)
+                if isinstance(prebuilt_info, Mapping):
+                    build_entered_flag = bool(getattr(transport, "_build_entered", prebuilt_info.get("build_entered", False)))
+                    prebuilt_copy = dict(prebuilt_info)
+                    prebuilt_copy["build_entered"] = build_entered_flag
+                    qwen36_summary_extra["prebuilt_jit_cache"] = prebuilt_copy
+                    qwen36_summary_extra["build_entered"] = build_entered_flag
+
+        if not anchor_prefix_only:
+            judge_done_dir.mkdir(parents=True, exist_ok=True)
+            judge_done_doc: dict[str, Any] = {
+                "judge_id": spec.judge_id,
+                "device": device,
+                "row_count": calls_so_far,
+                "sha256": rows_sha256,
+                "row_sha256s": all_row_sha256s,
+                # The file this pass wrote: `rows/<judge>.jsonl` (binary) or `rows/<judge>.three_way.jsonl` (3-way).
+                "rows_file": f"{ROWS_DIRNAME}/{row_path.name}",
                 "pass_mode": pass_mode,
-                "model_revision": spec.revision,
-                "model_digest": resp.model_digest,
-                "prompt_sha256": prompt.prompt_sha256,
-                "input_token_ids_sha256": in_tok_sha,
-                "output_token_ids_sha256": out_tok_sha,
-                "input_token_count": in_tok_cnt,
-                "output_token_count": out_tok_cnt,
-                "stop_reason": stop_rsn,
-                "min_top2_logit_margin": min_margin,
-                "verdict_token_margin": verdict_margin,
-                "verdict_parse_status": readout.state,
+                "bytes": len(row_bytes),
+                "items_count": len(shard_item_ids) if eff_shard_spec is not None else len(items),
+                "calls_count": calls_so_far,
+                "parsed_count": parsed_count,
+                "unparseable_count": unparseable_count,
+                "length_stop_count": length_stop_count,
+                "aborted_count": aborted_count,
+                "verdict_disagreement_count": verdict_disagreement_count,
+                "probs_missing_count": probs_missing_count,
+                "vram_peak_mib": vram_peak_overall,
+                "load_wall_seconds": load_wall_seconds,
+                "load_wall_seconds_history": load_history,
+                "total_seconds": round(total_seconds, 4),
+                "elapsed_seconds": child_wall_elapsed_s,
+                "dtype": effective_dtype,
+                "fill_uninitialized_memory": False,
                 "shard_spec": eff_shard_spec,
+                "shard_manifest_sha256": manifest_file_sha256,
                 "session_fingerprint_sha256": eff_session_fp,
-                "done_reason": readout.done_reason,
-                "state": readout.state,
-                "raw_generation": resp.raw_text,
-                "raw_verdict": readout.raw_verdict,
-                "confidence": round(readout.p_yes, 6) if readout.p_yes is not None else None,
-                "choice_probabilities": readout.choice_probabilities, **two_question_row_fields(readout, pass_mode),
-                **qwen36_row_fields(
-                    spec,
-                    resp,
-                    readout=readout,
-                    item_id=item.item_id,
-                    order=entry.order,
-                    in_tok_cnt=in_tok_cnt,
-                    out_tok_cnt=out_tok_cnt,
-                    stop_rsn=stop_rsn,
-                    library_pins=pins_with_determinism,
-                ),
-                "top_logprobs": top5_dicts,
-                "top_20_logprobs": top20_dicts,
-                "polarity_map": polarity_map,
-                "hop1_line_index": hop1_idx,
-                "hop2_line_index": hop2_idx,
-                "marker_line_index": marker_idx,
-                "seconds": round(elapsed, 6),
-                "vram_peak_mib": call_vram_peak,
-                "receipt_sha256": receipt_sha256,
+                "discarded_incomplete_item_ids": discarded_incomplete_item_ids,
+                "verified_recovery": verified_recovery,
+                "canary": canary_summary,
+                "canary_start_records": canary_start_records,
+                **qwen36_summary_extra,
             }
             if synthetic_items:
-                base_row_obj["synthetic_items"] = True
-            if will_halt_error_rate:
-                base_row_obj["run_status"] = "failed_to_run"
-                base_row_obj["partial_counts"] = {
-                    "calls_count": calls_so_far,
-                    "parsed_count": parsed_count,
-                    "unparseable_count": unparseable_count,
-                    "length_stop_count": length_stop_count,
-                    "aborted_count": aborted_count,
-                }
-            row_obj = _build_sealed_row_with_sha256(base_row_obj)
-            rf.write(_canonical_json_line(row_obj) + "\n")
-            rf.flush()
-            if not will_halt_error_rate:
-                completed_keys.add((entry.item_id, entry.order))
+                judge_done_doc["synthetic_items"] = True
+            judge_done_tmp.write_text(
+                json.dumps(judge_done_doc, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            judge_done_tmp.replace(judge_done_path)
 
-            if (
-                anchor_row_path is not None
-                and shard_k == 1
-                and item.item_id in anchor_item_id_set
-                and (item.item_id, entry.order) not in completed_anchor_keys
-                and not will_halt_error_rate
-            ):
-                with anchor_row_path.open("a", encoding="utf-8", newline="\n") as arf:
-                    arf.write(_canonical_json_line(row_obj) + "\n")
-                    arf.flush()
-                completed_anchor_keys.add((item.item_id, entry.order))
-
-            if will_halt_error_rate:
-                failed_wall_s = round(max(0.0, time.monotonic() - child_start_mono), 6)
-                _append_child_progress_line(
-                    eff_progress_file,
-                    {
-                        "kind": "child_end",
-                        "judge_id": spec.judge_id,
-                        "device": device,
-                        "counts_by_state": {
-                            "parsed": parsed_count,
-                            "unparseable": unparseable_count,
-                            "length_stop": length_stop_count,
-                            "aborted": aborted_count,
-                            "failed_to_run": failed_to_run_count,
-                        },
-                        "total_seconds": failed_wall_s,
-                        "elapsed_seconds": failed_wall_s,
-                    },
-                    lock=progress_lock,
-                )
-                raise refused_error(
-                    "BAKEOFF_JUDGE_ERROR_RATE_STOP",
-                    f"Stop rule triggered for '{spec.judge_id}': unparseable ({unparseable_count}) + length_stop "
-                    f"({length_stop_count}) + aborted ({aborted_count}) = {bad_calls}/{calls_so_far} ({bad_calls / calls_so_far:.1%}) > {error_rate_stop:.1%}.",
-                    "Inspect prompt formatting and max_new_tokens settings before continuing.",
-                )
-
-    child_wall_elapsed_s = round(max(0.0, time.monotonic() - child_start_mono), 6)
-    _append_child_progress_line(
-        eff_progress_file,
-        {
-            "kind": "child_end",
+        return {
+            "status": "ok",
             "judge_id": spec.judge_id,
-            "device": device,
-            "counts_by_state": {
-                "parsed": parsed_count,
-                "unparseable": unparseable_count,
-                "length_stop": length_stop_count,
-                "aborted": aborted_count,
-                "failed_to_run": failed_to_run_count,
-            },
-            "total_seconds": child_wall_elapsed_s,
-            "elapsed_seconds": child_wall_elapsed_s,
-        },
-        lock=progress_lock,
-    )
-
-    all_shard_items_complete = all(
-        (iid, ord_s) in completed_keys
-        for iid in shard_item_ids
-        for ord_s in ("AB", "BA")
-    )
-    canary_summary: dict[str, Any] | None = None
-    if (
-        run_canary
-        and canary_start_records is not None
-        and not anchor_prefix_only
-        and (not is_subblock_invocation or all_shard_items_complete)
-    ):
-        canary_end_records = _run_canary_snapshot(
-            spec=spec,
-            adapter=adapter,
-            transport=transport,
-            canary_items=canary_items,
-            pass_mode=pass_mode,
-            seed=schedule.seed,
-        )
-        canary_summary = _compare_canary_snapshots(
-            canary_start_records,
-            canary_end_records,
-            judge_id=spec.judge_id,
-            logprob_tolerance=canary_tol,
-        )
-
-    row_bytes = row_path.read_bytes()
-    rows_sha256 = hashlib.sha256(row_bytes).hexdigest()
-    final_row_objs = [
-        json.loads(ln)
-        for ln in row_bytes.decode("utf-8").splitlines()
-        if ln.strip()
-    ]
-    all_row_sha256s = [
-        str(r.get("row_sha256") or compute_row_body_sha256(r))
-        for r in final_row_objs
-        if isinstance(r, dict)
-    ]
-
-    if verified_recovery is None and isinstance(prev_done_doc.get("verified_recovery"), dict):
-        verified_recovery = prev_done_doc["verified_recovery"]
-    if not discarded_incomplete_item_ids and isinstance(prev_done_doc.get("discarded_incomplete_item_ids"), list):
-        discarded_incomplete_item_ids = [str(x) for x in prev_done_doc["discarded_incomplete_item_ids"]]
-    load_history = (
-        list(prev_load_history)
-        if anchor_prefix_only
-        else [*prev_load_history, load_wall_seconds]
-    )
-
-    call_seconds_vals = [
-        float(r["seconds"])
-        for r in final_row_objs
-        if isinstance(r, dict) and isinstance(r.get("seconds"), (int, float)) and not isinstance(r.get("seconds"), bool)
-    ]
-    thinking_len_vals = [
-        float(r["thinking_token_count"])
-        for r in final_row_objs
-        if isinstance(r, dict)
-        and isinstance(r.get("thinking_token_count"), (int, float))
-        and not isinstance(r.get("thinking_token_count"), bool)
-    ]
-    call_seconds_quantiles = _compute_quantiles(call_seconds_vals)
-    thinking_length_quantiles = _compute_quantiles(thinking_len_vals)
-    qwen36_summary_extra: dict[str, Any] = {}
-    if spec.judge_id == QWEN36_JUDGE_ID:
-        qwen36_summary_extra["max_new_tokens"] = resolve_qwen36_max_new_tokens(require_explicit=is_real_qwen36)
-        qwen36_summary_extra["seed_variant"] = eff_qwen36_seed_variant_recorded
-        qwen36_summary_extra["thinking_length_quantiles"] = thinking_length_quantiles
-        qwen36_summary_extra["call_seconds_quantiles"] = call_seconds_quantiles
-        if transport is not None:
-            cg_peak = getattr(transport, "_cgroup_memory_peak_bytes", None)
-            if cg_peak is not None:
-                qwen36_summary_extra["cgroup_memory_peak_bytes"] = int(cg_peak)
-            llm_init_s = getattr(transport, "_llm_init_seconds", None)
-            jit_sum = getattr(transport, "_jit_build_summary", None) or {}
-            jit_s = jit_sum.get("jit_build_seconds")
-            jit_targets = jit_sum.get("jit_build_targets") or []
-            if llm_init_s is not None:
-                qwen36_summary_extra["llm_init_seconds"] = float(llm_init_s)
-            if jit_s is not None:
-                qwen36_summary_extra["jit_build_seconds"] = float(jit_s)
-                qwen36_summary_extra["jit_build_targets"] = list(jit_targets)
-                qwen36_summary_extra["build_wall_seconds"] = float(jit_s)
-                qwen36_summary_extra["build_seconds_source"] = "flashinfer_jit_build_log"
-            elif llm_init_s is not None:
-                qwen36_summary_extra["build_wall_seconds"] = float(llm_init_s)
-                qwen36_summary_extra["build_seconds_source"] = "llm_init"
-
-    if not anchor_prefix_only:
-        judge_done_dir.mkdir(parents=True, exist_ok=True)
-        judge_done_doc: dict[str, Any] = {
-            "judge_id": spec.judge_id,
-            "device": device,
-            "row_count": calls_so_far,
-            "sha256": rows_sha256,
-            "row_sha256s": all_row_sha256s,
-            # The file this pass wrote: `rows/<judge>.jsonl` (binary) or `rows/<judge>.three_way.jsonl` (3-way).
-            "rows_file": f"{ROWS_DIRNAME}/{row_path.name}",
+            "judge_label": spec.judge_label,
+            "repo_id": spec.repo_id,
+            "revision": spec.revision,
+            "model_digest": verified_digest,
             "pass_mode": pass_mode,
-            "bytes": len(row_bytes),
+            "device": device,
+            "dtype": effective_dtype,
+            "cublas_workspace_config": os.environ.get("CUBLAS_WORKSPACE_CONFIG", CUBLAS_WORKSPACE_CONFIG_VALUE),
+            "deterministic_algorithms": det_status,
+            "fill_uninitialized_memory": False,
+            "attn_implementation": PINNED_ATTN_IMPLEMENTATION,
+            "sdpa_backend": pin_and_read_sdpa_backend(),
             "items_count": len(shard_item_ids) if eff_shard_spec is not None else len(items),
             "calls_count": calls_so_far,
+            "row_count": calls_so_far,
+            "rows_sha256": rows_sha256,
+            "row_sha256s": all_row_sha256s,
             "parsed_count": parsed_count,
             "unparseable_count": unparseable_count,
             "length_stop_count": length_stop_count,
@@ -6149,71 +6226,23 @@ def run_bakeoff_judge(
             "load_wall_seconds_history": load_history,
             "total_seconds": round(total_seconds, 4),
             "elapsed_seconds": child_wall_elapsed_s,
-            "dtype": effective_dtype,
-            "fill_uninitialized_memory": False,
+            "schedule_seed": schedule.seed,
+            "schedule_sha256": schedule.schedule_sha256,
             "shard_spec": eff_shard_spec,
             "shard_manifest_sha256": manifest_file_sha256,
-            "session_fingerprint_sha256": eff_session_fp,
+            "shard_item_ids": shard_item_ids,
+            "anchor_item_ids": anchor_item_ids,
             "discarded_incomplete_item_ids": discarded_incomplete_item_ids,
             "verified_recovery": verified_recovery,
             "canary": canary_summary,
-            "canary_start_records": canary_start_records,
+            "rows_path": str(row_path),
+            "judge_done_path": str(judge_done_path),
             **qwen36_summary_extra,
+            "generations_path": str(gen_path),
         }
-        if synthetic_items:
-            judge_done_doc["synthetic_items"] = True
-        judge_done_tmp.write_text(
-            json.dumps(judge_done_doc, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-            newline="\n",
-        )
-        judge_done_tmp.replace(judge_done_path)
-
-    return {
-        "status": "ok",
-        "judge_id": spec.judge_id,
-        "judge_label": spec.judge_label,
-        "repo_id": spec.repo_id,
-        "revision": spec.revision,
-        "model_digest": verified_digest,
-        "pass_mode": pass_mode,
-        "device": device,
-        "dtype": effective_dtype,
-        "cublas_workspace_config": os.environ.get("CUBLAS_WORKSPACE_CONFIG", CUBLAS_WORKSPACE_CONFIG_VALUE),
-        "deterministic_algorithms": det_status,
-        "fill_uninitialized_memory": False,
-        "attn_implementation": PINNED_ATTN_IMPLEMENTATION,
-        "sdpa_backend": pin_and_read_sdpa_backend(),
-        "items_count": len(shard_item_ids) if eff_shard_spec is not None else len(items),
-        "calls_count": calls_so_far,
-        "row_count": calls_so_far,
-        "rows_sha256": rows_sha256,
-        "row_sha256s": all_row_sha256s,
-        "parsed_count": parsed_count,
-        "unparseable_count": unparseable_count,
-        "length_stop_count": length_stop_count,
-        "aborted_count": aborted_count,
-        "verdict_disagreement_count": verdict_disagreement_count,
-        "probs_missing_count": probs_missing_count,
-        "vram_peak_mib": vram_peak_overall,
-        "load_wall_seconds": load_wall_seconds,
-        "load_wall_seconds_history": load_history,
-        "total_seconds": round(total_seconds, 4),
-        "elapsed_seconds": child_wall_elapsed_s,
-        "schedule_seed": schedule.seed,
-        "schedule_sha256": schedule.schedule_sha256,
-        "shard_spec": eff_shard_spec,
-        "shard_manifest_sha256": manifest_file_sha256,
-        "shard_item_ids": shard_item_ids,
-        "anchor_item_ids": anchor_item_ids,
-        "discarded_incomplete_item_ids": discarded_incomplete_item_ids,
-        "verified_recovery": verified_recovery,
-        "canary": canary_summary,
-        "rows_path": str(row_path),
-        "judge_done_path": str(judge_done_path),
-        **qwen36_summary_extra,
-        "generations_path": str(gen_path),
-    }
+    finally:
+        if callable(close_guard_fn):
+            close_guard_fn()
 
 
 def close_bakeoff_outputs(
@@ -9961,13 +9990,13 @@ def _read_cgroup_int_value(path: Path) -> int | None:
 
 
 def _read_cgroup_nonreclaimable_from_stat(cg_dir: Path) -> tuple[int | None, str]:
-    """Read `(nonreclaimable_bytes, used_source)` from `cg_dir/memory.stat`.
+    """Read `(nonreclaimable_bytes, used_source)` from `cg_dir/memory.stat`, adding `memory.kmem.usage_in_bytes` on v1.
 
-    cgroup v2 uses `anon + shmem + file_dirty + file_writeback + kernel` (or sums
-    `slab_unreclaimable + kernel_stack + pagetables + percpu + sock` when `kernel` is absent);
-    cgroup v1 uses `total_rss + total_shmem + total_dirty + total_writeback` (else
-    `rss + shmem + dirty + writeback`); when missing or unreadable, returns
-    `(None, 'memory.current_fallback')`.
+    cgroup v2 uses `anon + shmem + file_dirty + file_writeback + kernel + sock` when `kernel` is present
+    (or sums `slab_unreclaimable + kernel_stack + pagetables + sec_pagetables + percpu + sock + vmalloc`
+    when `kernel` is absent); cgroup v1 uses `total_rss + total_shmem + total_dirty + total_writeback` (else
+    `rss + shmem + dirty + writeback`) plus `memory.kmem.usage_in_bytes` when present; when missing or
+    unreadable, returns `(None, 'memory.current_fallback')`.
     """
     stat_path = cg_dir / "memory.stat"
     try:
@@ -9983,31 +10012,47 @@ def _read_cgroup_nonreclaimable_from_stat(cg_dir: Path) -> tuple[int | None, str
         dirty = int(stats.get("file_dirty", 0))
         writeback = int(stats.get("file_writeback", 0))
         if "kernel" in stats:
-            kernel_bytes = int(stats["kernel"])
-            used_source = "memory.stat:anon+shmem+file_dirty+file_writeback+kernel"
+            kernel_bytes = int(stats["kernel"]) + int(stats.get("sock", 0))
+            used_source = "memory.stat:anon+shmem+file_dirty+file_writeback+kernel+sock"
         else:
             kernel_bytes = sum(
                 int(stats.get(k, 0))
-                for k in ("slab_unreclaimable", "kernel_stack", "pagetables", "percpu", "sock")
+                for k in (
+                    "slab_unreclaimable",
+                    "kernel_stack",
+                    "pagetables",
+                    "sec_pagetables",
+                    "percpu",
+                    "sock",
+                    "vmalloc",
+                )
             )
             used_source = "memory.stat:anon+shmem+file_dirty+file_writeback+kernel_parts"
         return int(stats["anon"]) + int(stats["shmem"]) + dirty + writeback + kernel_bytes, used_source
+    nonrec_v1: int | None = None
+    src_v1 = "memory.current_fallback"
     if "total_rss" in stats and "total_shmem" in stats:
-        total = (
+        nonrec_v1 = (
             int(stats["total_rss"])
             + int(stats["total_shmem"])
             + int(stats.get("total_dirty", 0))
             + int(stats.get("total_writeback", 0))
         )
-        return total, "memory.stat_v1:total_rss+total_shmem+total_dirty+total_writeback"
-    if "rss" in stats and "shmem" in stats:
-        total = (
+        src_v1 = "memory.stat_v1:total_rss+total_shmem+total_dirty+total_writeback"
+    elif "rss" in stats and "shmem" in stats:
+        nonrec_v1 = (
             int(stats["rss"])
             + int(stats["shmem"])
             + int(stats.get("dirty", 0))
             + int(stats.get("writeback", 0))
         )
-        return total, "memory.stat_v1:rss+shmem+dirty+writeback"
+        src_v1 = "memory.stat_v1:rss+shmem+dirty+writeback"
+    if nonrec_v1 is not None:
+        kmem_bytes = _read_cgroup_int_value(cg_dir / "memory.kmem.usage_in_bytes")
+        if kmem_bytes is not None and 0 <= kmem_bytes < (1 << 60):
+            nonrec_v1 += int(kmem_bytes)
+            src_v1 = f"{src_v1}+kmem"
+        return nonrec_v1, src_v1
     return None, "memory.current_fallback"
 
 
@@ -10016,13 +10061,22 @@ def _read_cgroup_memory_state(
     cgroup_root: Path | None = None,
     proc_cgroup_path: Path | None = None,
 ) -> dict[str, Any]:
-    """Read nearest finite cgroup `memory.max`, `memory.current`, `memory.peak`, and `memory.stat` usage."""
+    """Read cgroup `memory.max`, `memory.current`, `memory.peak`, and `memory.stat` usage from the tightest headroom level."""
     cg_root = Path(cgroup_root) if cgroup_root is not None else Path(os.environ.get("RDLAB_CGROUP_DIR", "").strip() or "/sys/fs/cgroup")
     cg_proc = Path(proc_cgroup_path) if proc_cgroup_path is not None else Path("/proc/self/cgroup")
     first_peak: int | None = None
+    empty_state = {
+        "limit_bytes": None,
+        "current_bytes": None,
+        "peak_bytes": None,
+        "nonreclaimable_bytes": None,
+        "used_source": None,
+        "selected_cgroup_path": None,
+        "cgroup_chain": [],
+    }
     try:
         if not cg_proc.is_file():
-            return {"limit_bytes": None, "current_bytes": None, "peak_bytes": None, "nonreclaimable_bytes": None, "used_source": None}
+            return empty_state
         v2_rel: str | None = None
         v1_rel: str | None = None
         for line in cg_proc.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -10045,6 +10099,9 @@ def _read_cgroup_memory_state(
                     cand_dirs.append(cand)
             if base not in cand_dirs:
                 cand_dirs.append(base)
+        chain_entries: list[dict[str, Any]] = []
+        best_choice: dict[str, Any] | None = None
+        best_headroom: int | None = None
         for cand in cand_dirs:
             if not cand.is_dir():
                 continue
@@ -10056,21 +10113,64 @@ def _read_cgroup_memory_state(
             limit = _read_cgroup_int_value(cand / "memory.max")
             if limit is None:
                 limit = _read_cgroup_int_value(cand / "memory.limit_in_bytes")
-            if limit is not None and 0 <= limit < (1 << 60):
-                cur = _read_cgroup_int_value(cand / "memory.current")
-                if cur is None:
-                    cur = _read_cgroup_int_value(cand / "memory.usage_in_bytes")
-                nonreclaimable, used_src = _read_cgroup_nonreclaimable_from_stat(cand)
-                return {
-                    "limit_bytes": limit,
-                    "current_bytes": cur,
-                    "peak_bytes": peak,
-                    "nonreclaimable_bytes": nonreclaimable,
-                    "used_source": used_src,
-                }
+            cur = _read_cgroup_int_value(cand / "memory.current")
+            if cur is None:
+                cur = _read_cgroup_int_value(cand / "memory.usage_in_bytes")
+            finite_limit = limit if (limit is not None and 0 <= limit < (1 << 60)) else None
+            nonrec: int | None = None
+            used_src = "none"
+            if finite_limit is not None:
+                nonrec, used_src = _read_cgroup_nonreclaimable_from_stat(cand)
+                if nonrec is None and cur is not None:
+                    used_src = "memory.current_fallback"
+            used_val = nonrec if nonrec is not None else (cur if finite_limit is not None else None)
+            headroom_val = (finite_limit - used_val) if (finite_limit is not None and used_val is not None) else finite_limit
+            level = {
+                "path": cand.as_posix(),
+                "limit_bytes": finite_limit,
+                "current_bytes": cur,
+                "peak_bytes": peak,
+                "nonreclaimable_bytes": nonrec,
+                "used_bytes": used_val,
+                "used_source": used_src,
+                "headroom_bytes": headroom_val,
+            }
+            chain_entries.append(level)
+            if finite_limit is not None:
+                assert headroom_val is not None
+                if best_headroom is None or headroom_val < best_headroom:
+                    best_headroom = headroom_val
+                    best_choice = level
+        if best_choice is not None:
+            return {
+                "limit_bytes": best_choice["limit_bytes"],
+                "current_bytes": best_choice["current_bytes"],
+                "peak_bytes": best_choice["peak_bytes"] if best_choice["peak_bytes"] is not None else first_peak,
+                "nonreclaimable_bytes": best_choice["nonreclaimable_bytes"],
+                "used_source": best_choice["used_source"],
+                "selected_cgroup_path": best_choice["path"],
+                "cgroup_chain": chain_entries,
+            }
+        return {
+            "limit_bytes": None,
+            "current_bytes": None,
+            "peak_bytes": first_peak,
+            "nonreclaimable_bytes": None,
+            "used_source": None,
+            "selected_cgroup_path": None,
+            "cgroup_chain": chain_entries,
+        }
     except OSError:
         pass
-    return {"limit_bytes": None, "current_bytes": None, "peak_bytes": first_peak, "nonreclaimable_bytes": None, "used_source": None}
+    return {
+        "limit_bytes": None,
+        "current_bytes": None,
+        "peak_bytes": first_peak,
+        "nonreclaimable_bytes": None,
+        "used_source": None,
+        "selected_cgroup_path": None,
+        "cgroup_chain": [],
+    }
 
 
 def _read_cgroup_memory_peak_bytes(
@@ -10160,13 +10260,307 @@ def _parse_jit_budget_override(raw: str, *, min_value: int, var_name: str) -> in
     return val
 
 
+QWEN36_FLASHINFER_CUDA_ARCH_LIST: str = "12.0f"
+EXPECTED_FUSED_MOE_120_AOT_SO_SHA256: str = "92d9b4efd68a27a7085970ff7f62d597fac4d588fe1f0bdf98e91336ce1dd45b"
+JUDGE_PREBUILT_KERNELS_MISSING: str = "JUDGE_PREBUILT_KERNELS_MISSING"
+JUDGE_JIT_BUILD_ENTERED: str = "JUDGE_JIT_BUILD_ENTERED"
+_LIBCUDART_SO_NAME_RE: re.Pattern[str] = re.compile(r"^libcudart\.so(?:\.[0-9]+)*$")
+
+
+def read_mapped_libcudart_path(proc_maps_path: Path | None = None) -> str | None:
+    """Return the `libcudart` shared-library path actually mapped into the process from `/proc/self/maps`."""
+    maps_path = Path(proc_maps_path) if proc_maps_path is not None else Path("/proc/self/maps")
+    try:
+        text = maps_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    for raw_ln in text.splitlines():
+        parts = raw_ln.strip().split(None, 5)
+        if len(parts) < 6:
+            continue
+        mapped = parts[5].strip()
+        if mapped.endswith(" (deleted)"):
+            mapped = mapped[: -len(" (deleted)")].strip()
+        if not mapped or mapped.startswith("["):
+            continue
+        base_name = Path(mapped).name
+        if _LIBCUDART_SO_NAME_RE.match(base_name):
+            return mapped
+    return None
+
+
+def scan_flashinfer_workspace_build_entered(
+    workspace_dirs: Sequence[Path | str | None] | None = None,
+    *,
+    run_ninja_called: bool = False,
+) -> dict[str, Any]:
+    """Detect whether a FlashInfer JIT build was entered (`run_ninja`, `.ninja_log`, or `cached_ops/<module>`), ignoring generated `.cu` files."""
+    candidates: list[Path] = []
+    seen_roots: set[str] = set()
+    raw_dirs: list[Path | str | None] = list(workspace_dirs) if workspace_dirs is not None else []
+    if workspace_dirs is None:
+        try:
+            fi_env = importlib.import_module("flashinfer.jit.env")
+            raw_dirs.extend(
+                [
+                    getattr(fi_env, "FLASHINFER_WORKSPACE_DIR", None),
+                    getattr(fi_env, "FLASHINFER_CACHE_DIR", None),
+                ]
+            )
+        except Exception:
+            pass
+        env_ws = os.environ.get("FLASHINFER_WORKSPACE_BASE", "").strip()
+        if env_ws:
+            raw_dirs.append(Path(env_ws) / ".cache" / "flashinfer")
+    for raw_d in raw_dirs:
+        if not raw_d:
+            continue
+        p = Path(raw_d)
+        key = p.as_posix()
+        if key not in seen_roots:
+            seen_roots.add(key)
+            candidates.append(p)
+
+    ninja_logs: list[str] = []
+    cached_ops_dirs: list[str] = []
+    for root in candidates:
+        if not root.is_dir():
+            continue
+        for match in sorted(root.rglob(".ninja_log")):
+            if match.is_file():
+                ninja_logs.append(match.as_posix())
+        cached_roots: list[Path] = []
+        if root.name == "cached_ops":
+            cached_roots.append(root)
+        for match in sorted(root.rglob("cached_ops")):
+            if match.is_dir() and match not in cached_roots:
+                cached_roots.append(match)
+        for cr in cached_roots:
+            try:
+                for child in sorted(cr.iterdir()):
+                    if child.is_dir():
+                        cached_ops_dirs.append(child.as_posix())
+            except OSError:
+                continue
+
+    ninja_logs = sorted(set(ninja_logs))
+    cached_ops_dirs = sorted(set(cached_ops_dirs))
+    build_entered = bool(run_ninja_called or ninja_logs or cached_ops_dirs)
+    return {
+        "build_entered": build_entered,
+        "run_ninja_called": bool(run_ninja_called),
+        "ninja_logs": ninja_logs,
+        "cached_ops_dirs": cached_ops_dirs,
+    }
+
+
+class FlashInferRunNinjaGuard:
+    """Wraps both `flashinfer.jit.cpp_ext.run_ninja` and `flashinfer.jit.core.run_ninja` to refuse any JIT compile."""
+
+    def __init__(self) -> None:
+        self.run_ninja_called: bool = False
+        self.calls: list[dict[str, Any]] = []
+        self._installed: bool = False
+        self._cpp_ext_mod: Any = None
+        self._core_mod: Any = None
+        self._orig_cpp_ext_run_ninja: Any = None
+        self._orig_core_run_ninja: Any = None
+
+    def install(self) -> None:
+        if self._installed:
+            return
+        try:
+            cpp_ext_mod = importlib.import_module("flashinfer.jit.cpp_ext")
+        except Exception:
+            cpp_ext_mod = None
+        try:
+            core_mod = importlib.import_module("flashinfer.jit.core")
+        except Exception:
+            core_mod = None
+        guard = self
+
+        def _guarded_run_ninja(*args: Any, **kwargs: Any) -> Any:
+            guard.run_ninja_called = True
+            guard.calls.append({"args": [str(a) for a in args], "kwargs": {str(k): str(v) for k, v in kwargs.items()}})
+            raise refused_error(
+                JUDGE_JIT_BUILD_ENTERED,
+                "FlashInfer attempted to invoke run_ninja during judge execution.",
+                "Install the matching prebuilt flashinfer-jit-cache and flashinfer-jit-cache-sm120f wheels so no runtime JIT compilation runs.",
+            )
+
+        self._cpp_ext_mod = cpp_ext_mod
+        self._core_mod = core_mod
+        if cpp_ext_mod is not None and hasattr(cpp_ext_mod, "run_ninja"):
+            self._orig_cpp_ext_run_ninja = cpp_ext_mod.run_ninja
+            cpp_ext_mod.run_ninja = _guarded_run_ninja
+        if core_mod is not None and hasattr(core_mod, "run_ninja"):
+            self._orig_core_run_ninja = core_mod.run_ninja
+            core_mod.run_ninja = _guarded_run_ninja
+        self._installed = True
+
+    def uninstall(self) -> None:
+        if not self._installed:
+            return
+        if self._cpp_ext_mod is not None and self._orig_cpp_ext_run_ninja is not None:
+            self._cpp_ext_mod.run_ninja = self._orig_cpp_ext_run_ninja
+        if self._core_mod is not None and self._orig_core_run_ninja is not None:
+            self._core_mod.run_ninja = self._orig_core_run_ninja
+        self._installed = False
+
+
+def verify_qwen36_prebuilt_kernels_before_llm(
+    *,
+    expected_so_sha256: str | None = None,
+    proc_maps_path: Path | None = None,
+) -> dict[str, Any]:
+    """Verify FlashInfer's prebuilt AOT `fused_moe_120` kernel before constructing `LLM(...)`."""
+    eff_expected_sha256 = (
+        EXPECTED_FUSED_MOE_120_AOT_SO_SHA256
+        if expected_so_sha256 is None
+        else str(expected_so_sha256)
+    )
+    had_arch = bool(os.environ.get("FLASHINFER_CUDA_ARCH_LIST", "").strip())
+    if not had_arch:
+        os.environ["FLASHINFER_CUDA_ARCH_LIST"] = QWEN36_FLASHINFER_CUDA_ARCH_LIST
+    try:
+        fi_fused_moe = importlib.import_module("flashinfer.jit.fused_moe")
+        fi_env = importlib.import_module("flashinfer.jit.env")
+    except Exception as exc:
+        raise refused_error(
+            JUDGE_PREBUILT_KERNELS_MISSING,
+            f"FlashInfer prebuilt kernel check failed importing flashinfer.jit: {type(exc).__name__}: {exc}.",
+            "Install pinned flashinfer-python, flashinfer-jit-cache, and flashinfer-jit-cache-sm120f wheels in venv-vllm.",
+        ) from exc
+
+    if not had_arch:
+        try:
+            fi_core = importlib.import_module("flashinfer.jit.core")
+            refresh_fn = getattr(fi_core, "refresh_current_compilation_context", None)
+            if callable(refresh_fn):
+                refresh_fn()
+        except Exception:
+            pass
+
+    gen_fn = getattr(fi_fused_moe, "gen_cutlass_fused_moe_sm120_module", None)
+    if not callable(gen_fn):
+        raise refused_error(
+            JUDGE_PREBUILT_KERNELS_MISSING,
+            "flashinfer.jit.fused_moe.gen_cutlass_fused_moe_sm120_module is unavailable.",
+            "Install pinned flashinfer-python==0.7.3 with prebuilt sm120f AOT kernels.",
+        )
+    try:
+        spec = gen_fn(use_fast_build=False)
+    except Exception as exc:
+        raise refused_error(
+            JUDGE_PREBUILT_KERNELS_MISSING,
+            f"gen_cutlass_fused_moe_sm120_module(use_fast_build=False) failed: {type(exc).__name__}: {exc}.",
+            "Verify FLASHINFER_CUDA_ARCH_LIST=12.0f and prebuilt sm120f kernel wheels in venv-vllm.",
+        ) from exc
+
+    is_aot = bool(getattr(spec, "is_aot", False))
+    if not is_aot:
+        raise refused_error(
+            JUDGE_PREBUILT_KERNELS_MISSING,
+            f"FlashInfer {getattr(spec, 'name', 'fused_moe_120')} reported is_aot=False; refusing to compile on judge pod.",
+            "Install matching flashinfer-jit-cache and flashinfer-jit-cache-sm120f wheels for FLASHINFER_CUDA_ARCH_LIST=12.0f.",
+        )
+
+    module_name = str(getattr(spec, "name", "fused_moe_120") or "fused_moe_120")
+    artifacts = tuple(getattr(spec, "aot_artifacts", ()) or ())
+    if not artifacts and callable(getattr(fi_env, "get_aot_artifacts", None)):
+        try:
+            artifacts = tuple(fi_env.get_aot_artifacts(module_name) or ())
+        except Exception:
+            artifacts = ()
+
+    so_path_raw: Any = None
+    provider_id: str | None = None
+    provider_version: str | None = None
+    if artifacts:
+        art = artifacts[0]
+        so_path_raw = getattr(art, "path", None)
+        provider_id = getattr(art, "provider_id", None)
+        provider_version = getattr(art, "version", None)
+    if so_path_raw is None:
+        so_path_raw = getattr(spec, "aot_path", None)
+    if so_path_raw is None and callable(getattr(spec, "get_library_path", None)):
+        so_path_raw = spec.get_library_path()
+    if so_path_raw is None:
+        raise refused_error(
+            JUDGE_PREBUILT_KERNELS_MISSING,
+            f"FlashInfer {module_name} reported is_aot=True without an AOT .so path.",
+            "Verify flashinfer-jit-cache-sm120f installation.",
+        )
+    so_path = Path(so_path_raw)
+    if not so_path.is_file():
+        raise refused_error(
+            JUDGE_PREBUILT_KERNELS_MISSING,
+            f"FlashInfer AOT kernel binary missing on disk: {so_path}.",
+            "Re-sync venv-vllm from vllm.lock.txt so fused_moe_120.so is installed.",
+        )
+
+    hasher = hashlib.sha256()
+    with so_path.open("rb") as fh:
+        while chunk := fh.read(1024 * 1024):
+            hasher.update(chunk)
+    actual_sha256 = hasher.hexdigest().lower()
+    if actual_sha256 != eff_expected_sha256.lower():
+        raise refused_error(
+            JUDGE_PREBUILT_KERNELS_MISSING,
+            f"FlashInfer AOT {so_path.name} sha256 mismatch: file={actual_sha256}, expected={eff_expected_sha256}.",
+            "Re-sync venv-vllm from scripts/colab/locks/vllm.lock.txt.",
+        )
+
+    if provider_id is None:
+        provider_id = getattr(spec, "provider_id", None)
+    if provider_version is None:
+        provider_version = getattr(spec, "provider_version", None)
+
+    providers_list = tuple(getattr(fi_env, "FLASHINFER_AOT_PROVIDERS", ()) or ())
+    if not providers_list and callable(getattr(fi_env, "_get_aot_providers", None)):
+        try:
+            providers_list = tuple(fi_env._get_aot_providers() or ())
+        except Exception:
+            providers_list = ()
+    for prov in providers_list:
+        p_id = str(getattr(prov, "provider_id", "") or "")
+        p_ver = str(getattr(prov, "version", "") or "")
+        p_modules = getattr(prov, "modules", ()) or ()
+        if provider_id is not None and p_id == str(provider_id):
+            provider_version = p_ver or provider_version
+            break
+        if provider_id is None and module_name in p_modules:
+            provider_id = p_id or None
+            provider_version = p_ver or provider_version
+            break
+    if not provider_id or not provider_version:
+        raise refused_error(
+            JUDGE_PREBUILT_KERNELS_MISSING,
+            f"FlashInfer AOT provider metadata incomplete for {module_name}: provider_id={provider_id!r}, version={provider_version!r}.",
+            "Ensure flashinfer-jit-cache and flashinfer-jit-cache-sm120f expose valid AOT provider metadata.",
+        )
+
+    libcudart_path = read_mapped_libcudart_path(proc_maps_path=proc_maps_path)
+    return {
+        "module_name": module_name,
+        "is_aot": True,
+        "provider_id": str(provider_id),
+        "provider_version": str(provider_version),
+        "so_path": so_path.as_posix(),
+        "so_sha256": actual_sha256,
+        "expected_so_sha256": eff_expected_sha256.lower(),
+        "libcudart_path": libcudart_path,
+        "build_entered": False,
+    }
+
+
 def ensure_qwen36_jit_build_env_before_llm(
     *,
     cgroup_root: Path | None = None,
     proc_cgroup_path: Path | None = None,
     nproc: int | None = None,
 ) -> dict[str, Any]:
-    """Read cgroup headroom fresh and set ninja/nvcc JIT parallelism env vars immediately before `LLM(...)`."""
+    """Read cgroup headroom fresh across the full cgroup chain and set ninja/nvcc JIT parallelism env vars immediately before `LLM(...)`."""
     overrides: dict[str, int] = {}
     reserve_bytes = QWEN36_JIT_BUILD_RESERVE_BYTES
     per_job_bytes = QWEN36_JIT_BUILD_PER_JOB_BYTES
@@ -10198,6 +10592,8 @@ def ensure_qwen36_jit_build_env_before_llm(
         nproc=nproc,
         overrides=overrides,
     )
+    plan["selected_cgroup_path"] = cg_state.get("selected_cgroup_path")
+    plan["cgroup_chain"] = list(cg_state.get("cgroup_chain") or [])
     for k, v in plan["env_values"].items():
         os.environ[k] = v
     limit_tok = str(plan["limit_bytes"]) if plan.get("limit_bytes") is not None else "none"
@@ -10213,6 +10609,14 @@ def ensure_qwen36_jit_build_env_before_llm(
         f"reserve_bytes={plan['reserve_bytes']} "
         f"per_job_bytes={plan['per_job_bytes']} source={plan['source']} env={env_tok}"
     )
+    if plan.get("selected_cgroup_path"):
+        log_line += f" cgroup_path={plan['selected_cgroup_path']}"
+    if plan.get("cgroup_chain"):
+        chain_tok = ",".join(
+            f"{lvl.get('path')}(limit={lvl.get('limit_bytes')},used={lvl.get('used_bytes')},headroom={lvl.get('headroom_bytes')})"
+            for lvl in plan["cgroup_chain"]
+        )
+        log_line += f" cgroup_chain={chain_tok}"
     if plan["source"] == "fallback":
         log_line += f" nproc={plan['nproc']} fallback_reason=no_finite_cgroup_limit"
     if overrides:
@@ -10293,6 +10697,43 @@ class VllmJudgeTransport:
         self._llm_init_seconds: float | None = None
         self._jit_build_summary: dict[str, Any] | None = None
         self._cgroup_memory_peak_bytes: int | None = None
+        self._prebuilt_jit_cache_info: dict[str, Any] | None = None
+        self._build_entered: bool = False
+        self._build_scan_report: dict[str, Any] | None = None
+        self._run_ninja_guard: FlashInferRunNinjaGuard | None = None
+
+    def verify_no_build_entered(
+        self,
+        *,
+        workspace_dirs: Sequence[Path | str | None] | None = None,
+    ) -> dict[str, Any]:
+        """Verify neither `run_ninja` nor the FlashInfer workspace indicates a JIT build was entered."""
+        guard_called = bool(self._run_ninja_guard is not None and self._run_ninja_guard.run_ninja_called)
+        scan = scan_flashinfer_workspace_build_entered(
+            workspace_dirs=workspace_dirs,
+            run_ninja_called=bool(guard_called or self._build_entered),
+        )
+        self._build_scan_report = scan
+        self._build_entered = bool(scan["build_entered"])
+        if self._prebuilt_jit_cache_info is not None:
+            self._prebuilt_jit_cache_info["build_entered"] = self._build_entered
+        if self._build_entered:
+            raise refused_error(
+                JUDGE_JIT_BUILD_ENTERED,
+                (
+                    f"FlashInfer JIT build entered unexpectedly during judge run: "
+                    f"run_ninja_called={scan['run_ninja_called']}, "
+                    f"ninja_logs={scan['ninja_logs'][:3]}, "
+                    f"cached_ops_dirs={scan['cached_ops_dirs'][:3]}."
+                ),
+                "Install matching prebuilt flashinfer-jit-cache and flashinfer-jit-cache-sm120f wheels so FlashInfer loads AOT kernels without building.",
+            )
+        return scan
+
+    def close_build_guard(self) -> None:
+        if self._run_ninja_guard is not None:
+            self._run_ninja_guard.uninstall()
+            self._run_ninja_guard = None
 
     def verify_ready(self, spec: JudgeSpec, *, allow_remote_code_reviewed: str | None = None) -> str:
         check_remote_code_gate(spec, allow_remote_code_reviewed=allow_remote_code_reviewed)
@@ -10371,10 +10812,18 @@ class VllmJudgeTransport:
 
         # Take the cgroup non-reclaimable memory reading right before constructing `LLM(...)`.
         self._jit_build_plan = ensure_qwen36_jit_build_env_before_llm()
+        # Require prebuilt FlashInfer AOT kernels and install lifetime run_ninja guard before `LLM(...)`.
+        if self._run_ninja_guard is None:
+            self._run_ninja_guard = FlashInferRunNinjaGuard()
+        self._run_ninja_guard.install()
+        self._prebuilt_jit_cache_info = verify_qwen36_prebuilt_kernels_before_llm()
+        self._build_entered = False
         child_progress_raw = os.environ.get("RDLAB_JUDGE_CHILD_PROGRESS_FILE", "").strip()
-        if child_progress_raw:
-            _append_child_progress_line(
-                Path(child_progress_raw),
+        eff_child_progress: Path | None = (
+            Path(child_progress_raw) if child_progress_raw else getattr(self, "_progress_file", None)
+        )
+        if eff_child_progress is not None:
+            for child_rec in (
                 {
                     "kind": "jit_build_jobs",
                     "stage": "before_llm",
@@ -10385,10 +10834,25 @@ class VllmJudgeTransport:
                     "nonreclaimable_bytes": self._jit_build_plan.get("nonreclaimable_bytes"),
                     "used_bytes": self._jit_build_plan.get("used_bytes"),
                     "used_source": self._jit_build_plan.get("used_source"),
+                    "selected_cgroup_path": self._jit_build_plan.get("selected_cgroup_path"),
+                    "cgroup_chain": self._jit_build_plan.get("cgroup_chain"),
                     "source": self._jit_build_plan.get("source"),
                 },
-                lock=threading.Lock(),
-            )
+                {
+                    "kind": "prebuilt_jit_cache",
+                    "stage": "before_llm",
+                    "judge_id": spec.judge_id,
+                    **self._prebuilt_jit_cache_info,
+                },
+            ):
+                try:
+                    _append_child_progress_line(
+                        eff_child_progress,
+                        child_rec,
+                        lock=_CHILD_PROGRESS_LOCK,
+                    )
+                except OSError:
+                    pass
         t_llm_init = time.monotonic()
         try:
             self._llm = LLM(
@@ -10405,6 +10869,9 @@ class VllmJudgeTransport:
                 max_num_batched_tokens=max_num_batched_tokens,
                 enable_prefix_caching=QWEN36_ENABLE_PREFIX_CACHING,
             )
+        except Exception:
+            self.close_build_guard()
+            raise
         finally:
             self._llm_init_seconds = round(max(0.0, time.monotonic() - t_llm_init), 6)
             self._cgroup_memory_peak_bytes = _read_cgroup_memory_peak_bytes()
@@ -10413,6 +10880,10 @@ class VllmJudgeTransport:
                 if os.environ.get(QWEN36_FLASHINFER_JIT_BUILD_LOG_ENV_VAR) == str(eff_jit_log_path):
                     os.environ.pop(QWEN36_FLASHINFER_JIT_BUILD_LOG_ENV_VAR, None)
                 temp_jit_dir.cleanup()
+        mapped_libcudart = read_mapped_libcudart_path()
+        if mapped_libcudart is not None and self._prebuilt_jit_cache_info is not None:
+            self._prebuilt_jit_cache_info["libcudart_path"] = mapped_libcudart
+        self.verify_no_build_entered()
         self._max_model_len = max_model_len
         self._max_num_batched_tokens = max_num_batched_tokens
         resolved_cfg = read_qwen36_resolved_engine_config(self._llm)
@@ -10567,6 +11038,11 @@ class VllmJudgeTransport:
             "call_seed": call_seed,
             "seed_variant": recorded_seed_variant,
         }
+        if isinstance(self._prebuilt_jit_cache_info, Mapping):
+            prebuilt_pin = dict(self._prebuilt_jit_cache_info)
+            prebuilt_pin["build_entered"] = bool(self._build_entered)
+            library_pins["prebuilt_jit_cache"] = prebuilt_pin
+            library_pins["build_entered"] = bool(self._build_entered)
         return JudgeTransportResponse(
             raw_text=raw_text,
             tokens=tokens,

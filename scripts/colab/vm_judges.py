@@ -52,6 +52,7 @@ import tempfile
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 import zipfile
@@ -499,7 +500,7 @@ EXPECTED_D3_LOCK_SHA256 = (
     "08801f9ac5e3cfb14ce819b051aeef388bea3e564e7b99bddc10d91537ab78e2"
 )
 EXPECTED_VLLM_LOCK_SHA256 = (
-    "a9243e0bb6416650c21ff131beefb4f3406bc42310919219409d68459cb3cef5"
+    "d905b7ec43e45643ab2788730bda1290b9ea6e01f85f87596c41a436e247990b"
 )
 VLLM_VENV_NAME = "venv-vllm"
 VLLM_PYTHON_VERSION = "3.13"
@@ -1894,23 +1895,33 @@ def verify_lock_sdist_and_hashes(lock_path: Path) -> dict[str, Any]:
         if not line:
             continue
         m_pkg = re.match(r"^([a-zA-Z0-9_.-]+)==([^\s\\]+)", line)
-        if m_pkg:
+        m_url = None if m_pkg else re.match(r"^([a-zA-Z0-9_.-]+)\s*@\s*(https?://[^\s\\]+)", line)
+        if m_pkg or m_url:
             if cur_name is not None and cur_ver is not None:
                 entries.append((cur_name, cur_ver, cur_hashes, cur_dists))
-            cur_name = m_pkg.group(1).lower()
-            cur_ver = m_pkg.group(2)
+            if m_pkg:
+                cur_name = m_pkg.group(1).lower()
+                cur_ver = m_pkg.group(2)
+                cur_dists = []
+            else:
+                assert m_url is not None
+                cur_name = m_url.group(1).lower()
+                cur_url = m_url.group(2)
+                cur_ver = cur_url
+                url_base = urllib.parse.unquote(cur_url.split("?", 1)[0].split("#", 1)[0].rsplit("/", 1)[-1])
+                cur_dists = [url_base] if url_base.endswith((".whl", ".tar.gz", ".zip")) else []
             cur_hashes = [
                 hm.group(1)
                 for hm in re.finditer(r"--hash=sha256:([0-9a-f]{64})", line)
             ]
-            cur_dists = []
             continue
         if cur_name is not None:
             for hm in re.finditer(r"--hash=sha256:([0-9a-f]{64})", line):
                 cur_hashes.append(hm.group(1))
             if line.startswith("# distribution:"):
                 dist_name = line.split("# distribution:", 1)[1].strip()
-                cur_dists.append(dist_name)
+                if dist_name and dist_name not in cur_dists:
+                    cur_dists.append(dist_name)
 
     if cur_name is not None and cur_ver is not None:
         entries.append((cur_name, cur_ver, cur_hashes, cur_dists))
@@ -2901,10 +2912,10 @@ def preflight_judge_receipts(judge_ids: Sequence[str], *, receipts_dir: Path) ->
     return out
 
 
-def _verify_snapshot_files_against_receipt(
+def _verify_snapshot_files_against_receipt_with_files(
     spec: JudgeSpec, snapshot_dir: Path, receipt_doc: Mapping[str, Any]
-) -> tuple[Path, str]:
-    """Hash every file of `snapshot_dir` against a receipt `check_judge_receipt_static` accepted (sizes first)."""
+) -> tuple[Path, str, list[tuple[Path, int]]]:
+    """Hash every file of `snapshot_dir` against a receipt `check_judge_receipt_static` accepted (sizes first), returning `(snapshot_dir, digest, verified_files)`."""
     expected_files: Mapping[str, Any] = receipt_doc["files"]
     expected_rels = set(expected_files.keys())
 
@@ -2942,6 +2953,7 @@ def _verify_snapshot_files_against_receipt(
 
     # Check every file's size (`st_size`) against the receipt's `bytes` BEFORE hashing any bytes.
     sizes_by_rel: dict[str, int] = {}
+    verified_files: list[tuple[Path, int]] = []
     for rel in sorted(expected_rels):
         entry = expected_files[rel]
         exp_bytes = entry.get("bytes")
@@ -2953,6 +2965,10 @@ def _verify_snapshot_files_against_receipt(
                 f"Snapshot file '{rel}' byte length mismatch in '{snapshot_dir}': expected {exp_bytes}, got {size_on_disk}.",
             )
         sizes_by_rel[rel] = size_on_disk
+        try:
+            verified_files.append((fpath.resolve(strict=True), int(size_on_disk)))
+        except OSError:
+            verified_files.append((fpath, int(size_on_disk)))
 
     digest_hasher = hashlib.sha256()
     digest_hasher.update(f"{spec.repo_id}@{spec.revision}\n".encode("utf-8"))
@@ -2974,7 +2990,17 @@ def _verify_snapshot_files_against_receipt(
         digest_hasher.update(f"{rel}:{actual_sha}:{size_on_disk}\n".encode("utf-8"))
 
     verified_digest = f"sha256:{spec.revision}:{digest_hasher.hexdigest()[:16]}"
-    return snapshot_dir, verified_digest
+    return snapshot_dir, verified_digest, verified_files
+
+
+def _verify_snapshot_files_against_receipt(
+    spec: JudgeSpec, snapshot_dir: Path, receipt_doc: Mapping[str, Any]
+) -> tuple[Path, str]:
+    """Hash every file of `snapshot_dir` against a receipt `check_judge_receipt_static` accepted (sizes first)."""
+    snap_dir, verified_digest, _ = _verify_snapshot_files_against_receipt_with_files(
+        spec, snapshot_dir, receipt_doc
+    )
+    return snap_dir, verified_digest
 
 
 def rows_filename_for_pass(judge_id: str, pass_mode: str = DEFAULT_PASS_MODE) -> str:
@@ -3397,8 +3423,9 @@ def read_cgroup_memory_peak(
 def _parse_cgroup_memory_stat_text(text: str) -> tuple[int | None, str]:
     """Extract non-reclaimable memory bytes from cgroup `memory.stat` text.
 
-    - cgroup v2 (`anon` + `shmem`): includes `anon + shmem + file_dirty + file_writeback + kernel`
-      (or sums `slab_unreclaimable + kernel_stack + pagetables + percpu + sock` when `kernel` is absent).
+    - cgroup v2 (`anon` + `shmem`): includes `anon + shmem + file_dirty + file_writeback + kernel + sock`
+      when `kernel` is present, or sums `slab_unreclaimable + kernel_stack + pagetables + sec_pagetables + percpu + sock + vmalloc`
+      when `kernel` is absent.
     - cgroup v1 (`total_rss` + `total_shmem` + `total_dirty` + `total_writeback`, else
       `rss` + `shmem` + `dirty` + `writeback`).
     - When required keys are absent: returns `(None, 'memory.current_fallback')`.
@@ -3412,12 +3439,20 @@ def _parse_cgroup_memory_stat_text(text: str) -> tuple[int | None, str]:
         dirty = int(stats.get("file_dirty", 0))
         writeback = int(stats.get("file_writeback", 0))
         if "kernel" in stats:
-            kernel_bytes = int(stats["kernel"])
-            used_source = "memory.stat:anon+shmem+file_dirty+file_writeback+kernel"
+            kernel_bytes = int(stats["kernel"]) + int(stats.get("sock", 0))
+            used_source = "memory.stat:anon+shmem+file_dirty+file_writeback+kernel+sock"
         else:
             kernel_bytes = sum(
                 int(stats.get(k, 0))
-                for k in ("slab_unreclaimable", "kernel_stack", "pagetables", "percpu", "sock")
+                for k in (
+                    "slab_unreclaimable",
+                    "kernel_stack",
+                    "pagetables",
+                    "sec_pagetables",
+                    "percpu",
+                    "sock",
+                    "vmalloc",
+                )
             )
             used_source = "memory.stat:anon+shmem+file_dirty+file_writeback+kernel_parts"
         return int(stats["anon"]) + int(stats["shmem"]) + dirty + writeback + kernel_bytes, used_source
@@ -3441,18 +3476,25 @@ def _parse_cgroup_memory_stat_text(text: str) -> tuple[int | None, str]:
 
 
 def read_cgroup_nonreclaimable_bytes(cgroup_dir: Path | str | None) -> tuple[int | None, str]:
-    """Read `(nonreclaimable_bytes, used_source)` from `cgroup_dir/memory.stat`, falling back to `memory.current`."""
+    """Read `(nonreclaimable_bytes, used_source)` from `cgroup_dir/memory.stat`, adding `memory.kmem.usage_in_bytes` on v1."""
     if not cgroup_dir:
         return None, "memory.current_fallback"
-    stat_path = Path(cgroup_dir) / "memory.stat"
+    cg_path = Path(cgroup_dir)
+    stat_path = cg_path / "memory.stat"
     try:
         if not stat_path.is_file():
             return None, "memory.current_fallback"
-        return _parse_cgroup_memory_stat_text(
+        nonrec, used_source = _parse_cgroup_memory_stat_text(
             stat_path.read_text(encoding="utf-8", errors="replace")
         )
     except OSError:
         return None, "memory.current_fallback"
+    if nonrec is not None and used_source.startswith("memory.stat_v1:"):
+        kmem_bytes = _read_cgroup_int(cg_path / "memory.kmem.usage_in_bytes")
+        if kmem_bytes is not None and 0 <= kmem_bytes < (1 << 60):
+            nonrec += int(kmem_bytes)
+            used_source = f"{used_source}+kmem"
+    return nonrec, used_source
 
 
 def _parse_positive_or_zero_int_env(
@@ -3582,6 +3624,59 @@ def compute_jit_build_jobs(
     }
 
 
+def select_tightest_cgroup_headroom(
+    cg_chain: Mapping[str, Any],
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    """Evaluate headroom (`limit - used`) at every finite cgroup level in the chain and pick the tightest one."""
+    evaluated: list[dict[str, Any]] = []
+    chosen: dict[str, Any] | None = None
+    best_headroom: int | None = None
+    for entry in cg_chain.get("chain") or ():
+        if not isinstance(entry, Mapping):
+            continue
+        raw_max = entry.get("memory.max")
+        limit_bytes: int | None = None
+        if raw_max is not None and re.fullmatch(r"\d+", str(raw_max)):
+            parsed_max = int(str(raw_max))
+            if 0 <= parsed_max < (1 << 60):
+                limit_bytes = parsed_max
+        cur_val = entry.get("memory.current")
+        cur_bytes = int(cur_val) if cur_val is not None else None
+        path_str = str(entry.get("path") or "")
+        nonrec_bytes: int | None = None
+        used_source = "none"
+        if limit_bytes is not None:
+            nonrec_bytes, used_source = read_cgroup_nonreclaimable_bytes(path_str or None)
+            if nonrec_bytes is None and cur_bytes is not None:
+                used_source = "memory.current_fallback"
+        used_bytes = (
+            nonrec_bytes
+            if nonrec_bytes is not None
+            else (cur_bytes if limit_bytes is not None else None)
+        )
+        headroom_bytes = (
+            (int(limit_bytes) - int(used_bytes))
+            if (limit_bytes is not None and used_bytes is not None)
+            else limit_bytes
+        )
+        level_rec = {
+            "path": path_str,
+            "limit_bytes": limit_bytes,
+            "current_bytes": cur_bytes,
+            "nonreclaimable_bytes": nonrec_bytes,
+            "used_bytes": used_bytes,
+            "used_source": used_source,
+            "headroom_bytes": headroom_bytes,
+        }
+        evaluated.append(level_rec)
+        if limit_bytes is not None:
+            assert headroom_bytes is not None
+            if best_headroom is None or headroom_bytes < best_headroom:
+                best_headroom = headroom_bytes
+                chosen = level_rec
+    return chosen, evaluated
+
+
 def format_jit_build_jobs_log_line(plan: Mapping[str, Any]) -> str:
     """Format the single-line `QWEN36_JIT_BUILD_JOBS` diagnostic log summary."""
     limit_tok = str(plan["limit_bytes"]) if plan.get("limit_bytes") is not None else "none"
@@ -3601,6 +3696,15 @@ def format_jit_build_jobs_log_line(plan: Mapping[str, Any]) -> str:
         f"reserve_bytes={plan['reserve_bytes']} "
         f"per_job_bytes={plan['per_job_bytes']} source={plan['source']} env={env_tok}"
     )
+    if plan.get("selected_cgroup_path"):
+        line += f" cgroup_path={plan['selected_cgroup_path']}"
+    chain = plan.get("cgroup_chain") or []
+    if chain:
+        chain_tok = ",".join(
+            f"{lvl.get('path')}(limit={lvl.get('limit_bytes')},used={lvl.get('used_bytes')},headroom={lvl.get('headroom_bytes')})"
+            for lvl in chain
+        )
+        line += f" cgroup_chain={chain_tok}"
     if plan.get("source") == "fallback":
         line += f" nproc={plan.get('nproc')} fallback_reason=no_finite_cgroup_limit"
     overrides = plan.get("overrides") or {}
@@ -3618,27 +3722,27 @@ def apply_jit_build_jobs_to_env(
     config_env: Mapping[str, str] | None = None,
     nproc: int | None = None,
 ) -> dict[str, Any]:
-    """Compute JIT build job count from cgroup headroom, populate parallelism env vars in `target_env`, and return the plan."""
+    """Compute JIT build job count from tightest cgroup headroom in the chain, populate env vars, and return the plan."""
     cg_chain = read_cgroup_limit_chain(
         cgroup_root=cgroup_root,
         proc_cgroup_path=proc_cgroup_path,
     )
     budget = resolve_jit_build_budget_params(os.environ if config_env is None else config_env)
-    nf_path = cg_chain.get("nearest_finite_path")
-    nonreclaimable_bytes, used_source = (
-        read_cgroup_nonreclaimable_bytes(nf_path) if nf_path is not None else (None, "none")
-    )
+    tightest, headroom_chain = select_tightest_cgroup_headroom(cg_chain)
+    selected_path = tightest["path"] if tightest is not None else None
     plan = compute_jit_build_jobs(
-        limit_bytes=cg_chain.get("nearest_finite_memory_max"),
-        current_bytes=cg_chain.get("nearest_finite_memory_current"),
-        nonreclaimable_bytes=nonreclaimable_bytes,
-        used_source=used_source,
+        limit_bytes=(tightest["limit_bytes"] if tightest is not None else None),
+        current_bytes=(tightest["current_bytes"] if tightest is not None else None),
+        nonreclaimable_bytes=(tightest["nonreclaimable_bytes"] if tightest is not None else None),
+        used_source=(tightest["used_source"] if tightest is not None else "none"),
         reserve_bytes=budget["reserve_bytes"],
         per_job_bytes=budget["per_job_bytes"],
         nproc=nproc,
         overrides=budget["overrides"],
     )
-    plan["nearest_finite_cgroup_path"] = nf_path
+    plan["nearest_finite_cgroup_path"] = cg_chain.get("nearest_finite_path")
+    plan["selected_cgroup_path"] = selected_path
+    plan["cgroup_chain"] = headroom_chain
     for k, v in plan["env_values"].items():
         target_env[k] = v
     plan["log_line"] = format_jit_build_jobs_log_line(plan)
@@ -3889,6 +3993,54 @@ def _select_judge_specs(
     return selected
 
 
+def verify_all_judge_snapshots_with_files(
+    receipts_dir: Path,
+    hf_home: Path,
+    *,
+    repo_dir: Path | None = None,
+    only_judge_ids: Sequence[str] | None = None,
+) -> tuple[dict[str, str], list[tuple[Path, int]]]:
+    """Verify every file of selected judges and return `(verified_digests_by_judge, verified_files)`."""
+    _ensure_repo_imports(repo_dir)
+    ensure_not_drive_path(receipts_dir)
+    ensure_not_drive_path(hf_home)
+    verified: dict[str, str] = {}
+    verified_files: list[tuple[Path, int]] = []
+    seen_inodes: set[tuple[int, int]] = set()
+    seen_paths: set[str] = set()
+    for judge_id, spec in _select_judge_specs(only_judge_ids):
+        allow_sha = resolve_remote_code_arg_for_judge(spec)
+        if spec.requires_remote_code and allow_sha != D3_REVIEWED_REVISION_BY_JUDGE.get(judge_id):
+            raise RefusalError(
+                "REMOTE_CODE_FORBIDDEN",
+                f"Remote code is forbidden for {judge_id} ({spec.repo_id})",
+            )
+        _, receipt_doc = check_judge_receipt_static(spec, receipts_dir=receipts_dir)
+        snapshot_dir = _resolve_snapshot_dir_for_spec(spec, hf_home=hf_home)
+        _, digest, snap_files = _verify_snapshot_files_against_receipt_with_files(
+            spec,
+            snapshot_dir,
+            receipt_doc,
+        )
+        verified[judge_id] = digest
+        for resolved, size_b in snap_files:
+            try:
+                st = resolved.stat()
+                inode_key = (int(st.st_dev), int(st.st_ino))
+            except OSError:
+                inode_key = (0, 0)
+            path_key = resolved.as_posix()
+            if inode_key != (0, 0):
+                if inode_key in seen_inodes:
+                    continue
+                seen_inodes.add(inode_key)
+            if path_key in seen_paths:
+                continue
+            seen_paths.add(path_key)
+            verified_files.append((resolved, int(size_b)))
+    return verified, verified_files
+
+
 def verify_all_judge_snapshots(
     receipts_dir: Path,
     hf_home: Path,
@@ -3900,24 +4052,16 @@ def verify_all_judge_snapshots(
 
     Refuses the whole run on any SHA mismatch, extra file, bytecode file, or missing file.
     """
-    _ensure_repo_imports(repo_dir)
-    ensure_not_drive_path(receipts_dir)
-    ensure_not_drive_path(hf_home)
-    verified: dict[str, str] = {}
-    for judge_id, spec in _select_judge_specs(only_judge_ids):
-        allow_sha = resolve_remote_code_arg_for_judge(spec)
-        if spec.requires_remote_code and allow_sha != D3_REVIEWED_REVISION_BY_JUDGE.get(judge_id):
-            raise RefusalError(
-                "REMOTE_CODE_FORBIDDEN",
-                f"Remote code is forbidden for {judge_id} ({spec.repo_id})",
-            )
-        _, digest = verify_snapshot_against_receipt(
-            spec,
-            receipts_dir=receipts_dir,
-            hf_home=hf_home,
-        )
-        verified[judge_id] = digest
+    verified, _ = verify_all_judge_snapshots_with_files(
+        receipts_dir,
+        hf_home,
+        repo_dir=repo_dir,
+        only_judge_ids=only_judge_ids,
+    )
     return verified
+
+
+_DEFAULT_VERIFY_ALL_JUDGE_SNAPSHOTS = verify_all_judge_snapshots
 
 
 def _judge_snapshot_bytes_on_disk(
@@ -4581,8 +4725,12 @@ def _collect_verified_snapshot_files(
     *,
     only_judge_ids: Sequence[str] | None = None,
     repo_dir: Path | None = None,
+    receipts_dir: Path | None = None,
 ) -> list[tuple[Path, int]]:
-    """Enumerate unique `(resolved_file_path, size_bytes)` pairs across verified judge snapshots."""
+    """Enumerate unique `(resolved_file_path, size_bytes)` pairs across verified judge snapshots.
+
+    When `receipts_dir` is provided, only files listed in `<receipts_dir>/<owner>__<repo>.sha256.json` are included.
+    """
     _ensure_repo_imports(repo_dir)
     out: list[tuple[Path, int]] = []
     seen_inodes: set[tuple[int, int]] = set()
@@ -4590,6 +4738,10 @@ def _collect_verified_snapshot_files(
     for _judge_id, spec in _select_judge_specs(only_judge_ids):
         owner, repo = str(spec.repo_id).split("/", 1)
         model_dir_name = f"models--{owner}--{repo}"
+        allowed_rels: set[str] | None = None
+        if receipts_dir is not None:
+            _, rec_doc = check_judge_receipt_static(spec, receipts_dir=receipts_dir)
+            allowed_rels = set(rec_doc["files"].keys())
         cand_snaps = [
             hf_home / "hub" / model_dir_name / "snapshots" / str(spec.revision),
             hf_home / model_dir_name / "snapshots" / str(spec.revision),
@@ -4597,7 +4749,12 @@ def _collect_verified_snapshot_files(
         for snap_dir in cand_snaps:
             if not snap_dir.is_dir():
                 continue
-            for item in sorted(snap_dir.rglob("*")):
+            cand_items = (
+                [snap_dir / rel for rel in sorted(allowed_rels)]
+                if allowed_rels is not None
+                else sorted(snap_dir.rglob("*"))
+            )
+            for item in cand_items:
                 try:
                     resolved = item.resolve(strict=True)
                     if not resolved.is_file():
@@ -4670,7 +4827,7 @@ def _sync_verified_files_once(
                         except OSError:
                             pass
         return True, f"fdatasync({synced_files})", None
-    except OSError as exc:
+    except Exception as exc:
         return False, ("sync_fn" if sync_fn is not None else "fdatasync"), f"{type(exc).__name__}: {exc}"
 
 
@@ -4680,7 +4837,12 @@ def _sync_before_page_cache_drop(
     sync_fn: Callable[[], Any] | None = None,
     sync_timeout_seconds: float = DEFAULT_WEIGHTS_SYNC_TIMEOUT_SECONDS,
 ) -> tuple[bool, str, float, str | None, bool]:
-    """Flush dirty snapshot file pages in a bounded worker thread so a stalled filesystem cannot hang a run."""
+    """Flush dirty snapshot file pages in a bounded daemon worker thread so a stalled filesystem cannot hang a run.
+
+    `daemon=True` lets Python's interpreter shutdown avoid joining this worker, though an `os.fdatasync` blocked in
+    uninterruptible kernel I/O sleep (D-state) cannot be cancelled from user space and can still delay OS process
+    teardown until the underlying storage call times out.
+    """
     t_sync = time.monotonic()
     outcome: dict[str, Any] = {"sync_ran": False, "sync_method": "none", "sync_error": None}
     cancel_event = threading.Event()
@@ -4702,7 +4864,7 @@ def _sync_before_page_cache_drop(
     if worker.is_alive():
         cancel_event.set()
         return (
-            True,
+            False,
             ("sync_fn" if sync_fn is not None else "fdatasync"),
             sync_seconds,
             f"TimeoutError: sync exceeded {sync_timeout_seconds}s",
@@ -4722,6 +4884,8 @@ def drop_verified_snapshots_page_cache(
     *,
     only_judge_ids: Sequence[str] | None = None,
     repo_dir: Path | None = None,
+    receipts_dir: Path | None = None,
+    verified_files: Sequence[tuple[Path, int]] | None = None,
     progress_path: Path | None = None,
     cgroup_root: Path | None = None,
     proc_cgroup_path: Path | None = None,
@@ -4733,7 +4897,12 @@ def drop_verified_snapshots_page_cache(
     dryrun: bool = False,
     skip_real_drop: bool = False,
 ) -> dict[str, Any]:
-    """Sync verified weight snapshot files under a bounded deadline and release Linux page cache safely."""
+    """Sync verified weight snapshot files under a bounded deadline and release Linux page cache safely.
+
+    Note: `_sync_before_page_cache_drop` executes per-file `os.fdatasync` on a `daemon=True` worker thread; if the
+    kernel blocks `fdatasync` in uninterruptible D-state, `cancel_event` halts further files while OS teardown for the
+    stuck thread remains governed by kernel storage timeouts.
+    """
     mem_before = _read_cgroup_current_for_drop(
         cgroup_root=cgroup_root,
         proc_cgroup_path=proc_cgroup_path,
@@ -4775,11 +4944,22 @@ def drop_verified_snapshots_page_cache(
     )
 
     try:
-        snapshot_files = _collect_verified_snapshot_files(
-            hf_home,
-            only_judge_ids=only_judge_ids,
-            repo_dir=repo_dir,
-        )
+        if verified_files is not None:
+            dedup: list[tuple[Path, int]] = []
+            seen_v: set[str] = set()
+            for fpath, sz in verified_files:
+                pkey = Path(fpath).as_posix()
+                if pkey not in seen_v:
+                    seen_v.add(pkey)
+                    dedup.append((Path(fpath), int(sz)))
+            snapshot_files = dedup
+        else:
+            snapshot_files = _collect_verified_snapshot_files(
+                hf_home,
+                only_judge_ids=only_judge_ids,
+                repo_dir=repo_dir,
+                receipts_dir=receipts_dir,
+            )
     except Exception as exc:
         snapshot_files = []
         drop_caches_error = f"enumerate_error:{type(exc).__name__}:{exc}"
@@ -4969,12 +5149,23 @@ def download_and_verify_all_judge_weights(
     )
 
     t_ver, start_ver, _ = _record_step_start("verify", progress_path=progress_path)
-    verified = verify_all_judge_snapshots(
-        receipts_dir,
-        hf_home,
-        repo_dir=repo_dir,
-        only_judge_ids=only_judge_ids,
-    )
+    if verify_all_judge_snapshots is _DEFAULT_VERIFY_ALL_JUDGE_SNAPSHOTS:
+        verified, verified_files = verify_all_judge_snapshots_with_files(
+            receipts_dir,
+            hf_home,
+            repo_dir=repo_dir,
+            only_judge_ids=only_judge_ids,
+        )
+        drop_receipts_dir: Path | None = receipts_dir
+    else:
+        verified = verify_all_judge_snapshots(
+            receipts_dir,
+            hf_home,
+            repo_dir=repo_dir,
+            only_judge_ids=only_judge_ids,
+        )
+        verified_files = None
+        drop_receipts_dir = None
     _record_step_end(
         "verify",
         t_ver,
@@ -4988,6 +5179,8 @@ def download_and_verify_all_judge_weights(
         hf_home,
         only_judge_ids=only_judge_ids,
         repo_dir=repo_dir,
+        receipts_dir=drop_receipts_dir,
+        verified_files=verified_files,
         progress_path=progress_path,
         cgroup_root=cgroup_root,
         proc_cgroup_path=proc_cgroup_path,
@@ -8899,6 +9092,7 @@ def _run_judges_pipeline_body(
                 progress_path,
                 {
                     "kind": "jit_build_jobs",
+                    "stage": "before_spawn",
                     "judge": judge_id,
                     "judge_id": judge_id,
                     **_pass_record_fields(judge_id, pass_mode_j, eff_pass_mode),
@@ -8908,6 +9102,8 @@ def _run_judges_pipeline_body(
                     "nonreclaimable_bytes": jit_plan["nonreclaimable_bytes"],
                     "used_bytes": jit_plan["used_bytes"],
                     "used_source": jit_plan["used_source"],
+                    "selected_cgroup_path": jit_plan.get("selected_cgroup_path"),
+                    "cgroup_chain": jit_plan.get("cgroup_chain"),
                     "reserve_bytes": jit_plan["reserve_bytes"],
                     "per_job_bytes": jit_plan["per_job_bytes"],
                     "source": jit_plan["source"],
@@ -8959,12 +9155,16 @@ def _run_judges_pipeline_body(
                                 cp_obj = None
                             if (
                                 isinstance(cp_obj, Mapping)
-                                and cp_obj.get("kind") == "jit_build_jobs"
+                                and cp_obj.get("kind") in ("jit_build_jobs", "prebuilt_jit_cache")
                                 and progress_path is not None
                             ):
+                                fwd_obj = {k: v for k, v in cp_obj.items()}
+                                fwd_obj.setdefault("judge", judge_id)
+                                fwd_obj.setdefault("judge_id", judge_id)
+                                fwd_obj["stage"] = str(cp_obj.get("stage") or "before_llm")
                                 append_progress_line(
                                     progress_path,
-                                    {k: v for k, v in cp_obj.items()},
+                                    fwd_obj,
                                     proc_meminfo_path=proc_meminfo_path,
                                     cgroup_root=cgroup_root,
                                     proc_cgroup_path=proc_cgroup_path,
@@ -9435,6 +9635,10 @@ def _run_judges_pipeline_body(
         elif venv_name == "venv-vllm" or judge_id == QWEN36_JUDGE_ID:
             pass_build_extra["build_wall_seconds"] = load_time_s
             pass_build_extra["build_seconds_source"] = "llm_init"
+        if isinstance(done_doc.get("prebuilt_jit_cache"), Mapping):
+            pass_build_extra["prebuilt_jit_cache"] = dict(done_doc["prebuilt_jit_cache"])
+        if "build_entered" in done_doc:
+            pass_build_extra["build_entered"] = bool(done_doc["build_entered"])
 
         append_progress_line(
             progress_path,

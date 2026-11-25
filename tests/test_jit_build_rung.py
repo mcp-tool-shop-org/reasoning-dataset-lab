@@ -249,9 +249,13 @@ def test_ensure_vllm_venv_and_run_jit_build_rung_mocked(
             py_p = venv_dir / venv_py_rel
             py_p.parent.mkdir(parents=True, exist_ok=True)
             py_p.write_text("", encoding="utf-8")
+            ninja_p = py_p.parent / "ninja"
+            ninja_p.write_text("#!/bin/sh\n", encoding="utf-8")
+            ninja_p.chmod(0o755)
             (cu13 / "bin").mkdir(parents=True, exist_ok=True)
             (cu13 / "nvvm" / "bin").mkdir(parents=True, exist_ok=True)
             (cu13 / "include").mkdir(parents=True, exist_ok=True)
+            (cu13 / "include" / "cuda_runtime_api.h").write_text("#define CUDART_VERSION 13050\n", encoding="utf-8")
             (cu13 / "lib" / "stubs").mkdir(parents=True, exist_ok=True)
             (cu13 / "bin" / "nvcc").write_text("#!/bin/sh\n", encoding="utf-8")
             (cu13 / "lib" / "libcudart.so.13").write_bytes(b"")
@@ -262,6 +266,8 @@ def test_ensure_vllm_venv_and_run_jit_build_rung_mocked(
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         if len(cmd) >= 3 and Path(cmd[0]).name == "uv" and cmd[1] == "pip":
             return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if len(cmd) == 2 and Path(cmd[0]).name == "nvcc" and cmd[1] == "--version":
+            return SimpleNamespace(returncode=0, stdout="Cuda compilation tools, release 13.5, V13.5.37\n", stderr="")
         # Scope runner execution
         env = kwargs.get("env") or {}
         assert env.get("CUDA_VISIBLE_DEVICES") == ""
@@ -303,6 +309,8 @@ def test_ensure_vllm_venv_and_run_jit_build_rung_mocked(
             except OSError:
                 ch = ws / "cuda_home"
                 (ch / "bin").mkdir(parents=True, exist_ok=True)
+                (ch / "include").mkdir(parents=True, exist_ok=True)
+                (ch / "include" / "cuda_runtime_api.h").write_text("#define CUDART_VERSION 13050\n", encoding="utf-8")
                 (ch / "nvvm").mkdir(parents=True, exist_ok=True)
                 (ch / "lib64" / "stubs").mkdir(parents=True, exist_ok=True)
                 nvcc_p = ch / "bin" / "nvcc"
@@ -344,7 +352,8 @@ def test_ensure_vllm_venv_and_run_jit_build_rung_mocked(
         runner=_mock_runner,
     )
     assert res2["success"] is True
-    assert len(runner_calls) - calls_before_reuse == 1
+    assert len(runner_calls) - calls_before_reuse == 2
+    assert [Path(c[0]).name for c in runner_calls[calls_before_reuse:]] == ["nvcc", "systemd-run"]
 
     # In-process main() CLI: --plan-only with --cap-bytes, default cap, and error branches
     rc_plan = jit_build_rung.main([
@@ -633,11 +642,15 @@ def _setup_synthetic_rung_venv_and_flashinfer(
     py_p = venv_dir / venv_py_rel
     py_p.parent.mkdir(parents=True, exist_ok=True)
     py_p.write_text("", encoding="utf-8")
+    ninja_p = py_p.parent / "ninja"
+    ninja_p.write_text("#!/bin/sh\n", encoding="utf-8")
+    ninja_p.chmod(0o755)
     sp_dir = venv_dir / "lib" / "python3.13" / "site-packages"
     cu13 = sp_dir / "nvidia" / "cu13"
     (cu13 / "bin").mkdir(parents=True, exist_ok=True)
     (cu13 / "nvvm" / "bin").mkdir(parents=True, exist_ok=True)
     (cu13 / "include").mkdir(parents=True, exist_ok=True)
+    (cu13 / "include" / "cuda_runtime_api.h").write_text("#define CUDART_VERSION 13050\n", encoding="utf-8")
     (cu13 / "lib" / "stubs").mkdir(parents=True, exist_ok=True)
     (cu13 / "bin" / "nvcc").write_text("#!/bin/sh\n", encoding="utf-8")
     (cu13 / "lib" / "libcudart.so.13").write_bytes(b"")
@@ -707,6 +720,8 @@ def test_rung_worker_refuses_when_cgroup_memory_max_differs_from_cap(
     proc_cg.write_text("0::/rung.scope\n", encoding="utf-8", newline="\n")
 
     def _run_real_worker_script(cmd: list[str], **kwargs: Any) -> Any:
+        if len(cmd) == 2 and Path(cmd[0]).name == "nvcc" and cmd[1] == "--version":
+            return SimpleNamespace(returncode=0, stdout="Cuda compilation tools, release 13.5, V13.5.37\n", stderr="")
         # Execute the exact worker Python `-c` payload inside sys.executable with fake cgroup env
         worker_code = cmd[cmd.index("-c") + 1]
         env = dict(kwargs.get("env") or {})
@@ -724,10 +739,13 @@ def test_rung_worker_refuses_when_cgroup_memory_max_differs_from_cap(
         )
 
     monkeypatch.setattr(jit_build_rung.shutil, "which", lambda name: "/usr/bin/systemd-run" if name == "systemd-run" else None)
+    ch_dir = tmp_path / "ch"
+    (ch_dir / "include").mkdir(parents=True, exist_ok=True)
+    (ch_dir / "include" / "cuda_runtime_api.h").write_text("#define CUDART_VERSION 13050\n", encoding="utf-8")
     monkeypatch.setattr(jit_build_rung, "prepare_venv_cuda_home", lambda *_a, **_kw: {
-        "cuda_home": str(tmp_path / "ch"),
-        "nvcc": str(tmp_path / "ch" / "bin" / "nvcc"),
-        "lib64_dir": str(tmp_path / "ch" / "lib64"),
+        "cuda_home": str(ch_dir),
+        "nvcc": str(ch_dir / "bin" / "nvcc"),
+        "lib64_dir": str(ch_dir / "lib64"),
     })
 
     # Case 1: scope memory.max (32 GiB) != requested cap_bytes (64 GiB) -> fail closed RUNG_CAP_NOT_ENFORCED & build nothing
@@ -794,6 +812,8 @@ def test_rung_worker_refuses_when_cgroup_memory_max_differs_from_cap(
     )
 
     def _run_ok_worker(cmd: list[str], **kwargs: Any) -> Any:
+        if len(cmd) == 2 and Path(cmd[0]).name == "nvcc" and cmd[1] == "--version":
+            return SimpleNamespace(returncode=0, stdout="Cuda compilation tools, release 13.5, V13.5.37\n", stderr="")
         worker_code = cmd[cmd.index("-c") + 1]
         env = dict(kwargs.get("env") or {})
         env["RDLAB_JIT_RUNG_PROC_CGROUP"] = str(proc_cg)
@@ -828,13 +848,18 @@ def test_rung_worker_refuses_when_cgroup_memory_max_differs_from_cap(
 
     # Also cover defense-in-depth fallback when a worker exits without reporting scope_memory_max_bytes
     receipt_no_meta = tmp_path / "receipt_no_meta.json"
+    def _no_meta_runner(cmd: list[str], **_kw: Any) -> Any:
+        if len(cmd) == 2 and Path(cmd[0]).name == "nvcc" and cmd[1] == "--version":
+            return SimpleNamespace(returncode=0, stdout="Cuda compilation tools, release 13.5, V13.5.37\n", stderr="")
+        return SimpleNamespace(returncode=1, stdout="", stderr="no meta")
+
     with pytest.raises(jit_build_rung.JitBuildRungError) as exc_nometa:
         jit_build_rung.run_jit_build_rung(
             venv_dir=venv_ok,
             cap_bytes=requested_cap,
             cache_dir=cache_ok,
             receipt_path=receipt_no_meta,
-            runner=lambda *_a, **_kw: SimpleNamespace(returncode=1, stdout="", stderr="no meta"),
+            runner=_no_meta_runner,
         )
     assert exc_nometa.value.code == "RUNG_CAP_NOT_ENFORCED"
     assert json.loads(receipt_no_meta.read_text(encoding="utf-8"))["error_code"] == "RUNG_CAP_NOT_ENFORCED"
@@ -1029,16 +1054,21 @@ def test_rung_strips_inherited_cgroup_env_outside_test_mode_and_help_mentions_pa
     monkeypatch.setenv("RDLAB_JIT_RUNG_CGROUP_ROOT", "/tmp/evil_cg_root")
     monkeypatch.setenv("RDLAB_JIT_RUNG_TEST_MODE", "1")
     monkeypatch.setattr(jit_build_rung.shutil, "which", lambda name: "/usr/bin/systemd-run" if name == "systemd-run" else None)
+    ch_strip = tmp_path / "ch"
+    (ch_strip / "include").mkdir(parents=True, exist_ok=True)
+    (ch_strip / "include" / "cuda_runtime_api.h").write_text("#define CUDART_VERSION 13050\n", encoding="utf-8")
     monkeypatch.setattr(jit_build_rung, "prepare_venv_cuda_home", lambda *_a, **_kw: {
-        "cuda_home": str(tmp_path / "ch"),
-        "nvcc": str(tmp_path / "ch" / "bin" / "nvcc"),
-        "lib64_dir": str(tmp_path / "ch" / "lib64"),
+        "cuda_home": str(ch_strip),
+        "nvcc": str(ch_strip / "bin" / "nvcc"),
+        "lib64_dir": str(ch_strip / "lib64"),
     })
 
     seen_envs: list[dict[str, str]] = []
     seen_worker_scripts: list[str] = []
 
     def _inspect_env_runner(cmd: list[str], **kwargs: Any) -> Any:
+        if len(cmd) == 2 and Path(cmd[0]).name == "nvcc" and cmd[1] == "--version":
+            return SimpleNamespace(returncode=0, stdout="Cuda compilation tools, release 13.5, V13.5.37\n", stderr="")
         env = dict(kwargs.get("env") or {})
         seen_envs.append(env)
         seen_worker_scripts.append(cmd[cmd.index("-c") + 1])
@@ -1088,6 +1118,136 @@ def test_rung_strips_inherited_cgroup_env_outside_test_mode_and_help_mentions_pa
     assert help_proc.returncode == 0
     assert "page size" in help_proc.stdout.lower()
     assert "refused" in help_proc.stdout.lower()
+
+
+def test_rung_refuses_nvcc_cudart_mismatch_keeps_worker_tail_finds_venv_ninja_and_handles_missing_bins(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requested_cap = 64 * 1024**3
+    venv_dir, _ = _setup_synthetic_rung_venv_and_flashinfer(tmp_path / "v_mis")
+    cu13_inc = venv_dir / "lib" / "python3.13" / "site-packages" / "nvidia" / "cu13" / "include"
+    # Mismatch: nvcc 13.5 against CUDART_VERSION 13000 (13.0)
+    (cu13_inc / "cuda_runtime_api.h").write_text("#define CUDART_VERSION 13000\n", encoding="utf-8")
+
+    ch_dir = tmp_path / "ch_mis"
+    (ch_dir / "bin").mkdir(parents=True, exist_ok=True)
+    (ch_dir / "bin" / "nvcc").write_text("#!/bin/sh\n", encoding="utf-8")
+    (ch_dir / "include").mkdir(parents=True, exist_ok=True)
+    (ch_dir / "include" / "cuda_runtime_api.h").write_text("#define CUDART_VERSION 13000\n", encoding="utf-8")
+    (ch_dir / "lib64").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(
+        jit_build_rung,
+        "prepare_venv_cuda_home",
+        lambda *_a, **_kw: {
+            "cu13_root": str(venv_dir),
+            "cuda_home": str(ch_dir),
+            "nvcc": str(ch_dir / "bin" / "nvcc"),
+            "lib64_dir": str(ch_dir / "lib64"),
+        },
+    )
+    monkeypatch.setattr(jit_build_rung.shutil, "which", lambda name: "/usr/bin/systemd-run" if name == "systemd-run" else None)
+
+    build_invocations: list[list[str]] = []
+
+    def _mismatch_runner(cmd: list[str], **_kw: Any) -> Any:
+        if len(cmd) == 2 and Path(cmd[0]).name == "nvcc" and cmd[1] == "--version":
+            return SimpleNamespace(returncode=0, stdout="Cuda compilation tools, release 13.5, V13.5.37\n", stderr="")
+        build_invocations.append(list(cmd))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    mismatch_receipt = tmp_path / "mismatch_receipt.json"
+    with pytest.raises(jit_build_rung.JitBuildRungError) as exc_tk:
+        jit_build_rung.run_jit_build_rung(
+            venv_dir=venv_dir,
+            cap_bytes=requested_cap,
+            cache_dir=tmp_path / "cache_mis",
+            receipt_path=mismatch_receipt,
+            runner=_mismatch_runner,
+        )
+    assert exc_tk.value.code == "CUDA_TOOLKIT_VERSION_MISMATCH"
+    assert build_invocations == []
+    assert json.loads(mismatch_receipt.read_text(encoding="utf-8"))["error_code"] == "CUDA_TOOLKIT_VERSION_MISMATCH"
+
+    # Match (13.0 == 13000) proceeds, finds ninja strictly via <venv>/bin, and preserves last 200 lines of worker output
+    monkeypatch.setenv("PATH", "")
+    venv_py_dir = jit_build_rung._venv_python_path(venv_dir).parent
+    (ch_dir / "include" / "cuda_runtime_api.h").write_text("#define CUDART_VERSION 13050\n", encoding="utf-8")
+    seen_child_paths: list[str] = []
+
+    def _tail_runner(cmd: list[str], **kwargs: Any) -> Any:
+        if len(cmd) == 2 and Path(cmd[0]).name == "nvcc" and cmd[1] == "--version":
+            return SimpleNamespace(returncode=0, stdout="Cuda compilation tools, release 13.5, V13.5.37\n", stderr="")
+        env = dict(kwargs.get("env") or {})
+        seen_child_paths.append(env.get("PATH", ""))
+        Path(env["RDLAB_JIT_RUNG_WORKER_META"]).write_text(
+            json.dumps({"success": False, "error_code": "JIT_BUILD_FAILED", "scope_memory_max": str(requested_cap), "scope_memory_max_bytes": requested_cap}),
+            encoding="utf-8",
+        )
+        out_lines = "\n".join(f"out-{i}" for i in range(250)) + "\n"
+        err_lines = "\n".join(f"ninja-err-{i}" for i in range(240)) + "\n"
+        return SimpleNamespace(returncode=1, stdout=out_lines, stderr=err_lines)
+
+    tail_receipt = tmp_path / "tail_receipt.json"
+    res_tail = jit_build_rung.run_jit_build_rung(
+        venv_dir=venv_dir,
+        cap_bytes=requested_cap,
+        cache_dir=tmp_path / "cache_tail",
+        receipt_path=tail_receipt,
+        runner=_tail_runner,
+    )
+    assert seen_child_paths and seen_child_paths[0].split(os.pathsep)[0] == str(venv_py_dir)
+    assert res_tail["ninja_bin"] == str(venv_py_dir / "ninja")
+    assert len(res_tail["worker_stdout_tail"]) == 200
+    assert res_tail["worker_stdout_tail"][0] == "out-50" and res_tail["worker_stdout_tail"][-1] == "out-249"
+    assert len(res_tail["worker_stderr_tail"]) == 200
+    assert res_tail["worker_stderr_tail"][0] == "ninja-err-40" and res_tail["worker_stderr_tail"][-1] == "ninja-err-239"
+    wlog = Path(res_tail["worker_log_path"])
+    assert wlog.is_file()
+    assert "ninja-err-239" in wlog.read_text(encoding="utf-8")
+    rec_disk = json.loads(tail_receipt.read_text(encoding="utf-8"))
+    assert rec_disk["worker_stderr_tail"][-1] == "ninja-err-239"
+
+    # Missing uv -> structured UV_NOT_FOUND (no raw FileNotFoundError)
+    with pytest.raises(jit_build_rung.JitBuildRungError) as exc_uv:
+        jit_build_rung.ensure_vllm_venv_from_lock(
+            tmp_path / "no_uv_venv",
+            uv_bin="/nonexistent/bin/uv",
+            runner=lambda *_a, **_kw: (_ for _ in ()).throw(FileNotFoundError("no uv")),
+        )
+    assert exc_uv.value.code == "UV_NOT_FOUND"
+
+    # Missing ninja -> structured NINJA_NOT_FOUND
+    for cand in (venv_py_dir / "ninja", venv_py_dir / "ninja.exe"):
+        if cand.exists():
+            cand.unlink()
+    with pytest.raises(jit_build_rung.JitBuildRungError) as exc_ninja:
+        jit_build_rung.run_jit_build_rung(
+            venv_dir=venv_dir,
+            cap_bytes=requested_cap,
+            cache_dir=tmp_path / "cache_no_ninja",
+            receipt_path=tmp_path / "no_ninja_receipt.json",
+            runner=_tail_runner,
+        )
+    assert exc_ninja.value.code == "NINJA_NOT_FOUND"
+
+
+def test_parse_ninja_log_dedup_key_includes_cmdhash(tmp_path: Path) -> None:
+    log_path = tmp_path / ".ninja_log"
+    # Two edges with identical (start_ms, end_ms) = (1000, 11000) but different cmdhash BOTH count (2 edges),
+    # while two outputs sharing identical (start_ms, end_ms, cmdhash) = (20000, 35000, h_shared) deduplicate to 1.
+    log_path.write_text(
+        "# ninja log v5\n"
+        "1000\t11000\t0\tedge_a.cu.o\th_cmd_a\n"
+        "1000\t11000\t0\tedge_b.cu.o\th_cmd_b\n"
+        "20000\t35000\t0\tmulti_1.o\th_shared\n"
+        "20000\t35000\t0\tmulti_2.o\th_shared\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    durations = jit_build_rung.parse_ninja_log(log_path)
+    assert sorted(durations) == [10.0, 10.0, 15.0]
+
 
 
 
