@@ -5571,6 +5571,126 @@ def test_fired_qwen36_stops_report_named_failure_class_never_none(
     assert stale_proc.returncode == 0, stale_proc.stdout + stale_proc.stderr
 
 
+def test_every_launcher_failed_outcome_has_named_failure_class(tmp_path: Path) -> None:
+    """Every failed outcome the launcher can write carries a non-empty named `failure_class`, never `none`."""
+    import re
+    from reasoning_dataset_lab.pilot_b import run_records
+
+    launch_text = LAUNCH_JUDGES_SH.read_text(encoding="utf-8")
+    raw_whys = re.findall(r'^\s*RUN_WHY="([^"]+)"', launch_text, flags=re.MULTILINE)
+    failed_whys = [w for w in raw_whys if not w.startswith("completed ")]
+    assert len(failed_whys) >= 60
+
+    code_re = re.compile(r"^(?:no_capacity|[A-Z][A-Z0-9_]{2,})$")
+    for raw_why in failed_whys:
+        # Replace bash `${...}` / `$VAR` and command substitutions so only genuine rule/text prefixes remain.
+        sample_why = re.sub(r"\$\([^)]*\)", "cmd", raw_why)
+        sample_why = re.sub(r"\$\{[^}]+\}", "val", sample_why)
+        sample_why = re.sub(r"\$[A-Za-z_][A-Za-z0-9_]*", "val", sample_why)
+        resolved = run_records.resolve_outcome_failure_class(outcome="failed", why=sample_why)
+        assert isinstance(resolved, str) and resolved and resolved.lower() != "none", raw_why
+        assert code_re.fullmatch(resolved), (raw_why, resolved)
+
+    # Branch coverage for resolve_outcome_failure_class and classify_launcher_failure_class
+    assert run_records.resolve_outcome_failure_class(outcome="ok", why="anything") is None
+    assert run_records.resolve_outcome_failure_class(outcome="probe", why="anything") is None
+    assert (
+        run_records.resolve_outcome_failure_class(
+            outcome="ok", explicit_failure_class="STOPPED_EARLY", why=""
+        )
+        == "STOPPED_EARLY"
+    )
+    assert (
+        run_records.resolve_outcome_failure_class(
+            outcome="failed", explicit_failure_class="WINDOW_ID_STUB_REFUSED", why=""
+        )
+        == "WINDOW_ID_STUB_REFUSED"
+    )
+    dir_st = tmp_path / "dir_st"
+    dir_st.mkdir()
+    (dir_st / "status.json").write_text('{"failure_class": "VM_DISK_INSUFFICIENT"}\n', encoding="utf-8")
+    assert run_records.resolve_outcome_failure_class(outcome="failed", run_dir=dir_st) == "VM_DISK_INSUFFICIENT"
+    dir_rcpt = tmp_path / "dir_rcpt"
+    dir_rcpt.mkdir()
+    (dir_rcpt / "status.json").write_text('{"failure_class": "none"}\n', encoding="utf-8")
+    (dir_rcpt / "vm_receipt.json").write_text(
+        '{"failure_class": "JUDGE_CUDA_HOME_MISSING"}\n', encoding="utf-8"
+    )
+    assert run_records.resolve_outcome_failure_class(outcome="failed", run_dir=dir_rcpt) == "JUDGE_CUDA_HOME_MISSING"
+    assert (
+        run_records.resolve_outcome_failure_class(
+            outcome="failed",
+            run_dir=tmp_path / "missing_dir",
+            shutdown_failure_class="OFFRIG_SHUTDOWN_UNVERIFIED",
+            why="",
+        )
+        == "OFFRIG_SHUTDOWN_UNVERIFIED"
+    )
+    assert run_records.classify_launcher_failure_class("[REPO_TREE_DIRTY] dirty tree") == "REPO_TREE_DIRTY"
+    assert run_records.classify_launcher_failure_class("detected LOG_GUARD_CLAIM_LEAK in logs") == "LOG_GUARD_CLAIM_LEAK"
+    assert run_records.classify_launcher_failure_class("unexpected plain text") == "LAUNCHER_FAILED"
+    assert run_records.classify_launcher_failure_class("") == "LAUNCHER_FAILED"
+
+    # End-to-end launcher failure paths that previously left failure_class=none
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "fc_rec")
+    items = _make_synthetic_public_items(tmp_path / "fc_items", count=2)
+    env_missing_items = fake_colab.setup_fake_colab_environment(tmp_path / "env_missing_items")
+    out_missing_items = tmp_path / "out_missing_items"
+    exp_missing_items = _base_launcher_exports(
+        env_missing_items,
+        open_lock=tmp_path / "fc1.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=items,
+    ) + "unset RDLAB_ITEMS_FILE; "
+    p1 = _pm_run_launcher(
+        exp_missing_items,
+        f"--time-one --card A100 --shape standard --out-dir '{_to_wsl_path(out_missing_items)}' --run-id fc-missing-items-01",
+    )
+    assert p1.returncode != 0
+    assert "failure_class=ITEMS_FILE_MISSING" in p1.stderr, p1.stderr
+    assert "failure_class=none" not in p1.stderr, p1.stderr
+    assert json.loads((out_missing_items / "outcome.draft.json").read_text(encoding="utf-8"))["failure_class"] == "ITEMS_FILE_MISSING"
+
+    out_missing_item_path = tmp_path / "out_missing_item_path"
+    env_missing_item_path = fake_colab.setup_fake_colab_environment(tmp_path / "env_missing_item_path")
+    missing_items_path = tmp_path / "does_not_exist_items.jsonl"
+    exp_missing_item_path = _base_launcher_exports(
+        env_missing_item_path,
+        open_lock=tmp_path / "fc2.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=items,
+    ) + f"export RDLAB_ITEMS_FILE='{_to_wsl_path(missing_items_path)}'; "
+    p2 = _pm_run_launcher(
+        exp_missing_item_path,
+        f"--stub --out-dir '{_to_wsl_path(out_missing_item_path)}' --run-id fc-missing-item-path-01",
+    )
+    assert p2.returncode != 0
+    assert "failure_class=ITEMS_FILE_NOT_FOUND" in p2.stderr, p2.stderr
+    assert "failure_class=none" not in p2.stderr, p2.stderr
+    assert json.loads((out_missing_item_path / "outcome.draft.json").read_text(encoding="utf-8"))["failure_class"] == "ITEMS_FILE_NOT_FOUND"
+
+    out_del_status = tmp_path / "out_del_status"
+    env_del_status = fake_colab.setup_fake_colab_environment(tmp_path / "env_del_status")
+    exp_del_status = _base_launcher_exports(
+        env_del_status,
+        open_lock=tmp_path / "fc3.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=items,
+    ) + "export FAKE_COLAB_DELETE_STATUS_FILE=1; export FAKE_COLAB_DISK_FREE_BYTES=220000000000; "
+    p3 = _pm_run_launcher(
+        exp_del_status,
+        f"--stub --out-dir '{_to_wsl_path(out_del_status)}' --run-id fc-del-status-01",
+    )
+    assert p3.returncode != 0
+    assert "failure_class=VM_STATUS_MISSING" in p3.stderr, p3.stderr
+    assert "failure_class=none" not in p3.stderr, p3.stderr
+    assert json.loads((out_del_status / "outcome.draft.json").read_text(encoding="utf-8"))["failure_class"] == "VM_STATUS_MISSING"
+
+
+
 
 
 
