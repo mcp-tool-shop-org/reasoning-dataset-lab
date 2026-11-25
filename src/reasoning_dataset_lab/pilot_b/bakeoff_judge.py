@@ -4890,6 +4890,7 @@ def resolve_child_heartbeat_interval_seconds(interval_seconds: float | None = No
 
 
 _PROCESS_START_MONOTONIC: float = time.monotonic()
+_CHILD_PROGRESS_LOCK: threading.Lock = threading.Lock()
 
 
 def _append_child_progress_line(
@@ -4942,7 +4943,7 @@ def compute_row_body_sha256(row_obj: Mapping[str, Any]) -> str:
     return hashlib.sha256(_canonical_json_line(base).encode("utf-8")).hexdigest()
 
 
-def run_bakeoff_judge(
+def _run_bakeoff_judge_impl(
     *,
     part_dir: Path,
     output_dir: Path,
@@ -4981,6 +4982,7 @@ def run_bakeoff_judge(
     replacement_session: bool = False,
     resume_overlap_pairs: int = DEFAULT_RECOVERY_OVERLAP_ITEM_PAIRS,
     synthetic_items: bool = False,
+    _cleanup_callbacks: list[Callable[[], None]] | None = None,
 ) -> dict[str, object]:
     """Run a single judge over `part_bakeoff_sealed/items.jsonl` and write unsealed rows and `generations.jsonl`."""
     try:
@@ -5084,7 +5086,7 @@ def run_bakeoff_judge(
         if progress_file is not None
         else (Path(env_prog) if env_prog else None)
     )
-    progress_lock = threading.Lock()
+    progress_lock = _CHILD_PROGRESS_LOCK
     child_start_mono = time.monotonic()
     _append_child_progress_line(
         eff_progress_file,
@@ -5144,6 +5146,8 @@ def run_bakeoff_judge(
                     shard_spec=eff_shard_spec,
                 )
             else:  # the NLI encoder has its own sequence-classification transport
+                if spec.judge_id == QWEN36_JUDGE_ID and not device.startswith("cpu"):
+                    prepare_qwen36_no_compile_process_env(device=device)
                 transport = real_transport_class_for(spec)(  # NLI encoder, elephant-1 (qev), or transformers
                     receipts_dir=receipts_dir,
                     hf_home=hf_home,
@@ -5171,7 +5175,15 @@ def run_bakeoff_judge(
             for it in items:
                 for ord_mode in ("AB", "BA"):
                     check_cap_fn(spec, adapter.assemble_prompt(it, order=ord_mode, pass_mode=pass_mode))
+    if transport is not None and eff_progress_file is not None:
+        setattr(transport, "_progress_file", eff_progress_file)
+    if transport is not None and spec.judge_id == QWEN36_JUDGE_ID:
+        setattr(transport, "_jit_shim_marker_dir", resolved_out)
     ensure_loaded_fn = getattr(transport, "_ensure_loaded", None)
+    verify_no_build_fn = getattr(transport, "verify_no_build_entered", None)
+    close_guard_fn = getattr(transport, "close_build_guard", None)
+    if _cleanup_callbacks is not None and callable(close_guard_fn):
+        _cleanup_callbacks.append(close_guard_fn)
     if callable(ensure_loaded_fn):
         ensure_loaded_fn(spec)
     load_wall_seconds = round(max(0.0, time.monotonic() - child_start_mono), 6)
@@ -5192,8 +5204,16 @@ def run_bakeoff_judge(
                 "nonreclaimable_bytes": jit_plan.get("nonreclaimable_bytes"),
                 "used_bytes": jit_plan.get("used_bytes"),
                 "used_source": jit_plan.get("used_source"),
+                "selected_cgroup_path": jit_plan.get("selected_cgroup_path"),
+                "cgroup_chain": jit_plan.get("cgroup_chain"),
                 "source": jit_plan.get("source"),
             }
+        prebuilt_info = getattr(transport, "_prebuilt_jit_cache_info", None)
+        if isinstance(prebuilt_info, Mapping):
+            load_done_payload["prebuilt_jit_cache"] = dict(prebuilt_info)
+            load_done_payload["build_entered"] = bool(
+                getattr(transport, "_build_entered", prebuilt_info.get("build_entered", False))
+            )
         cg_peak = getattr(transport, "_cgroup_memory_peak_bytes", None)
         if cg_peak is not None:
             load_done_payload["cgroup_memory_peak_bytes"] = int(cg_peak)
@@ -6123,6 +6143,15 @@ def run_bakeoff_judge(
             elif llm_init_s is not None:
                 qwen36_summary_extra["build_wall_seconds"] = float(llm_init_s)
                 qwen36_summary_extra["build_seconds_source"] = "llm_init"
+            if callable(verify_no_build_fn):
+                verify_no_build_fn()
+            prebuilt_info = getattr(transport, "_prebuilt_jit_cache_info", None)
+            if isinstance(prebuilt_info, Mapping):
+                build_entered_flag = bool(getattr(transport, "_build_entered", prebuilt_info.get("build_entered", False)))
+                prebuilt_copy = dict(prebuilt_info)
+                prebuilt_copy["build_entered"] = build_entered_flag
+                qwen36_summary_extra["prebuilt_jit_cache"] = prebuilt_copy
+                qwen36_summary_extra["build_entered"] = build_entered_flag
 
     if not anchor_prefix_only:
         judge_done_dir.mkdir(parents=True, exist_ok=True)
@@ -6214,6 +6243,94 @@ def run_bakeoff_judge(
         **qwen36_summary_extra,
         "generations_path": str(gen_path),
     }
+
+
+def run_bakeoff_judge(
+    *,
+    part_dir: Path,
+    output_dir: Path,
+    judge: str,
+    schedule_seed: int | None = DEFAULT_SCHEDULE_SEED,
+    pass_mode: PassMode = "binary",
+    limit_items: int | None = None,
+    fake_transport: bool = False,
+    transport: JudgeTransport | None = None,
+    receipts_dir: Path | None = None,
+    hf_home: Path | None = None,
+    device: str = "cpu",
+    torch_dtype: str = DEFAULT_TORCH_DTYPE,
+    allow_remote_code_reviewed: str | None = None,
+    vram_halt_mib: int = DEFAULT_VRAM_HALT_MIB,
+    vram_probe: Callable[[], int] | None = None,
+    halt_pid: int | None = None,
+    pid_killer: Callable[[int], None] = kill_judge_pid_tree,
+    error_rate_stop: float = DEFAULT_ERROR_RATE_STOP,
+    error_rate_min_calls: int = DEFAULT_ERROR_RATE_MIN_CALLS,
+    force_length_stop_items: Sequence[str] = (),
+    force_unparseable_items: Sequence[str] = (),
+    canary_config_path: Path | None = None,
+    run_canary: bool = True,
+    repo_root: Path | None = None,
+    progress_file: Path | None = None,
+    heartbeat_interval_seconds: float | None = None,
+    shard_spec: str | None = None,
+    shard_manifest_path: Path | None = None,
+    shard_manifest_sha256: str | None = None,
+    golden_anchor_manifest_path: Path | None = None,
+    active_item_ids: Sequence[str] | None = None,
+    anchor_prefix_only: bool = False,
+    session_fingerprint_sha256: str | None = None,
+    window_mode: str | None = None,
+    replacement_session: bool = False,
+    resume_overlap_pairs: int = DEFAULT_RECOVERY_OVERLAP_ITEM_PAIRS,
+    synthetic_items: bool = False,
+) -> dict[str, object]:
+    """Run a single judge over `part_bakeoff_sealed/items.jsonl` and write unsealed rows and `generations.jsonl`."""
+    cleanup_callbacks: list[Callable[[], None]] = []
+    try:
+        return _run_bakeoff_judge_impl(
+            part_dir=part_dir,
+            output_dir=output_dir,
+            judge=judge,
+            schedule_seed=schedule_seed,
+            pass_mode=pass_mode,
+            limit_items=limit_items,
+            fake_transport=fake_transport,
+            transport=transport,
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+            device=device,
+            torch_dtype=torch_dtype,
+            allow_remote_code_reviewed=allow_remote_code_reviewed,
+            vram_halt_mib=vram_halt_mib,
+            vram_probe=vram_probe,
+            halt_pid=halt_pid,
+            pid_killer=pid_killer,
+            error_rate_stop=error_rate_stop,
+            error_rate_min_calls=error_rate_min_calls,
+            force_length_stop_items=force_length_stop_items,
+            force_unparseable_items=force_unparseable_items,
+            canary_config_path=canary_config_path,
+            run_canary=run_canary,
+            repo_root=repo_root,
+            progress_file=progress_file,
+            heartbeat_interval_seconds=heartbeat_interval_seconds,
+            shard_spec=shard_spec,
+            shard_manifest_path=shard_manifest_path,
+            shard_manifest_sha256=shard_manifest_sha256,
+            golden_anchor_manifest_path=golden_anchor_manifest_path,
+            active_item_ids=active_item_ids,
+            anchor_prefix_only=anchor_prefix_only,
+            session_fingerprint_sha256=session_fingerprint_sha256,
+            window_mode=window_mode,
+            replacement_session=replacement_session,
+            resume_overlap_pairs=resume_overlap_pairs,
+            synthetic_items=synthetic_items,
+            _cleanup_callbacks=cleanup_callbacks,
+        )
+    finally:
+        for cb in cleanup_callbacks:
+            cb()
 
 
 def close_bakeoff_outputs(
@@ -8468,6 +8585,13 @@ def main_judge_runner(argv: Sequence[str] | None = None) -> int:
             if args.active_item_ids
             else None
         )
+        if (
+            args.p0a_stage is None
+            and args.judge == QWEN36_JUDGE_ID
+            and not bool(args.fake_transport)
+            and not normalized_device.startswith("cpu")
+        ):
+            prepare_qwen36_no_compile_process_env(device=normalized_device)
         if args.p0a_stage is not None:
             if args.synthetic_items:
                 raise refused_error(
@@ -9961,13 +10085,13 @@ def _read_cgroup_int_value(path: Path) -> int | None:
 
 
 def _read_cgroup_nonreclaimable_from_stat(cg_dir: Path) -> tuple[int | None, str]:
-    """Read `(nonreclaimable_bytes, used_source)` from `cg_dir/memory.stat`.
+    """Read `(nonreclaimable_bytes, used_source)` from `cg_dir/memory.stat`, adding `memory.kmem.usage_in_bytes` on v1.
 
-    cgroup v2 uses `anon + shmem + file_dirty + file_writeback + kernel` (or sums
-    `slab_unreclaimable + kernel_stack + pagetables + percpu + sock` when `kernel` is absent);
-    cgroup v1 uses `total_rss + total_shmem + total_dirty + total_writeback` (else
-    `rss + shmem + dirty + writeback`); when missing or unreadable, returns
-    `(None, 'memory.current_fallback')`.
+    cgroup v2 uses `anon + shmem + file_dirty + file_writeback + kernel + sock` when `kernel` is present
+    (or sums `slab_unreclaimable + kernel_stack + pagetables + sec_pagetables + percpu + sock + vmalloc`
+    when `kernel` is absent); cgroup v1 uses `total_rss + total_shmem + total_dirty + total_writeback` (else
+    `rss + shmem + dirty + writeback`) plus `memory.kmem.usage_in_bytes` when present; when missing or
+    unreadable, returns `(None, 'memory.current_fallback')`.
     """
     stat_path = cg_dir / "memory.stat"
     try:
@@ -9983,31 +10107,47 @@ def _read_cgroup_nonreclaimable_from_stat(cg_dir: Path) -> tuple[int | None, str
         dirty = int(stats.get("file_dirty", 0))
         writeback = int(stats.get("file_writeback", 0))
         if "kernel" in stats:
-            kernel_bytes = int(stats["kernel"])
-            used_source = "memory.stat:anon+shmem+file_dirty+file_writeback+kernel"
+            kernel_bytes = int(stats["kernel"]) + int(stats.get("sock", 0))
+            used_source = "memory.stat:anon+shmem+file_dirty+file_writeback+kernel+sock"
         else:
             kernel_bytes = sum(
                 int(stats.get(k, 0))
-                for k in ("slab_unreclaimable", "kernel_stack", "pagetables", "percpu", "sock")
+                for k in (
+                    "slab_unreclaimable",
+                    "kernel_stack",
+                    "pagetables",
+                    "sec_pagetables",
+                    "percpu",
+                    "sock",
+                    "vmalloc",
+                )
             )
             used_source = "memory.stat:anon+shmem+file_dirty+file_writeback+kernel_parts"
         return int(stats["anon"]) + int(stats["shmem"]) + dirty + writeback + kernel_bytes, used_source
+    nonrec_v1: int | None = None
+    src_v1 = "memory.current_fallback"
     if "total_rss" in stats and "total_shmem" in stats:
-        total = (
+        nonrec_v1 = (
             int(stats["total_rss"])
             + int(stats["total_shmem"])
             + int(stats.get("total_dirty", 0))
             + int(stats.get("total_writeback", 0))
         )
-        return total, "memory.stat_v1:total_rss+total_shmem+total_dirty+total_writeback"
-    if "rss" in stats and "shmem" in stats:
-        total = (
+        src_v1 = "memory.stat_v1:total_rss+total_shmem+total_dirty+total_writeback"
+    elif "rss" in stats and "shmem" in stats:
+        nonrec_v1 = (
             int(stats["rss"])
             + int(stats["shmem"])
             + int(stats.get("dirty", 0))
             + int(stats.get("writeback", 0))
         )
-        return total, "memory.stat_v1:rss+shmem+dirty+writeback"
+        src_v1 = "memory.stat_v1:rss+shmem+dirty+writeback"
+    if nonrec_v1 is not None:
+        kmem_bytes = _read_cgroup_int_value(cg_dir / "memory.kmem.usage_in_bytes")
+        if kmem_bytes is not None and 0 <= kmem_bytes < (1 << 60):
+            nonrec_v1 += int(kmem_bytes)
+            src_v1 = f"{src_v1}+kmem"
+        return nonrec_v1, src_v1
     return None, "memory.current_fallback"
 
 
@@ -10016,13 +10156,22 @@ def _read_cgroup_memory_state(
     cgroup_root: Path | None = None,
     proc_cgroup_path: Path | None = None,
 ) -> dict[str, Any]:
-    """Read nearest finite cgroup `memory.max`, `memory.current`, `memory.peak`, and `memory.stat` usage."""
+    """Read cgroup `memory.max`, `memory.current`, `memory.peak`, and `memory.stat` usage from the tightest headroom level."""
     cg_root = Path(cgroup_root) if cgroup_root is not None else Path(os.environ.get("RDLAB_CGROUP_DIR", "").strip() or "/sys/fs/cgroup")
     cg_proc = Path(proc_cgroup_path) if proc_cgroup_path is not None else Path("/proc/self/cgroup")
     first_peak: int | None = None
+    empty_state = {
+        "limit_bytes": None,
+        "current_bytes": None,
+        "peak_bytes": None,
+        "nonreclaimable_bytes": None,
+        "used_source": None,
+        "selected_cgroup_path": None,
+        "cgroup_chain": [],
+    }
     try:
         if not cg_proc.is_file():
-            return {"limit_bytes": None, "current_bytes": None, "peak_bytes": None, "nonreclaimable_bytes": None, "used_source": None}
+            return empty_state
         v2_rel: str | None = None
         v1_rel: str | None = None
         for line in cg_proc.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -10045,6 +10194,9 @@ def _read_cgroup_memory_state(
                     cand_dirs.append(cand)
             if base not in cand_dirs:
                 cand_dirs.append(base)
+        chain_entries: list[dict[str, Any]] = []
+        best_choice: dict[str, Any] | None = None
+        best_headroom: int | None = None
         for cand in cand_dirs:
             if not cand.is_dir():
                 continue
@@ -10056,21 +10208,64 @@ def _read_cgroup_memory_state(
             limit = _read_cgroup_int_value(cand / "memory.max")
             if limit is None:
                 limit = _read_cgroup_int_value(cand / "memory.limit_in_bytes")
-            if limit is not None and 0 <= limit < (1 << 60):
-                cur = _read_cgroup_int_value(cand / "memory.current")
-                if cur is None:
-                    cur = _read_cgroup_int_value(cand / "memory.usage_in_bytes")
-                nonreclaimable, used_src = _read_cgroup_nonreclaimable_from_stat(cand)
-                return {
-                    "limit_bytes": limit,
-                    "current_bytes": cur,
-                    "peak_bytes": peak,
-                    "nonreclaimable_bytes": nonreclaimable,
-                    "used_source": used_src,
-                }
+            cur = _read_cgroup_int_value(cand / "memory.current")
+            if cur is None:
+                cur = _read_cgroup_int_value(cand / "memory.usage_in_bytes")
+            finite_limit = limit if (limit is not None and 0 <= limit < (1 << 60)) else None
+            nonrec: int | None = None
+            used_src = "none"
+            if finite_limit is not None:
+                nonrec, used_src = _read_cgroup_nonreclaimable_from_stat(cand)
+                if nonrec is None and cur is not None:
+                    used_src = "memory.current_fallback"
+            used_val = nonrec if nonrec is not None else (cur if finite_limit is not None else None)
+            headroom_val = (finite_limit - used_val) if (finite_limit is not None and used_val is not None) else finite_limit
+            level = {
+                "path": cand.as_posix(),
+                "limit_bytes": finite_limit,
+                "current_bytes": cur,
+                "peak_bytes": peak,
+                "nonreclaimable_bytes": nonrec,
+                "used_bytes": used_val,
+                "used_source": used_src,
+                "headroom_bytes": headroom_val,
+            }
+            chain_entries.append(level)
+            if finite_limit is not None:
+                assert headroom_val is not None
+                if best_headroom is None or headroom_val < best_headroom:
+                    best_headroom = headroom_val
+                    best_choice = level
+        if best_choice is not None:
+            return {
+                "limit_bytes": best_choice["limit_bytes"],
+                "current_bytes": best_choice["current_bytes"],
+                "peak_bytes": best_choice["peak_bytes"] if best_choice["peak_bytes"] is not None else first_peak,
+                "nonreclaimable_bytes": best_choice["nonreclaimable_bytes"],
+                "used_source": best_choice["used_source"],
+                "selected_cgroup_path": best_choice["path"],
+                "cgroup_chain": chain_entries,
+            }
+        return {
+            "limit_bytes": None,
+            "current_bytes": None,
+            "peak_bytes": first_peak,
+            "nonreclaimable_bytes": None,
+            "used_source": None,
+            "selected_cgroup_path": None,
+            "cgroup_chain": chain_entries,
+        }
     except OSError:
         pass
-    return {"limit_bytes": None, "current_bytes": None, "peak_bytes": first_peak, "nonreclaimable_bytes": None, "used_source": None}
+    return {
+        "limit_bytes": None,
+        "current_bytes": None,
+        "peak_bytes": first_peak,
+        "nonreclaimable_bytes": None,
+        "used_source": None,
+        "selected_cgroup_path": None,
+        "cgroup_chain": [],
+    }
 
 
 def _read_cgroup_memory_peak_bytes(
@@ -10160,13 +10355,643 @@ def _parse_jit_budget_override(raw: str, *, min_value: int, var_name: str) -> in
     return val
 
 
+QWEN36_FLASHINFER_CUDA_ARCH_LIST: str = "12.0f"
+EXPECTED_FUSED_MOE_120_AOT_SO_SHA256: str = "92d9b4efd68a27a7085970ff7f62d597fac4d588fe1f0bdf98e91336ce1dd45b"
+JUDGE_PREBUILT_KERNELS_MISSING: str = "JUDGE_PREBUILT_KERNELS_MISSING"
+JUDGE_JIT_BUILD_ENTERED: str = "JUDGE_JIT_BUILD_ENTERED"
+JUDGE_GPU_COMPUTE_CAP_MISMATCH: str = "JUDGE_GPU_COMPUTE_CAP_MISMATCH"
+QWEN36_JIT_SHIM_MARKER_ENV_VAR: str = "RDLAB_JIT_SHIM_MARKER_FILE"
+JUDGE_JIT_BUILD_ENTERED_MARKER_LINE: str = "JUDGE_JIT_BUILD_ENTERED: runtime compilation forbidden on judge pod"
+_LIBCUDART_SO_NAME_RE: re.Pattern[str] = re.compile(r"^libcudart\.so(?:\.[0-9]+)*$")
+_COMPUTE_CAP_RE: re.Pattern[str] = re.compile(r"^\s*([0-9]+)\.([0-9]+)\s*$")
+
+
+def _resolve_logical_cuda_device_index(device: str) -> int:
+    raw = str(device or "cuda:0").strip().lower()
+    if ":" in raw:
+        _, idx_raw = raw.rsplit(":", 1)
+        if re.fullmatch(r"[0-9]+", idx_raw.strip()):
+            return int(idx_raw.strip())
+    return 0
+
+
+def _nvml_capability_via_pynvml(logical_index: int) -> tuple[int, int, str] | None:
+    try:
+        import pynvml
+    except Exception:
+        return None
+    pynvml.nvmlInit()
+    try:
+        cvd = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip()
+        handle = None
+        if cvd:
+            entries = [tok.strip() for tok in cvd.split(",") if tok.strip()]
+            if 0 <= logical_index < len(entries):
+                sel = entries[logical_index]
+                if re.fullmatch(r"[0-9]+", sel):
+                    handle = pynvml.nvmlDeviceGetHandleByIndex(int(sel))
+                else:
+                    handle = pynvml.nvmlDeviceGetHandleByUUID(sel)
+        if handle is None:
+            handle = pynvml.nvmlDeviceGetHandleByIndex(int(logical_index))
+        major, minor = pynvml.nvmlDeviceGetCudaComputeCapability(handle)
+        return int(major), int(minor), "pynvml"
+    finally:
+        try:
+            pynvml.nvmlShutdown()
+        except Exception:
+            pass
+
+
+def _nvml_capability_via_nvidia_smi(logical_index: int) -> tuple[int, int, str] | None:
+    try:
+        res = subprocess.run(
+            ["nvidia-smi", "--query-gpu=compute_cap", "--format=csv,noheader,nounits"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except OSError:
+        return None
+    if int(getattr(res, "returncode", 1)) != 0:
+        return None
+    rows = [ln.strip() for ln in (getattr(res, "stdout", "") or "").splitlines() if ln.strip()]
+    if not rows:
+        return None
+    target_idx = logical_index if 0 <= logical_index < len(rows) else 0
+    match = _COMPUTE_CAP_RE.match(rows[target_idx])
+    if not match:
+        return None
+    return int(match.group(1)), int(match.group(2)), "nvidia-smi"
+
+
+def verify_qwen36_sm12x_compute_capability(*, device: str = "cuda:0") -> dict[str, Any]:
+    """Query GPU SM compute capability via NVML (`pynvml` or `nvidia-smi`) without initializing CUDA; require 12.x."""
+    logical_idx = _resolve_logical_cuda_device_index(device)
+    parsed: tuple[int, int, str] | None = None
+    nvml_err: str | None = None
+    try:
+        parsed = _nvml_capability_via_pynvml(logical_idx)
+    except Exception as exc:
+        nvml_err = f"{type(exc).__name__}: {exc}"
+    if parsed is None:
+        parsed = _nvml_capability_via_nvidia_smi(logical_idx)
+    if parsed is None:
+        detail = f" ({nvml_err})" if nvml_err else ""
+        raise refused_error(
+            JUDGE_GPU_COMPUTE_CAP_MISMATCH,
+            f"Unable to read GPU SM compute capability via NVML or nvidia-smi{detail} before setting {QWEN36_FLASHINFER_CUDA_ARCH_LIST!r}.",
+            "Ensure NVML / nvidia-smi is available and an SM 12.x GPU is attached before running qwen3.6-35b-a3b.",
+        )
+    major, minor, source = parsed
+    if int(major) != 12:
+        raise refused_error(
+            JUDGE_GPU_COMPUTE_CAP_MISMATCH,
+            f"Qwen3.6 prebuilt sm_120f kernels require SM 12.x GPU capability, got {major}.{minor} via {source}.",
+            "Run qwen3.6-35b-a3b on an SM 12.x GPU matching FLASHINFER_CUDA_ARCH_LIST=12.0f.",
+        )
+    return {
+        "major": int(major),
+        "minor": int(minor),
+        "compute_capability": f"{int(major)}.{int(minor)}",
+        "source": source,
+    }
+
+
+def prepare_qwen36_no_compile_process_env(*, device: str = "cuda:0") -> dict[str, Any]:
+    """Verify SM 12.x via NVML without initializing CUDA, then pin `FLASHINFER_CUDA_ARCH_LIST=12.0f` before any flashinfer/vLLM import."""
+    cap_info = verify_qwen36_sm12x_compute_capability(device=device)
+    os.environ["FLASHINFER_CUDA_ARCH_LIST"] = QWEN36_FLASHINFER_CUDA_ARCH_LIST
+    return cap_info
+
+
+def read_mapped_libcudart_path(proc_maps_path: Path | None = None) -> str | None:
+    """Return the `libcudart` shared-library path actually mapped into the process from `/proc/self/maps`."""
+    maps_path = Path(proc_maps_path) if proc_maps_path is not None else Path("/proc/self/maps")
+    try:
+        text = maps_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    for raw_ln in text.splitlines():
+        parts = raw_ln.strip().split(None, 5)
+        if len(parts) < 6:
+            continue
+        mapped = parts[5].strip()
+        if mapped.endswith(" (deleted)"):
+            mapped = mapped[: -len(" (deleted)")].strip()
+        if not mapped or mapped.startswith("["):
+            continue
+        base_name = Path(mapped).name
+        if _LIBCUDART_SO_NAME_RE.match(base_name):
+            return mapped
+    return None
+
+
+def _resolve_flashinfer_workspace_candidates(
+    workspace_dirs: Sequence[Path | str | None] | None = None,
+) -> list[Path]:
+    candidates: list[Path] = []
+    seen_roots: set[str] = set()
+    raw_dirs: list[Path | str | None] = list(workspace_dirs) if workspace_dirs is not None else []
+    if workspace_dirs is None:
+        try:
+            from flashinfer.jit import env as fi_env
+            raw_dirs.extend(
+                [
+                    getattr(fi_env, "FLASHINFER_WORKSPACE_DIR", None),
+                    getattr(fi_env, "FLASHINFER_CACHE_DIR", None),
+                ]
+            )
+        except Exception:
+            pass
+        env_ws = os.environ.get("FLASHINFER_WORKSPACE_BASE", "").strip()
+        if env_ws:
+            raw_dirs.append(Path(env_ws) / ".cache" / "flashinfer")
+    for raw_d in raw_dirs:
+        if not raw_d:
+            continue
+        p = Path(raw_d)
+        key = p.as_posix()
+        if key not in seen_roots:
+            seen_roots.add(key)
+            candidates.append(p)
+    return candidates
+
+
+def _is_cached_ops_build_artifact(file_path: Path) -> bool:
+    name = file_path.name
+    return name == "build.ninja" or name.endswith(".o") or name.endswith(".so") or ".so." in name
+
+
+def _iter_cached_ops_roots(root: Path) -> list[Path]:
+    cached_roots: list[Path] = []
+    if root.name == "cached_ops":
+        cached_roots.append(root)
+    for match in sorted(root.rglob("cached_ops")):
+        if match.is_dir() and match not in cached_roots:
+            cached_roots.append(match)
+    return cached_roots
+
+
+def _safe_file_sig(file_path: Path) -> tuple[int, int] | None:
+    try:
+        st = file_path.stat()
+        return (int(st.st_mtime_ns), int(st.st_size))
+    except OSError:
+        return None
+
+
+def _safe_iterdir(dir_path: Path) -> list[Path]:
+    try:
+        return sorted(dir_path.iterdir())
+    except OSError:
+        return []
+
+
+def snapshot_flashinfer_workspaces(
+    workspace_dirs: Sequence[Path | str | None] | None = None,
+) -> dict[str, Any]:
+    """Snapshot `.ninja_log` files and existing build artifacts under `cached_ops/<module>` before `LLM(...)`."""
+    candidates = _resolve_flashinfer_workspace_candidates(workspace_dirs)
+    ninja_logs: dict[str, tuple[int, int]] = {}
+    cached_ops_artifacts: dict[str, tuple[int, int]] = {}
+    for root in candidates:
+        if not root.is_dir():
+            continue
+        for match in sorted(root.rglob(".ninja_log")):
+            sig = _safe_file_sig(match) if match.is_file() else None
+            if sig is not None:
+                ninja_logs[match.as_posix()] = sig
+        for cr in _iter_cached_ops_roots(root):
+            for child in _safe_iterdir(cr):
+                if not child.is_dir() or child.name == "tmp":
+                    continue
+                for fpath in sorted(child.rglob("*")):
+                    if fpath.is_file() and _is_cached_ops_build_artifact(fpath):
+                        sig = _safe_file_sig(fpath)
+                        if sig is not None:
+                            cached_ops_artifacts[fpath.as_posix()] = sig
+    return {
+        "ninja_logs": ninja_logs,
+        "cached_ops_artifacts": cached_ops_artifacts,
+    }
+
+
+def read_jit_shim_marker(marker_path: Path | None = None) -> list[str]:
+    """Read recorded refusing-shim invocation lines from `marker_path` or `RDLAB_JIT_SHIM_MARKER_FILE`."""
+    eff_path = marker_path
+    if eff_path is None:
+        raw_env = os.environ.get(QWEN36_JIT_SHIM_MARKER_ENV_VAR, "").strip()
+        if raw_env:
+            eff_path = Path(raw_env)
+    if eff_path is None or not Path(eff_path).is_file():
+        return []
+    return [ln.strip() for ln in Path(eff_path).read_text(encoding="utf-8", errors="replace").splitlines() if ln.strip()]
+
+
+def scan_flashinfer_workspace_build_entered(
+    workspace_dirs: Sequence[Path | str | None] | None = None,
+    *,
+    baseline: Mapping[str, Any] | None = None,
+    run_ninja_called: bool = False,
+    shim_marker_path: Path | None = None,
+) -> dict[str, Any]:
+    """Detect whether a FlashInfer JIT build entered (`run_ninja`, shim marker, new/updated `.ninja_log`, or `cached_ops/<module>` `build.ninja`/`*.o`/`.so`)."""
+    candidates = _resolve_flashinfer_workspace_candidates(workspace_dirs)
+    base_nlogs = dict((baseline or {}).get("ninja_logs") or {})
+    base_arts = dict((baseline or {}).get("cached_ops_artifacts") or {})
+
+    ninja_logs: list[str] = []
+    cached_ops_dirs: list[str] = []
+    cached_ops_build_files: list[str] = []
+    for root in candidates:
+        if not root.is_dir():
+            continue
+        for match in sorted(root.rglob(".ninja_log")):
+            if match.is_file():
+                key = match.as_posix()
+                sig = _safe_file_sig(match)
+                if key not in base_nlogs or tuple(base_nlogs[key]) != sig:
+                    ninja_logs.append(key)
+        for cr in _iter_cached_ops_roots(root):
+            for child in _safe_iterdir(cr):
+                if not child.is_dir() or child.name == "tmp":
+                    continue
+                new_artifacts: list[str] = []
+                for fpath in sorted(child.rglob("*")):
+                    if fpath.is_file() and _is_cached_ops_build_artifact(fpath):
+                        fkey = fpath.as_posix()
+                        fsig = _safe_file_sig(fpath)
+                        if fkey not in base_arts or tuple(base_arts[fkey]) != fsig:
+                            new_artifacts.append(fkey)
+                if new_artifacts:
+                    cached_ops_dirs.append(child.as_posix())
+                    cached_ops_build_files.extend(new_artifacts)
+
+    ninja_logs = sorted(set(ninja_logs))
+    cached_ops_dirs = sorted(set(cached_ops_dirs))
+    cached_ops_build_files = sorted(set(cached_ops_build_files))
+    shim_records = read_jit_shim_marker(shim_marker_path)
+    build_entered = bool(run_ninja_called or shim_records or ninja_logs or cached_ops_dirs)
+    return {
+        "build_entered": build_entered,
+        "run_ninja_called": bool(run_ninja_called),
+        "shim_invocations": shim_records,
+        "ninja_logs": ninja_logs,
+        "cached_ops_dirs": cached_ops_dirs,
+        "cached_ops_build_files": cached_ops_build_files,
+    }
+
+
+class FlashInferBuildShimGuard:
+    """Stages refusing `ninja`/`nvcc` shims in `PATH`, `NINJA`, `FLASHINFER_NVCC`, `CUDACXX`, `CUDA_HOME`, and `CUDA_PATH` so spawned EngineCore processes inherit them."""
+
+    _ENV_KEYS: tuple[str, ...] = (
+        "PATH",
+        "NINJA",
+        "FLASHINFER_NVCC",
+        "CUDACXX",
+        "CUDA_HOME",
+        "CUDA_PATH",
+        QWEN36_JIT_SHIM_MARKER_ENV_VAR,
+    )
+
+    def __init__(self, *, marker_dir: Path | None = None) -> None:
+        self._marker_dir: Path | None = Path(marker_dir) if marker_dir is not None else None
+        self._temp_dir: tempfile.TemporaryDirectory[str] | None = None
+        self._installed: bool = False
+        self._saved_env: dict[str, str | None] = {}
+        self.shim_root: Path | None = None
+        self.shim_bin_dir: Path | None = None
+        self.marker_path: Path | None = None
+        self._ninja_pkg: Any = None
+        self._orig_ninja_bin_dir: str | None = None
+
+    @staticmethod
+    def _write_exec(path: Path, body: str) -> None:
+        path.write_text(body, encoding="utf-8", newline="\n")
+        try:
+            path.chmod(0o755)
+        except OSError:
+            pass
+
+    def install(self) -> None:
+        if self._installed:
+            return
+        self._temp_dir = tempfile.TemporaryDirectory(prefix="rdlab-jit-shim-")
+        root = Path(self._temp_dir.name).resolve()
+        bin_dir = root / "bin"
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        existing_marker = os.environ.get(QWEN36_JIT_SHIM_MARKER_ENV_VAR, "").strip()
+        if existing_marker:
+            marker_p = Path(existing_marker).resolve()
+        elif self._marker_dir is not None:
+            self._marker_dir.mkdir(parents=True, exist_ok=True)
+            marker_p = (self._marker_dir / "jit_shim_marker.log").resolve()
+        else:
+            marker_p = (root / "jit_shim_marker.log").resolve()
+        marker_p.parent.mkdir(parents=True, exist_ok=True)
+
+        ninja_sh = bin_dir / "ninja"
+        self._write_exec(
+            ninja_sh,
+            (
+                "#!/bin/sh\n"
+                f'marker="${{{QWEN36_JIT_SHIM_MARKER_ENV_VAR}:-{marker_p.as_posix()}}}"\n'
+                'mkdir -p "$(dirname "$marker")" 2>/dev/null || true\n'
+                'printf \'JUDGE_JIT_BUILD_ENTERED\\tninja\\t%s\\n\' "$*" >> "$marker"\n'
+                f'printf \'%s (tool=ninja args=%s)\\n\' "{JUDGE_JIT_BUILD_ENTERED_MARKER_LINE}" "$*" >&2\n'
+                "exit 97\n"
+            ),
+        )
+        nvcc_sh = bin_dir / "nvcc"
+        self._write_exec(
+            nvcc_sh,
+            (
+                "#!/bin/sh\n"
+                'if [ "$#" -eq 1 ]; then\n'
+                '  case "$1" in\n'
+                "    --version|-V|--list-gpu-arch|--list-gpu-code)\n"
+                "      exit 1\n"
+                "      ;;\n"
+                "  esac\n"
+                "fi\n"
+                f'marker="${{{QWEN36_JIT_SHIM_MARKER_ENV_VAR}:-{marker_p.as_posix()}}}"\n'
+                'mkdir -p "$(dirname "$marker")" 2>/dev/null || true\n'
+                'printf \'JUDGE_JIT_BUILD_ENTERED\\tnvcc\\t%s\\n\' "$*" >> "$marker"\n'
+                f'printf \'%s (tool=nvcc args=%s)\\n\' "{JUDGE_JIT_BUILD_ENTERED_MARKER_LINE}" "$*" >&2\n'
+                "exit 97\n"
+            ),
+        )
+
+        existing_cuda = os.environ.get("CUDA_HOME") or os.environ.get("CUDA_PATH") or ""
+        if existing_cuda:
+            cuda_src = Path(existing_cuda)
+            for sub in ("include", "lib64"):
+                sub_src = cuda_src / sub
+                sub_dst = root / sub
+                if sub_src.exists() and not sub_dst.exists():
+                    try:
+                        os.symlink(str(sub_src), str(sub_dst))
+                    except OSError:
+                        pass
+
+        self._saved_env = {k: os.environ.get(k) for k in self._ENV_KEYS}
+        old_path = os.environ.get("PATH", "")
+        parts = [p for p in old_path.split(os.pathsep) if p and p != str(bin_dir)]
+        os.environ["PATH"] = os.pathsep.join([str(bin_dir), *parts])
+        ninja_bin = str(ninja_sh)
+        nvcc_bin = str(nvcc_sh)
+        os.environ["NINJA"] = ninja_bin
+        os.environ["FLASHINFER_NVCC"] = nvcc_bin
+        os.environ["CUDACXX"] = nvcc_bin
+        os.environ["CUDA_HOME"] = str(root)
+        os.environ["CUDA_PATH"] = str(root)
+        os.environ[QWEN36_JIT_SHIM_MARKER_ENV_VAR] = str(marker_p)
+
+        try:
+            import ninja as ninja_pkg
+
+            self._ninja_pkg = ninja_pkg
+            self._orig_ninja_bin_dir = getattr(ninja_pkg, "BIN_DIR", None)
+            ninja_pkg.BIN_DIR = str(bin_dir)
+        except Exception:
+            self._ninja_pkg = None
+
+        self.shim_root = root
+        self.shim_bin_dir = bin_dir
+        self.marker_path = marker_p
+        self._installed = True
+
+    def uninstall(self) -> None:
+        if not self._installed:
+            return
+        if self._ninja_pkg is not None:
+            self._ninja_pkg.BIN_DIR = self._orig_ninja_bin_dir
+            self._ninja_pkg = None
+        for k, prev in self._saved_env.items():
+            if prev is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = prev
+        self._saved_env = {}
+        if self._temp_dir is not None:
+            self._temp_dir.cleanup()
+            self._temp_dir = None
+        self.shim_root = None
+        self.shim_bin_dir = None
+        self._installed = False
+
+
+class FlashInferRunNinjaGuard:
+    """Wraps both `flashinfer.jit.cpp_ext.run_ninja` and `flashinfer.jit.core.run_ninja` to refuse any JIT compile."""
+
+    def __init__(self) -> None:
+        self.run_ninja_called: bool = False
+        self.calls: list[dict[str, Any]] = []
+        self._installed: bool = False
+        self._cpp_ext_mod: Any = None
+        self._core_mod: Any = None
+        self._orig_cpp_ext_run_ninja: Any = None
+        self._orig_core_run_ninja: Any = None
+
+    def install(self) -> None:
+        if self._installed:
+            return
+        try:
+            from flashinfer.jit import cpp_ext as cpp_ext_mod
+        except Exception:
+            cpp_ext_mod = None
+        try:
+            from flashinfer.jit import core as core_mod
+        except Exception:
+            core_mod = None
+        guard = self
+
+        def _guarded_run_ninja(*args: Any, **kwargs: Any) -> Any:
+            guard.run_ninja_called = True
+            guard.calls.append({"args": [str(a) for a in args], "kwargs": {str(k): str(v) for k, v in kwargs.items()}})
+            raise refused_error(
+                JUDGE_JIT_BUILD_ENTERED,
+                "FlashInfer attempted to invoke run_ninja during judge execution.",
+                "Install the matching prebuilt flashinfer-jit-cache and flashinfer-jit-cache-sm120f wheels so no runtime JIT compilation runs.",
+            )
+
+        self._cpp_ext_mod = cpp_ext_mod
+        self._core_mod = core_mod
+        if cpp_ext_mod is not None and hasattr(cpp_ext_mod, "run_ninja"):
+            self._orig_cpp_ext_run_ninja = cpp_ext_mod.run_ninja
+            cpp_ext_mod.run_ninja = _guarded_run_ninja
+        if core_mod is not None and hasattr(core_mod, "run_ninja"):
+            self._orig_core_run_ninja = core_mod.run_ninja
+            core_mod.run_ninja = _guarded_run_ninja
+        self._installed = True
+
+    def uninstall(self) -> None:
+        if not self._installed:
+            return
+        if self._cpp_ext_mod is not None and self._orig_cpp_ext_run_ninja is not None:
+            self._cpp_ext_mod.run_ninja = self._orig_cpp_ext_run_ninja
+        if self._core_mod is not None and self._orig_core_run_ninja is not None:
+            self._core_mod.run_ninja = self._orig_core_run_ninja
+        self._installed = False
+
+
+def verify_qwen36_prebuilt_kernels_before_llm(
+    *,
+    expected_so_sha256: str | None = None,
+    proc_maps_path: Path | None = None,
+) -> dict[str, Any]:
+    """Verify FlashInfer's prebuilt AOT `fused_moe_120` kernel before constructing `LLM(...)`."""
+    eff_expected_sha256 = (
+        EXPECTED_FUSED_MOE_120_AOT_SO_SHA256
+        if expected_so_sha256 is None
+        else str(expected_so_sha256)
+    )
+    had_arch = bool(os.environ.get("FLASHINFER_CUDA_ARCH_LIST", "").strip())
+    if not had_arch:
+        os.environ["FLASHINFER_CUDA_ARCH_LIST"] = QWEN36_FLASHINFER_CUDA_ARCH_LIST
+    try:
+        from flashinfer.jit import env as fi_env
+        from flashinfer.jit import fused_moe as fi_fused_moe
+    except Exception as exc:
+        raise refused_error(
+            JUDGE_PREBUILT_KERNELS_MISSING,
+            f"FlashInfer prebuilt kernel check failed importing flashinfer.jit: {type(exc).__name__}: {exc}.",
+            "Install pinned flashinfer-python, flashinfer-jit-cache, and flashinfer-jit-cache-sm120f wheels in venv-vllm.",
+        ) from exc
+
+    if not had_arch:
+        try:
+            from flashinfer.jit import core as fi_core
+            refresh_fn = getattr(fi_core, "refresh_current_compilation_context", None)
+            if callable(refresh_fn):
+                refresh_fn()
+        except Exception:
+            pass
+
+    gen_fn = getattr(fi_fused_moe, "gen_cutlass_fused_moe_sm120_module", None)
+    if not callable(gen_fn):
+        raise refused_error(
+            JUDGE_PREBUILT_KERNELS_MISSING,
+            "flashinfer.jit.fused_moe.gen_cutlass_fused_moe_sm120_module is unavailable.",
+            "Install pinned flashinfer-python==0.7.3 with prebuilt sm120f AOT kernels.",
+        )
+    try:
+        spec = gen_fn(use_fast_build=False)
+    except Exception as exc:
+        raise refused_error(
+            JUDGE_PREBUILT_KERNELS_MISSING,
+            f"gen_cutlass_fused_moe_sm120_module(use_fast_build=False) failed: {type(exc).__name__}: {exc}.",
+            "Verify FLASHINFER_CUDA_ARCH_LIST=12.0f and prebuilt sm120f kernel wheels in venv-vllm.",
+        ) from exc
+
+    is_aot = bool(getattr(spec, "is_aot", False))
+    if not is_aot:
+        raise refused_error(
+            JUDGE_PREBUILT_KERNELS_MISSING,
+            f"FlashInfer {getattr(spec, 'name', 'fused_moe_120')} reported is_aot=False; refusing to compile on judge pod.",
+            "Install matching flashinfer-jit-cache and flashinfer-jit-cache-sm120f wheels for FLASHINFER_CUDA_ARCH_LIST=12.0f.",
+        )
+
+    module_name = str(getattr(spec, "name", "fused_moe_120") or "fused_moe_120")
+    artifacts = tuple(getattr(spec, "aot_artifacts", ()) or ())
+    if not artifacts and callable(getattr(fi_env, "get_aot_artifacts", None)):
+        try:
+            artifacts = tuple(fi_env.get_aot_artifacts(module_name) or ())
+        except Exception:
+            artifacts = ()
+
+    so_path_raw: Any = None
+    provider_id: str | None = None
+    provider_version: str | None = None
+    if artifacts:
+        art = artifacts[0]
+        so_path_raw = getattr(art, "path", None)
+        provider_id = getattr(art, "provider_id", None)
+        provider_version = getattr(art, "version", None)
+    if so_path_raw is None:
+        so_path_raw = getattr(spec, "aot_path", None)
+    if so_path_raw is None and callable(getattr(spec, "get_library_path", None)):
+        so_path_raw = spec.get_library_path()
+    if so_path_raw is None:
+        raise refused_error(
+            JUDGE_PREBUILT_KERNELS_MISSING,
+            f"FlashInfer {module_name} reported is_aot=True without an AOT .so path.",
+            "Verify flashinfer-jit-cache-sm120f installation.",
+        )
+    so_path = Path(so_path_raw)
+    if not so_path.is_file():
+        raise refused_error(
+            JUDGE_PREBUILT_KERNELS_MISSING,
+            f"FlashInfer AOT kernel binary missing on disk: {so_path}.",
+            "Re-sync venv-vllm from vllm.lock.txt so fused_moe_120.so is installed.",
+        )
+
+    hasher = hashlib.sha256()
+    with so_path.open("rb") as fh:
+        while chunk := fh.read(1024 * 1024):
+            hasher.update(chunk)
+    actual_sha256 = hasher.hexdigest().lower()
+    if actual_sha256 != eff_expected_sha256.lower():
+        raise refused_error(
+            JUDGE_PREBUILT_KERNELS_MISSING,
+            f"FlashInfer AOT {so_path.name} sha256 mismatch: file={actual_sha256}, expected={eff_expected_sha256}.",
+            "Re-sync venv-vllm from scripts/colab/locks/vllm.lock.txt.",
+        )
+
+    if provider_id is None:
+        provider_id = getattr(spec, "provider_id", None)
+    if provider_version is None:
+        provider_version = getattr(spec, "provider_version", None)
+
+    providers_list = tuple(getattr(fi_env, "FLASHINFER_AOT_PROVIDERS", ()) or ())
+    if not providers_list and callable(getattr(fi_env, "_get_aot_providers", None)):
+        try:
+            providers_list = tuple(fi_env._get_aot_providers() or ())
+        except Exception:
+            providers_list = ()
+    for prov in providers_list:
+        p_id = str(getattr(prov, "provider_id", "") or "")
+        p_ver = str(getattr(prov, "version", "") or "")
+        p_modules = getattr(prov, "modules", ()) or ()
+        if provider_id is not None and p_id == str(provider_id):
+            provider_version = p_ver or provider_version
+            break
+        if provider_id is None and module_name in p_modules:
+            provider_id = p_id or None
+            provider_version = p_ver or provider_version
+            break
+    if not provider_id or not provider_version:
+        raise refused_error(
+            JUDGE_PREBUILT_KERNELS_MISSING,
+            f"FlashInfer AOT provider metadata incomplete for {module_name}: provider_id={provider_id!r}, version={provider_version!r}.",
+            "Ensure flashinfer-jit-cache and flashinfer-jit-cache-sm120f expose valid AOT provider metadata.",
+        )
+
+    libcudart_path = read_mapped_libcudart_path(proc_maps_path=proc_maps_path)
+    return {
+        "module_name": module_name,
+        "is_aot": True,
+        "provider_id": str(provider_id),
+        "provider_version": str(provider_version),
+        "so_path": so_path.as_posix(),
+        "so_sha256": actual_sha256,
+        "expected_so_sha256": eff_expected_sha256.lower(),
+        "libcudart_path": libcudart_path,
+        "build_entered": False,
+    }
+
+
 def ensure_qwen36_jit_build_env_before_llm(
     *,
     cgroup_root: Path | None = None,
     proc_cgroup_path: Path | None = None,
     nproc: int | None = None,
 ) -> dict[str, Any]:
-    """Read cgroup headroom fresh and set ninja/nvcc JIT parallelism env vars immediately before `LLM(...)`."""
+    """Read cgroup headroom fresh across the full cgroup chain and set ninja/nvcc JIT parallelism env vars immediately before `LLM(...)`."""
     overrides: dict[str, int] = {}
     reserve_bytes = QWEN36_JIT_BUILD_RESERVE_BYTES
     per_job_bytes = QWEN36_JIT_BUILD_PER_JOB_BYTES
@@ -10198,6 +11023,8 @@ def ensure_qwen36_jit_build_env_before_llm(
         nproc=nproc,
         overrides=overrides,
     )
+    plan["selected_cgroup_path"] = cg_state.get("selected_cgroup_path")
+    plan["cgroup_chain"] = list(cg_state.get("cgroup_chain") or [])
     for k, v in plan["env_values"].items():
         os.environ[k] = v
     limit_tok = str(plan["limit_bytes"]) if plan.get("limit_bytes") is not None else "none"
@@ -10213,6 +11040,14 @@ def ensure_qwen36_jit_build_env_before_llm(
         f"reserve_bytes={plan['reserve_bytes']} "
         f"per_job_bytes={plan['per_job_bytes']} source={plan['source']} env={env_tok}"
     )
+    if plan.get("selected_cgroup_path"):
+        log_line += f" cgroup_path={plan['selected_cgroup_path']}"
+    if plan.get("cgroup_chain"):
+        chain_tok = ",".join(
+            f"{lvl.get('path')}(limit={lvl.get('limit_bytes')},used={lvl.get('used_bytes')},headroom={lvl.get('headroom_bytes')})"
+            for lvl in plan["cgroup_chain"]
+        )
+        log_line += f" cgroup_chain={chain_tok}"
     if plan["source"] == "fallback":
         log_line += f" nproc={plan['nproc']} fallback_reason=no_finite_cgroup_limit"
     if overrides:
@@ -10293,6 +11128,60 @@ class VllmJudgeTransport:
         self._llm_init_seconds: float | None = None
         self._jit_build_summary: dict[str, Any] | None = None
         self._cgroup_memory_peak_bytes: int | None = None
+        self._prebuilt_jit_cache_info: dict[str, Any] | None = None
+        self._build_entered: bool = False
+        self._build_scan_report: dict[str, Any] | None = None
+        self._run_ninja_guard: FlashInferRunNinjaGuard | None = None
+        self._build_shim_guard: FlashInferBuildShimGuard | None = None
+        self._workspace_baseline: dict[str, Any] | None = None
+        self._compute_cap_info: dict[str, Any] | None = None
+        self._jit_shim_marker_dir: Path | None = None
+
+    def verify_no_build_entered(
+        self,
+        *,
+        workspace_dirs: Sequence[Path | str | None] | None = None,
+        chain_from: BaseException | None = None,
+    ) -> dict[str, Any]:
+        """Verify neither `run_ninja`, the `ninja`/`nvcc` shims, nor the FlashInfer workspace indicates a JIT build was entered."""
+        guard_called = bool(self._run_ninja_guard is not None and self._run_ninja_guard.run_ninja_called)
+        marker_p = self._build_shim_guard.marker_path if self._build_shim_guard is not None else None
+        scan = scan_flashinfer_workspace_build_entered(
+            workspace_dirs=workspace_dirs,
+            baseline=self._workspace_baseline,
+            run_ninja_called=bool(guard_called or self._build_entered),
+            shim_marker_path=marker_p,
+        )
+        self._build_scan_report = scan
+        self._build_entered = bool(scan["build_entered"])
+        if self._prebuilt_jit_cache_info is not None:
+            self._prebuilt_jit_cache_info["build_entered"] = self._build_entered
+        if self._build_entered:
+            if isinstance(chain_from, RdlabError) and chain_from.code == JUDGE_JIT_BUILD_ENTERED:
+                raise chain_from
+            exc = refused_error(
+                JUDGE_JIT_BUILD_ENTERED,
+                (
+                    f"FlashInfer JIT build entered unexpectedly during judge run: "
+                    f"run_ninja_called={scan['run_ninja_called']}, "
+                    f"shim_invocations={scan['shim_invocations'][:3]}, "
+                    f"ninja_logs={scan['ninja_logs'][:3]}, "
+                    f"cached_ops_dirs={scan['cached_ops_dirs'][:3]}."
+                ),
+                "Install matching prebuilt flashinfer-jit-cache and flashinfer-jit-cache-sm120f wheels so FlashInfer loads AOT kernels without building.",
+            )
+            if chain_from is not None:
+                raise exc from chain_from
+            raise exc
+        return scan
+
+    def close_build_guard(self) -> None:
+        if self._run_ninja_guard is not None:
+            self._run_ninja_guard.uninstall()
+            self._run_ninja_guard = None
+        if self._build_shim_guard is not None:
+            self._build_shim_guard.uninstall()
+            self._build_shim_guard = None
 
     def verify_ready(self, spec: JudgeSpec, *, allow_remote_code_reviewed: str | None = None) -> str:
         check_remote_code_gate(spec, allow_remote_code_reviewed=allow_remote_code_reviewed)
@@ -10359,6 +11248,8 @@ class VllmJudgeTransport:
         max_model_len = QWEN36_PROMPT_TOKEN_CAP + max_new_tokens
         max_num_batched_tokens = compute_qwen36_max_num_batched_tokens(max_model_len)
         self._ensure_tokenizer_loaded(spec)
+        if not self.device.lower().startswith("cpu"):
+            self._compute_cap_info = prepare_qwen36_no_compile_process_env(device=self.device)
         configured_jit_log = os.environ.get(QWEN36_FLASHINFER_JIT_BUILD_LOG_ENV_VAR, "").strip()
         temp_jit_dir: tempfile.TemporaryDirectory[str] | None = None
         if configured_jit_log:
@@ -10367,14 +11258,35 @@ class VllmJudgeTransport:
             temp_jit_dir = tempfile.TemporaryDirectory(prefix="rdlab-flashinfer-jit-log-")
             eff_jit_log_path = Path(temp_jit_dir.name) / "jit_build.jsonl"
             os.environ[QWEN36_FLASHINFER_JIT_BUILD_LOG_ENV_VAR] = str(eff_jit_log_path)
-        from vllm import LLM
 
-        # Take the cgroup non-reclaimable memory reading right before constructing `LLM(...)`.
+        # Take the cgroup non-reclaimable memory reading and install child-inherited shims before importing flashinfer or vLLM.
         self._jit_build_plan = ensure_qwen36_jit_build_env_before_llm()
+        if self._build_shim_guard is None:
+            self._build_shim_guard = FlashInferBuildShimGuard(marker_dir=self._jit_shim_marker_dir)
+        self._build_shim_guard.install()
+        if self._run_ninja_guard is None:
+            self._run_ninja_guard = FlashInferRunNinjaGuard()
+        self._run_ninja_guard.install()
+        try:
+            self._prebuilt_jit_cache_info = verify_qwen36_prebuilt_kernels_before_llm()
+        except Exception as llm_exc:
+            try:
+                self.verify_no_build_entered(chain_from=llm_exc)
+            finally:
+                self.close_build_guard()
+            raise
+        if self._compute_cap_info is not None:
+            self._prebuilt_jit_cache_info["compute_capability"] = self._compute_cap_info["compute_capability"]
+            self._prebuilt_jit_cache_info["compute_capability_source"] = self._compute_cap_info["source"]
+        self._workspace_baseline = snapshot_flashinfer_workspaces()
+        self._build_entered = False
+        from vllm import LLM
         child_progress_raw = os.environ.get("RDLAB_JUDGE_CHILD_PROGRESS_FILE", "").strip()
-        if child_progress_raw:
-            _append_child_progress_line(
-                Path(child_progress_raw),
+        eff_child_progress: Path | None = (
+            Path(child_progress_raw) if child_progress_raw else getattr(self, "_progress_file", None)
+        )
+        if eff_child_progress is not None:
+            for child_rec in (
                 {
                     "kind": "jit_build_jobs",
                     "stage": "before_llm",
@@ -10385,10 +11297,25 @@ class VllmJudgeTransport:
                     "nonreclaimable_bytes": self._jit_build_plan.get("nonreclaimable_bytes"),
                     "used_bytes": self._jit_build_plan.get("used_bytes"),
                     "used_source": self._jit_build_plan.get("used_source"),
+                    "selected_cgroup_path": self._jit_build_plan.get("selected_cgroup_path"),
+                    "cgroup_chain": self._jit_build_plan.get("cgroup_chain"),
                     "source": self._jit_build_plan.get("source"),
                 },
-                lock=threading.Lock(),
-            )
+                {
+                    "kind": "prebuilt_jit_cache",
+                    "stage": "before_llm",
+                    "judge_id": spec.judge_id,
+                    **self._prebuilt_jit_cache_info,
+                },
+            ):
+                try:
+                    _append_child_progress_line(
+                        eff_child_progress,
+                        child_rec,
+                        lock=_CHILD_PROGRESS_LOCK,
+                    )
+                except OSError:
+                    pass
         t_llm_init = time.monotonic()
         try:
             self._llm = LLM(
@@ -10405,6 +11332,12 @@ class VllmJudgeTransport:
                 max_num_batched_tokens=max_num_batched_tokens,
                 enable_prefix_caching=QWEN36_ENABLE_PREFIX_CACHING,
             )
+        except Exception as llm_exc:
+            try:
+                self.verify_no_build_entered(chain_from=llm_exc)
+            finally:
+                self.close_build_guard()
+            raise
         finally:
             self._llm_init_seconds = round(max(0.0, time.monotonic() - t_llm_init), 6)
             self._cgroup_memory_peak_bytes = _read_cgroup_memory_peak_bytes()
@@ -10413,6 +11346,10 @@ class VllmJudgeTransport:
                 if os.environ.get(QWEN36_FLASHINFER_JIT_BUILD_LOG_ENV_VAR) == str(eff_jit_log_path):
                     os.environ.pop(QWEN36_FLASHINFER_JIT_BUILD_LOG_ENV_VAR, None)
                 temp_jit_dir.cleanup()
+        mapped_libcudart = read_mapped_libcudart_path()
+        if mapped_libcudart is not None and self._prebuilt_jit_cache_info is not None:
+            self._prebuilt_jit_cache_info["libcudart_path"] = mapped_libcudart
+        self.verify_no_build_entered()
         self._max_model_len = max_model_len
         self._max_num_batched_tokens = max_num_batched_tokens
         resolved_cfg = read_qwen36_resolved_engine_config(self._llm)
@@ -10498,7 +11435,12 @@ class VllmJudgeTransport:
         )
 
         t0 = time.monotonic()
-        outputs = self._llm.generate([rendered_prompt], sampling_params=sampling_params)
+        try:
+            outputs = self._llm.generate([rendered_prompt], sampling_params=sampling_params)
+        except Exception as gen_exc:
+            self.verify_no_build_entered(chain_from=gen_exc)
+            raise
+        self.verify_no_build_entered()
         elapsed = max(0.0001, time.monotonic() - t0)
 
         req_out = outputs[0]
@@ -10567,6 +11509,11 @@ class VllmJudgeTransport:
             "call_seed": call_seed,
             "seed_variant": recorded_seed_variant,
         }
+        if isinstance(self._prebuilt_jit_cache_info, Mapping):
+            prebuilt_pin = dict(self._prebuilt_jit_cache_info)
+            prebuilt_pin["build_entered"] = bool(self._build_entered)
+            library_pins["prebuilt_jit_cache"] = prebuilt_pin
+            library_pins["build_entered"] = bool(self._build_entered)
         return JudgeTransportResponse(
             raw_text=raw_text,
             tokens=tokens,

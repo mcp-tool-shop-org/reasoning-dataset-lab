@@ -9,7 +9,7 @@ import json
 import math
 from pathlib import Path
 import sys
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
@@ -187,10 +187,70 @@ def _install_fake_runtime(
     monkeypatch.setitem(
         sys.modules,
         "transformers",
-        SimpleNamespace(__version__="5.22.2", AutoTokenizer=SimpleNamespace(from_pretrained=lambda *a, **kw: FakeTokenizer())),
+        SimpleNamespace(__version__="5.22.2", AutoTokenizer=SimpleNamespace(from_pretrained=tok_builder if "tok_builder" in locals() else (lambda *a, **kw: FakeTokenizer()))),
     )
     monkeypatch.setitem(sys.modules, "tokenizers", SimpleNamespace(__version__="0.23.3"))
     monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(__version__="2.14.0"))
+    aot_root = hf_home.parent / ".fake_flashinfer_aot"
+    so_path = aot_root / "fused_moe_120" / "fused_moe_120.so"
+    so_path.parent.mkdir(parents=True, exist_ok=True)
+    so_path.write_bytes(b"fake-aot-fused-moe-120")
+    so_sha = hashlib.sha256(so_path.read_bytes()).hexdigest()
+    monkeypatch.setattr(bakeoff_judge, "EXPECTED_FUSED_MOE_120_AOT_SO_SHA256", so_sha)
+    ws_dir = hf_home.parent / ".fake_flashinfer_ws"
+    ws_dir.mkdir(parents=True, exist_ok=True)
+    provider = SimpleNamespace(
+        provider_id="sm120f",
+        distribution="flashinfer-jit-cache-sm120f",
+        version="0.7.3+cu130",
+        jit_cache_dir=aot_root,
+        cuda_architectures=frozenset({"sm120f"}),
+        modules=frozenset({"fused_moe_120"}),
+    )
+    artifact = SimpleNamespace(provider_id="sm120f", path=so_path, cuda_architectures=frozenset({"sm120f"}))
+    spec_obj = SimpleNamespace(
+        name="fused_moe_120",
+        is_aot=True,
+        aot_artifacts=(artifact,),
+        aot_path=so_path,
+        get_library_path=lambda: so_path,
+    )
+    fi_mod = ModuleType("flashinfer")
+    fi_mod.__path__ = []  # type: ignore[attr-defined]
+    fi_jit = ModuleType("flashinfer.jit")
+    fi_jit.__path__ = []  # type: ignore[attr-defined]
+    fi_env = SimpleNamespace(
+        FLASHINFER_AOT_PROVIDERS=(provider,),
+        FLASHINFER_WORKSPACE_DIR=ws_dir,
+        FLASHINFER_CACHE_DIR=ws_dir,
+        _get_aot_providers=lambda: (provider,),
+        get_aot_artifacts=lambda _name: (artifact,),
+    )
+    fi_cpp_ext = SimpleNamespace(run_ninja=lambda *_a, **_kw: None)
+    fi_core = SimpleNamespace(
+        run_ninja=fi_cpp_ext.run_ninja,
+        refresh_current_compilation_context=lambda: None,
+    )
+    fi_fused = SimpleNamespace(gen_cutlass_fused_moe_sm120_module=lambda use_fast_build=False: spec_obj)
+    fi_mod.jit = fi_jit  # type: ignore[attr-defined]
+    fi_jit.env = fi_env  # type: ignore[attr-defined]
+    fi_jit.cpp_ext = fi_cpp_ext  # type: ignore[attr-defined]
+    fi_jit.core = fi_core  # type: ignore[attr-defined]
+    fi_jit.fused_moe = fi_fused  # type: ignore[attr-defined]
+    fake_pynvml = SimpleNamespace(
+        nvmlInit=lambda: None,
+        nvmlShutdown=lambda: None,
+        nvmlDeviceGetHandleByIndex=lambda _i=0: object(),
+        nvmlDeviceGetHandleByUUID=lambda _u: object(),
+        nvmlDeviceGetCudaComputeCapability=lambda _h: (12, 0),
+    )
+    monkeypatch.setitem(sys.modules, "pynvml", fake_pynvml)
+    monkeypatch.setitem(sys.modules, "flashinfer", fi_mod)
+    monkeypatch.setitem(sys.modules, "flashinfer.jit", fi_jit)
+    monkeypatch.setitem(sys.modules, "flashinfer.jit.env", fi_env)
+    monkeypatch.setitem(sys.modules, "flashinfer.jit.cpp_ext", fi_cpp_ext)
+    monkeypatch.setitem(sys.modules, "flashinfer.jit.core", fi_core)
+    monkeypatch.setitem(sys.modules, "flashinfer.jit.fused_moe", fi_fused)
     monkeypatch.setenv("HF_HOME", str(hf_home))
     return state
 

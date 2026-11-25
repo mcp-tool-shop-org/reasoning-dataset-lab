@@ -82,6 +82,8 @@ FUSED_MOE_120_GENERATED_COUNT = 68  # `generate_gemm_operations(..., "120;120-re
 TRACKED_LOCK_PACKAGES: tuple[str, ...] = (
     "vllm",
     "flashinfer-python",
+    "flashinfer-jit-cache",
+    "flashinfer-jit-cache-sm120f",
     "nvidia-cuda-nvcc",
     "nvidia-nvvm",
     "nvidia-cuda-runtime",
@@ -90,6 +92,10 @@ TRACKED_LOCK_PACKAGES: tuple[str, ...] = (
     "nvidia-cuda-nvrtc",
     "ninja",
 )
+WORKER_OUTPUT_TAIL_LINES: int = 200
+_NVCC_RELEASE_RE = re.compile(r"release\s+(\d+)\.(\d+)(?:\.(\d+))?")
+_CUDART_VERSION_RE = re.compile(r"^\s*#\s*define\s+CUDART_VERSION\s+(\d+)\b", re.MULTILINE)
+_DIRECT_URL_WHL_RE = re.compile(r"^([A-Za-z0-9_.-]+)\s*@\s*(https?://[^\s\\]+)")
 _SIZE_SUFFIX_MULTIPLIERS: dict[str, int] = {
     "": 1,
     "B": 1,
@@ -168,6 +174,14 @@ def parse_vllm_lock_versions(
         m = _PKG_PIN_RE.match(stripped)
         if m:
             all_pins[m.group(1).lower()] = m.group(2)
+            continue
+        m_url = _DIRECT_URL_WHL_RE.match(stripped)
+        if m_url:
+            pkg_name = m_url.group(1).lower()
+            url_val = m_url.group(2)
+            whl_name = url_val.split("?", 1)[0].split("#", 1)[0].rsplit("/", 1)[-1]
+            parts = whl_name[:-4].split("-") if whl_name.endswith(".whl") else []
+            all_pins[pkg_name] = parts[1].replace("%2B", "+") if len(parts) >= 2 else url_val
 
     missing = [pkg for pkg in TRACKED_LOCK_PACKAGES if pkg not in all_pins]
     if missing:
@@ -249,40 +263,57 @@ def ensure_vllm_venv_from_lock(
     )
     if not reused:
         venv_dir.parent.mkdir(parents=True, exist_ok=True)
-        if not venv_py.is_file():
-            res_venv = runner(
-                [uv_bin, "venv", "--python", "3.13", str(venv_dir)],
-                stdin=subprocess.DEVNULL,
-                capture_output=True,
-                text=True,
-                timeout=300,
-                check=False,
+        if runner is subprocess.run and not Path(uv_bin).is_file() and _find_executable_on_path(uv_bin, os.environ.get("PATH", "")) is None:
+            raise JitBuildRungError(
+                "UV_NOT_FOUND",
+                f"uv executable not found ({uv_bin!r}); install uv or ensure it is on PATH.",
             )
+        if not venv_py.is_file():
+            try:
+                res_venv = runner(
+                    [uv_bin, "venv", "--python", "3.13", str(venv_dir)],
+                    stdin=subprocess.DEVNULL,
+                    capture_output=True,
+                    text=True,
+                    timeout=300,
+                    check=False,
+                )
+            except FileNotFoundError as exc:
+                raise JitBuildRungError(
+                    "UV_NOT_FOUND",
+                    f"uv executable not found ({uv_bin!r}): {exc}",
+                ) from exc
             if int(getattr(res_venv, "returncode", 1)) != 0:
                 raise JitBuildRungError(
                     "UV_VENV_FAILED",
                     f"uv venv failed rc={res_venv.returncode}: {(res_venv.stderr or '').strip()}",
                 )
-        res_sync = runner(
-            [
-                uv_bin,
-                "pip",
-                "sync",
-                "--python",
-                str(_venv_python_path(venv_dir)),
-                "--only-binary",
-                ":all:",
-                "--no-binary",
-                "pyyaml",
-                "--require-hashes",
-                str(lock_path),
-            ],
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            timeout=1800,
-            check=False,
-        )
+        try:
+            res_sync = runner(
+                [
+                    uv_bin,
+                    "pip",
+                    "sync",
+                    "--python",
+                    str(_venv_python_path(venv_dir)),
+                    "--only-binary",
+                    ":all:",
+                    "--no-binary",
+                    "pyyaml",
+                    "--require-hashes",
+                    str(lock_path),
+                ],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                timeout=1800,
+                check=False,
+            )
+        except FileNotFoundError as exc:
+            raise JitBuildRungError(
+                "UV_NOT_FOUND",
+                f"uv executable not found ({uv_bin!r}): {exc}",
+            ) from exc
         if int(getattr(res_sync, "returncode", 1)) != 0:
             raise JitBuildRungError(
                 "UV_SYNC_FAILED",
@@ -319,6 +350,112 @@ def validate_fresh_cache_dir(cache_dir: Path) -> Path:
             f"FLASHINFER_WORKSPACE_BASE / cache_dir must be a fresh temp dir outside home; got {resolved}",
         )
     return resolved
+
+
+def _find_executable_on_path(name: str, path_value: str) -> str | None:
+    """Locate an executable on `path_value` (or exact path) without altering `shutil.which` test stubs."""
+    cand_direct = Path(name)
+    if cand_direct.is_file() and (sys.platform.startswith("win") or os.access(cand_direct, os.X_OK)):
+        return str(cand_direct)
+    exts = ("", ".exe") if sys.platform.startswith("win") else ("",)
+    for raw_dir in (path_value or "").split(os.pathsep):
+        d_str = raw_dir.strip()
+        if not d_str:
+            continue
+        d_path = Path(d_str)
+        for ext in exts:
+            cand = d_path / f"{name}{ext}"
+            if cand.is_file() and (sys.platform.startswith("win") or os.access(cand, os.X_OK)):
+                return str(cand)
+    return None
+
+
+def _tail_lines(text: str | None, limit: int = WORKER_OUTPUT_TAIL_LINES) -> list[str]:
+    if not text:
+        return []
+    lines = str(text).splitlines()
+    return lines[-max(1, int(limit)) :]
+
+
+def parse_nvcc_release_version(text: str) -> tuple[int, int, str]:
+    """Parse `(major, minor, raw_str)` from `nvcc --version` output."""
+    match = _NVCC_RELEASE_RE.search(text or "")
+    if not match:
+        raise JitBuildRungError(
+            "NVCC_VERSION_PARSE_FAILED",
+            f"Could not parse CUDA release version from nvcc --version output: {(text or '').strip()!r}",
+        )
+    major = int(match.group(1))
+    minor = int(match.group(2))
+    raw_str = f"{major}.{minor}.{match.group(3)}" if match.group(3) else f"{major}.{minor}"
+    return major, minor, raw_str
+
+
+def parse_cudart_header_version(include_dir: Path) -> tuple[int, int, int, Path]:
+    """Parse `CUDART_VERSION` from `cuda_runtime_api.h` or `cuda_runtime.h` under `include_dir`."""
+    inc_path = Path(include_dir)
+    candidates = [
+        inc_path / "cuda_runtime_api.h",
+        inc_path / "cuda_runtime.h",
+    ]
+    for hdr in candidates:
+        if hdr.is_file():
+            content = hdr.read_text(encoding="utf-8", errors="replace")
+            match = _CUDART_VERSION_RE.search(content)
+            if match:
+                val = int(match.group(1))
+                major = val // 1000
+                minor = (val % 1000) // 10
+                return major, minor, val, hdr
+    raise JitBuildRungError(
+        "CUDART_HEADER_VERSION_MISSING",
+        f"Could not find CUDART_VERSION macro in cuda_runtime_api.h or cuda_runtime.h under {inc_path}",
+    )
+
+
+def check_cuda_toolkit_version_match(
+    nvcc_bin: Path,
+    include_dir: Path,
+    *,
+    runner: Callable[..., Any] = subprocess.run,
+) -> dict[str, Any]:
+    """Verify `nvcc --version` major.minor equals `CUDART_VERSION` from the target headers before any build."""
+    try:
+        res = runner(
+            [str(nvcc_bin), "--version"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise JitBuildRungError("VENV_NVCC_MISSING", f"nvcc executable not found at {nvcc_bin}: {exc}") from exc
+    if int(getattr(res, "returncode", 1)) != 0:
+        raise JitBuildRungError(
+            "NVCC_VERSION_FAILED",
+            f"{nvcc_bin} --version exited rc={getattr(res, 'returncode', 1)}: {(getattr(res, 'stderr', '') or '').strip()}",
+        )
+    nvcc_out = f"{getattr(res, 'stdout', '') or ''}\n{getattr(res, 'stderr', '') or ''}"
+    nvcc_major, nvcc_minor, nvcc_raw = parse_nvcc_release_version(nvcc_out)
+    rt_major, rt_minor, cudart_version, hdr_path = parse_cudart_header_version(include_dir)
+    if (nvcc_major, nvcc_minor) != (rt_major, rt_minor):
+        raise JitBuildRungError(
+            "CUDA_TOOLKIT_VERSION_MISMATCH",
+            (
+                f"nvcc {nvcc_major}.{nvcc_minor} ({nvcc_raw}) does not match CUDART_VERSION={cudart_version} "
+                f"({rt_major}.{rt_minor} in {hdr_path}); CCCL requires matching compiler and CUDA runtime major.minor."
+            ),
+        )
+    return {
+        "nvcc_major": nvcc_major,
+        "nvcc_minor": nvcc_minor,
+        "nvcc_release": nvcc_raw,
+        "cudart_version": cudart_version,
+        "cudart_major": rt_major,
+        "cudart_minor": rt_minor,
+        "cudart_header": str(hdr_path),
+    }
 
 
 def _symlink_force(target: Path, link_path: Path) -> None:
@@ -444,8 +581,8 @@ def resolve_fused_moe_120_target_spec() -> dict[str, Any]:
 
 
 def parse_ninja_log(ninja_log_path: Path) -> list[float]:
-    """Parse `.ninja_log` (v5) compile edges (`.o` targets only), deduplicated by `(start_ms, end_ms)`."""
-    latest_by_target: dict[str, tuple[int, int]] = {}
+    """Parse `.ninja_log` (v5) compile edges (`.o` targets only), deduplicated by `(start_ms, end_ms, cmdhash)`."""
+    latest_by_target: dict[str, tuple[int, int, str]] = {}
     try:
         lines = Path(ninja_log_path).read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
@@ -465,12 +602,13 @@ def parse_ninja_log(ninja_log_path: Path) -> list[float]:
         target = cols[3].strip()
         if not target or not target.endswith(".o"):
             continue
-        latest_by_target[target] = (start_ms, end_ms)
+        cmdhash = cols[4].strip() if len(cols) >= 5 and cols[4].strip() else target
+        latest_by_target[target] = (start_ms, end_ms, cmdhash)
 
-    seen_edges: set[tuple[int, int]] = set()
+    seen_edges: set[tuple[int, int, str]] = set()
     durations: list[float] = []
-    for start_ms, end_ms in latest_by_target.values():
-        edge = (start_ms, end_ms)
+    for start_ms, end_ms, cmdhash in latest_by_target.values():
+        edge = (start_ms, end_ms, cmdhash)
         if edge in seen_edges:
             continue
         seen_edges.add(edge)
@@ -612,7 +750,7 @@ def build_pod_reference(
             limit_bytes=POD_2026_11_24_LIMIT_BYTES,
             current_bytes=POD_2026_11_24_CURRENT_BYTES_BEFORE_DROP,
             nonreclaimable_bytes=eff_nonreclaimable,
-            used_source="memory.stat:anon+shmem+file_dirty+file_writeback+kernel",
+            used_source="memory.stat:anon+shmem+file_dirty+file_writeback+kernel+sock",
             reserve_bytes=int(reserve_bytes),
             per_job_bytes=int(per_job_bytes_assumed),
         )
@@ -792,6 +930,9 @@ def enrich_jit_build_receipt(receipt: Mapping[str, Any]) -> dict[str, Any]:
         "scope_mode",
         "success",
         "error_code",
+        "worker_stdout_tail",
+        "worker_stderr_tail",
+        "worker_log_path",
         "cache_dir",
         "error",
     )
@@ -1160,6 +1301,12 @@ def run_jit_build_rung(
         )
         jit_log_path = ws_dir / "flashinfer_jit_build.jsonl"
         worker_meta_path = ws_dir / "worker_meta.json"
+        worker_log_path = (
+            Path(receipt_path).with_suffix(".worker.log")
+            if receipt_path is not None
+            else (eff_cache_dir / "jit_build_worker.log" if cache_dir is not None else Path(venv_dir) / "jit_build_worker.log")
+        )
+        venv_bin_dir = str(Path(venv_info["venv_python"]).parent)
         child_env = dict(os.environ)
         for env_k in TEST_CGROUP_ENV_VARS:
             child_env.pop(env_k, None)
@@ -1176,6 +1323,7 @@ def run_jit_build_rung(
         child_env["RDLAB_JIT_RUNG_EXPECTED_CAP_BYTES"] = str(int(cap_bytes))
         child_env["PATH"] = os.pathsep.join(
             [
+                venv_bin_dir,
                 str(Path(toolkit["cuda_home"]) / "bin"),
                 str(Path(toolkit["cuda_home"]) / "nvvm" / "bin"),
                 child_env.get("PATH", ""),
@@ -1186,6 +1334,53 @@ def run_jit_build_rung(
         ).strip(os.pathsep)
         for k, v in job_plan["env_values"].items():
             child_env[k] = v
+
+        def _write_preflight_failure_receipt(code: str, msg: str) -> None:
+            if receipt_path is None:
+                return
+            worker_log_path.parent.mkdir(parents=True, exist_ok=True)
+            worker_log_path.write_text(f"[{code}] {msg}\n", encoding="utf-8", newline="\n")
+            write_jit_build_receipt(
+                receipt_path,
+                {
+                    "versions": venv_info["versions"],
+                    "lock_sha256": venv_info["lock_sha256"],
+                    "targets": [FUSED_MOE_120_MODULE_NAME],
+                    "cap_bytes": int(cap_bytes),
+                    "scope_memory_max": None,
+                    "scope_memory_max_bytes": None,
+                    "jobs": int(job_plan["jobs"]),
+                    "memory_peak_bytes": None,
+                    "build_seconds": 0.0,
+                    "wall_seconds": 0.0,
+                    "scope_mode": scope_mode,
+                    "success": False,
+                    "error_code": code,
+                    "worker_stdout_tail": [],
+                    "worker_stderr_tail": _tail_lines(f"[{code}] {msg}"),
+                    "worker_log_path": str(worker_log_path),
+                    "cache_dir": str(eff_cache_dir),
+                    "error": msg,
+                    "job_plan": job_plan,
+                    "target_details": resolve_fused_moe_120_target_spec(),
+                },
+            )
+
+        ninja_bin = _find_executable_on_path("ninja", child_env["PATH"])
+        if ninja_bin is None:
+            msg = f"ninja executable not found on worker PATH ({child_env['PATH']!r}); install ninja in {venv_bin_dir}."
+            _write_preflight_failure_receipt("NINJA_NOT_FOUND", msg)
+            raise JitBuildRungError("NINJA_NOT_FOUND", msg)
+
+        try:
+            toolkit_versions = check_cuda_toolkit_version_match(
+                Path(toolkit["nvcc"]),
+                Path(toolkit["cuda_home"]) / "include",
+                runner=runner,
+            )
+        except JitBuildRungError as exc:
+            _write_preflight_failure_receipt(exc.code, exc.message)
+            raise
 
         unit_name = f"rdlab-jit-build-{os.getpid()}-{int(time.time())}"
         scope_cmd, eff_scope_mode = build_scope_command(
@@ -1206,6 +1401,23 @@ def run_jit_build_rung(
             check=False,
         )
         wall_s = round(max(0.0, time.monotonic() - t0), 6)
+        raw_stdout = getattr(res, "stdout", None) or ""
+        raw_stderr = getattr(res, "stderr", None) or ""
+        stdout_tail = _tail_lines(raw_stdout, WORKER_OUTPUT_TAIL_LINES)
+        stderr_tail = _tail_lines(raw_stderr, WORKER_OUTPUT_TAIL_LINES)
+        worker_log_path.parent.mkdir(parents=True, exist_ok=True)
+        worker_log_path.write_text(
+            (
+                f"=== WORKER COMMAND ===\n{' '.join(scope_cmd)}\n"
+                f"=== RETURNCODE: {getattr(res, 'returncode', 1)} ===\n"
+                f"=== STDOUT (last {WORKER_OUTPUT_TAIL_LINES} lines; total {len(raw_stdout.splitlines())}) ===\n"
+                f"{chr(10).join(stdout_tail)}\n"
+                f"=== STDERR (last {WORKER_OUTPUT_TAIL_LINES} lines; total {len(raw_stderr.splitlines())}) ===\n"
+                f"{chr(10).join(stderr_tail)}\n"
+            ),
+            encoding="utf-8",
+            newline="\n",
+        )
         worker_meta: dict[str, Any] = {}
         if worker_meta_path.is_file():
             try:
@@ -1239,6 +1451,8 @@ def run_jit_build_rung(
             {
                 "versions": venv_info["versions"],
                 "lock_sha256": venv_info["lock_sha256"],
+                "toolkit_check": toolkit_versions,
+                "ninja_bin": ninja_bin,
                 "targets": targets,
                 "cap_bytes": int(cap_bytes),
                 "scope_memory_max": scope_memory_max,
@@ -1259,6 +1473,9 @@ def run_jit_build_rung(
                     and worker_meta.get("success", False)
                 ),
                 "error_code": error_code,
+                "worker_stdout_tail": stdout_tail,
+                "worker_stderr_tail": stderr_tail,
+                "worker_log_path": str(worker_log_path),
                 "cache_dir": str(eff_cache_dir),
                 "error": error_msg,
                 "job_plan": job_plan,
