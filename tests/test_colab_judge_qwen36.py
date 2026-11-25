@@ -4265,6 +4265,8 @@ def test_cgroup_tightest_headroom_across_chain_and_stat_parity_table(
     parent_dir = cg_root / "user.slice"
     child_dir = parent_dir / "pod.scope"
     child_dir.mkdir(parents=True, exist_ok=True)
+    (cg_root / "memory.max").write_text(f"{200 * 1024**3}\n", encoding="utf-8")
+    (cg_root / "memory.current").write_text("0\n", encoding="utf-8")
     (parent_dir / "memory.max").write_text(f"{40 * 1024**3}\n", encoding="utf-8")
     (parent_dir / "memory.current").write_text(f"{32 * 1024**3}\n", encoding="utf-8")
     (parent_dir / "memory.stat").write_text(
@@ -4517,9 +4519,100 @@ def test_prebuilt_aot_and_guard_edge_branches(
         lambda **_kw: SimpleNamespace(name="fused_moe_120", is_aot=True, get_library_path=lambda: info["fi_so_path"]),
     )
     monkeypatch.setattr(sys.modules["flashinfer.jit.env"], "FLASHINFER_AOT_PROVIDERS", ())
-    monkeypatch.setattr(sys.modules["flashinfer.jit.env"], "_get_aot_providers", lambda: ())
+    monkeypatch.setattr(
+        sys.modules["flashinfer.jit.env"],
+        "_get_aot_providers",
+        lambda: (_ for _ in ()).throw(RuntimeError("provider query failed")),
+    )
     with pytest.raises(RdlabError):
         bakeoff_judge.verify_qwen36_prebuilt_kernels_before_llm(expected_so_sha256=info["fi_so_sha256"])
+
+    # Additional scan_flashinfer_workspace_build_entered edge inputs (None, absent dir, direct cached_ops dir, file-named cached_ops, OSError on iterdir)
+    direct_cached_ops = tmp_path / "direct_ws" / "cached_ops"
+    (direct_cached_ops / "mod_x").mkdir(parents=True, exist_ok=True)
+    (direct_cached_ops / "note.txt").write_text("plain", encoding="utf-8")
+    (direct_cached_ops / ".ninja_log").mkdir(exist_ok=True)
+    ws_file_co = tmp_path / "ws_file_co"
+    ws_file_co.mkdir(parents=True, exist_ok=True)
+    (ws_file_co / "cached_ops").write_text("not a dir", encoding="utf-8")
+    direct_scan = bakeoff_judge.scan_flashinfer_workspace_build_entered(
+        [None, tmp_path / "absent_ws", direct_cached_ops, ws_file_co]
+    )
+    assert direct_scan["build_entered"] is True
+    assert any(p.endswith("mod_x") for p in direct_scan["cached_ops_dirs"])
+    with pytest.MonkeyPatch.context() as mp_iter:
+        mp_iter.setattr(Path, "iterdir", lambda _s: (_ for _ in ()).throw(OSError("denied")))
+        denied_scan = bakeoff_judge.scan_flashinfer_workspace_build_entered([direct_cached_ops])
+        assert denied_scan["cached_ops_dirs"] == []
+
+    # verify_qwen36_prebuilt_kernels_before_llm: unset arch + refresh None/raising, artifact with version, fallback aot_path + module_name provider match
+    info_full = _install_fake_aot_flashinfer(tmp_path / "aot_branches", monkeypatch)
+    monkeypatch.delenv("FLASHINFER_CUDA_ARCH_LIST", raising=False)
+    monkeypatch.setattr(sys.modules["flashinfer.jit.core"], "refresh_current_compilation_context", None)
+    monkeypatch.setattr(
+        sys.modules["flashinfer.jit.fused_moe"],
+        "gen_cutlass_fused_moe_sm120_module",
+        lambda **_kw: SimpleNamespace(
+            name="fused_moe_120",
+            is_aot=True,
+            aot_artifacts=(SimpleNamespace(provider_id="sm120f", version="0.7.3+cu130", path=info_full["fi_so_path"]),),
+        ),
+    )
+    res_art_ver = bakeoff_judge.verify_qwen36_prebuilt_kernels_before_llm(expected_so_sha256=info_full["fi_so_sha256"])
+    assert res_art_ver["provider_version"] == "0.7.3+cu130"
+
+    monkeypatch.delenv("FLASHINFER_CUDA_ARCH_LIST", raising=False)
+    monkeypatch.setattr(
+        sys.modules["flashinfer.jit.core"],
+        "refresh_current_compilation_context",
+        lambda: (_ for _ in ()).throw(RuntimeError("refresh fail")),
+    )
+    monkeypatch.setattr(
+        sys.modules["flashinfer.jit.env"],
+        "get_aot_artifacts",
+        lambda _n: (_ for _ in ()).throw(RuntimeError("artifacts err")),
+    )
+    other_prov = SimpleNamespace(provider_id="other", version="0.7.3", modules=frozenset({"other_mod"}))
+    match_prov = SimpleNamespace(provider_id="sm120f", version="0.7.3+cu130", modules=frozenset({"fused_moe_120"}))
+    monkeypatch.setattr(sys.modules["flashinfer.jit.env"], "FLASHINFER_AOT_PROVIDERS", (other_prov, match_prov))
+    monkeypatch.setattr(
+        sys.modules["flashinfer.jit.fused_moe"],
+        "gen_cutlass_fused_moe_sm120_module",
+        lambda **_kw: SimpleNamespace(name="fused_moe_120", is_aot=True, aot_path=info_full["fi_so_path"]),
+    )
+    res_fallback_prov = bakeoff_judge.verify_qwen36_prebuilt_kernels_before_llm(expected_so_sha256=info_full["fi_so_sha256"])
+    assert res_fallback_prov["provider_id"] == "sm120f"
+
+    # VllmJudgeTransport: close_build_guard when None, verify_no_build_entered raising on workspace dir, pre-created guard, generate with None _prebuilt_jit_cache_info
+    monkeypatch.delenv("FLASHINFER_WORKSPACE_BASE", raising=False)
+    vllm_env = _setup_fake_vllm_env(
+        tmp_path / "transport_edges",
+        monkeypatch,
+        responses=[
+            SimpleNamespace(
+                outputs=[SimpleNamespace(text="<think>x</think>\nA", token_ids=[10, 12, 32], finish_reason="stop", logprobs=[{10: SimpleNamespace(decoded_token="<think>", logprob=-0.01)}, {12: SimpleNamespace(decoded_token="</think>", logprob=-0.01)}, {32: SimpleNamespace(decoded_token="A", logprob=-0.1)}])],
+                prompt_token_ids=[1, 2],
+            )
+        ],
+    )
+    monkeypatch.setenv(bakeoff_judge.QWEN36_MAX_NEW_TOKENS_ENV_VAR, "4096")
+    spec = JUDGE_SPECS[QWEN36_ID]
+    t_edge = bakeoff_judge.VllmJudgeTransport(receipts_dir=vllm_env["receipts_dir"], hf_home=vllm_env["hf_home"], device="cuda")
+    t_edge.verify_ready(spec)
+    t_edge.close_build_guard()
+    with pytest.raises(RdlabError) as exc_ws_entered:
+        t_edge.verify_no_build_entered(workspace_dirs=[direct_cached_ops])
+    assert exc_ws_entered.value.code == "JUDGE_JIT_BUILD_ENTERED"
+    t_edge._build_entered = False
+    t_edge._run_ninja_guard = bakeoff_judge.FlashInferRunNinjaGuard()
+    t_edge._ensure_loaded(spec)
+    try:
+        t_edge._prebuilt_jit_cache_info = None
+        prompt_edge = bakeoff_judge.Qwen36ChoiceAdapter(spec).assemble_prompt(_synth_items(1)[0], order="AB", pass_mode=CONTRA)
+        resp_edge = t_edge.generate(spec, prompt_edge, seed=1)
+        assert "prebuilt_jit_cache" not in resp_edge.library_pins
+    finally:
+        t_edge.close_build_guard()
 
 
 
