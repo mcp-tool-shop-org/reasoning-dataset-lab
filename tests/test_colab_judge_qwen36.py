@@ -5,8 +5,10 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -2610,3 +2612,1382 @@ def test_qwen36_unsharded_fresh_run_unchanged_against_cb2863aa(
     assert res["seed_variant"] == "none"
     assert res["schedule_sha256"] == "3a7b496e8cd0c354011f77bb9ada0688981b2de9604128f94bf1108cd80f9099"
     assert res["shard_manifest_sha256"] == "8cf89d07438abfed3932fefa7e59e9c5a87e7f43c6bd1e095f6e63f27517b1e2"
+
+
+# --- Memory-bounded flashinfer/vLLM JIT build job count, page-cache drop, and build telemetry --------------------
+
+
+def _write_fake_cgroup_tree(
+    base_dir: Path,
+    *,
+    rel_cgroup: str = "/pod.scope",
+    limit_raw: str | None = "124999999488",
+    current_raw: str | None = "93410516992",
+    peak_raw: str | None = None,
+) -> tuple[Path, Path]:
+    cg_root = base_dir / "sys_fs_cgroup"
+    cg_dir = cg_root / rel_cgroup.strip("/") if rel_cgroup.strip("/") else cg_root
+    cg_dir.mkdir(parents=True, exist_ok=True)
+    if limit_raw is not None:
+        (cg_dir / "memory.max").write_text(f"{limit_raw}\n", encoding="utf-8", newline="\n")
+    if current_raw is not None:
+        (cg_dir / "memory.current").write_text(f"{current_raw}\n", encoding="utf-8", newline="\n")
+    if peak_raw is not None:
+        (cg_dir / "memory.peak").write_text(f"{peak_raw}\n", encoding="utf-8", newline="\n")
+    (cg_dir / "memory.events").write_text("oom 0\noom_kill 0\n", encoding="utf-8", newline="\n")
+    proc_cg = base_dir / "proc_self_cgroup"
+    proc_cg.write_text(f"0::{rel_cgroup}\n", encoding="utf-8", newline="\n")
+    return cg_root, proc_cg
+
+
+@pytest.mark.parametrize(
+    ("limit_bytes", "current_bytes", "expected_jobs", "expected_raw"),
+    [
+        # Pod pre-drop numbers: (124999999488 - 93410516992 - 17179869184) // 8589934592 == 1
+        (124_999_999_488, 93_410_516_992, 1, 1),
+        # Pod post-drop (~21.5 GB resident): headroom ~86.3 GB -> raw 10 -> clamped to 8
+        (124_999_999_488, 21_483_657_850, 8, 10),
+        # Tight pod headroom -> floor below 1 -> clamped to 1
+        (64 * 1024**3, 60 * 1024**3, 1, -2),
+        # Mid-range 64 GiB pod with 0 current -> (64 - 16) // 8 == 6
+        (64 * 1024**3, 0, 6, 6),
+        # 64 GiB pod with 24 GiB used -> (64 - 24 - 16) // 8 == 3
+        (64 * 1024**3, 24 * 1024**3, 3, 3),
+    ],
+)
+def test_jit_build_jobs_table_including_pod_numbers(
+    limit_bytes: int,
+    current_bytes: int,
+    expected_jobs: int,
+    expected_raw: int,
+) -> None:
+    vm_plan = vm_judges.compute_jit_build_jobs(
+        limit_bytes=limit_bytes,
+        current_bytes=current_bytes,
+        nproc=64,
+    )
+    src_plan = bakeoff_judge.compute_qwen36_jit_build_jobs(
+        limit_bytes=limit_bytes,
+        current_bytes=current_bytes,
+        nproc=64,
+    )
+    assert vm_plan["source"] == "cgroup"
+    assert vm_plan["jobs"] == expected_jobs
+    assert vm_plan["raw_jobs"] == expected_raw
+    assert vm_plan["reserve_bytes"] == 16 * 1024**3
+    assert vm_plan["per_job_bytes"] == 8 * 1024**3
+    assert vm_plan["env_values"] == {
+        "MAX_JOBS": str(expected_jobs),
+        "FLASHINFER_JIT_PREBUILD_MAX_JOBS": str(expected_jobs),
+        "FLASHINFER_NVCC_THREADS": "1",
+        "NVCC_THREADS": "1",
+    }
+    assert src_plan == vm_plan
+
+
+def test_jit_build_jobs_budget_env_overrides_and_refusals(
+    tmp_path: Path,
+) -> None:
+    cg_root, proc_cg = _write_fake_cgroup_tree(
+        tmp_path,
+        limit_raw=str(64 * 1024**3),
+        current_raw="0",
+    )
+    target_env: dict[str, str] = {}
+    plan = vm_judges.apply_jit_build_jobs_to_env(
+        target_env,
+        cgroup_root=cg_root,
+        proc_cgroup_path=proc_cg,
+        config_env={
+            "RDLAB_JIT_BUILD_RESERVE_BYTES": str(8 * 1024**3),
+            "RDLAB_JIT_BUILD_PER_JOB_BYTES": str(10 * 1024**3),
+        },
+        nproc=64,
+    )
+    # (64 GiB - 0 - 8 GiB) // 10 GiB == 5
+    assert plan["jobs"] == 5
+    assert plan["overrides"] == {
+        "RDLAB_JIT_BUILD_RESERVE_BYTES": 8 * 1024**3,
+        "RDLAB_JIT_BUILD_PER_JOB_BYTES": 10 * 1024**3,
+    }
+    assert "overrides=RDLAB_JIT_BUILD_PER_JOB_BYTES=10737418240,RDLAB_JIT_BUILD_RESERVE_BYTES=8589934592" in plan["log_line"]
+
+    with pytest.raises(vm_judges.RefusalError) as exc_info:
+        vm_judges.resolve_jit_build_budget_params({"RDLAB_JIT_BUILD_PER_JOB_BYTES": "0"})
+    assert exc_info.value.code == "BAD_JIT_BUILD_JOBS_CONFIG"
+
+    with pytest.raises(vm_judges.RefusalError) as exc_info2:
+        vm_judges.resolve_jit_build_budget_params({"RDLAB_JIT_BUILD_RESERVE_BYTES": "abc"})
+    assert exc_info2.value.code == "BAD_JIT_BUILD_JOBS_CONFIG"
+
+    with pytest.raises(vm_judges.RefusalError):
+        vm_judges.compute_jit_build_jobs(limit_bytes=1024, current_bytes=0, reserve_bytes=-1)
+    with pytest.raises(vm_judges.RefusalError):
+        vm_judges.compute_jit_build_jobs(limit_bytes=1024, current_bytes=0, per_job_bytes=0)
+
+    # Also exercise bakeoff_judge reserve/per_job overrides, refusals, preconfigured skip, and v1/missing cgroup readers
+    monkeypatch_mod = pytest.MonkeyPatch()
+    try:
+        monkeypatch_mod.delenv("MAX_JOBS", raising=False)
+        monkeypatch_mod.setenv("RDLAB_JIT_BUILD_RESERVE_BYTES", str(8 * 1024**3))
+        monkeypatch_mod.setenv("RDLAB_JIT_BUILD_PER_JOB_BYTES", str(8 * 1024**3))
+        v1_cg = tmp_path / "v1_cg"
+        v1_dir = v1_cg / "memory" / "v1.slice"
+        v1_dir.mkdir(parents=True, exist_ok=True)
+        (v1_dir / "memory.limit_in_bytes").write_text(str(40 * 1024**3) + "\n", encoding="utf-8")
+        (v1_dir / "memory.usage_in_bytes").write_text(str(8 * 1024**3) + "\n", encoding="utf-8")
+        (v1_dir / "memory.max_usage_in_bytes").write_text("999\n", encoding="utf-8")
+        v1_proc = tmp_path / "v1_proc"
+        v1_proc.write_text("3:memory:/v1.slice\n", encoding="utf-8")
+        assert vm_judges.read_cgroup_memory_peak(cgroup_root=v1_cg, proc_cgroup_path=v1_proc) == 999
+        assert bakeoff_judge._read_cgroup_memory_peak_bytes(cgroup_root=v1_cg, proc_cgroup_path=v1_proc) == 999
+        ov_plan = bakeoff_judge.ensure_qwen36_jit_build_env_before_llm(
+            cgroup_root=v1_cg,
+            proc_cgroup_path=v1_proc,
+            nproc=16,
+        )
+        assert ov_plan["jobs"] == 3
+        monkeypatch_mod.delenv("MAX_JOBS", raising=False)
+        monkeypatch_mod.setenv("RDLAB_JIT_BUILD_RESERVE_BYTES", "bad")
+        with pytest.raises(RdlabError):
+            bakeoff_judge.ensure_qwen36_jit_build_env_before_llm()
+        monkeypatch_mod.setenv("RDLAB_JIT_BUILD_RESERVE_BYTES", "0")
+        monkeypatch_mod.setenv("RDLAB_JIT_BUILD_PER_JOB_BYTES", "0")
+        with pytest.raises(RdlabError):
+            bakeoff_judge.ensure_qwen36_jit_build_env_before_llm()
+    finally:
+        monkeypatch_mod.undo()
+
+    # Exercise read_flashinfer_jit_build_log edge cases in both modules
+    bad_jit_log = tmp_path / "bad_jit.jsonl"
+    bad_jit_log.write_text(
+        "\nnot-json\n[]\n"
+        '{"name":"bad","seconds":true}\n'
+        '{"name":"fused_moe_120","seconds":1.0}\n'
+        '{"name":"fused_moe_120","seconds":0.5}\n',
+        encoding="utf-8",
+    )
+    for reader in (vm_judges.read_flashinfer_jit_build_log, bakeoff_judge.read_flashinfer_jit_build_log):
+        assert reader(None)["jit_build_seconds"] is None
+        assert reader(tmp_path / "missing.jsonl")["jit_build_seconds"] is None
+        assert reader(bad_jit_log)["jit_build_seconds"] == 1.5
+
+    assert vm_judges.read_cgroup_memory_peak(cgroup_root=tmp_path / "nocg", proc_cgroup_path=tmp_path / "noproc") is None
+    assert bakeoff_judge._read_cgroup_memory_peak_bytes(cgroup_root=tmp_path / "nocg", proc_cgroup_path=tmp_path / "noproc") is None
+    cg_nofin, proc_nofin = _write_fake_cgroup_tree(tmp_path / "nofin", limit_raw="max", current_raw="10", peak_raw="777")
+    assert vm_judges.read_cgroup_memory_peak(cgroup_root=cg_nofin, proc_cgroup_path=proc_nofin) == 777
+
+    edge_cg = tmp_path / "edge_cg"
+    edge_cg.mkdir(parents=True, exist_ok=True)
+    (edge_cg / "memory.peak").write_text("555\n", encoding="utf-8")
+    edge_proc = tmp_path / "edge_proc"
+    edge_proc.write_text(
+        "malformed_line\n2:cpu:/other\n0::/missing.slice\n3:memory:/missing.slice\n",
+        encoding="utf-8",
+    )
+    assert bakeoff_judge._read_cgroup_memory_peak_bytes(cgroup_root=edge_cg, proc_cgroup_path=edge_proc) == 555
+
+    with pytest.MonkeyPatch.context() as mp_os:
+        mp_os.setattr(Path, "read_text", lambda *_a, **_kw: (_ for _ in ()).throw(OSError("simulated io error")))
+        assert bakeoff_judge._read_cgroup_int_value(edge_cg / "memory.peak") is None
+        assert bakeoff_judge._read_cgroup_memory_state(cgroup_root=edge_cg, proc_cgroup_path=edge_proc) == {
+            "limit_bytes": None,
+            "current_bytes": None,
+            "peak_bytes": None,
+            "nonreclaimable_bytes": None,
+            "used_source": None,
+        }
+        assert bakeoff_judge.read_flashinfer_jit_build_log(bad_jit_log) == {
+            "jit_build_seconds": None,
+            "jit_build_targets": [],
+            "jit_build_entries": [],
+        }
+
+
+def test_jit_build_jobs_fallback_when_no_finite_limit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cg_root, proc_cg = _write_fake_cgroup_tree(
+        tmp_path,
+        limit_raw="max",
+        current_raw="1000000",
+    )
+    env_64: dict[str, str] = {}
+    plan_64 = vm_judges.apply_jit_build_jobs_to_env(
+        env_64,
+        cgroup_root=cg_root,
+        proc_cgroup_path=proc_cg,
+        config_env={},
+        nproc=64,
+    )
+    assert plan_64["source"] == "fallback"
+    assert plan_64["jobs"] == 8
+    assert plan_64["limit_bytes"] is None
+    assert "source=fallback" in plan_64["log_line"]
+    assert "fallback_reason=no_finite_cgroup_limit" in plan_64["log_line"]
+
+    env_4: dict[str, str] = {}
+    plan_4 = vm_judges.apply_jit_build_jobs_to_env(
+        env_4,
+        cgroup_root=cg_root,
+        proc_cgroup_path=proc_cg,
+        config_env={},
+        nproc=4,
+    )
+    assert plan_4["source"] == "fallback"
+    assert plan_4["jobs"] == 4
+    assert env_4["MAX_JOBS"] == "4"
+    assert env_4["FLASHINFER_JIT_PREBUILD_MAX_JOBS"] == "4"
+    assert env_4["FLASHINFER_NVCC_THREADS"] == "1"
+    assert env_4["NVCC_THREADS"] == "1"
+
+    for k in bakeoff_judge.QWEN36_JIT_BUILD_PARALLELISM_ENV_VARS:
+        monkeypatch.delenv(k, raising=False)
+    src_plan = bakeoff_judge.ensure_qwen36_jit_build_env_before_llm(
+        cgroup_root=cg_root,
+        proc_cgroup_path=proc_cg,
+        nproc=3,
+    )
+    assert src_plan["source"] == "fallback"
+    assert src_plan["jobs"] == 3
+    out = capsys.readouterr().out
+    assert "QWEN36_JIT_BUILD_JOBS jobs=3 limit_bytes=none current_bytes=none" in out
+    assert "source=fallback" in out
+
+
+def _write_qwen36_snapshot_fixture(base_dir: Path) -> tuple[Path, Path, Path]:
+    receipts_dir = base_dir / "receipts"
+    hf_home = base_dir / "hf_home"
+    receipts_dir.mkdir(parents=True, exist_ok=True)
+    spec = JUDGE_SPECS[QWEN36_ID]
+    owner, repo = spec.repo_id.split("/", 1)
+    snap = hf_home / "hub" / f"models--{owner}--{repo}" / "snapshots" / spec.revision
+    snap.mkdir(parents=True, exist_ok=True)
+    files = {
+        "config.json": b'{"architectures": ["Qwen3_5MoeForConditionalGeneration"]}',
+        "model-00001-of-00026.safetensors": b"synthetic-qwen36-weights",
+        "tokenizer.json": b"{}",
+    }
+    manifest_files: dict[str, dict[str, Any]] = {}
+    for rel, content in files.items():
+        (snap / rel).write_bytes(content)
+        manifest_files[rel] = {
+            "bytes": len(content),
+            "sha256": hashlib.sha256(content).hexdigest(),
+        }
+    (receipts_dir / f"{owner}__{repo}.sha256.json").write_text(
+        json.dumps(
+            {
+                "repo": spec.repo_id,
+                "revision": spec.revision,
+                "source": "hf-api-metadata",
+                "seconds": None,
+                "files": manifest_files,
+                "total_bytes": sum(v["bytes"] for v in manifest_files.values()),
+            }
+        ),
+        encoding="utf-8",
+    )
+    return receipts_dir, hf_home, snap
+
+
+def test_jit_build_env_set_before_llm_constructor_and_records_peak_and_seconds(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 1) Direct VllmJudgeTransport._ensure_loaded: sets env before mocked LLM(...) and records peak + jit build log
+    from tests.test_qwen36_engine_pins import _install_fake_runtime, _make_full_fake_engine
+
+    receipts_dir, hf_home, _snap = _write_qwen36_snapshot_fixture(tmp_path / "direct")
+    cg_root, proc_cg = _write_fake_cgroup_tree(
+        tmp_path / "direct_cg",
+        limit_raw="124999999488",
+        current_raw="93410516992",
+        peak_raw="98765432100",
+    )
+    monkeypatch.setenv("RDLAB_CGROUP_DIR", str(cg_root))
+    orig_read_state = bakeoff_judge._read_cgroup_memory_state
+    monkeypatch.setattr(
+        bakeoff_judge,
+        "_read_cgroup_memory_state",
+        lambda **kw: orig_read_state(cgroup_root=cg_root, proc_cgroup_path=proc_cg),
+    )
+    for k in bakeoff_judge.QWEN36_JIT_BUILD_PARALLELISM_ENV_VARS:
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.delenv("FLASHINFER_JIT_BUILD_LOG", raising=False)
+
+    observed_during_llm_init: dict[str, Any] = {}
+    _state = _install_fake_runtime(
+        monkeypatch,
+        hf_home,
+        llm_engine_factory=lambda kw: _make_full_fake_engine(max_num_batched_tokens=kw["max_num_batched_tokens"]).llm_engine,
+    )
+    vllm_mod = sys.modules["vllm"]
+    orig_llm_cls = vllm_mod.LLM
+
+    class _CapturingLLM(orig_llm_cls):  # type: ignore[misc,valid-type]
+        def __init__(self, **kwargs: Any) -> None:
+            observed_during_llm_init["env"] = {
+                k: os.environ.get(k) for k in bakeoff_judge.QWEN36_JIT_BUILD_PARALLELISM_ENV_VARS
+            }
+            jit_log = os.environ.get("FLASHINFER_JIT_BUILD_LOG", "")
+            observed_during_llm_init["jit_log"] = jit_log
+            if jit_log:
+                Path(jit_log).write_text(
+                    json.dumps({"toolchain": "nvcc", "name": "fused_moe_120", "seconds": 42.25}) + "\n",
+                    encoding="utf-8",
+                    newline="\n",
+                )
+            super().__init__(**kwargs)
+
+    monkeypatch.setattr(vllm_mod, "LLM", _CapturingLLM)
+    monkeypatch.setenv(bakeoff_judge.QWEN36_MAX_NEW_TOKENS_ENV_VAR, "4096")
+
+    spec = JUDGE_SPECS[QWEN36_ID]
+    transport = bakeoff_judge.VllmJudgeTransport(receipts_dir=receipts_dir, hf_home=hf_home, device="cuda")
+    transport.verify_ready(spec)
+    transport._ensure_loaded(spec)
+
+    assert observed_during_llm_init["env"] == {
+        "MAX_JOBS": "1",
+        "FLASHINFER_JIT_PREBUILD_MAX_JOBS": "1",
+        "FLASHINFER_NVCC_THREADS": "1",
+        "NVCC_THREADS": "1",
+    }
+    assert transport._cgroup_memory_peak_bytes == 98_765_432_100
+    assert transport._jit_build_summary == {
+        "jit_build_seconds": 42.25,
+        "jit_build_targets": ["fused_moe_120"],
+        "jit_build_entries": [{"toolchain": "nvcc", "name": "fused_moe_120", "seconds": 42.25}],
+    }
+    assert isinstance(transport._llm_init_seconds, float) and transport._llm_init_seconds >= 0.0
+
+    # 1a) run_bakeoff_judge with VllmJudgeTransport propagates load_done + judge_done build telemetry (both log present & absent)
+    bj_items_dir = tmp_path / "bj_items"
+    bj_items_dir.mkdir(parents=True, exist_ok=True)
+    _write_items_jsonl(bj_items_dir / "items.jsonl", _synth_items(1))
+    bj_out_1 = tmp_path / "bj_out_1"
+    bj_prog_1 = tmp_path / "bj_prog_1.jsonl"
+    real_vllm_cls = bakeoff_judge.VllmJudgeTransport
+    monkeypatch.setattr(bakeoff_judge, "pin_and_read_sdpa_backend", lambda *_a, **_kw: "math")
+    for k in bakeoff_judge.QWEN36_JIT_BUILD_PARALLELISM_ENV_VARS:
+        monkeypatch.delenv(k, raising=False)
+    res_bj_1 = run_bakeoff_judge(
+        judge=QWEN36_ID,
+        part_dir=bj_items_dir,
+        output_dir=bj_out_1,
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        device="cuda",
+        pass_mode=CONTRA,
+        window_mode="stub",
+        fake_transport=False,
+        run_canary=False,
+        progress_file=bj_prog_1,
+        synthetic_items=False,
+    )
+    assert res_bj_1["status"] == "ok"
+    done_bj_1 = json.loads(Path(res_bj_1["judge_done_path"]).read_text(encoding="utf-8"))
+    assert done_bj_1["cgroup_memory_peak_bytes"] == 98_765_432_100
+    assert done_bj_1["jit_build_seconds"] == 42.25
+    assert done_bj_1["build_seconds_source"] == "flashinfer_jit_build_log"
+    bj_load_1 = [json.loads(ln) for ln in bj_prog_1.read_text(encoding="utf-8").splitlines() if ln.strip() and json.loads(ln).get("kind") == "load_done"][0]
+    assert bj_load_1["cgroup_memory_peak_bytes"] == 98_765_432_100
+    assert bj_load_1["jit_build_seconds"] == 42.25
+    assert bj_load_1["build_seconds_source"] == "flashinfer_jit_build_log"
+
+    # Without FLASHINFER_JIT_BUILD_LOG entries -> falls back to build_seconds_source="llm_init"
+    monkeypatch.setattr(sys.modules["vllm"], "LLM", orig_llm_cls)
+    bj_out_2 = tmp_path / "bj_out_2"
+    bj_prog_2 = tmp_path / "bj_prog_2.jsonl"
+    monkeypatch.setenv("FLASHINFER_JIT_BUILD_LOG", str(tmp_path / "configured_empty_jit.jsonl"))
+    res_bj_2 = run_bakeoff_judge(
+        judge=QWEN36_ID,
+        part_dir=bj_items_dir,
+        output_dir=bj_out_2,
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        device="cuda",
+        pass_mode=CONTRA,
+        window_mode="stub",
+        fake_transport=False,
+        run_canary=False,
+        progress_file=bj_prog_2,
+        synthetic_items=False,
+    )
+    monkeypatch.delenv("FLASHINFER_JIT_BUILD_LOG", raising=False)
+    done_bj_2 = json.loads(Path(res_bj_2["judge_done_path"]).read_text(encoding="utf-8"))
+    assert done_bj_2["build_seconds_source"] == "llm_init"
+    assert isinstance(done_bj_2["build_wall_seconds"], float)
+    bj_load_2 = [json.loads(ln) for ln in bj_prog_2.read_text(encoding="utf-8").splitlines() if ln.strip() and json.loads(ln).get("kind") == "load_done"][0]
+    assert bj_load_2["build_seconds_source"] == "llm_init"
+
+    # 1b) Failing LLM(...) constructor still records memory.peak and build_wall_seconds / llm_init_seconds
+    class _FailingLLM:
+        def __init__(self, **kwargs: Any) -> None:
+            _ = kwargs
+            raise RuntimeError("simulated OOM during JIT build")
+
+    monkeypatch.setattr(sys.modules["vllm"], "LLM", _FailingLLM)
+    failing_transport = real_vllm_cls(receipts_dir=receipts_dir, hf_home=hf_home, device="cuda")
+    failing_transport.verify_ready(spec)
+    with pytest.raises(RuntimeError, match="simulated OOM"):
+        failing_transport._ensure_loaded(spec)
+    assert failing_transport._cgroup_memory_peak_bytes == 98_765_432_100
+    assert isinstance(failing_transport._llm_init_seconds, float) and failing_transport._llm_init_seconds >= 0.0
+
+    # Also check child env propagation & progress.jsonl recording from vm_judges.run_judges_pipeline
+    part_dir = _make_builder_part(tmp_path / "pipe", triads=1)
+    work_dir = tmp_path / "pipe" / "work"
+    run_dir = tmp_path / "pipe" / "run"
+    progress_path = run_dir / "progress.jsonl"
+    vllm_py = work_dir / vm_judges.VLLM_VENV_NAME / "bin" / "python"
+    vllm_py.parent.mkdir(parents=True, exist_ok=True)
+    vllm_py.write_text("", encoding="utf-8")
+    monkeypatch.setenv("RDLAB_JUDGE_LOCK_SHA256", vm_judges.EXPECTED_JUDGE_LOCK_SHA256)
+    monkeypatch.setenv("RDLAB_D3_LOCK_SHA256", vm_judges.EXPECTED_D3_LOCK_SHA256)
+    monkeypatch.setenv("RDLAB_VLLM_LOCK_SHA256", vm_judges.EXPECTED_VLLM_LOCK_SHA256)
+    monkeypatch.setenv("RDLAB_QWEN36_MAX_NEW_TOKENS", "4096")
+    monkeypatch.setattr(
+        vm_judges,
+        "read_cgroup_limit_chain",
+        lambda **kw: {
+            "chain": [{"path": "/pod.scope", "memory.max": "124999999488", "memory.high": None, "memory.current": 93410516992, "memory.peak": 101234567890, "oom": 0, "oom_kill": 0}],
+            "nearest_finite_path": "/pod.scope",
+            "nearest_finite_memory_max": 124999999488,
+            "nearest_finite_memory_current": 93410516992,
+        },
+    )
+    # Write expected receipts for all bakeoff judges + qwen3.6
+    pipe_receipts, pipe_hf = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "pipe_data")
+    pipe_qwen_receipts, _pipe_qwen_hf, _snap2 = _write_qwen36_snapshot_fixture(tmp_path / "pipe_qwen")
+    for f in pipe_qwen_receipts.glob("*.json"):
+        (pipe_receipts / f.name).write_text(f.read_text(encoding="utf-8"), encoding="utf-8")
+    q_snap_src = _pipe_qwen_hf / "hub" / f"models--{spec.repo_id.replace('/', '--')}" / "snapshots" / spec.revision
+    q_snap_dst = pipe_hf / "hub" / f"models--{spec.repo_id.replace('/', '--')}" / "snapshots" / spec.revision
+    q_snap_dst.mkdir(parents=True, exist_ok=True)
+    for f in q_snap_src.iterdir():
+        (q_snap_dst / f.name).write_bytes(f.read_bytes())
+
+    spawned_envs: list[dict[str, str]] = []
+
+    def _fake_child_runner(cmd: list[str], *, env: dict[str, str], timeout_seconds: float) -> dict[str, Any]:
+        _ = (cmd, timeout_seconds)
+        spawned_envs.append(dict(env))
+        cp = Path(env["RDLAB_JUDGE_CHILD_PROGRESS_FILE"])
+        cp.parent.mkdir(parents=True, exist_ok=True)
+        cp.write_text(json.dumps({"kind": "load_done", "judge_id": QWEN36_ID}) + "\n", encoding="utf-8")
+        jit_p = Path(env["FLASHINFER_JIT_BUILD_LOG"])
+        jit_p.write_text(json.dumps({"name": "fused_moe_120", "seconds": 19.5}) + "\n", encoding="utf-8")
+        rows_f = run_dir / "rows" / vm_judges.rows_filename_for_pass(QWEN36_ID, "three_way_contradicted")
+        rows_f.parent.mkdir(parents=True, exist_ok=True)
+        rows_b = (json.dumps({"id": "synth-0", "seconds": 0.1, "state": "parsed"}) + "\n").encode("utf-8")
+        rows_f.write_bytes(rows_b)
+        done_f = run_dir / "judge_done" / vm_judges.judge_done_filename_for_pass(QWEN36_ID, "three_way_contradicted")
+        done_f.parent.mkdir(parents=True, exist_ok=True)
+        done_f.write_text(
+            json.dumps(
+                {
+                    "judge_id": QWEN36_ID,
+                    "row_count": 1,
+                    "sha256": hashlib.sha256(rows_b).hexdigest(),
+                    "load_wall_seconds": 21.0,
+                    "cgroup_memory_peak_bytes": 101234567890,
+                    "llm_init_seconds": 20.5,
+                    "jit_build_seconds": 19.5,
+                    "jit_build_targets": ["fused_moe_120"],
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return {"returncode": 0, "elapsed_seconds": 21.5, "timed_out": False, "stdout": "", "stderr": ""}
+
+    monkeypatch.setattr(vm_judges, "_run_child_with_group_timeout", _fake_child_runner)
+
+    summary, _mass = vm_judges.run_judges_pipeline(
+        mode="time-one",
+        part_dir=part_dir,
+        run_dir=run_dir,
+        receipts_dir=pipe_receipts,
+        hf_home=pipe_hf,
+        vram_halt_mib=92_000,
+        dryrun=True,
+        repo_root=REPO_ROOT,
+        work_dir=work_dir,
+        progress_path=progress_path,
+        only_judge_ids=(QWEN36_ID,),
+        only_judges=(QWEN36_ID,),
+        pass_mode="three_way_contradicted",
+    )
+    assert len(spawned_envs) == 1
+    for env_key, expected_val in (
+        ("MAX_JOBS", "1"),
+        ("FLASHINFER_JIT_PREBUILD_MAX_JOBS", "1"),
+        ("FLASHINFER_NVCC_THREADS", "1"),
+        ("NVCC_THREADS", "1"),
+    ):
+        assert spawned_envs[0][env_key] == expected_val
+    prog_records = [json.loads(ln) for ln in progress_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    jit_recs = [r for r in prog_records if r.get("kind") == "jit_build_jobs"]
+    assert len(jit_recs) == 1
+    assert jit_recs[0]["jobs"] == 1
+    assert jit_recs[0]["limit_bytes"] == 124999999488
+    assert jit_recs[0]["current_bytes"] == 93410516992
+    assert jit_recs[0]["source"] == "cgroup"
+    pass_recs = [r for r in prog_records if r.get("kind") == "judge_pass_done"]
+    assert len(pass_recs) == 1
+    assert pass_recs[0]["cgroup_memory_peak_bytes"] == 101234567890
+    assert pass_recs[0]["jit_build_seconds"] == 19.5
+    assert pass_recs[0]["llm_init_seconds"] == 20.5
+    assert summary["judges"][QWEN36_ID]["cgroup_memory_peak_bytes"] == 101234567890
+
+    # Verify child failure path records memory.peak and build_wall_seconds on judge_failed
+    fail_run_dir = tmp_path / "pipe" / "fail_run"
+    fail_progress = fail_run_dir / "progress.jsonl"
+    monkeypatch.setattr(
+        vm_judges,
+        "_run_child_with_group_timeout",
+        lambda cmd, *, env, timeout_seconds: {"returncode": 137, "elapsed_seconds": 33.25, "timed_out": False, "stdout": "", "stderr": "OOM kill during ninja"},
+    )
+    with pytest.raises(vm_judges.JudgeChildProcessError):
+        vm_judges.run_judges_pipeline(
+            mode="time-one",
+            part_dir=part_dir,
+            run_dir=fail_run_dir,
+            receipts_dir=pipe_receipts,
+            hf_home=pipe_hf,
+            vram_halt_mib=92_000,
+            dryrun=True,
+            repo_root=REPO_ROOT,
+            work_dir=work_dir,
+            progress_path=fail_progress,
+            only_judge_ids=(QWEN36_ID,),
+            only_judges=(QWEN36_ID,),
+            pass_mode="three_way_contradicted",
+        )
+    fail_recs = [json.loads(ln) for ln in fail_progress.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    jf = [r for r in fail_recs if r.get("kind") == "judge_failed"][-1]
+    assert jf["cgroup_memory_peak_bytes"] == 101234567890
+    assert jf["build_wall_seconds"] == 33.25
+    assert jf["build_seconds_source"] == "child_wall_fallback"
+
+
+def test_weights_page_cache_drop_and_posix_fadvise_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "data")
+    # Also create a symlinked blob file under Qwen3.6 snapshot directory to verify resolved file handling
+    qwen_spec = JUDGE_SPECS[QWEN36_ID]
+    owner, repo = qwen_spec.repo_id.split("/", 1)
+    qwen_snap = hf_home / "hub" / f"models--{owner}--{repo}" / "snapshots" / qwen_spec.revision
+    qwen_snap.mkdir(parents=True, exist_ok=True)
+    blob = hf_home / "hub" / f"models--{owner}--{repo}" / "blobs" / "fake_weights_blob"
+    blob.parent.mkdir(parents=True, exist_ok=True)
+    blob.write_bytes(b"synthetic-weights-payload")
+    snap_weight = qwen_snap / "model.safetensors"
+    try:
+        snap_weight.symlink_to(blob)
+    except OSError:
+        snap_weight.write_bytes(b"synthetic-weights-payload")
+
+    # Simulate memory.current dropping from 93410516992 before drop to 21483657850 after drop
+    cg_root, proc_cg = _write_fake_cgroup_tree(
+        tmp_path / "cg",
+        limit_raw="124999999488",
+        current_raw="93410516992",
+    )
+    mem_cur_file = cg_root / "pod.scope" / "memory.current"
+
+    # Case 1: drop_caches writable
+    drop_caches_ok = tmp_path / "drop_caches_ok"
+    drop_caches_ok.write_text("0\n", encoding="utf-8")
+    real_open = Path.open
+
+    def _drop_caches_open(self_p: Path, *args: Any, **kwargs: Any) -> Any:
+        fh = real_open(self_p, *args, **kwargs)
+        if self_p == drop_caches_ok and args and "w" in str(args[0]):
+            mem_cur_file.write_text("21483657850\n", encoding="utf-8")
+        return fh
+
+    monkeypatch.setattr(Path, "open", _drop_caches_open)
+    prog_1 = tmp_path / "prog1.jsonl"
+    res_1 = vm_judges.drop_verified_snapshots_page_cache(
+        hf_home,
+        only_judge_ids=(QWEN36_ID,),
+        repo_dir=REPO_ROOT,
+        progress_path=prog_1,
+        cgroup_root=cg_root,
+        proc_cgroup_path=proc_cg,
+        drop_caches_path=drop_caches_ok,
+    )
+    assert res_1["method"] == "drop_caches"
+    assert res_1["memory_current_before"] == 93410516992
+    assert res_1["memory_current_after"] == 21483657850
+    rec_1 = [json.loads(ln) for ln in prog_1.read_text(encoding="utf-8").splitlines() if ln.strip()][-1]
+    assert rec_1["kind"] == "weights_page_cache_drop"
+    assert rec_1["memory_current_before"] == 93410516992
+    assert rec_1["memory_current_after"] == 21483657850
+
+    # Case 2: drop_caches NOT writable -> falls back to os.posix_fadvise on every verified snapshot file
+    mem_cur_file.write_text("93410516992\n", encoding="utf-8")
+    unwritable_drop = tmp_path / "drop_caches_ro"
+    unwritable_drop.write_text("0\n", encoding="utf-8")
+
+    def _ro_open(self_p: Path, *args: Any, **kwargs: Any) -> Any:
+        if self_p == unwritable_drop:
+            raise PermissionError("read-only /proc/sys/vm/drop_caches")
+        return real_open(self_p, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", _ro_open)
+    fadvise_calls: list[tuple[int, int, int, int]] = []
+
+    def _fake_fadvise(fd: int, offset: int, length: int, advice: int) -> None:
+        fadvise_calls.append((fd, offset, length, advice))
+        mem_cur_file.write_text("21483657850\n", encoding="utf-8")
+
+    monkeypatch.setattr(os, "POSIX_FADV_DONTNEED", 4, raising=False)
+    prog_2 = tmp_path / "prog2.jsonl"
+    res_2 = vm_judges.drop_verified_snapshots_page_cache(
+        hf_home,
+        only_judge_ids=(QWEN36_ID,),
+        repo_dir=REPO_ROOT,
+        progress_path=prog_2,
+        cgroup_root=cg_root,
+        proc_cgroup_path=proc_cg,
+        drop_caches_path=unwritable_drop,
+        fadvise_fn=_fake_fadvise,
+    )
+    assert res_2["method"] == "posix_fadvise"
+    assert res_2["files_advised"] >= 1
+    assert len(fadvise_calls) == res_2["files_advised"]
+    assert all(call[1:] == (0, 0, 4) for call in fadvise_calls)
+    assert res_2["memory_current_before"] == 93410516992
+    assert res_2["memory_current_after"] == 21483657850
+    rec_2 = [json.loads(ln) for ln in prog_2.read_text(encoding="utf-8").splitlines() if ln.strip()][-1]
+    assert rec_2["method"] == "posix_fadvise"
+    assert rec_2["memory_current_before"] == 93410516992
+    assert rec_2["memory_current_after"] == 21483657850
+
+    # Case 3: neither works -> method == "none", never fails
+    def _failing_fadvise(_fd: int, _offset: int, _length: int, _advice: int) -> None:
+        raise OSError("fadvise unsupported")
+
+    res_3 = vm_judges.drop_verified_snapshots_page_cache(
+        hf_home,
+        only_judge_ids=(QWEN36_ID,),
+        repo_dir=REPO_ROOT,
+        progress_path=tmp_path / "prog3.jsonl",
+        cgroup_root=cg_root,
+        proc_cgroup_path=proc_cg,
+        drop_caches_path=unwritable_drop,
+        fadvise_fn=_failing_fadvise,
+    )
+    assert res_3["method"] == "none"
+
+    monkeypatch.setattr(os, "posix_fadvise", None, raising=False)
+    cg_nofin, proc_nofin = _write_fake_cgroup_tree(tmp_path / "nofin_drop", limit_raw="max", current_raw=None)
+    res_3b = vm_judges.drop_verified_snapshots_page_cache(
+        hf_home,
+        only_judge_ids=(QWEN36_ID,),
+        repo_dir=REPO_ROOT,
+        progress_path=tmp_path / "prog3b.jsonl",
+        cgroup_root=cg_nofin,
+        proc_cgroup_path=proc_nofin,
+        drop_caches_path=unwritable_drop,
+        fadvise_fn=None,
+    )
+    assert res_3b["method"] == "none"
+
+    # Case 4: download_and_verify_all_judge_weights triggers drop_verified_snapshots_page_cache after verify
+    dl_prog = tmp_path / "dl_prog.jsonl"
+    monkeypatch.setattr(vm_judges, "download_all_judge_weights", lambda *_a, **_kw: [])
+    monkeypatch.setattr(vm_judges, "verify_all_judge_snapshots", lambda *_a, **_kw: {"nli-deberta-v3-large": "abc"})
+    monkeypatch.setattr(vm_judges, "DEFAULT_DROP_CACHES_PATH", unwritable_drop)
+    monkeypatch.setattr(os, "posix_fadvise", _fake_fadvise, raising=False)
+    verified_res = vm_judges.download_and_verify_all_judge_weights(
+        receipts_dir,
+        hf_home,
+        repo_dir=REPO_ROOT,
+        progress_path=dl_prog,
+        only_judge_ids=("nli-deberta-v3-large",),
+        cgroup_root=cg_root,
+        proc_cgroup_path=proc_cg,
+    )
+    assert verified_res == {"nli-deberta-v3-large": "abc"}
+    dl_kinds = [json.loads(ln).get("kind") for ln in dl_prog.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    assert "weights_page_cache_drop" in dl_kinds
+
+
+def test_weights_page_cache_drop_syncs_dirty_pages_before_drop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "data")
+    _ = receipts_dir
+    cg_root, proc_cg = _write_fake_cgroup_tree(
+        tmp_path / "cg",
+        limit_raw="124999999488",
+        current_raw="93410516992",
+    )
+    mem_cur_file = cg_root / "pod.scope" / "memory.current"
+    drop_caches_file = tmp_path / "drop_caches"
+    drop_caches_file.write_text("0\n", encoding="utf-8")
+
+    # Simulate dirty weight pages: drop_caches only reclaims pages after per-file fdatasync runs first.
+    dirty_state = {"dirty": True, "events": [], "fds": []}
+
+    def _fake_fdatasync(fd: int) -> None:
+        dirty_state["events"].append("fdatasync")
+        dirty_state["fds"].append(fd)
+        dirty_state["dirty"] = False
+
+    real_open = Path.open
+
+    def _drop_open(self_p: Path, *args: Any, **kwargs: Any) -> Any:
+        fh = real_open(self_p, *args, **kwargs)
+        if self_p == drop_caches_file and args and "w" in str(args[0]):
+            dirty_state["events"].append("drop")
+            if not dirty_state["dirty"]:
+                mem_cur_file.write_text("21483657850\n", encoding="utf-8")
+        return fh
+
+    os_sync_calls: list[str] = []
+    monkeypatch.setattr(os, "sync", lambda: os_sync_calls.append("sync"), raising=False)
+    monkeypatch.setattr(os, "fdatasync", _fake_fdatasync, raising=False)
+    monkeypatch.setattr(Path, "open", _drop_open)
+    prog_1 = tmp_path / "prog_sync.jsonl"
+    res_1 = vm_judges.drop_verified_snapshots_page_cache(
+        hf_home,
+        only_judge_ids=("mu-judge",),
+        repo_dir=REPO_ROOT,
+        progress_path=prog_1,
+        cgroup_root=cg_root,
+        proc_cgroup_path=proc_cg,
+        drop_caches_path=drop_caches_file,
+    )
+    assert os_sync_calls == []
+    assert dirty_state["events"][0] == "fdatasync"
+    assert dirty_state["events"][-1] == "drop"
+    assert len(dirty_state["fds"]) == res_1["snapshot_files_count"] >= 1
+    assert res_1["method"] == "drop_caches"
+    assert res_1["sync_ran"] is True
+    assert res_1["sync_method"] == f"fdatasync({res_1['snapshot_files_count']})"
+    assert res_1["sync_timed_out"] is False
+    assert isinstance(res_1["sync_seconds"], float) and res_1["sync_seconds"] >= 0.0
+    assert res_1["sync_error"] is None
+    assert res_1["memory_current_before"] == 93410516992
+    assert res_1["memory_current_after"] == 21483657850
+    recs_1 = [json.loads(ln) for ln in prog_1.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    assert [r["kind"] for r in recs_1] == ["weights_sync_start", "weights_page_cache_drop"]
+    assert recs_1[0]["event"] == "SYNC_START"
+    assert recs_1[1]["sync_ran"] is True
+    assert recs_1[1]["sync_method"] == f"fdatasync({res_1['snapshot_files_count']})"
+    assert recs_1[1]["sync_seconds"] == res_1["sync_seconds"]
+
+    # Custom sync_fn and OSError tolerance.
+    res_fn = vm_judges.drop_verified_snapshots_page_cache(
+        hf_home,
+        only_judge_ids=("mu-judge",),
+        repo_dir=REPO_ROOT,
+        progress_path=tmp_path / "prog_syncfn.jsonl",
+        cgroup_root=cg_root,
+        proc_cgroup_path=proc_cg,
+        drop_caches_path=drop_caches_file,
+        sync_fn=lambda: None,
+    )
+    assert res_fn["sync_ran"] is True
+    assert res_fn["sync_method"] == "sync_fn"
+
+    def _failing_sync() -> None:
+        raise OSError("simulated sync io error")
+
+    res_3 = vm_judges.drop_verified_snapshots_page_cache(
+        hf_home,
+        only_judge_ids=("nli-deberta-v3-large",),
+        repo_dir=REPO_ROOT,
+        progress_path=tmp_path / "prog_sync_err.jsonl",
+        cgroup_root=cg_root,
+        proc_cgroup_path=proc_cg,
+        drop_caches_path=drop_caches_file,
+        sync_fn=_failing_sync,
+    )
+    assert res_3["sync_ran"] is False
+    assert "OSError: simulated sync io error" in str(res_3["sync_error"])
+    assert res_3["method"] == "drop_caches"
+
+
+def test_weights_page_cache_drop_dryrun_skips_real_drop_caches_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "data")
+    cg_root, proc_cg = _write_fake_cgroup_tree(
+        tmp_path / "cg",
+        limit_raw="124999999488",
+        current_raw="93410516992",
+    )
+    spy_drop = tmp_path / "spy_drop_caches"
+    spy_drop.write_text("0\n", encoding="utf-8")
+    sync_calls: list[str] = []
+
+    prog_1 = tmp_path / "prog_dry.jsonl"
+    res_1 = vm_judges.drop_verified_snapshots_page_cache(
+        hf_home,
+        only_judge_ids=("nli-deberta-v3-large",),
+        repo_dir=REPO_ROOT,
+        progress_path=prog_1,
+        cgroup_root=cg_root,
+        proc_cgroup_path=proc_cg,
+        drop_caches_path=spy_drop,
+        sync_fn=lambda: sync_calls.append("called"),
+        dryrun=True,
+    )
+    assert spy_drop.read_text(encoding="utf-8") == "0\n"
+    assert sync_calls == []
+    assert res_1["method"] == "skipped_dryrun"
+    assert res_1["sync_ran"] is False
+    assert res_1["sync_method"] == "skipped_dryrun"
+    rec_1 = [json.loads(ln) for ln in prog_1.read_text(encoding="utf-8").splitlines() if ln.strip()][0]
+    assert rec_1["kind"] == "weights_page_cache_drop"
+    assert rec_1["method"] == "skipped_dryrun"
+    assert rec_1["sync_ran"] is False
+
+    # Also verify download_and_verify_all_judge_weights(dryrun=True) propagates dryrun=True
+    prog_dl = tmp_path / "prog_dl_dry.jsonl"
+    monkeypatch.setattr(vm_judges, "download_all_judge_weights", lambda *_a, **_kw: [])
+    monkeypatch.setattr(vm_judges, "verify_all_judge_snapshots", lambda *_a, **_kw: {"nli-deberta-v3-large": "abc"})
+    monkeypatch.setattr(vm_judges, "DEFAULT_DROP_CACHES_PATH", spy_drop)
+    vm_judges.download_and_verify_all_judge_weights(
+        receipts_dir,
+        hf_home,
+        dryrun=True,
+        repo_dir=REPO_ROOT,
+        progress_path=prog_dl,
+        only_judge_ids=("nli-deberta-v3-large",),
+        cgroup_root=cg_root,
+        proc_cgroup_path=proc_cg,
+    )
+    assert spy_drop.read_text(encoding="utf-8") == "0\n"
+    drop_recs = [
+        json.loads(ln)
+        for ln in prog_dl.read_text(encoding="utf-8").splitlines()
+        if ln.strip() and json.loads(ln).get("kind") == "weights_page_cache_drop"
+    ]
+    assert len(drop_recs) == 1
+    assert drop_recs[0]["method"] == "skipped_dryrun"
+
+    # When running under pytest with no explicit drop_caches_path, the test guard also skips real /proc/sys/vm/drop_caches.
+    monkeypatch.setattr(vm_judges, "DEFAULT_DROP_CACHES_PATH", Path("/proc/sys/vm/drop_caches"))
+    res_guard = vm_judges.drop_verified_snapshots_page_cache(
+        hf_home,
+        only_judge_ids=("nli-deberta-v3-large",),
+        repo_dir=REPO_ROOT,
+        cgroup_root=cg_root,
+        proc_cgroup_path=proc_cg,
+    )
+    assert res_guard["method"] == "skipped_dryrun"
+
+
+def test_jit_build_jobs_page_cache_heavy_cgroup_uses_anon_plus_shmem(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Page-cache-heavy cgroup: memory.current is 93.41 GB (which previously gave 1 job),
+    # while clean memory.stat shows low anon + shmem + zero dirty/writeback + low kernel -> headroom gives 8 jobs.
+    cg_root, proc_cg = _write_fake_cgroup_tree(
+        tmp_path / "v2",
+        limit_raw="124999999488",
+        current_raw="93410516992",
+    )
+    anon_bytes = 4 * 1024**3
+    shmem_bytes = 512 * 1024**2
+    expected_nonrec = anon_bytes + shmem_bytes
+    (cg_root / "pod.scope" / "memory.stat").write_text(
+        f"anon {anon_bytes}\nfile 88500000000\nshmem {shmem_bytes}\nfile_dirty 0\nfile_writeback 0\nkernel 0\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    vm_env: dict[str, str] = {}
+    vm_plan = vm_judges.apply_jit_build_jobs_to_env(
+        vm_env,
+        cgroup_root=cg_root,
+        proc_cgroup_path=proc_cg,
+        config_env={},
+        nproc=64,
+    )
+    assert vm_plan["jobs"] == 8
+    assert vm_plan["source"] == "cgroup"
+    assert vm_plan["current_bytes"] == 93_410_516_992
+    assert vm_plan["nonreclaimable_bytes"] == expected_nonrec
+    assert vm_plan["used_bytes"] == expected_nonrec
+    assert vm_plan["used_source"] == "memory.stat:anon+shmem+file_dirty+file_writeback+kernel"
+    assert (
+        f"current_bytes=93410516992 nonreclaimable_bytes={expected_nonrec} used_bytes={expected_nonrec} "
+        "used_source=memory.stat:anon+shmem+file_dirty+file_writeback+kernel"
+    ) in vm_plan["log_line"]
+
+    for k in bakeoff_judge.QWEN36_JIT_BUILD_PARALLELISM_ENV_VARS:
+        monkeypatch.delenv(k, raising=False)
+    src_plan = bakeoff_judge.ensure_qwen36_jit_build_env_before_llm(
+        cgroup_root=cg_root,
+        proc_cgroup_path=proc_cg,
+        nproc=64,
+    )
+    captured_out = capsys.readouterr().out
+    assert src_plan["jobs"] == 8
+    assert src_plan["current_bytes"] == 93_410_516_992
+    assert src_plan["nonreclaimable_bytes"] == expected_nonrec
+    assert src_plan["used_bytes"] == expected_nonrec
+    assert src_plan["used_source"] == "memory.stat:anon+shmem+file_dirty+file_writeback+kernel"
+    assert (
+        f"current_bytes=93410516992 nonreclaimable_bytes={expected_nonrec} used_bytes={expected_nonrec} "
+        "used_source=memory.stat:anon+shmem+file_dirty+file_writeback+kernel"
+    ) in captured_out
+    assert vm_judges.compute_jit_build_jobs(
+        limit_bytes=124_999_999_488,
+        current_bytes=93_410_516_992,
+        nonreclaimable_bytes=expected_nonrec,
+        used_source="memory.stat:anon+shmem+file_dirty+file_writeback+kernel",
+        nproc=64,
+    ) == bakeoff_judge.compute_qwen36_jit_build_jobs(
+        limit_bytes=124_999_999_488,
+        current_bytes=93_410_516_992,
+        nonreclaimable_bytes=expected_nonrec,
+        used_source="memory.stat:anon+shmem+file_dirty+file_writeback+kernel",
+        nproc=64,
+    )
+
+    # Verify cgroup v1 keys: total_rss + total_shmem + total_dirty + total_writeback, and rss + shmem + dirty + writeback
+    v1_root = tmp_path / "v1"
+    v1_dir_1 = v1_root / "memory" / "g1.slice"
+    v1_dir_1.mkdir(parents=True, exist_ok=True)
+    (v1_dir_1 / "memory.limit_in_bytes").write_text("124999999488\n", encoding="utf-8")
+    (v1_dir_1 / "memory.usage_in_bytes").write_text("93410516992\n", encoding="utf-8")
+    (v1_dir_1 / "memory.stat").write_text(
+        f"rss 1000\nshmem 200\ntotal_rss {anon_bytes}\ntotal_shmem {shmem_bytes}\ntotal_dirty 0\ntotal_writeback 0\n",
+        encoding="utf-8",
+    )
+    v1_proc_1 = tmp_path / "v1_proc_1"
+    v1_proc_1.write_text("3:memory:/g1.slice\n", encoding="utf-8")
+    v1_plan_1 = vm_judges.apply_jit_build_jobs_to_env({}, cgroup_root=v1_root, proc_cgroup_path=v1_proc_1, config_env={}, nproc=64)
+    assert v1_plan_1["jobs"] == 8
+    assert v1_plan_1["nonreclaimable_bytes"] == expected_nonrec
+    assert v1_plan_1["used_source"] == "memory.stat_v1:total_rss+total_shmem+total_dirty+total_writeback"
+    src_v1_1 = bakeoff_judge.ensure_qwen36_jit_build_env_before_llm(cgroup_root=v1_root, proc_cgroup_path=v1_proc_1, nproc=64)
+    assert src_v1_1["used_source"] == "memory.stat_v1:total_rss+total_shmem+total_dirty+total_writeback"
+    assert src_v1_1["nonreclaimable_bytes"] == expected_nonrec
+
+    (v1_dir_1 / "memory.stat").write_text(f"rss {anon_bytes}\nshmem {shmem_bytes}\n", encoding="utf-8")
+    v1_plan_2 = vm_judges.apply_jit_build_jobs_to_env({}, cgroup_root=v1_root, proc_cgroup_path=v1_proc_1, config_env={}, nproc=64)
+    assert v1_plan_2["used_source"] == "memory.stat_v1:rss+shmem+dirty+writeback"
+    assert v1_plan_2["nonreclaimable_bytes"] == expected_nonrec
+    src_v1_2 = bakeoff_judge.ensure_qwen36_jit_build_env_before_llm(cgroup_root=v1_root, proc_cgroup_path=v1_proc_1, nproc=64)
+    assert src_v1_2["used_source"] == "memory.stat_v1:rss+shmem+dirty+writeback"
+
+    # Also verify pipeline progress.jsonl (kind="jit_build_jobs") logs both readings & used_source
+    part_dir = _make_builder_part(tmp_path / "pipe", triads=1)
+    work_dir = tmp_path / "pipe" / "work"
+    run_dir = tmp_path / "pipe" / "run"
+    progress_path = run_dir / "progress.jsonl"
+    vllm_py = work_dir / vm_judges.VLLM_VENV_NAME / "bin" / "python"
+    vllm_py.parent.mkdir(parents=True, exist_ok=True)
+    vllm_py.write_text("", encoding="utf-8")
+    monkeypatch.setenv("RDLAB_JUDGE_LOCK_SHA256", vm_judges.EXPECTED_JUDGE_LOCK_SHA256)
+    monkeypatch.setenv("RDLAB_D3_LOCK_SHA256", vm_judges.EXPECTED_D3_LOCK_SHA256)
+    monkeypatch.setenv("RDLAB_VLLM_LOCK_SHA256", vm_judges.EXPECTED_VLLM_LOCK_SHA256)
+    monkeypatch.setenv("RDLAB_QWEN36_MAX_NEW_TOKENS", "4096")
+    spec = JUDGE_SPECS[QWEN36_ID]
+    pipe_receipts, pipe_hf = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "pipe_data")
+    pipe_qwen_receipts, pipe_qwen_hf, _ = _write_qwen36_snapshot_fixture(tmp_path / "pipe_qwen")
+    for f in pipe_qwen_receipts.glob("*.json"):
+        (pipe_receipts / f.name).write_text(f.read_text(encoding="utf-8"), encoding="utf-8")
+    owner, repo = spec.repo_id.split("/", 1)
+    q_snap_dst = pipe_hf / "hub" / f"models--{owner}--{repo}" / "snapshots" / spec.revision
+    q_snap_dst.mkdir(parents=True, exist_ok=True)
+    for f in (pipe_qwen_hf / "hub" / f"models--{owner}--{repo}" / "snapshots" / spec.revision).iterdir():
+        (q_snap_dst / f.name).write_bytes(f.read_bytes())
+
+    def _fake_child(_cmd: list[str], *, env: dict[str, str], timeout_seconds: float) -> dict[str, Any]:
+        _ = timeout_seconds
+        Path(env["RDLAB_JUDGE_CHILD_PROGRESS_FILE"]).parent.mkdir(parents=True, exist_ok=True)
+        Path(env["RDLAB_JUDGE_CHILD_PROGRESS_FILE"]).write_text(
+            json.dumps({"kind": "jit_build_jobs", "stage": "before_llm", "jobs": 8, "current_bytes": 93_410_516_992, "nonreclaimable_bytes": expected_nonrec, "used_bytes": expected_nonrec, "used_source": "memory.stat:anon+shmem+file_dirty+file_writeback+kernel"}) + "\n"
+            + '{"kind":"load_done"}\n',
+            encoding="utf-8",
+        )
+        rows_f = run_dir / "rows" / vm_judges.rows_filename_for_pass(QWEN36_ID, "three_way_contradicted")
+        rows_f.parent.mkdir(parents=True, exist_ok=True)
+        rows_b = b'{"id":"synth-0","seconds":0.1,"state":"parsed"}\n'
+        rows_f.write_bytes(rows_b)
+        done_f = run_dir / "judge_done" / vm_judges.judge_done_filename_for_pass(QWEN36_ID, "three_way_contradicted")
+        done_f.parent.mkdir(parents=True, exist_ok=True)
+        done_f.write_text(
+            json.dumps({"judge_id": QWEN36_ID, "row_count": 1, "sha256": hashlib.sha256(rows_b).hexdigest()}) + "\n",
+            encoding="utf-8",
+        )
+        return {"returncode": 0, "elapsed_seconds": 1.0, "timed_out": False, "stdout": "", "stderr": ""}
+
+    monkeypatch.setattr(vm_judges, "_run_child_with_group_timeout", _fake_child)
+    vm_judges.run_judges_pipeline(
+        mode="time-one",
+        part_dir=part_dir,
+        run_dir=run_dir,
+        receipts_dir=pipe_receipts,
+        hf_home=pipe_hf,
+        vram_halt_mib=92_000,
+        dryrun=True,
+        repo_root=REPO_ROOT,
+        work_dir=work_dir,
+        progress_path=progress_path,
+        cgroup_root=cg_root,
+        proc_cgroup_path=proc_cg,
+        only_judge_ids=(QWEN36_ID,),
+        only_judges=(QWEN36_ID,),
+        pass_mode="three_way_contradicted",
+    )
+    jit_recs = [
+        json.loads(ln)
+        for ln in progress_path.read_text(encoding="utf-8").splitlines()
+        if ln.strip() and json.loads(ln).get("kind") == "jit_build_jobs"
+    ]
+    assert len(jit_recs) == 2
+    assert jit_recs[0]["jobs"] == 8
+    assert jit_recs[0]["current_bytes"] == 93_410_516_992
+    assert jit_recs[0]["nonreclaimable_bytes"] == expected_nonrec
+    assert jit_recs[0]["used_bytes"] == expected_nonrec
+    assert jit_recs[0]["used_source"] == "memory.stat:anon+shmem+file_dirty+file_writeback+kernel"
+    assert jit_recs[1]["stage"] == "before_llm"
+
+
+def test_jit_build_jobs_memory_stat_missing_falls_back_to_memory_current(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cg_root, proc_cg = _write_fake_cgroup_tree(
+        tmp_path / "no_stat",
+        limit_raw="124999999488",
+        current_raw="93410516992",
+    )
+    # Intentionally omit memory.stat -> must fall back to memory.current -> 1 job
+    assert not (cg_root / "pod.scope" / "memory.stat").exists()
+
+    vm_plan = vm_judges.apply_jit_build_jobs_to_env(
+        {},
+        cgroup_root=cg_root,
+        proc_cgroup_path=proc_cg,
+        config_env={},
+        nproc=64,
+    )
+    assert vm_plan["jobs"] == 1
+    assert vm_plan["source"] == "cgroup"
+    assert vm_plan["current_bytes"] == 93_410_516_992
+    assert vm_plan["nonreclaimable_bytes"] is None
+    assert vm_plan["used_bytes"] == 93_410_516_992
+    assert vm_plan["used_source"] == "memory.current_fallback"
+    assert "current_bytes=93410516992 nonreclaimable_bytes=none used_bytes=93410516992 used_source=memory.current_fallback" in vm_plan["log_line"]
+
+    for k in bakeoff_judge.QWEN36_JIT_BUILD_PARALLELISM_ENV_VARS:
+        monkeypatch.delenv(k, raising=False)
+    src_plan = bakeoff_judge.ensure_qwen36_jit_build_env_before_llm(
+        cgroup_root=cg_root,
+        proc_cgroup_path=proc_cg,
+        nproc=64,
+    )
+    captured_out = capsys.readouterr().out
+    assert src_plan["jobs"] == 1
+    assert src_plan["nonreclaimable_bytes"] is None
+    assert src_plan["used_bytes"] == 93_410_516_992
+    assert src_plan["used_source"] == "memory.current_fallback"
+    assert "current_bytes=93410516992 nonreclaimable_bytes=none used_bytes=93410516992 used_source=memory.current_fallback" in captured_out
+
+    # Also verify missing keys in memory.stat triggers the same memory.current fallback
+    (cg_root / "pod.scope" / "memory.stat").write_text("file 80000000000\nbad line\n", encoding="utf-8")
+    vm_plan_2 = vm_judges.apply_jit_build_jobs_to_env(
+        {},
+        cgroup_root=cg_root,
+        proc_cgroup_path=proc_cg,
+        config_env={},
+        nproc=64,
+    )
+    assert vm_plan_2["used_source"] == "memory.current_fallback"
+    assert vm_plan_2["used_bytes"] == 93_410_516_992
+    src_plan_2 = bakeoff_judge.ensure_qwen36_jit_build_env_before_llm(cgroup_root=cg_root, proc_cgroup_path=proc_cg, nproc=64)
+    assert src_plan_2["used_source"] == "memory.current_fallback"
+
+    # Unreadable memory.stat (OSError on read) and missing cgroup_dir edge cases
+    assert vm_judges.read_cgroup_nonreclaimable_bytes(None) == (None, "memory.current_fallback")
+    with pytest.MonkeyPatch.context() as mp_io:
+        mp_io.setattr(Path, "read_text", lambda *_a, **_kw: (_ for _ in ()).throw(OSError("stat err")))
+        assert vm_judges.read_cgroup_nonreclaimable_bytes(cg_root / "pod.scope") == (None, "memory.current_fallback")
+
+
+def test_jit_build_jobs_counts_dirty_writeback_and_kernel_in_nonreclaimable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Low anon + shmem (4.5 GiB) alone would give 8 jobs on 125 GB limit,
+    # but high file_dirty + file_writeback + kernel (85 GiB) must restrict to 1 job.
+    cg_root, proc_cg = _write_fake_cgroup_tree(
+        tmp_path / "dirty_cg",
+        limit_raw="124999999488",
+        current_raw="93410516992",
+    )
+    anon = 4 * 1024**3
+    shmem = 512 * 1024**2
+    file_dirty = 60 * 1024**3
+    file_writeback = 20 * 1024**3
+    kernel = 5 * 1024**3
+    expected_nonrec = anon + shmem + file_dirty + file_writeback + kernel
+    (cg_root / "pod.scope" / "memory.stat").write_text(
+        f"anon {anon}\nshmem {shmem}\nfile_dirty {file_dirty}\nfile_writeback {file_writeback}\nkernel {kernel}\n",
+        encoding="utf-8",
+    )
+    vm_plan = vm_judges.apply_jit_build_jobs_to_env({}, cgroup_root=cg_root, proc_cgroup_path=proc_cg, config_env={}, nproc=64)
+    src_plan = bakeoff_judge.ensure_qwen36_jit_build_env_before_llm(cgroup_root=cg_root, proc_cgroup_path=proc_cg, nproc=64)
+    assert vm_plan["nonreclaimable_bytes"] == expected_nonrec
+    assert vm_plan["jobs"] == 1
+    assert vm_plan["used_source"] == "memory.stat:anon+shmem+file_dirty+file_writeback+kernel"
+    assert src_plan["nonreclaimable_bytes"] == expected_nonrec
+    assert src_plan["jobs"] == 1
+
+    # Also test cgroup v2 without `kernel` key -> sums slab_unreclaimable + kernel_stack + pagetables + percpu + sock
+    (cg_root / "pod.scope" / "memory.stat").write_text(
+        (
+            f"anon {anon}\nshmem {shmem}\nfile_dirty {file_dirty}\nfile_writeback {file_writeback}\n"
+            f"slab_unreclaimable {3 * 1024**3}\nkernel_stack {512 * 1024**2}\n"
+            f"pagetables {512 * 1024**2}\npercpu {512 * 1024**2}\nsock {512 * 1024**2}\n"
+        ),
+        encoding="utf-8",
+    )
+    vm_parts = vm_judges.apply_jit_build_jobs_to_env({}, cgroup_root=cg_root, proc_cgroup_path=proc_cg, config_env={}, nproc=64)
+    src_parts = bakeoff_judge.ensure_qwen36_jit_build_env_before_llm(cgroup_root=cg_root, proc_cgroup_path=proc_cg, nproc=64)
+    assert vm_parts["used_source"] == "memory.stat:anon+shmem+file_dirty+file_writeback+kernel_parts"
+    assert vm_parts["nonreclaimable_bytes"] == expected_nonrec
+    assert vm_parts["jobs"] == 1
+    assert src_parts["used_source"] == "memory.stat:anon+shmem+file_dirty+file_writeback+kernel_parts"
+    assert src_parts["nonreclaimable_bytes"] == expected_nonrec
+
+
+def test_jit_build_jobs_reading_taken_immediately_before_llm_constructor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests.test_qwen36_engine_pins import _install_fake_runtime, _make_full_fake_engine
+
+    receipts_dir, hf_home, _ = _write_qwen36_snapshot_fixture(tmp_path / "recheck")
+    cg_root, proc_cg = _write_fake_cgroup_tree(
+        tmp_path / "cg",
+        limit_raw="124999999488",
+        current_raw="93410516992",
+    )
+    stat_file = cg_root / "pod.scope" / "memory.stat"
+    # Initially clean (would give 8 jobs if cached from launch time)
+    stat_file.write_text(
+        f"anon {4 * 1024**3}\nshmem 0\nfile_dirty 0\nfile_writeback 0\nkernel 0\n",
+        encoding="utf-8",
+    )
+    _install_fake_runtime(
+        monkeypatch,
+        hf_home,
+        llm_engine_factory=lambda kw: _make_full_fake_engine(max_num_batched_tokens=kw["max_num_batched_tokens"]).llm_engine,
+    )
+    vllm_mod = sys.modules["vllm"]
+    orig_llm_cls = vllm_mod.LLM
+    events: list[tuple[str, Any]] = []
+    orig_read_state = bakeoff_judge._read_cgroup_memory_state
+
+    def _spy_read_state(**_kw: Any) -> dict[str, Any]:
+        st = orig_read_state(cgroup_root=cg_root, proc_cgroup_path=proc_cg)
+        events.append(("read_cgroup", st["nonreclaimable_bytes"]))
+        return st
+
+    class _OrderCheckLLM(orig_llm_cls):  # type: ignore[misc,valid-type]
+        def __init__(self, **kwargs: Any) -> None:
+            events.append(("llm_init", os.environ.get("MAX_JOBS")))
+            super().__init__(**kwargs)
+
+    monkeypatch.setattr(bakeoff_judge, "_read_cgroup_memory_state", _spy_read_state)
+    monkeypatch.setattr(vllm_mod, "LLM", _OrderCheckLLM)
+    # Pre-populate MAX_JOBS="8" to prove ensure_qwen36_jit_build_env_before_llm does NOT skip re-reading!
+    for k in bakeoff_judge.QWEN36_JIT_BUILD_PARALLELISM_ENV_VARS:
+        monkeypatch.setenv(k, "8")
+    monkeypatch.setenv(bakeoff_judge.QWEN36_MAX_NEW_TOKENS_ENV_VAR, "4096")
+    child_prog = tmp_path / "child_prog.jsonl"
+    monkeypatch.setenv("RDLAB_JUDGE_CHILD_PROGRESS_FILE", str(child_prog))
+
+    spec = JUDGE_SPECS[QWEN36_ID]
+    transport = bakeoff_judge.VllmJudgeTransport(receipts_dir=receipts_dir, hf_home=hf_home, device="cuda")
+    transport.verify_ready(spec)
+
+    # Simulate dirty pages accumulating AFTER drop / tokenizer load, right before LLM(...)
+    orig_tok_load = transport._ensure_tokenizer_loaded
+
+    def _dirty_during_tok(sp: Any) -> None:
+        orig_tok_load(sp)
+        events.append(("tokenizer_loaded", None))
+        stat_file.write_text(
+            f"anon {4 * 1024**3}\nshmem 0\nfile_dirty {86 * 1024**3}\nfile_writeback 0\nkernel 0\n",
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(transport, "_ensure_tokenizer_loaded", _dirty_during_tok)
+    transport._ensure_loaded(spec)
+
+    # Verify cgroup read ran AFTER tokenizer_loaded and IMMEDIATELY BEFORE llm_init, flipping MAX_JOBS 8 -> 1
+    tok_idx = next(i for i, ev in enumerate(events) if ev[0] == "tokenizer_loaded")
+    read_idx = next(i for i, ev in enumerate(events) if ev[0] == "read_cgroup")
+    llm_idx = next(i for i, ev in enumerate(events) if ev[0] == "llm_init")
+    assert tok_idx < read_idx < llm_idx
+    assert events[read_idx] == ("read_cgroup", 90 * 1024**3)
+    assert events[llm_idx] == ("llm_init", "1")
+    child_recs = [json.loads(ln) for ln in child_prog.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    assert any(r.get("kind") == "jit_build_jobs" and r.get("stage") == "before_llm" and r.get("jobs") == 1 for r in child_recs)
+
+
+def test_weights_sync_start_logged_and_deadline_timeout_never_fails_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "data")
+    _ = receipts_dir
+    cg_root, proc_cg = _write_fake_cgroup_tree(
+        tmp_path / "cg",
+        limit_raw="124999999488",
+        current_raw="93410516992",
+    )
+    vm_log = tmp_path / "vm.log"
+    monkeypatch.setattr(vm_judges, "_ACTIVE_VM_LOG_PATH", vm_log)
+    monkeypatch.setenv("RDLAB_WEIGHTS_SYNC_TIMEOUT_SECONDS", "0.05")
+    drop_caches = tmp_path / "drop_caches"
+    drop_caches.write_text("0\n", encoding="utf-8")
+    prog = tmp_path / "prog_timeout.jsonl"
+
+    release_sync = threading.Event()
+    order: list[str] = []
+
+    def _slow_sync() -> None:
+        # Check SYNC_START was already written to vm.log and progress.jsonl BEFORE sync runs!
+        assert "SYNC_START" in vm_log.read_text(encoding="utf-8")
+        assert any(
+            json.loads(ln).get("kind") == "weights_sync_start"
+            for ln in prog.read_text(encoding="utf-8").splitlines()
+            if ln.strip()
+        )
+        order.append("sync_started")
+        release_sync.wait(timeout=2.0)
+
+    try:
+        res = vm_judges.drop_verified_snapshots_page_cache(
+            hf_home,
+            only_judge_ids=("mu-judge",),
+            repo_dir=REPO_ROOT,
+            progress_path=prog,
+            cgroup_root=cg_root,
+            proc_cgroup_path=proc_cg,
+            drop_caches_path=drop_caches,
+            sync_fn=_slow_sync,
+        )
+    finally:
+        release_sync.set()
+
+    assert order == ["sync_started"]
+    assert res["sync_ran"] is True
+    assert res["sync_timed_out"] is True
+    assert res["sync_timeout_seconds"] == 0.05
+    assert res["sync_timeout_override"] == 0.05
+    assert "TimeoutError" in str(res["sync_error"])
+    assert res["method"] == "drop_caches"
+    log_txt = vm_log.read_text(encoding="utf-8")
+    assert "SYNC_START " in log_txt
+    assert "override=RDLAB_WEIGHTS_SYNC_TIMEOUT_SECONDS=0.05" in log_txt
+    assert "sync_timed_out=True" in log_txt
+    prog_recs = [json.loads(ln) for ln in prog.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    assert [r["kind"] for r in prog_recs] == ["weights_sync_start", "weights_page_cache_drop"]
+    assert prog_recs[1]["sync_timed_out"] is True
+
+    # Invalid RDLAB_WEIGHTS_SYNC_TIMEOUT_SECONDS falls back cleanly to default without failing
+    monkeypatch.setenv("RDLAB_WEIGHTS_SYNC_TIMEOUT_SECONDS", "not-a-float")
+    eff_to, ov_to = vm_judges.resolve_weights_sync_timeout_seconds()
+    assert eff_to == vm_judges.DEFAULT_WEIGHTS_SYNC_TIMEOUT_SECONDS
+    assert ov_to is None
+    assert "WEIGHTS_SYNC_TIMEOUT_INVALID" in vm_log.read_text(encoding="utf-8")
+    assert vm_judges.resolve_weights_sync_timeout_seconds(timeout_seconds=0.25) == (0.25, None)
+
+    # Bounded fdatasync timeout + OSError tolerance in default fdatasync loop
+    slow_fdatasync_done = threading.Event()
+    monkeypatch.setattr(os, "fdatasync", lambda _fd: slow_fdatasync_done.wait(timeout=2.0), raising=False)
+    try:
+        res_fdatasync_to = vm_judges.drop_verified_snapshots_page_cache(
+            hf_home,
+            only_judge_ids=("mu-judge",),
+            repo_dir=REPO_ROOT,
+            progress_path=prog,
+            cgroup_root=cg_root,
+            proc_cgroup_path=proc_cg,
+            drop_caches_path=drop_caches,
+            sync_timeout_seconds=0.05,
+        )
+    finally:
+        slow_fdatasync_done.set()
+    assert res_fdatasync_to["sync_timed_out"] is True
+    assert res_fdatasync_to["method"] == "drop_caches"
+
+    monkeypatch.setattr(os, "fdatasync", lambda _fd: (_ for _ in ()).throw(OSError("fdatasync io err")), raising=False)
+    res_fdatasync_err = vm_judges.drop_verified_snapshots_page_cache(
+        hf_home,
+        only_judge_ids=("mu-judge",),
+        repo_dir=REPO_ROOT,
+        progress_path=prog,
+        cgroup_root=cg_root,
+        proc_cgroup_path=proc_cg,
+        drop_caches_path=drop_caches,
+        sync_timeout_seconds=1.0,
+    )
+    assert res_fdatasync_err["sync_ran"] is False
+    assert "OSError: fdatasync io err" in str(res_fdatasync_err["sync_error"])
+
+
+def test_pytest_guard_skips_real_drop_caches_even_when_sync_fn_injected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "data")
+    cg_root, proc_cg = _write_fake_cgroup_tree(
+        tmp_path / "cg",
+        limit_raw="124999999488",
+        current_raw="93410516992",
+    )
+    real_drop_target = Path("/proc/sys/vm/drop_caches")
+    monkeypatch.setattr(vm_judges, "DEFAULT_DROP_CACHES_PATH", real_drop_target)
+    real_open = Path.open
+
+    def _forbid_real_drop_open(self_p: Path, *args: Any, **kwargs: Any) -> Any:
+        if self_p == real_drop_target:
+            raise AssertionError("drop_verified_snapshots_page_cache attempted to open real /proc/sys/vm/drop_caches under pytest!")
+        return real_open(self_p, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", _forbid_real_drop_open)
+    sync_calls: list[str] = []
+    prog = tmp_path / "prog_guard.jsonl"
+    res = vm_judges.drop_verified_snapshots_page_cache(
+        hf_home,
+        only_judge_ids=("mu-judge",),
+        repo_dir=REPO_ROOT,
+        progress_path=prog,
+        cgroup_root=cg_root,
+        proc_cgroup_path=proc_cg,
+        sync_fn=lambda: sync_calls.append("ran"),
+    )
+    assert sync_calls == ["ran"]
+    assert res["sync_ran"] is True
+    assert res["method"] == "skipped_dryrun"
+
+
+
