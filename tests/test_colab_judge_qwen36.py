@@ -37,12 +37,16 @@ from reasoning_dataset_lab.pilot_b.bakeoff_judge import (  # noqa: E402
 from tests.fixtures import fake_colab  # noqa: E402
 from tests.test_colab_judge_launcher import (  # noqa: E402,F401  (autouse fixture keeps env hermetic)
     LAUNCH_JUDGES_SH,
+    REAL_MODE_SHIM_PY,
     _attach_part_files,
     _base_launcher_exports,
+    _e2e_synthetic_time_one_inputs,
     _hermetic_fake_colab_and_uv_env,
     _make_builder_part,
     _make_synthetic_judge_snapshots_and_receipts,
     _make_synthetic_public_items,
+    _pm_real_mode_exports,
+    _pm_run_launcher,
     _project_part_items,
     _to_wsl_path,
     vm_judges,
@@ -54,6 +58,27 @@ QWEN36_REPO = "Qwen/Qwen3.6-35B-A3B"
 QWEN36_REV = "345d467b117d1fd5eda9b879a5988de9ae5f47a7"
 CONTRA = "three_way_contradicted"
 INTERNAL = ("supported", "unsupported", "cannot_tell")
+_QWEN36_SHIM_ENV_KEYS: tuple[str, ...] = (
+    "PATH",
+    "NINJA",
+    "FLASHINFER_NVCC",
+    "CUDACXX",
+    "CUDA_HOME",
+    "CUDA_PATH",
+    "RDLAB_JIT_SHIM_MARKER_FILE",
+    "FLASHINFER_DISABLE_JIT",
+    "FLASHINFER_CUDA_ARCH_LIST",
+)
+
+
+@pytest.fixture(autouse=True)
+def _restore_qwen36_shim_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Restore shim compiler/CUDA env vars after every test even if FlashInferBuildShimGuard stays installed."""
+    for key in _QWEN36_SHIM_ENV_KEYS:
+        if key in os.environ:
+            monkeypatch.setenv(key, os.environ[key])
+        else:
+            monkeypatch.delenv(key, raising=False)
 
 
 def _spawn_engine_core_ninja_worker(tool: str, args: list[str], q: Any) -> None:
@@ -741,7 +766,11 @@ def _install_fake_aot_flashinfer(
     monkeypatch.setitem(sys.modules, "flashinfer.jit.cpp_ext", fi_cpp_ext)
     monkeypatch.setitem(sys.modules, "flashinfer.jit.core", fi_core)
     monkeypatch.setitem(sys.modules, "flashinfer.jit.fused_moe", fi_fused)
-    return {"fi_ws_dir": ws_dir, "fi_so_path": so_path, "fi_so_sha256": so_sha}
+    fake_cuda = base_dir / ".fake_cuda"
+    (fake_cuda / "include").mkdir(parents=True, exist_ok=True)
+    (fake_cuda / "lib64").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("CUDA_HOME", str(fake_cuda))
+    return {"fi_ws_dir": ws_dir, "fi_so_path": so_path, "fi_so_sha256": so_sha, "fake_cuda": fake_cuda}
 
 
 def _setup_fake_vllm_env(
@@ -4683,11 +4712,13 @@ def test_spawned_child_shim_blocks_ninja_and_nvcc_and_chains_engine_exception(
     assert Path(cenv["NINJA"]).is_file()
 
     # 2. Spawned multiprocessing EngineCore child trying to run `ninja` or `nvcc` is blocked by the shim,
-    #    writes marker file, and generic engine exception in LLM() raises chained JUDGE_JIT_BUILD_ENTERED.
+    #    writes marker file under RDLAB_WORK_DIR (never out_dir), and generic engine exception raises chained JUDGE_JIT_BUILD_ENTERED.
     out_dir = tmp_path / "run_out"
+    work_dir = tmp_path / "work_dir"
     env = _setup_fake_vllm_env(tmp_path / "spawn_shim", monkeypatch, responses=[])
     monkeypatch.setenv(bakeoff_judge.QWEN36_MAX_NEW_TOKENS_ENV_VAR, "4096")
     monkeypatch.setenv("CUDA_HOME", str(fake_cuda))
+    monkeypatch.setenv("RDLAB_WORK_DIR", str(work_dir))
     monkeypatch.delenv("RDLAB_JIT_SHIM_MARKER_FILE", raising=False)
 
     spawn_results: list[tuple[int, str, str]] = []
@@ -4749,9 +4780,11 @@ def test_spawned_child_shim_blocks_ninja_and_nvcc_and_chains_engine_exception(
     # Ninja + nvcc -c invocations exited non-zero with marker text
     assert spawn_results[2][0] != 0 and "JUDGE_JIT_BUILD_ENTERED" in spawn_results[2][1]
     assert spawn_results[3][0] != 0 and "JUDGE_JIT_BUILD_ENTERED" in spawn_results[3][1]
-    marker_file = out_dir / "jit_shim_marker.log"
-    assert marker_file.is_file()
-    marker_txt = marker_file.read_text(encoding="utf-8")
+    assert not (out_dir / "jit_shim_marker.log").exists()
+    assert list(out_dir.rglob("*jit_shim*")) == []
+    marker_files = sorted((work_dir / "jit_shim").glob("jit_shim_marker*.log"))
+    assert len(marker_files) >= 1
+    marker_txt = marker_files[-1].read_text(encoding="utf-8")
     assert "JUDGE_JIT_BUILD_ENTERED" in marker_txt and "ninja" in marker_txt and "nvcc" in marker_txt
 
     # 3. Also verify generate() exception boundary catches lazy EngineCore compile refusal AND re-raises unrelated errors
@@ -5044,6 +5077,10 @@ def test_workspace_baseline_snapshot_and_trtllm_tmp_exclusions(
     monkeypatch.setenv(bakeoff_judge.QWEN36_JIT_SHIM_MARKER_ENV_VAR, str(mfile))
     assert len(bakeoff_judge.read_jit_shim_marker()) == 1
 
+    fake_cuda_guard = tmp_path / "guard_cuda"
+    (fake_cuda_guard / "include").mkdir(parents=True, exist_ok=True)
+    (fake_cuda_guard / "lib64").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("CUDA_HOME", str(fake_cuda_guard))
     fake_ninja_pkg = SimpleNamespace(BIN_DIR="/orig/ninja")
     monkeypatch.setitem(sys.modules, "ninja", fake_ninja_pkg)
     guard = bakeoff_judge.FlashInferBuildShimGuard()
@@ -5053,6 +5090,487 @@ def test_workspace_baseline_snapshot_and_trtllm_tmp_exclusions(
     guard.uninstall()
     guard.uninstall()  # idempotent second uninstall
     assert fake_ninja_pkg.BIN_DIR == "/orig/ninja"
+
+
+def test_no_shim_dir_fallback_marker_uses_temp_or_work_dir_never_out_dir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Even when neither RDLAB_JIT_SHIM_MARKER_FILE nor RDLAB_WORK_DIR is set (p0a / boot gatekeeper / standalone),
+    # the fallback marker lands under the temp directory and nothing lands in out_dir / run_dir.
+    env = _setup_fake_vllm_env(tmp_path / "no_shim_temp", monkeypatch, responses=[])
+    monkeypatch.setenv(bakeoff_judge.QWEN36_MAX_NEW_TOKENS_ENV_VAR, "4096")
+    monkeypatch.delenv("RDLAB_JIT_SHIM_MARKER_FILE", raising=False)
+    monkeypatch.delenv("RDLAB_WORK_DIR", raising=False)
+    custom_tmp = tmp_path / "isolated_tmp"
+    custom_tmp.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(bakeoff_judge.tempfile, "tempdir", str(custom_tmp))
+
+    orig_llm = sys.modules["vllm"].LLM
+
+    class _TempMarkerCallingLLM(orig_llm):  # type: ignore[misc,valid-type]
+        def __init__(self, **kwargs: Any) -> None:
+            _ = kwargs
+            ctx = multiprocessing.get_context("spawn")
+            q: Any = ctx.Queue()
+            p = ctx.Process(target=_spawn_engine_core_ninja_worker, args=("ninja", ["-j1"], q))
+            p.start()
+            p.join(timeout=30)
+            assert p.exitcode == 0
+            rc, _out, _err = q.get(timeout=5)
+            assert rc != 0
+            raise RuntimeError("Engine core exited after ninja refusal")
+
+    monkeypatch.setattr(sys.modules["vllm"], "LLM", _TempMarkerCallingLLM)
+    items_dir = tmp_path / "items_no_shim"
+    items_dir.mkdir(parents=True, exist_ok=True)
+    _write_items_jsonl(items_dir / "items.jsonl", _synth_items(1))
+    out_dir = tmp_path / "run_out_clean"
+
+    with pytest.raises(RdlabError) as exc_tmp:
+        run_bakeoff_judge(
+            judge=QWEN36_ID,
+            part_dir=items_dir,
+            output_dir=out_dir,
+            receipts_dir=env["receipts_dir"],
+            hf_home=env["hf_home"],
+            device="cuda",
+            pass_mode=CONTRA,
+            window_mode="stub",
+            fake_transport=False,
+            vram_probe=lambda: 0,
+            run_canary=False,
+            synthetic_items=False,
+        )
+    assert exc_tmp.value.code == "JUDGE_JIT_BUILD_ENTERED"
+    assert not any("jit_shim" in p.name for p in out_dir.rglob("*"))
+    # Pack out_dir with vm_judges.build_allowlisted_result_tar to prove zero TAR_ALLOWLIST_VIOLATION
+    tar_members = vm_judges.build_allowlisted_result_tar(out_dir, tmp_path / "result_clean.tar.gz")
+    assert isinstance(tar_members, list)
+    temp_markers = sorted((custom_tmp / "rdlab-jit-shim-markers").glob("jit_shim_marker_*.log"))
+    assert len(temp_markers) == 1
+    assert "JUDGE_JIT_BUILD_ENTERED\tninja" in temp_markers[0].read_text(encoding="utf-8")
+
+
+def test_flashinfer_disable_jit_env_and_missing_jit_cache_error_chained(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 1. Child env (vm_judges), launch_judges.sh --dry, and spawned EngineCore worker all carry FLASHINFER_DISABLE_JIT=1
+    fake_cuda = tmp_path / "disable_jit_cuda"
+    (fake_cuda / "include").mkdir(parents=True, exist_ok=True)
+    (fake_cuda / "lib64").mkdir(parents=True, exist_ok=True)
+    cenv = vm_judges.build_judge_child_env(
+        tmp_path / "hf",
+        REPO_ROOT,
+        base_env={"CUDA_HOME": str(fake_cuda), "PATH": "/usr/bin"},
+        judge_id=QWEN36_ID,
+        venv_name=vm_judges.VLLM_VENV_NAME,
+    )
+    assert cenv["FLASHINFER_DISABLE_JIT"] == "1"
+    assert cenv["FLASHINFER_CUDA_ARCH_LIST"] == "12.0f"
+
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "dry_data")
+    _seed_qwen36_snapshot_and_receipt(receipts_dir, hf_home)
+    items_file = _make_synthetic_public_items(tmp_path / "dry_data", count=1)
+    env_p = fake_colab.setup_fake_colab_environment(tmp_path / "dry_fc")
+    dry_exports = (
+        _base_launcher_exports(
+            env_p,
+            open_lock=tmp_path / "dry_dj.lock",
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+            items_file=items_file,
+        )
+        + f"export RDLAB_ONLY_JUDGES={QWEN36_ID}; export RDLAB_PASS_MODE={CONTRA}; "
+    )
+    proc_dry = _run_launcher(dry_exports, f"--stub --dry --out-dir '{_to_wsl_path(tmp_path / 'dry_out')}' --run-id dry-dj")
+    assert proc_dry.returncode == 0, proc_dry.stderr
+    assert "--env FLASHINFER_DISABLE_JIT=1" in proc_dry.stdout
+
+    # 2. Fake JitSpec.build() raising MissingJITCacheError surfaces as chained JUDGE_JIT_BUILD_ENTERED, and spawned child sees FLASHINFER_DISABLE_JIT=1
+    env = _setup_fake_vllm_env(tmp_path / "miss_jit", monkeypatch, responses=[])
+    monkeypatch.setenv(bakeoff_judge.QWEN36_MAX_NEW_TOKENS_ENV_VAR, "4096")
+    monkeypatch.setenv("CUDA_HOME", str(fake_cuda))
+    monkeypatch.delenv("FLASHINFER_DISABLE_JIT", raising=False)
+
+    class MissingJITCacheError(RuntimeError):
+        pass
+
+    class _FakeJitSpec:
+        def build(self) -> None:
+            if os.environ.get("FLASHINFER_DISABLE_JIT"):
+                raise MissingJITCacheError(
+                    "JIT compilation is disabled via FLASHINFER_DISABLE_JIT environment variable"
+                )
+
+    observed_child_env: list[str | None] = []
+    orig_llm = sys.modules["vllm"].LLM
+
+    class _MissingCacheLLM(orig_llm):  # type: ignore[misc,valid-type]
+        def __init__(self, **kwargs: Any) -> None:
+            _ = kwargs
+            ctx = multiprocessing.get_context("spawn")
+            q: Any = ctx.Queue()
+            p = ctx.Process(
+                target=_spawn_engine_core_ninja_worker,
+                args=("sh", ["-c", 'printf "%s" "$FLASHINFER_DISABLE_JIT"'], q),
+            )
+            p.start()
+            p.join(timeout=30)
+            assert p.exitcode == 0
+            rc, _err, out = q.get(timeout=5)
+            assert rc == 0
+            observed_child_env.append(out)
+            try:
+                _FakeJitSpec().build()
+            except MissingJITCacheError as mexc:
+                raise RuntimeError("Engine core initialization failed") from mexc
+
+    monkeypatch.setattr(sys.modules["vllm"], "LLM", _MissingCacheLLM)
+    items_dir = tmp_path / "items_dj"
+    items_dir.mkdir(parents=True, exist_ok=True)
+    _write_items_jsonl(items_dir / "items.jsonl", _synth_items(1))
+    with pytest.raises(RdlabError) as exc_dj:
+        run_bakeoff_judge(
+            judge=QWEN36_ID,
+            part_dir=items_dir,
+            output_dir=tmp_path / "out_dj",
+            receipts_dir=env["receipts_dir"],
+            hf_home=env["hf_home"],
+            device="cuda",
+            pass_mode=CONTRA,
+            window_mode="stub",
+            fake_transport=False,
+            vram_probe=lambda: 0,
+            run_canary=False,
+            synthetic_items=False,
+        )
+    assert exc_dj.value.code == "JUDGE_JIT_BUILD_ENTERED"
+    assert isinstance(exc_dj.value.__cause__, RuntimeError)
+    assert isinstance(exc_dj.value.__cause__.__cause__, MissingJITCacheError)
+    assert observed_child_env == ["1"]
+
+    # Also test generate() exception chain with MissingJITCacheError
+    monkeypatch.setattr(sys.modules["vllm"], "LLM", orig_llm)
+    t_gen = bakeoff_judge.VllmJudgeTransport(receipts_dir=env["receipts_dir"], hf_home=env["hf_home"], device="cuda")
+    t_gen.verify_ready(JUDGE_SPECS[QWEN36_ID])
+    prompt_gen = bakeoff_judge.Qwen36ChoiceAdapter(JUDGE_SPECS[QWEN36_ID]).assemble_prompt(_synth_items(1)[0], order="AB", pass_mode=CONTRA)
+    try:
+        t_gen._ensure_loaded(JUDGE_SPECS[QWEN36_ID])
+        monkeypatch.setattr(
+            t_gen._llm,
+            "generate",
+            lambda *_a, **_kw: (_FakeJitSpec().build(), []),
+        )
+        with pytest.raises(RdlabError) as exc_gen_dj:
+            t_gen.generate(JUDGE_SPECS[QWEN36_ID], prompt_gen, seed=7)
+        assert exc_gen_dj.value.code == "JUDGE_JIT_BUILD_ENTERED"
+        assert isinstance(exc_gen_dj.value.__cause__, MissingJITCacheError)
+    finally:
+        t_gen.close_build_guard()
+
+
+def test_shim_cuda_home_fallback_usr_local_cuda_or_named_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("CUDA_HOME", raising=False)
+    monkeypatch.delenv("CUDA_PATH", raising=False)
+    monkeypatch.delenv(bakeoff_judge.QWEN36_JIT_SHIM_MARKER_ENV_VAR, raising=False)
+    monkeypatch.delenv("RDLAB_WORK_DIR", raising=False)
+    monkeypatch.setattr(bakeoff_judge.tempfile, "tempdir", str(tmp_path / "shim_fb_tmp"))
+    (tmp_path / "shim_fb_tmp").mkdir(parents=True, exist_ok=True)
+
+    # 1. When default /usr/local/cuda (faked) exists with include/ + lib/, both vm_judges & bakeoff_judge link it
+    fake_default_cuda = tmp_path / "usr_local_cuda"
+    (fake_default_cuda / "include").mkdir(parents=True, exist_ok=True)
+    (fake_default_cuda / "lib").mkdir(parents=True, exist_ok=True)
+
+    cenv_fb = vm_judges.build_judge_child_env(
+        tmp_path / "hf",
+        REPO_ROOT,
+        base_env={"PATH": "/usr/bin"},
+        judge_id=QWEN36_ID,
+        venv_name=vm_judges.VLLM_VENV_NAME,
+        jit_shim_dir=tmp_path / "vm_shim_fb",
+        jit_shim_marker_file=tmp_path / "vm_work" / "marker.log",
+        default_cuda_home=fake_default_cuda,
+    )
+    assert cenv_fb["CUDA_HOME"] == str((tmp_path / "vm_shim_fb").resolve())
+    assert (tmp_path / "vm_shim_fb" / "include").is_symlink()
+    assert (tmp_path / "vm_shim_fb" / "lib").is_symlink()
+
+    guard_fb = bakeoff_judge.FlashInferBuildShimGuard(default_cuda_home=fake_default_cuda)
+    guard_fb.install()
+    try:
+        assert guard_fb.shim_root is not None
+        assert (guard_fb.shim_root / "include").is_symlink()
+        assert (guard_fb.shim_root / "lib").is_symlink()
+        assert guard_fb.marker_path is not None
+        guard_fb.marker_path.write_text("", encoding="utf-8")
+        marker_before_uninstall = guard_fb.marker_path
+    finally:
+        guard_fb.uninstall()
+    assert not marker_before_uninstall.exists()
+
+    # 2. When CUDA_HOME/CUDA_PATH are unset and default_cuda_home is absent -> named JUDGE_CUDA_HOME_MISSING
+    missing_cuda = tmp_path / "no_cuda_here"
+    with pytest.raises(vm_judges.RefusalError) as vm_exc:
+        vm_judges.stage_qwen36_no_compile_shim(
+            tmp_path / "vm_shim_miss",
+            tmp_path / "vm_work" / "m2.log",
+            {"PATH": "/usr/bin"},
+            default_cuda_home=missing_cuda,
+        )
+    assert vm_exc.value.code == "JUDGE_CUDA_HOME_MISSING"
+    assert "include" in vm_exc.value.hint.lower()
+
+    guard_miss = bakeoff_judge.FlashInferBuildShimGuard(default_cuda_home=missing_cuda)
+    with pytest.raises(RdlabError) as bk_exc:
+        guard_miss.install()
+    assert bk_exc.value.code == "JUDGE_CUDA_HOME_MISSING"
+    assert "include" in bk_exc.value.hint.lower()
+
+    # 3. Present dir missing include/ -> also JUDGE_CUDA_HOME_MISSING (never empty shim headers)
+    no_headers_cuda = tmp_path / "no_headers_cuda"
+    no_headers_cuda.mkdir(parents=True, exist_ok=True)
+    with pytest.raises(RdlabError) as hdr_exc:
+        bakeoff_judge.resolve_cuda_home_for_shim({"CUDA_HOME": str(no_headers_cuda)})
+    assert hdr_exc.value.code == "JUDGE_CUDA_HOME_MISSING"
+
+
+def test_sm_check_nvidia_smi_honours_cuda_visible_devices(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(sys.modules, "pynvml", None)  # type: ignore[arg-type]
+
+    # Device 0 is SM 8.0, Device 1 is SM 12.0; CUDA_VISIBLE_DEVICES=1 sees ONLY device 1 -> passes
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
+    monkeypatch.setattr(
+        bakeoff_judge.subprocess,
+        "run",
+        lambda *_a, **_kw: SimpleNamespace(
+            returncode=0,
+            stdout="0, GPU-00000000-0000-0000-0000-000000000000, 8.0\n1, GPU-11111111-1111-1111-1111-111111111111, 12.0\n",
+            stderr="",
+        ),
+    )
+    ok_idx = bakeoff_judge.verify_qwen36_sm12x_compute_capability(device="cuda:0")
+    assert ok_idx["compute_capability"] == "12.0" and ok_idx["source"] == "nvidia-smi"
+
+    # Also test UUID matching in CUDA_VISIBLE_DEVICES
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-11111111-1111-1111-1111-111111111111")
+    ok_uuid = bakeoff_judge.verify_qwen36_sm12x_compute_capability(device="cuda")
+    assert ok_uuid["compute_capability"] == "12.0"
+
+    # With 0,1 visible and one non-12.x GPU -> JUDGE_GPU_COMPUTE_CAP_MISMATCH
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1")
+    with pytest.raises(RdlabError) as exc_multi:
+        bakeoff_judge.verify_qwen36_sm12x_compute_capability(device="cuda:1")
+    assert exc_multi.value.code == "JUDGE_GPU_COMPUTE_CAP_MISMATCH"
+
+    # Single-column faked 2-GPU output also honours CUDA_VISIBLE_DEVICES=1
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
+    monkeypatch.setattr(
+        bakeoff_judge.subprocess,
+        "run",
+        lambda *_a, **_kw: SimpleNamespace(returncode=0, stdout="8.0\n12.0\n", stderr=""),
+    )
+    ok_col1 = bakeoff_judge.verify_qwen36_sm12x_compute_capability(device="cuda:0")
+    assert ok_col1["compute_capability"] == "12.0"
+
+    # Swapped (0=12.0, 1=8.0) with CUDA_VISIBLE_DEVICES=1 -> refuses JUDGE_GPU_COMPUTE_CAP_MISMATCH
+    monkeypatch.setattr(
+        bakeoff_judge.subprocess,
+        "run",
+        lambda *_a, **_kw: SimpleNamespace(returncode=0, stdout="12.0\n8.0\n", stderr=""),
+    )
+    with pytest.raises(RdlabError) as exc_dev1_bad:
+        bakeoff_judge.verify_qwen36_sm12x_compute_capability(device="cuda:0")
+    assert exc_dev1_bad.value.code == "JUDGE_GPU_COMPUTE_CAP_MISMATCH"
+
+    # Out-of-range logical device, malformed CSV row, missing visible GPU index, and empty CVD out-of-range
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+    with pytest.raises(RdlabError):
+        bakeoff_judge.verify_qwen36_sm12x_compute_capability(device="cuda:1")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "9")
+    monkeypatch.setattr(
+        bakeoff_judge.subprocess,
+        "run",
+        lambda *_a, **_kw: SimpleNamespace(returncode=0, stdout="0, GPU-0, 12.0\n", stderr=""),
+    )
+    with pytest.raises(RdlabError):
+        bakeoff_judge.verify_qwen36_sm12x_compute_capability(device="cuda:0")
+    monkeypatch.setattr(
+        bakeoff_judge.subprocess,
+        "run",
+        lambda *_a, **_kw: SimpleNamespace(returncode=0, stdout="bad, GPU-0, 12.0\n", stderr=""),
+    )
+    with pytest.raises(RdlabError):
+        bakeoff_judge.verify_qwen36_sm12x_compute_capability(device="cuda:0")
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    monkeypatch.setattr(
+        bakeoff_judge.subprocess,
+        "run",
+        lambda *_a, **_kw: SimpleNamespace(returncode=0, stdout="12.0\n", stderr=""),
+    )
+    with pytest.raises(RdlabError):
+        bakeoff_judge.verify_qwen36_sm12x_compute_capability(device="cuda:2")
+
+    # Multi-GPU pynvml visibility edge: out-of-range logical index returns None -> refuses
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+    monkeypatch.setitem(
+        sys.modules,
+        "pynvml",
+        SimpleNamespace(
+            nvmlInit=lambda: None,
+            nvmlShutdown=lambda: None,
+            nvmlDeviceGetHandleByIndex=lambda _i=0: object(),
+            nvmlDeviceGetHandleByUUID=lambda _u: object(),
+            nvmlDeviceGetCudaComputeCapability=lambda _h: (12, 0),
+        ),
+    )
+    assert bakeoff_judge._nvml_capability_via_pynvml(1) is None
+
+
+def test_fired_qwen36_stops_report_named_failure_class_never_none(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Fired VM/child stops keep a named failure_class across CLI, status.json, outcome.draft.json, and [outcome]."""
+    # 1. End-to-end launcher + real-mode VM shim when CUDA_HOME/CUDA_PATH are unset and /usr/local/cuda is absent
+    receipts_dir, hf_home, items, q36_exports = _e2e_synthetic_time_one_inputs(
+        tmp_path, item_ids=["synth-001", "synth-002"]
+    )
+    env_paths = fake_colab.setup_fake_colab_environment(
+        tmp_path / "e2e_no_cuda_env", uv_python_315_found=True
+    )
+    (env_paths["state_dir"] / "no_fake_cuda_home").write_text("1\n", encoding="utf-8")
+    kept = tmp_path / "e2e_no_cuda_kept"
+    out_dir = tmp_path / "e2e_no_cuda_out"
+    exports = (
+        "unset CUDA_HOME CUDA_PATH; "
+        + _pm_real_mode_exports(
+            env_paths,
+            open_lock=tmp_path / "e2e_no_cuda.lock",
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+            items_file=items,
+            part_dir=None,
+        )
+        + f"export FAKE_COLAB_REAL_MODE_SHIM='{_to_wsl_path(REAL_MODE_SHIM_PY)}'; "
+        + f"export FAKE_COLAB_KEEP_UPLOADS_DIR='{_to_wsl_path(kept)}'; "
+        + f"export FAKE_COLAB_VM_HF_SEED='{_to_wsl_path(hf_home)}'; "
+        + f"export FAKE_COLAB_VM_DENY_ROOTS='{_to_wsl_path(tmp_path)}'; "
+        + q36_exports
+    )
+    proc = _pm_run_launcher(
+        exports,
+        f"--time-one --synthetic-items --out-dir '{_to_wsl_path(out_dir)}' --run-id rdlab-d5c-qwen36-g4-time-02",
+        timeout=300,
+    )
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert "failure_class=JUDGE_CUDA_HOME_MISSING" in proc.stderr, proc.stderr
+    assert "failure_class=none" not in proc.stderr, proc.stderr
+    status_doc = json.loads((out_dir / "status.json").read_text(encoding="utf-8"))
+    outcome_doc = json.loads((out_dir / "outcome.draft.json").read_text(encoding="utf-8"))
+    assert status_doc["failure_class"] == "JUDGE_CUDA_HOME_MISSING", status_doc
+    assert outcome_doc.get("failure_class") == "JUDGE_CUDA_HOME_MISSING", outcome_doc
+
+    # 2. bakeoff_judge.main catches DeviceRefusalError (both unchained and chained)
+    monkeypatch.setattr(bakeoff_judge, "normalize_judge_device", lambda dev: dev)
+    monkeypatch.delenv("CUDA_HOME", raising=False)
+    monkeypatch.delenv("CUDA_PATH", raising=False)
+
+    def _raise_unchained(**_kw: Any) -> Any:
+        raise bakeoff_judge.DeviceRefusalError(
+            "JUDGE_CUDA_HOME_MISSING", "missing cuda toolkit", "install cuda", exit_code=2
+        )
+
+    monkeypatch.setattr(bakeoff_judge, "prepare_qwen36_no_compile_process_env", _raise_unchained)
+    part_dir = _make_builder_part(tmp_path / "cli_part")
+    rc_unchained = bakeoff_judge.main_judge_runner(
+        [
+            "--part-dir",
+            str(part_dir),
+            "--output-dir",
+            str(tmp_path / "cli_out_1"),
+            "--judge",
+            QWEN36_ID,
+            "--device",
+            "cuda:0",
+        ]
+    )
+    assert rc_unchained == 2
+    err_unchained = capsys.readouterr().err
+    assert "JUDGE_CUDA_HOME_MISSING: missing cuda toolkit" in err_unchained
+    assert "caused by" not in err_unchained
+
+    def _raise_chained(**_kw: Any) -> Any:
+        try:
+            raise RuntimeError("MissingJITCacheError inner")
+        except RuntimeError as inner:
+            raise bakeoff_judge.DeviceRefusalError(
+                "JUDGE_JIT_BUILD_ENTERED", "jit build entered", "prebuild", exit_code=2
+            ) from inner
+
+    monkeypatch.setattr(bakeoff_judge, "prepare_qwen36_no_compile_process_env", _raise_chained)
+    rc_chained = bakeoff_judge.main_judge_runner(
+        [
+            "--part-dir",
+            str(part_dir),
+            "--output-dir",
+            str(tmp_path / "cli_out_2"),
+            "--judge",
+            QWEN36_ID,
+            "--device",
+            "cuda:0",
+        ]
+    )
+    assert rc_chained == 2
+    err_chained = capsys.readouterr().err
+    assert "JUDGE_JIT_BUILD_ENTERED: jit build entered (caused by RuntimeError: MissingJITCacheError inner)" in err_chained
+
+    # 3. vm_judges.classify_judge_child_stop_code preserves named Qwen3.6 stop codes
+    assert (
+        vm_judges.classify_judge_child_stop_code("unclassified stderr", shim_invocations=["nvcc -V"])
+        == "JUDGE_JIT_BUILD_ENTERED"
+    )
+    for code in vm_judges.QWEN36_NAMED_CHILD_STOP_CODES:
+        assert vm_judges.classify_judge_child_stop_code(f"{code}: blocked\n") == code
+    assert vm_judges.classify_judge_child_stop_code("plain ValueError traceback") is None
+
+    # 4. Stale inherited CUDA_PATH (e.g. from an earlier unclosed test shim) never leaks into fake_vm_real_mode_shim
+    stale_env = fake_colab.setup_fake_colab_environment(
+        tmp_path / "e2e_stale_cuda_env", uv_python_315_found=True
+    )
+    stale_out = tmp_path / "e2e_stale_cuda_out"
+    stale_exports = (
+        f"export CUDA_PATH='{_to_wsl_path(tmp_path / 'deleted_shim_dir')}'; "
+        + _pm_real_mode_exports(
+            stale_env,
+            open_lock=tmp_path / "e2e_stale_cuda.lock",
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+            items_file=items,
+            part_dir=None,
+        )
+        + f"export FAKE_COLAB_REAL_MODE_SHIM='{_to_wsl_path(REAL_MODE_SHIM_PY)}'; "
+        + f"export FAKE_COLAB_KEEP_UPLOADS_DIR='{_to_wsl_path(tmp_path / 'e2e_stale_kept')}'; "
+        + f"export FAKE_COLAB_VM_HF_SEED='{_to_wsl_path(hf_home)}'; "
+        + f"export FAKE_COLAB_VM_DENY_ROOTS='{_to_wsl_path(tmp_path)}'; "
+        + q36_exports
+    )
+    stale_proc = _pm_run_launcher(
+        stale_exports,
+        f"--time-one --synthetic-items --out-dir '{_to_wsl_path(stale_out)}' --run-id rdlab-d5c-qwen36-g4-time-03",
+        timeout=300,
+    )
+    assert stale_proc.returncode == 0, stale_proc.stdout + stale_proc.stderr
+
+
 
 
 

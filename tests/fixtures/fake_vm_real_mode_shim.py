@@ -144,6 +144,21 @@ def install(ns: dict[str, Any], *, state_dir: str, vm_root: str) -> None:
 
     ns["resolve_content_dir"] = _resolve_content_dir
 
+    # Clear any inherited host CUDA_HOME/CUDA_PATH (the real launcher never forwards them onto the VM), and
+    # provide a fake CUDA toolkit root inside vm_root unless the test explicitly asks to trigger
+    # JUDGE_CUDA_HOME_MISSING via `<state_dir>/no_fake_cuda_home`, so CPU runners without `/usr/local/cuda`
+    # still run `resolve_cuda_home_for_shim` and `stage_qwen36_no_compile_shim` for real inside the VM sandbox.
+    if not (state_dir and (Path(state_dir) / "preserve_vm_cuda_env").exists()):
+        os.environ.pop("CUDA_HOME", None)
+        os.environ.pop("CUDA_PATH", None)
+    if state_dir and (Path(state_dir) / "no_fake_cuda_home").exists():
+        ns["DEFAULT_UNIX_CUDA_HOME"] = root / "missing_usr_local_cuda"
+    else:
+        fake_cuda = root / "usr" / "local" / "cuda"
+        (fake_cuda / "include").mkdir(parents=True, exist_ok=True)
+        (fake_cuda / "lib64").mkdir(parents=True, exist_ok=True)
+        ns["DEFAULT_UNIX_CUDA_HOME"] = fake_cuda
+
     verified_judges: set[str] = set()
 
     def _as_dryrun(name: str) -> Any:

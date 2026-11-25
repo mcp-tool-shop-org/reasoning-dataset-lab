@@ -1731,6 +1731,7 @@ build_exec_env_args() {
     case ",${_norm_only_judges}," in
       *,qwen3.6-35b-a3b,*)
         EXEC_ENV_ARGS+=(--env "FLASHINFER_CUDA_ARCH_LIST=12.0f")
+        EXEC_ENV_ARGS+=(--env "FLASHINFER_DISABLE_JIT=1")
         ;;
     esac
   fi
@@ -2371,8 +2372,23 @@ PY
 if [[ "$STATUS_CHECK_RC" -ne 0 ]]; then
   if [[ "$STATUS_CHECK_OUT" == stale_status\|* ]]; then
     RUN_WHY="VM status.json is stale (${STATUS_CHECK_OUT})"
+    if [[ -z "$RUN_FAILURE_CLASS" ]]; then
+      RUN_FAILURE_CLASS="VM_STATUS_STALE"
+    fi
   else
     RUN_WHY="VM status.json reported failure (${STATUS_CHECK_OUT})"
+    if [[ -z "$RUN_FAILURE_CLASS" ]]; then
+      RUN_FAILURE_CLASS="$("$PYTHON_BIN" -c 'import json, sys; from pathlib import Path
+try:
+    doc = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+    print(str(doc.get("failure_class") or "").strip())
+except Exception:
+    print("")
+' "$OUT_DIR/status.json" </dev/null 2>/dev/null || true)"
+      if [[ -z "$RUN_FAILURE_CLASS" ]]; then
+        RUN_FAILURE_CLASS="VM_STATUS_FAILED"
+      fi
+    fi
   fi
   exit "$STATUS_CHECK_RC"
 fi
@@ -2575,6 +2591,24 @@ vm_judges.write_outputs_closed(out_dir)
 PY
   then
     RUN_WHY="rig log guard or result tar verification failed"
+    if [[ -z "$RUN_FAILURE_CLASS" ]]; then
+      RUN_FAILURE_CLASS="$("$PYTHON_BIN" -c 'import json, sys; from pathlib import Path
+fc = ""
+for p in sys.argv[1:]:
+    try:
+        doc = json.loads(Path(p).read_text(encoding="utf-8"))
+        val = str(doc.get("failure_class") or "").strip() if isinstance(doc, dict) else ""
+        if val:
+            fc = val
+            break
+    except Exception:
+        pass
+print(fc)
+' "$OUT_DIR/vm_receipt.json" "$OUT_DIR/status.json" </dev/null 2>/dev/null || true)"
+      if [[ -z "$RUN_FAILURE_CLASS" ]]; then
+        RUN_FAILURE_CLASS="RIG_OUTPUT_VERIFY_FAILED"
+      fi
+    fi
     exit 2
   fi
 }
@@ -3859,6 +3893,7 @@ payload["kit_launch_judges_sh_sha256"] = os.environ.get("RDLAB_OUTCOME_KIT_LAUNC
 payload["kit_vm_script_check"] = None
 _kit_status_p = out_path.parent / "status.json"
 _kit_status_failure_class = ""
+_vm_receipt_failure_class = ""
 if _kit_status_p.is_file():
     try:
         _kit_status_doc = json.loads(_kit_status_p.read_text(encoding="utf-8"))
@@ -3866,6 +3901,14 @@ if _kit_status_p.is_file():
             if _kit_status_doc.get("kit_vm_script_check") in ("passed", "refused", "not_sent"):
                 payload["kit_vm_script_check"] = _kit_status_doc["kit_vm_script_check"]
             _kit_status_failure_class = str(_kit_status_doc.get("failure_class") or "").strip()
+    except Exception:
+        pass
+_vm_receipt_p = out_path.parent / "vm_receipt.json"
+if _vm_receipt_p.is_file():
+    try:
+        _vm_receipt_doc = json.loads(_vm_receipt_p.read_text(encoding="utf-8"))
+        if isinstance(_vm_receipt_doc, dict):
+            _vm_receipt_failure_class = str(_vm_receipt_doc.get("failure_class") or "").strip()
     except Exception:
         pass
 jdone_dir = out_path.parent / "judge_done"
@@ -3926,8 +3969,8 @@ if until_step_val:
     if outcome == "ok":
         payload["stopped_after"] = until_step_val
 failure_class_val = os.environ.get("RDLAB_FAILURE_CLASS", "").strip()
-if not failure_class_val and _kit_status_failure_class == "KIT_VM_SCRIPT_MISMATCH":
-    failure_class_val = "KIT_VM_SCRIPT_MISMATCH"
+if not failure_class_val and outcome != "ok":
+    failure_class_val = _kit_status_failure_class or _vm_receipt_failure_class
 if failure_class_val:
     payload["failure_class"] = failure_class_val
 live_usage_rate_raw = os.environ.get("RDLAB_LIVE_USAGE_RATE", "").strip()
