@@ -5904,14 +5904,41 @@ def test_engine_core_unchained_failure_reports_jit_build_entered(
     try:
         import multiprocessing.process as _mp_proc
 
-        class _FakeProc(_mp_proc.BaseProcess):
-            def run(self) -> None:
-                raise RuntimeError("MissingJITCacheError in BaseProcess")
+        def _raise_bp() -> None:
+            raise RuntimeError("MissingJITCacheError in BaseProcess")
 
+        p_fake = _mp_proc.BaseProcess(target=_raise_bp)
         with pytest.raises(RuntimeError, match="MissingJITCacheError"):
-            _mp_proc.BaseProcess.run(_FakeProc())
+            p_fake.run()
     finally:
         g_bp.uninstall()
+
+    # Empty fallback engine_stop_path unlinks cleanly on uninstall, and verify_no_build_entered raises non-JIT stop without chain_from
+    monkeypatch.delenv("RDLAB_JUDGE_ENGINE_STOP_FILE", raising=False)
+    monkeypatch.delenv("RDLAB_JIT_SHIM_MARKER_FILE", raising=False)
+    monkeypatch.delenv("RDLAB_WORK_DIR", raising=False)
+    g_empty = bakeoff_judge.FlashInferBuildShimGuard(default_cuda_home=fake_cuda)
+    g_empty.install()
+    assert g_empty.engine_stop_path is not None
+    g_empty.engine_stop_path.write_text("", encoding="utf-8")
+    g_empty.uninstall()
+
+    g_other = bakeoff_judge.FlashInferBuildShimGuard(default_cuda_home=fake_cuda)
+    g_other.install()
+    try:
+        assert g_other.engine_stop_path is not None
+        g_other.engine_stop_path.write_text(
+            json.dumps({"code": "JUDGE_PREBUILT_KERNELS_MISSING", "source": "core", "detail": "missing"}) + "\n",
+            encoding="utf-8",
+        )
+        t_other = bakeoff_judge.VllmJudgeTransport(receipts_dir=env["receipts_dir"], hf_home=env["hf_home"], device="cuda")
+        t_other._build_shim_guard = g_other
+        with pytest.raises(RdlabError) as exc_unchained_other:
+            t_other.verify_no_build_entered(workspace_dirs=[])
+        assert exc_unchained_other.value.code == "JUDGE_PREBUILT_KERNELS_MISSING"
+        assert exc_unchained_other.value.__cause__ is None
+    finally:
+        g_other.uninstall()
 
 
 @pytest.mark.parametrize(
