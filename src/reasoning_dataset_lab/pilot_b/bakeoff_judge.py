@@ -5178,7 +5178,9 @@ def _run_bakeoff_judge_impl(
     if transport is not None and eff_progress_file is not None:
         setattr(transport, "_progress_file", eff_progress_file)
     if transport is not None and spec.judge_id == QWEN36_JUDGE_ID:
-        setattr(transport, "_jit_shim_marker_dir", resolved_out)
+        work_dir_raw = os.environ.get("RDLAB_WORK_DIR", "").strip()
+        if work_dir_raw:
+            setattr(transport, "_jit_shim_marker_dir", Path(work_dir_raw).resolve() / "jit_shim")
     ensure_loaded_fn = getattr(transport, "_ensure_loaded", None)
     verify_no_build_fn = getattr(transport, "verify_no_build_entered", None)
     close_guard_fn = getattr(transport, "close_build_guard", None)
@@ -10356,10 +10358,13 @@ def _parse_jit_budget_override(raw: str, *, min_value: int, var_name: str) -> in
 
 
 QWEN36_FLASHINFER_CUDA_ARCH_LIST: str = "12.0f"
+QWEN36_FLASHINFER_DISABLE_JIT: str = "1"
 EXPECTED_FUSED_MOE_120_AOT_SO_SHA256: str = "92d9b4efd68a27a7085970ff7f62d597fac4d588fe1f0bdf98e91336ce1dd45b"
 JUDGE_PREBUILT_KERNELS_MISSING: str = "JUDGE_PREBUILT_KERNELS_MISSING"
 JUDGE_JIT_BUILD_ENTERED: str = "JUDGE_JIT_BUILD_ENTERED"
 JUDGE_GPU_COMPUTE_CAP_MISMATCH: str = "JUDGE_GPU_COMPUTE_CAP_MISMATCH"
+JUDGE_CUDA_HOME_MISSING: str = "JUDGE_CUDA_HOME_MISSING"
+DEFAULT_UNIX_CUDA_HOME: Path = Path("/usr/local/cuda")
 QWEN36_JIT_SHIM_MARKER_ENV_VAR: str = "RDLAB_JIT_SHIM_MARKER_FILE"
 JUDGE_JIT_BUILD_ENTERED_MARKER_LINE: str = "JUDGE_JIT_BUILD_ENTERED: runtime compilation forbidden on judge pod"
 _LIBCUDART_SO_NAME_RE: re.Pattern[str] = re.compile(r"^libcudart\.so(?:\.[0-9]+)*$")
@@ -10375,6 +10380,13 @@ def _resolve_logical_cuda_device_index(device: str) -> int:
     return 0
 
 
+def _resolve_cuda_visible_devices() -> list[str]:
+    cvd = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip()
+    if not cvd:
+        return []
+    return [tok.strip() for tok in cvd.split(",") if tok.strip()]
+
+
 def _nvml_capability_via_pynvml(logical_index: int) -> tuple[int, int, str] | None:
     try:
         import pynvml
@@ -10382,18 +10394,24 @@ def _nvml_capability_via_pynvml(logical_index: int) -> tuple[int, int, str] | No
         return None
     pynvml.nvmlInit()
     try:
-        cvd = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip()
-        handle = None
-        if cvd:
-            entries = [tok.strip() for tok in cvd.split(",") if tok.strip()]
-            if 0 <= logical_index < len(entries):
-                sel = entries[logical_index]
+        entries = _resolve_cuda_visible_devices()
+        if entries:
+            if not (0 <= logical_index < len(entries)):
+                return None
+            caps: list[tuple[int, int]] = []
+            for sel in entries:
                 if re.fullmatch(r"[0-9]+", sel):
                     handle = pynvml.nvmlDeviceGetHandleByIndex(int(sel))
                 else:
                     handle = pynvml.nvmlDeviceGetHandleByUUID(sel)
-        if handle is None:
-            handle = pynvml.nvmlDeviceGetHandleByIndex(int(logical_index))
+                major, minor = pynvml.nvmlDeviceGetCudaComputeCapability(handle)
+                caps.append((int(major), int(minor)))
+            for major, minor in caps:
+                if major != 12:
+                    return major, minor, "pynvml"
+            target_major, target_minor = caps[logical_index]
+            return target_major, target_minor, "pynvml"
+        handle = pynvml.nvmlDeviceGetHandleByIndex(int(logical_index))
         major, minor = pynvml.nvmlDeviceGetCudaComputeCapability(handle)
         return int(major), int(minor), "pynvml"
     finally:
@@ -10403,10 +10421,34 @@ def _nvml_capability_via_pynvml(logical_index: int) -> tuple[int, int, str] | No
             pass
 
 
+def _parse_nvidia_smi_rows(stdout_text: str) -> list[tuple[int, str, int, int]] | None:
+    parsed_rows: list[tuple[int, str, int, int]] = []
+    raw_lines = [ln.strip() for ln in (stdout_text or "").splitlines() if ln.strip()]
+    if not raw_lines:
+        return None
+    for pos, ln in enumerate(raw_lines):
+        if "," in ln:
+            parts = [p.strip() for p in ln.split(",")]
+            if len(parts) < 3 or not re.fullmatch(r"[0-9]+", parts[0]):
+                return None
+            gpu_idx = int(parts[0])
+            gpu_uuid = parts[1]
+            cap_str = parts[2]
+        else:
+            gpu_idx = pos
+            gpu_uuid = ""
+            cap_str = ln
+        match = _COMPUTE_CAP_RE.match(cap_str)
+        if not match:
+            return None
+        parsed_rows.append((gpu_idx, gpu_uuid, int(match.group(1)), int(match.group(2))))
+    return parsed_rows
+
+
 def _nvml_capability_via_nvidia_smi(logical_index: int) -> tuple[int, int, str] | None:
     try:
         res = subprocess.run(
-            ["nvidia-smi", "--query-gpu=compute_cap", "--format=csv,noheader,nounits"],
+            ["nvidia-smi", "--query-gpu=index,uuid,compute_cap", "--format=csv,noheader,nounits"],
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
@@ -10417,18 +10459,45 @@ def _nvml_capability_via_nvidia_smi(logical_index: int) -> tuple[int, int, str] 
         return None
     if int(getattr(res, "returncode", 1)) != 0:
         return None
-    rows = [ln.strip() for ln in (getattr(res, "stdout", "") or "").splitlines() if ln.strip()]
-    if not rows:
+    parsed_rows = _parse_nvidia_smi_rows(getattr(res, "stdout", "") or "")
+    if not parsed_rows:
         return None
-    target_idx = logical_index if 0 <= logical_index < len(rows) else 0
-    match = _COMPUTE_CAP_RE.match(rows[target_idx])
-    if not match:
+    entries = _resolve_cuda_visible_devices()
+    if entries:
+        if not (0 <= logical_index < len(entries)):
+            return None
+        visible_caps: list[tuple[int, int]] = []
+        for sel in entries:
+            matched: tuple[int, str, int, int] | None = None
+            if re.fullmatch(r"[0-9]+", sel):
+                want_idx = int(sel)
+                matched = next((row for row in parsed_rows if row[0] == want_idx), None)
+            else:
+                sel_low = sel.lower()
+                matched = next(
+                    (
+                        row
+                        for row in parsed_rows
+                        if row[1] and (row[1].lower() == sel_low or row[1].lower().startswith(sel_low))
+                    ),
+                    None,
+                )
+            if matched is None:
+                return None
+            visible_caps.append((matched[2], matched[3]))
+        for major, minor in visible_caps:
+            if major != 12:
+                return major, minor, "nvidia-smi"
+        target_major, target_minor = visible_caps[logical_index]
+        return target_major, target_minor, "nvidia-smi"
+    if not (0 <= logical_index < len(parsed_rows)):
         return None
-    return int(match.group(1)), int(match.group(2)), "nvidia-smi"
+    _idx, _uuid, major, minor = parsed_rows[logical_index]
+    return major, minor, "nvidia-smi"
 
 
 def verify_qwen36_sm12x_compute_capability(*, device: str = "cuda:0") -> dict[str, Any]:
-    """Query GPU SM compute capability via NVML (`pynvml` or `nvidia-smi`) without initializing CUDA; require 12.x."""
+    """Query GPU SM compute capability via NVML (`pynvml` or `nvidia-smi` filtered to `CUDA_VISIBLE_DEVICES`) without initializing CUDA; require 12.x."""
     logical_idx = _resolve_logical_cuda_device_index(device)
     parsed: tuple[int, int, str] | None = None
     nvml_err: str | None = None
@@ -10461,9 +10530,10 @@ def verify_qwen36_sm12x_compute_capability(*, device: str = "cuda:0") -> dict[st
 
 
 def prepare_qwen36_no_compile_process_env(*, device: str = "cuda:0") -> dict[str, Any]:
-    """Verify SM 12.x via NVML without initializing CUDA, then pin `FLASHINFER_CUDA_ARCH_LIST=12.0f` before any flashinfer/vLLM import."""
+    """Verify SM 12.x via NVML without initializing CUDA, then pin `FLASHINFER_CUDA_ARCH_LIST=12.0f` and `FLASHINFER_DISABLE_JIT=1` before any flashinfer/vLLM import."""
     cap_info = verify_qwen36_sm12x_compute_capability(device=device)
     os.environ["FLASHINFER_CUDA_ARCH_LIST"] = QWEN36_FLASHINFER_CUDA_ARCH_LIST
+    os.environ["FLASHINFER_DISABLE_JIT"] = QWEN36_FLASHINFER_DISABLE_JIT
     return cap_info
 
 
@@ -10645,8 +10715,51 @@ def scan_flashinfer_workspace_build_entered(
     }
 
 
+def resolve_cuda_home_for_shim(
+    env: Mapping[str, str] | None = None,
+    *,
+    default_cuda_home: Path = DEFAULT_UNIX_CUDA_HOME,
+) -> Path:
+    """Resolve a real CUDA toolkit root from `CUDA_HOME`/`CUDA_PATH` or `/usr/local/cuda` when present."""
+    src_env = os.environ if env is None else env
+    raw_cuda = (src_env.get("CUDA_HOME") or src_env.get("CUDA_PATH") or "").strip()
+    if raw_cuda:
+        cuda_src = Path(raw_cuda)
+        source_label = f"CUDA_HOME/CUDA_PATH ({cuda_src})"
+    elif Path(default_cuda_home).exists():
+        cuda_src = Path(default_cuda_home)
+        source_label = f"fallback {default_cuda_home}"
+    else:
+        raise refused_error(
+            JUDGE_CUDA_HOME_MISSING,
+            f"Neither CUDA_HOME nor CUDA_PATH is set and fallback {default_cuda_home} does not exist.",
+            "Install CUDA toolkit or set CUDA_HOME/CUDA_PATH to a directory containing include/ before loading qwen3.6-35b-a3b.",
+        )
+    if not cuda_src.is_dir() or not (cuda_src / "include").is_dir():
+        raise refused_error(
+            JUDGE_CUDA_HOME_MISSING,
+            f"Resolved CUDA toolkit directory is missing headers (include/): {source_label}.",
+            "Set CUDA_HOME/CUDA_PATH to a valid CUDA toolkit root with an include/ directory.",
+        )
+    return cuda_src.resolve()
+
+
+def resolve_fallback_jit_shim_marker_path(*, marker_dir: Path | None = None) -> Path:
+    """Return a shim marker path under `marker_dir`, `RDLAB_WORK_DIR`, or system temp dir (never `output_dir`/`run_dir`)."""
+    if marker_dir is not None:
+        base_dir = Path(marker_dir).resolve()
+    else:
+        work_raw = os.environ.get("RDLAB_WORK_DIR", "").strip()
+        if work_raw:
+            base_dir = Path(work_raw).resolve() / "jit_shim"
+        else:
+            base_dir = Path(tempfile.gettempdir()).resolve() / "rdlab-jit-shim-markers"
+    base_dir.mkdir(parents=True, exist_ok=True)
+    return (base_dir / f"jit_shim_marker_{os.getpid()}_{time.monotonic_ns()}.log").resolve()
+
+
 class FlashInferBuildShimGuard:
-    """Stages refusing `ninja`/`nvcc` shims in `PATH`, `NINJA`, `FLASHINFER_NVCC`, `CUDACXX`, `CUDA_HOME`, and `CUDA_PATH` so spawned EngineCore processes inherit them."""
+    """Stages refusing `ninja`/`nvcc` shims in `PATH`, `NINJA`, `FLASHINFER_NVCC`, `CUDACXX`, `CUDA_HOME`, `CUDA_PATH`, and `FLASHINFER_DISABLE_JIT`."""
 
     _ENV_KEYS: tuple[str, ...] = (
         "PATH",
@@ -10655,14 +10768,22 @@ class FlashInferBuildShimGuard:
         "CUDACXX",
         "CUDA_HOME",
         "CUDA_PATH",
+        "FLASHINFER_DISABLE_JIT",
         QWEN36_JIT_SHIM_MARKER_ENV_VAR,
     )
 
-    def __init__(self, *, marker_dir: Path | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        marker_dir: Path | None = None,
+        default_cuda_home: Path = DEFAULT_UNIX_CUDA_HOME,
+    ) -> None:
         self._marker_dir: Path | None = Path(marker_dir) if marker_dir is not None else None
+        self._default_cuda_home: Path = Path(default_cuda_home)
         self._temp_dir: tempfile.TemporaryDirectory[str] | None = None
         self._installed: bool = False
         self._saved_env: dict[str, str | None] = {}
+        self._owns_fallback_marker: bool = False
         self.shim_root: Path | None = None
         self.shim_bin_dir: Path | None = None
         self.marker_path: Path | None = None
@@ -10680,6 +10801,7 @@ class FlashInferBuildShimGuard:
     def install(self) -> None:
         if self._installed:
             return
+        cuda_src = resolve_cuda_home_for_shim(default_cuda_home=self._default_cuda_home)
         self._temp_dir = tempfile.TemporaryDirectory(prefix="rdlab-jit-shim-")
         root = Path(self._temp_dir.name).resolve()
         bin_dir = root / "bin"
@@ -10687,11 +10809,10 @@ class FlashInferBuildShimGuard:
         existing_marker = os.environ.get(QWEN36_JIT_SHIM_MARKER_ENV_VAR, "").strip()
         if existing_marker:
             marker_p = Path(existing_marker).resolve()
-        elif self._marker_dir is not None:
-            self._marker_dir.mkdir(parents=True, exist_ok=True)
-            marker_p = (self._marker_dir / "jit_shim_marker.log").resolve()
+            self._owns_fallback_marker = False
         else:
-            marker_p = (root / "jit_shim_marker.log").resolve()
+            marker_p = resolve_fallback_jit_shim_marker_path(marker_dir=self._marker_dir)
+            self._owns_fallback_marker = True
         marker_p.parent.mkdir(parents=True, exist_ok=True)
 
         ninja_sh = bin_dir / "ninja"
@@ -10726,17 +10847,13 @@ class FlashInferBuildShimGuard:
             ),
         )
 
-        existing_cuda = os.environ.get("CUDA_HOME") or os.environ.get("CUDA_PATH") or ""
-        if existing_cuda:
-            cuda_src = Path(existing_cuda)
-            for sub in ("include", "lib64"):
-                sub_src = cuda_src / sub
-                sub_dst = root / sub
-                if sub_src.exists() and not sub_dst.exists():
-                    try:
-                        os.symlink(str(sub_src), str(sub_dst))
-                    except OSError:
-                        pass
+        for sub in ("include", "lib64", "lib"):
+            sub_src = cuda_src / sub
+            sub_dst = root / sub
+            if sub == "lib" and (root / "lib64").exists():
+                continue
+            if sub_src.exists() and not sub_dst.exists():
+                os.symlink(str(sub_src), str(sub_dst))
 
         self._saved_env = {k: os.environ.get(k) for k in self._ENV_KEYS}
         old_path = os.environ.get("PATH", "")
@@ -10749,6 +10866,7 @@ class FlashInferBuildShimGuard:
         os.environ["CUDACXX"] = nvcc_bin
         os.environ["CUDA_HOME"] = str(root)
         os.environ["CUDA_PATH"] = str(root)
+        os.environ["FLASHINFER_DISABLE_JIT"] = QWEN36_FLASHINFER_DISABLE_JIT
         os.environ[QWEN36_JIT_SHIM_MARKER_ENV_VAR] = str(marker_p)
 
         try:
@@ -10780,6 +10898,10 @@ class FlashInferBuildShimGuard:
         if self._temp_dir is not None:
             self._temp_dir.cleanup()
             self._temp_dir = None
+        if self._owns_fallback_marker and self.marker_path is not None and self.marker_path.is_file():
+            if self.marker_path.stat().st_size == 0:
+                self.marker_path.unlink()
+        self._owns_fallback_marker = False
         self.shim_root = None
         self.shim_bin_dir = None
         self._installed = False
@@ -11094,6 +11216,19 @@ def unavailable_qwen36_resolved_engine_config() -> dict[str, str]:
     return {field: "unavailable" for field, _ in QWEN36_RESOLVED_ENGINE_CONFIG_PATHS}
 
 
+def _find_missing_jit_cache_error(exc: BaseException | None) -> BaseException | None:
+    """Return the first exception in the cause/context chain matching FlashInfer's `MissingJITCacheError`."""
+    cur: BaseException | None = exc
+    seen: set[int] = set()
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        msg = str(cur)
+        if type(cur).__name__ == "MissingJITCacheError" or "MissingJITCacheError" in msg or "FLASHINFER_DISABLE_JIT" in msg:
+            return cur
+        cur = cur.__cause__ if cur.__cause__ is not None else cur.__context__
+    return None
+
+
 class VllmJudgeTransport:
     """Offline, in-process, batch-1 vLLM transport for `Qwen/Qwen3.6-35B-A3B` (`venv-vllm`)."""
 
@@ -11143,7 +11278,7 @@ class VllmJudgeTransport:
         workspace_dirs: Sequence[Path | str | None] | None = None,
         chain_from: BaseException | None = None,
     ) -> dict[str, Any]:
-        """Verify neither `run_ninja`, the `ninja`/`nvcc` shims, nor the FlashInfer workspace indicates a JIT build was entered."""
+        """Verify neither `run_ninja`, `FLASHINFER_DISABLE_JIT`, the `ninja`/`nvcc` shims, nor the FlashInfer workspace indicates a JIT build was entered."""
         guard_called = bool(self._run_ninja_guard is not None and self._run_ninja_guard.run_ninja_called)
         marker_p = self._build_shim_guard.marker_path if self._build_shim_guard is not None else None
         scan = scan_flashinfer_workspace_build_entered(
@@ -11152,6 +11287,10 @@ class VllmJudgeTransport:
             run_ninja_called=bool(guard_called or self._build_entered),
             shim_marker_path=marker_p,
         )
+        missing_jit_exc = _find_missing_jit_cache_error(chain_from)
+        scan["disable_jit_triggered"] = bool(missing_jit_exc is not None)
+        if missing_jit_exc is not None:
+            scan["build_entered"] = True
         self._build_scan_report = scan
         self._build_entered = bool(scan["build_entered"])
         if self._prebuilt_jit_cache_info is not None:
@@ -11159,11 +11298,13 @@ class VllmJudgeTransport:
         if self._build_entered:
             if isinstance(chain_from, RdlabError) and chain_from.code == JUDGE_JIT_BUILD_ENTERED:
                 raise chain_from
+            disable_detail = f" ({type(missing_jit_exc).__name__}: {missing_jit_exc})" if missing_jit_exc is not None else ""
             exc = refused_error(
                 JUDGE_JIT_BUILD_ENTERED,
                 (
                     f"FlashInfer JIT build entered unexpectedly during judge run: "
                     f"run_ninja_called={scan['run_ninja_called']}, "
+                    f"disable_jit_triggered={scan['disable_jit_triggered']}{disable_detail}, "
                     f"shim_invocations={scan['shim_invocations'][:3]}, "
                     f"ninja_logs={scan['ninja_logs'][:3]}, "
                     f"cached_ops_dirs={scan['cached_ops_dirs'][:3]}."

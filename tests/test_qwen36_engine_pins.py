@@ -251,6 +251,10 @@ def _install_fake_runtime(
     monkeypatch.setitem(sys.modules, "flashinfer.jit.cpp_ext", fi_cpp_ext)
     monkeypatch.setitem(sys.modules, "flashinfer.jit.core", fi_core)
     monkeypatch.setitem(sys.modules, "flashinfer.jit.fused_moe", fi_fused)
+    fake_cuda = hf_home.parent / ".fake_cuda"
+    (fake_cuda / "include").mkdir(parents=True, exist_ok=True)
+    (fake_cuda / "lib64").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("CUDA_HOME", str(fake_cuda))
     monkeypatch.setenv("HF_HOME", str(hf_home))
     return state
 

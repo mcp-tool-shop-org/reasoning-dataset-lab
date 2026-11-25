@@ -1731,6 +1731,7 @@ build_exec_env_args() {
     case ",${_norm_only_judges}," in
       *,qwen3.6-35b-a3b,*)
         EXEC_ENV_ARGS+=(--env "FLASHINFER_CUDA_ARCH_LIST=12.0f")
+        EXEC_ENV_ARGS+=(--env "FLASHINFER_DISABLE_JIT=1")
         ;;
     esac
   fi

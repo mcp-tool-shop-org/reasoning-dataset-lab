@@ -3878,8 +3878,40 @@ def build_download_child_env(
 
 
 QWEN36_FLASHINFER_CUDA_ARCH_LIST = "12.0f"
+QWEN36_FLASHINFER_DISABLE_JIT = "1"
 QWEN36_JIT_SHIM_MARKER_ENV_VAR = "RDLAB_JIT_SHIM_MARKER_FILE"
+JUDGE_CUDA_HOME_MISSING = "JUDGE_CUDA_HOME_MISSING"
+DEFAULT_UNIX_CUDA_HOME = Path("/usr/local/cuda")
 JUDGE_JIT_BUILD_ENTERED_MARKER_LINE = "JUDGE_JIT_BUILD_ENTERED: runtime compilation forbidden on judge pod"
+
+
+def resolve_cuda_home_for_shim(
+    env: Mapping[str, str] | None = None,
+    *,
+    default_cuda_home: Path = DEFAULT_UNIX_CUDA_HOME,
+) -> Path:
+    """Resolve a real CUDA toolkit root from `CUDA_HOME`/`CUDA_PATH` or `/usr/local/cuda` when present."""
+    src_env = os.environ if env is None else env
+    raw_cuda = (src_env.get("CUDA_HOME") or src_env.get("CUDA_PATH") or "").strip()
+    if raw_cuda:
+        cuda_src = Path(raw_cuda)
+        source_label = f"CUDA_HOME/CUDA_PATH ({cuda_src})"
+    elif Path(default_cuda_home).exists():
+        cuda_src = Path(default_cuda_home)
+        source_label = f"fallback {default_cuda_home}"
+    else:
+        raise RefusalError(
+            JUDGE_CUDA_HOME_MISSING,
+            f"Neither CUDA_HOME nor CUDA_PATH is set and fallback {default_cuda_home} does not exist.",
+            hint="Install CUDA toolkit or set CUDA_HOME/CUDA_PATH to a directory containing include/ before launching qwen3.6-35b-a3b.",
+        )
+    if not cuda_src.is_dir() or not (cuda_src / "include").is_dir():
+        raise RefusalError(
+            JUDGE_CUDA_HOME_MISSING,
+            f"Resolved CUDA toolkit directory is missing headers (include/): {source_label}.",
+            hint="Set CUDA_HOME/CUDA_PATH to a valid CUDA toolkit root with an include/ directory.",
+        )
+    return cuda_src.resolve()
 
 
 def _ensure_executable_shim_file(path: Path, body: str) -> None:
@@ -3894,8 +3926,11 @@ def stage_qwen36_no_compile_shim(
     shim_root: Path,
     marker_file: Path,
     child_env: MutableMapping[str, str],
+    *,
+    default_cuda_home: Path = DEFAULT_UNIX_CUDA_HOME,
 ) -> dict[str, str]:
     """Stage refusing `ninja` and `nvcc` shims first on `PATH` and compiler env vars for every spawned child."""
+    cuda_src = resolve_cuda_home_for_shim(child_env, default_cuda_home=default_cuda_home)
     shim_root_resolved = Path(shim_root).resolve()
     bin_dir = shim_root_resolved / "bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
@@ -3936,17 +3971,16 @@ def stage_qwen36_no_compile_shim(
         ),
     )
 
-    existing_cuda_home = child_env.get("CUDA_HOME") or child_env.get("CUDA_PATH") or ""
-    if existing_cuda_home:
-        cuda_src = Path(existing_cuda_home)
-        for sub in ("include", "lib64"):
-            sub_src = cuda_src / sub
-            sub_dst = shim_root_resolved / sub
-            if sub_src.exists() and not sub_dst.exists():
-                try:
-                    os.symlink(str(sub_src), str(sub_dst))
-                except OSError:
-                    pass
+    for sub in ("include", "lib64", "lib"):
+        sub_src = cuda_src / sub
+        sub_dst = shim_root_resolved / sub
+        if sub == "lib" and (shim_root_resolved / "lib64").exists():
+            continue
+        if sub_src.exists() and not sub_dst.exists():
+            try:
+                os.symlink(str(sub_src), str(sub_dst))
+            except OSError:
+                pass
 
     old_path = child_env.get("PATH", "")
     path_parts = [p for p in old_path.split(os.pathsep) if p and p != str(bin_dir)]
@@ -3959,12 +3993,14 @@ def stage_qwen36_no_compile_shim(
     child_env["CUDA_HOME"] = str(shim_root_resolved)
     child_env["CUDA_PATH"] = str(shim_root_resolved)
     child_env[QWEN36_JIT_SHIM_MARKER_ENV_VAR] = str(marker_resolved)
+    child_env["FLASHINFER_DISABLE_JIT"] = QWEN36_FLASHINFER_DISABLE_JIT
     return {
         "shim_root": str(shim_root_resolved),
         "bin_dir": str(bin_dir),
         "ninja_shim": ninja_bin,
         "nvcc_shim": nvcc_bin,
         "marker_file": str(marker_resolved),
+        "cuda_src": str(cuda_src),
     }
 
 
@@ -3978,6 +4014,7 @@ def build_judge_child_env(
     venv_name: str | None = None,
     jit_shim_dir: Path | None = None,
     jit_shim_marker_file: Path | None = None,
+    default_cuda_home: Path = DEFAULT_UNIX_CUDA_HOME,
 ) -> dict[str, str]:
     """Build the judge child subprocess environment, dropping `HF_TOKEN*` and `HUGGING_FACE_HUB_TOKEN` and setting `HF_HUB_OFFLINE=1`."""
     source_env = os.environ if base_env is None else base_env
@@ -4010,8 +4047,14 @@ def build_judge_child_env(
     _prepend_pinned_uv_to_path(child_env)
     if judge_id == QWEN36_JUDGE_ID or venv_name == VLLM_VENV_NAME:
         child_env["FLASHINFER_CUDA_ARCH_LIST"] = QWEN36_FLASHINFER_CUDA_ARCH_LIST
+        child_env["FLASHINFER_DISABLE_JIT"] = QWEN36_FLASHINFER_DISABLE_JIT
         if jit_shim_dir is not None and jit_shim_marker_file is not None:
-            stage_qwen36_no_compile_shim(jit_shim_dir, jit_shim_marker_file, child_env)
+            stage_qwen36_no_compile_shim(
+                jit_shim_dir,
+                jit_shim_marker_file,
+                child_env,
+                default_cuda_home=default_cuda_home,
+            )
     return child_env
 
 
@@ -9172,14 +9215,19 @@ def _run_judges_pipeline_body(
         if eff_synthetic_items:
             child_cmd.append("--synthetic-items")
 
+        stage_live_shim = (
+            not dryrun
+            and norm_mode not in STUB_OR_DRYRUN_MODES
+            and not real_load_on_cpu
+        )
         child_env = build_judge_child_env(
             hf_home,
             eff_repo_dir,
             progress_file=child_progress_file,
             judge_id=judge_id,
             venv_name=venv_name,
-            jit_shim_dir=(eff_work_dir / "jit_shim" / pass_key_j),
-            jit_shim_marker_file=(eff_work_dir / "jit_shim" / f"{pass_key_j}_marker.log"),
+            jit_shim_dir=(eff_work_dir / "jit_shim" / pass_key_j) if stage_live_shim else None,
+            jit_shim_marker_file=(eff_work_dir / "jit_shim" / f"{pass_key_j}_marker.log") if stage_live_shim else None,
         )
         jit_build_log_path: Path | None = None
         if venv_name == "venv-vllm" or judge_id == QWEN36_JUDGE_ID:
