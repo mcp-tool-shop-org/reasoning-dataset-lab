@@ -8663,6 +8663,10 @@ def main_judge_runner(argv: Sequence[str] | None = None) -> int:
             synthetic_items=bool(args.synthetic_items),
         )
         return 0
+    except DeviceRefusalError as exc:
+        cause_suffix = f" (caused by {type(exc.__cause__).__name__}: {exc.__cause__})" if exc.__cause__ is not None else ""
+        sys.stderr.write(f"{exc.code}: {exc.message}{cause_suffix}\n")
+        return int(exc.exit_code or 2)
     except RdlabError as exc:
         sys.stderr.write(f"{exc.code}: {exc.message}\n")
         return int(exc.exit_code or 2)

@@ -37,12 +37,16 @@ from reasoning_dataset_lab.pilot_b.bakeoff_judge import (  # noqa: E402
 from tests.fixtures import fake_colab  # noqa: E402
 from tests.test_colab_judge_launcher import (  # noqa: E402,F401  (autouse fixture keeps env hermetic)
     LAUNCH_JUDGES_SH,
+    REAL_MODE_SHIM_PY,
     _attach_part_files,
     _base_launcher_exports,
+    _e2e_synthetic_time_one_inputs,
     _hermetic_fake_colab_and_uv_env,
     _make_builder_part,
     _make_synthetic_judge_snapshots_and_receipts,
     _make_synthetic_public_items,
+    _pm_real_mode_exports,
+    _pm_run_launcher,
     _project_part_items,
     _to_wsl_path,
     vm_judges,
@@ -5407,6 +5411,116 @@ def test_sm_check_nvidia_smi_honours_cuda_visible_devices(
         ),
     )
     assert bakeoff_judge._nvml_capability_via_pynvml(1) is None
+
+
+def test_fired_qwen36_stops_report_named_failure_class_never_none(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Fired VM/child stops keep a named failure_class across CLI, status.json, outcome.draft.json, and [outcome]."""
+    # 1. End-to-end launcher + real-mode VM shim when CUDA_HOME/CUDA_PATH are unset and /usr/local/cuda is absent
+    receipts_dir, hf_home, items, q36_exports = _e2e_synthetic_time_one_inputs(
+        tmp_path, item_ids=["synth-001", "synth-002"]
+    )
+    env_paths = fake_colab.setup_fake_colab_environment(
+        tmp_path / "e2e_no_cuda_env", uv_python_315_found=True
+    )
+    (env_paths["state_dir"] / "no_fake_cuda_home").write_text("1\n", encoding="utf-8")
+    kept = tmp_path / "e2e_no_cuda_kept"
+    out_dir = tmp_path / "e2e_no_cuda_out"
+    exports = (
+        "unset CUDA_HOME CUDA_PATH; "
+        + _pm_real_mode_exports(
+            env_paths,
+            open_lock=tmp_path / "e2e_no_cuda.lock",
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+            items_file=items,
+            part_dir=None,
+        )
+        + f"export FAKE_COLAB_REAL_MODE_SHIM='{_to_wsl_path(REAL_MODE_SHIM_PY)}'; "
+        + f"export FAKE_COLAB_KEEP_UPLOADS_DIR='{_to_wsl_path(kept)}'; "
+        + f"export FAKE_COLAB_VM_HF_SEED='{_to_wsl_path(hf_home)}'; "
+        + f"export FAKE_COLAB_VM_DENY_ROOTS='{_to_wsl_path(tmp_path)}'; "
+        + q36_exports
+    )
+    proc = _pm_run_launcher(
+        exports,
+        f"--time-one --synthetic-items --out-dir '{_to_wsl_path(out_dir)}' --run-id rdlab-d5c-qwen36-g4-time-02",
+        timeout=300,
+    )
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert "failure_class=JUDGE_CUDA_HOME_MISSING" in proc.stderr, proc.stderr
+    assert "failure_class=none" not in proc.stderr, proc.stderr
+    status_doc = json.loads((out_dir / "status.json").read_text(encoding="utf-8"))
+    outcome_doc = json.loads((out_dir / "outcome.draft.json").read_text(encoding="utf-8"))
+    assert status_doc["failure_class"] == "JUDGE_CUDA_HOME_MISSING", status_doc
+    assert outcome_doc.get("failure_class") == "JUDGE_CUDA_HOME_MISSING", outcome_doc
+
+    # 2. bakeoff_judge.main catches DeviceRefusalError (both unchained and chained)
+    monkeypatch.setattr(bakeoff_judge, "normalize_judge_device", lambda dev: dev)
+    monkeypatch.delenv("CUDA_HOME", raising=False)
+    monkeypatch.delenv("CUDA_PATH", raising=False)
+
+    def _raise_unchained(**_kw: Any) -> Any:
+        raise bakeoff_judge.DeviceRefusalError(
+            "JUDGE_CUDA_HOME_MISSING", "missing cuda toolkit", "install cuda", exit_code=2
+        )
+
+    monkeypatch.setattr(bakeoff_judge, "prepare_qwen36_no_compile_process_env", _raise_unchained)
+    part_dir, _ = _make_builder_part(tmp_path / "cli_part")
+    rc_unchained = bakeoff_judge.main(
+        [
+            "--part-dir",
+            str(part_dir),
+            "--output-dir",
+            str(tmp_path / "cli_out_1"),
+            "--judge",
+            QWEN36_ID,
+            "--device",
+            "cuda:0",
+        ]
+    )
+    assert rc_unchained == 2
+    err_unchained = capsys.readouterr().err
+    assert "JUDGE_CUDA_HOME_MISSING: missing cuda toolkit" in err_unchained
+    assert "caused by" not in err_unchained
+
+    def _raise_chained(**_kw: Any) -> Any:
+        try:
+            raise RuntimeError("MissingJITCacheError inner")
+        except RuntimeError as inner:
+            raise bakeoff_judge.DeviceRefusalError(
+                "JUDGE_JIT_BUILD_ENTERED", "jit build entered", "prebuild", exit_code=2
+            ) from inner
+
+    monkeypatch.setattr(bakeoff_judge, "prepare_qwen36_no_compile_process_env", _raise_chained)
+    rc_chained = bakeoff_judge.main(
+        [
+            "--part-dir",
+            str(part_dir),
+            "--output-dir",
+            str(tmp_path / "cli_out_2"),
+            "--judge",
+            QWEN36_ID,
+            "--device",
+            "cuda:0",
+        ]
+    )
+    assert rc_chained == 2
+    err_chained = capsys.readouterr().err
+    assert "JUDGE_JIT_BUILD_ENTERED: jit build entered (caused by RuntimeError: MissingJITCacheError inner)" in err_chained
+
+    # 3. vm_judges.classify_judge_child_stop_code preserves named Qwen3.6 stop codes
+    assert (
+        vm_judges.classify_judge_child_stop_code("unclassified stderr", shim_invocations=["nvcc -V"])
+        == "JUDGE_JIT_BUILD_ENTERED"
+    )
+    for code in vm_judges.QWEN36_NAMED_CHILD_STOP_CODES:
+        assert vm_judges.classify_judge_child_stop_code(f"{code}: blocked\n") == code
+    assert vm_judges.classify_judge_child_stop_code("plain ValueError traceback") is None
+
 
 
 

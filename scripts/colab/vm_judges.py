@@ -3883,26 +3883,49 @@ QWEN36_JIT_SHIM_MARKER_ENV_VAR = "RDLAB_JIT_SHIM_MARKER_FILE"
 JUDGE_CUDA_HOME_MISSING = "JUDGE_CUDA_HOME_MISSING"
 DEFAULT_UNIX_CUDA_HOME = Path("/usr/local/cuda")
 JUDGE_JIT_BUILD_ENTERED_MARKER_LINE = "JUDGE_JIT_BUILD_ENTERED: runtime compilation forbidden on judge pod"
+QWEN36_NAMED_CHILD_STOP_CODES: tuple[str, ...] = (
+    "JUDGE_JIT_BUILD_ENTERED",
+    "JUDGE_PREBUILT_KERNELS_MISSING",
+    "JUDGE_CUDA_HOME_MISSING",
+    "JUDGE_GPU_COMPUTE_CAP_MISMATCH",
+)
+
+
+def classify_judge_child_stop_code(
+    stderr_text: str,
+    stdout_text: str = "",
+    *,
+    shim_invocations: Sequence[str] = (),
+) -> str | None:
+    """Return the named Qwen3.6 stop code when a judge child fails on a guarded stop."""
+    if shim_invocations:
+        return "JUDGE_JIT_BUILD_ENTERED"
+    combined = f"{stderr_text}\n{stdout_text}"
+    for code in QWEN36_NAMED_CHILD_STOP_CODES:
+        if code in combined:
+            return code
+    return None
 
 
 def resolve_cuda_home_for_shim(
     env: Mapping[str, str] | None = None,
     *,
-    default_cuda_home: Path = DEFAULT_UNIX_CUDA_HOME,
+    default_cuda_home: Path | None = None,
 ) -> Path:
     """Resolve a real CUDA toolkit root from `CUDA_HOME`/`CUDA_PATH` or `/usr/local/cuda` when present."""
+    eff_default = DEFAULT_UNIX_CUDA_HOME if default_cuda_home is None else Path(default_cuda_home)
     src_env = os.environ if env is None else env
     raw_cuda = (src_env.get("CUDA_HOME") or src_env.get("CUDA_PATH") or "").strip()
     if raw_cuda:
         cuda_src = Path(raw_cuda)
         source_label = f"CUDA_HOME/CUDA_PATH ({cuda_src})"
-    elif Path(default_cuda_home).exists():
-        cuda_src = Path(default_cuda_home)
-        source_label = f"fallback {default_cuda_home}"
+    elif eff_default.exists():
+        cuda_src = eff_default
+        source_label = f"fallback {eff_default}"
     else:
         raise RefusalError(
             JUDGE_CUDA_HOME_MISSING,
-            f"Neither CUDA_HOME nor CUDA_PATH is set and fallback {default_cuda_home} does not exist.",
+            f"Neither CUDA_HOME nor CUDA_PATH is set and fallback {eff_default} does not exist.",
             hint="Install CUDA toolkit or set CUDA_HOME/CUDA_PATH to a directory containing include/ before launching qwen3.6-35b-a3b.",
         )
     if not cuda_src.is_dir() or not (cuda_src / "include").is_dir():
@@ -3927,7 +3950,7 @@ def stage_qwen36_no_compile_shim(
     marker_file: Path,
     child_env: MutableMapping[str, str],
     *,
-    default_cuda_home: Path = DEFAULT_UNIX_CUDA_HOME,
+    default_cuda_home: Path | None = None,
 ) -> dict[str, str]:
     """Stage refusing `ninja` and `nvcc` shims first on `PATH` and compiler env vars for every spawned child."""
     cuda_src = resolve_cuda_home_for_shim(child_env, default_cuda_home=default_cuda_home)
@@ -4014,7 +4037,7 @@ def build_judge_child_env(
     venv_name: str | None = None,
     jit_shim_dir: Path | None = None,
     jit_shim_marker_file: Path | None = None,
-    default_cuda_home: Path = DEFAULT_UNIX_CUDA_HOME,
+    default_cuda_home: Path | None = None,
 ) -> dict[str, str]:
     """Build the judge child subprocess environment, dropping `HF_TOKEN*` and `HUGGING_FACE_HUB_TOKEN` and setting `HF_HUB_OFFLINE=1`."""
     source_env = os.environ if base_env is None else base_env
@@ -9603,7 +9626,16 @@ def _run_judges_pipeline_body(
                 or raw_rc in (-9, 137)
                 or (oom_kill_delta is not None and oom_kill_delta > 0)
             )
-            failure_class = "JUDGE_CHILD_OOM" if is_oom else "JUDGE_CHILD_FAILED"
+            named_child_stop = (
+                None
+                if is_oom
+                else classify_judge_child_stop_code(
+                    child_res["stderr"] or "",
+                    child_res["stdout"] or "",
+                    shim_invocations=failure_build_extra.get("jit_shim_invocations", ()),
+                )
+            )
+            failure_class = "JUDGE_CHILD_OOM" if is_oom else (named_child_stop or "JUDGE_CHILD_FAILED")
             if is_oom and sig_num is None and raw_rc in (-9, 137):
                 sig_num = 9
 
