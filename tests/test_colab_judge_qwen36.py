@@ -4419,6 +4419,95 @@ def test_weights_sync_non_oserror_verified_files_only_and_child_progress_try_loc
     finally:
         t.close_build_guard()
 
+    # Exercise real verify_all_judge_snapshots_with_files -> verified_files path through download_and_verify_all_judge_weights
+    real_ver_prog = tmp_path / "real_ver_prog.jsonl"
+    monkeypatch.setattr(vm_judges, "download_all_judge_weights", lambda *_a, **_kw: [])
+    monkeypatch.setattr(vm_judges, "DEFAULT_DROP_CACHES_PATH", drop_caches)
+    real_verified = vm_judges.download_and_verify_all_judge_weights(
+        receipts_dir,
+        hf_home,
+        repo_dir=REPO_ROOT,
+        progress_path=real_ver_prog,
+        only_judge_ids=("mu-judge",),
+        cgroup_root=cg_root,
+        proc_cgroup_path=proc_cg,
+    )
+    assert "mu-judge" in real_verified
+
+
+def test_prebuilt_aot_and_guard_edge_branches(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # read_mapped_libcudart_path: missing file, non-matching file, and `(deleted)` suffix cleanup
+    assert bakeoff_judge.read_mapped_libcudart_path(proc_maps_path=tmp_path / "absent.maps") is None
+    empty_maps = tmp_path / "empty.maps"
+    empty_maps.write_text("00400000-00500000 r-xp 00000000 08:01 1\n00500000-00600000 rw-p 00000000 00:00 0 [heap]\n", encoding="utf-8")
+    assert bakeoff_judge.read_mapped_libcudart_path(proc_maps_path=empty_maps) is None
+    del_maps = tmp_path / "deleted.maps"
+    del_maps.write_text("7f0000-7f1000 r-xp 00000000 08:01 9 /opt/cu13/lib/libcudart.so.13 (deleted)\n", encoding="utf-8")
+    assert bakeoff_judge.read_mapped_libcudart_path(proc_maps_path=del_maps) == "/opt/cu13/lib/libcudart.so.13"
+
+    # scan_flashinfer_workspace_build_entered default discovery via FLASHINFER_WORKSPACE_BASE
+    ws_base = tmp_path / "fi_base"
+    (ws_base / ".cache" / "flashinfer" / "cached_ops" / "sample_mod").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("FLASHINFER_WORKSPACE_BASE", str(ws_base))
+    monkeypatch.delitem(sys.modules, "flashinfer.jit.env", raising=False)
+    monkeypatch.delitem(sys.modules, "flashinfer.jit.cpp_ext", raising=False)
+    monkeypatch.delitem(sys.modules, "flashinfer.jit.core", raising=False)
+    assert bakeoff_judge.scan_flashinfer_workspace_build_entered()["build_entered"] is True
+
+    # FlashInferRunNinjaGuard handles missing submodules and idempotent install/uninstall cleanly
+    guard_missing = bakeoff_judge.FlashInferRunNinjaGuard()
+    monkeypatch.setitem(sys.modules, "flashinfer.jit.cpp_ext", None)  # type: ignore[arg-type]
+    monkeypatch.setitem(sys.modules, "flashinfer.jit.core", None)  # type: ignore[arg-type]
+    guard_missing.install()
+    guard_missing.install()
+    guard_missing.uninstall()
+    guard_missing.uninstall()
+
+    # verify_qwen36_prebuilt_kernels_before_llm error branches
+    monkeypatch.setitem(sys.modules, "flashinfer.jit.fused_moe", None)  # type: ignore[arg-type]
+    with pytest.raises(RdlabError) as exc_imp:
+        bakeoff_judge.verify_qwen36_prebuilt_kernels_before_llm()
+    assert exc_imp.value.code == "JUDGE_PREBUILT_KERNELS_MISSING"
+
+    _install_fake_aot_flashinfer(tmp_path / "aot_edges", monkeypatch)
+    fi_fused = sys.modules["flashinfer.jit.fused_moe"]
+    monkeypatch.setattr(fi_fused, "gen_cutlass_fused_moe_sm120_module", None)
+    with pytest.raises(RdlabError):
+        bakeoff_judge.verify_qwen36_prebuilt_kernels_before_llm()
+
+    monkeypatch.setattr(fi_fused, "gen_cutlass_fused_moe_sm120_module", lambda **_kw: (_ for _ in ()).throw(RuntimeError("boom")))
+    with pytest.raises(RdlabError):
+        bakeoff_judge.verify_qwen36_prebuilt_kernels_before_llm()
+
+    monkeypatch.setattr(fi_fused, "gen_cutlass_fused_moe_sm120_module", lambda **_kw: SimpleNamespace(name="fused_moe_120", is_aot=True))
+    with pytest.raises(RdlabError):
+        bakeoff_judge.verify_qwen36_prebuilt_kernels_before_llm()
+
+    missing_so = tmp_path / "missing_fused_moe.so"
+    monkeypatch.setattr(
+        fi_fused,
+        "gen_cutlass_fused_moe_sm120_module",
+        lambda **_kw: SimpleNamespace(name="fused_moe_120", is_aot=True, get_library_path=lambda: missing_so),
+    )
+    with pytest.raises(RdlabError):
+        bakeoff_judge.verify_qwen36_prebuilt_kernels_before_llm()
+
+    # Existing .so + matching sha but incomplete provider metadata -> JUDGE_PREBUILT_KERNELS_MISSING
+    info = _install_fake_aot_flashinfer(tmp_path / "aot_meta", monkeypatch)
+    monkeypatch.setattr(
+        sys.modules["flashinfer.jit.fused_moe"],
+        "gen_cutlass_fused_moe_sm120_module",
+        lambda **_kw: SimpleNamespace(name="fused_moe_120", is_aot=True, get_library_path=lambda: info["fi_so_path"]),
+    )
+    monkeypatch.setattr(sys.modules["flashinfer.jit.env"], "FLASHINFER_AOT_PROVIDERS", ())
+    monkeypatch.setattr(sys.modules["flashinfer.jit.env"], "_get_aot_providers", lambda: ())
+    with pytest.raises(RdlabError):
+        bakeoff_judge.verify_qwen36_prebuilt_kernels_before_llm(expected_so_sha256=info["fi_so_sha256"])
+
+
 
 
 

@@ -1249,6 +1249,67 @@ def test_parse_ninja_log_dedup_key_includes_cmdhash(tmp_path: Path) -> None:
     assert sorted(durations) == [10.0, 10.0, 15.0]
 
 
+def test_jit_rung_validation_and_error_edge_branches(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PATH", f"{os.pathsep}/nonexistent_dir_xyz")
+    assert jit_build_rung._find_executable_on_path("definitely_missing_bin_xyz", os.environ["PATH"]) is None
+    assert jit_build_rung._tail_lines("", 200) == []
+
+    # Missing uv checked before subprocess launch when runner is subprocess.run
+    with pytest.raises(jit_build_rung.JitBuildRungError) as exc_uv_pre:
+        jit_build_rung.ensure_vllm_venv_from_lock(
+            tmp_path / "pre_uv",
+            uv_bin="/nonexistent/uv_pre",
+            runner=subprocess.run,
+        )
+    assert exc_uv_pre.value.code == "UV_NOT_FOUND"
+
+    # FileNotFoundError during `uv pip sync` also raises structured UV_NOT_FOUND
+    def _pip_sync_missing_uv(cmd: list[str], **_kw: Any) -> Any:
+        if len(cmd) >= 2 and cmd[1] == "venv":
+            vdir = Path(cmd[-1])
+            (vdir / "bin").mkdir(parents=True, exist_ok=True)
+            (vdir / "bin" / "python").write_text("", encoding="utf-8")
+            (vdir / "Scripts").mkdir(parents=True, exist_ok=True)
+            (vdir / "Scripts" / "python.exe").write_text("", encoding="utf-8")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        raise FileNotFoundError("uv vanished")
+
+    with pytest.raises(jit_build_rung.JitBuildRungError) as exc_uv_sync:
+        jit_build_rung.ensure_vllm_venv_from_lock(tmp_path / "sync_uv", runner=_pip_sync_missing_uv)
+    assert exc_uv_sync.value.code == "UV_NOT_FOUND"
+
+    # check_cuda_toolkit_version_match failure branches
+    inc_dir = tmp_path / "inc"
+    inc_dir.mkdir(parents=True, exist_ok=True)
+    with pytest.raises(jit_build_rung.JitBuildRungError) as exc_nvcc_miss:
+        jit_build_rung.check_cuda_toolkit_version_match(
+            tmp_path / "no_nvcc",
+            inc_dir,
+            runner=lambda *_a, **_kw: (_ for _ in ()).throw(FileNotFoundError("no nvcc")),
+        )
+    assert exc_nvcc_miss.value.code == "VENV_NVCC_MISSING"
+
+    with pytest.raises(jit_build_rung.JitBuildRungError) as exc_nvcc_rc:
+        jit_build_rung.check_cuda_toolkit_version_match(
+            tmp_path / "bad_nvcc",
+            inc_dir,
+            runner=lambda *_a, **_kw: SimpleNamespace(returncode=2, stdout="", stderr="nvcc error"),
+        )
+    assert exc_nvcc_rc.value.code == "NVCC_VERSION_FAILED"
+
+    with pytest.raises(jit_build_rung.JitBuildRungError) as exc_nvcc_parse:
+        jit_build_rung.parse_nvcc_release_version("not a release string")
+    assert exc_nvcc_parse.value.code == "NVCC_VERSION_PARSE_FAILED"
+
+    with pytest.raises(jit_build_rung.JitBuildRungError) as exc_hdr_miss:
+        jit_build_rung.parse_cudart_header_version(inc_dir)
+    assert exc_hdr_miss.value.code == "CUDART_HEADER_VERSION_MISSING"
+
+
+
 
 
 
