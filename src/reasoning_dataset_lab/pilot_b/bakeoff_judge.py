@@ -5146,6 +5146,8 @@ def _run_bakeoff_judge_impl(
                     shard_spec=eff_shard_spec,
                 )
             else:  # the NLI encoder has its own sequence-classification transport
+                if spec.judge_id == QWEN36_JUDGE_ID and not device.startswith("cpu"):
+                    prepare_qwen36_no_compile_process_env(device=device)
                 transport = real_transport_class_for(spec)(  # NLI encoder, elephant-1 (qev), or transformers
                     receipts_dir=receipts_dir,
                     hf_home=hf_home,
@@ -5175,6 +5177,8 @@ def _run_bakeoff_judge_impl(
                     check_cap_fn(spec, adapter.assemble_prompt(it, order=ord_mode, pass_mode=pass_mode))
     if transport is not None and eff_progress_file is not None:
         setattr(transport, "_progress_file", eff_progress_file)
+    if transport is not None and spec.judge_id == QWEN36_JUDGE_ID:
+        setattr(transport, "_jit_shim_marker_dir", resolved_out)
     ensure_loaded_fn = getattr(transport, "_ensure_loaded", None)
     verify_no_build_fn = getattr(transport, "verify_no_build_entered", None)
     close_guard_fn = getattr(transport, "close_build_guard", None)
@@ -8581,6 +8585,13 @@ def main_judge_runner(argv: Sequence[str] | None = None) -> int:
             if args.active_item_ids
             else None
         )
+        if (
+            args.p0a_stage is None
+            and args.judge == QWEN36_JUDGE_ID
+            and not bool(args.fake_transport)
+            and not normalized_device.startswith("cpu")
+        ):
+            prepare_qwen36_no_compile_process_env(device=normalized_device)
         if args.p0a_stage is not None:
             if args.synthetic_items:
                 raise refused_error(
@@ -10348,7 +10359,112 @@ QWEN36_FLASHINFER_CUDA_ARCH_LIST: str = "12.0f"
 EXPECTED_FUSED_MOE_120_AOT_SO_SHA256: str = "92d9b4efd68a27a7085970ff7f62d597fac4d588fe1f0bdf98e91336ce1dd45b"
 JUDGE_PREBUILT_KERNELS_MISSING: str = "JUDGE_PREBUILT_KERNELS_MISSING"
 JUDGE_JIT_BUILD_ENTERED: str = "JUDGE_JIT_BUILD_ENTERED"
+JUDGE_GPU_COMPUTE_CAP_MISMATCH: str = "JUDGE_GPU_COMPUTE_CAP_MISMATCH"
+QWEN36_JIT_SHIM_MARKER_ENV_VAR: str = "RDLAB_JIT_SHIM_MARKER_FILE"
+JUDGE_JIT_BUILD_ENTERED_MARKER_LINE: str = "JUDGE_JIT_BUILD_ENTERED: runtime compilation forbidden on judge pod"
 _LIBCUDART_SO_NAME_RE: re.Pattern[str] = re.compile(r"^libcudart\.so(?:\.[0-9]+)*$")
+_COMPUTE_CAP_RE: re.Pattern[str] = re.compile(r"^\s*([0-9]+)\.([0-9]+)\s*$")
+
+
+def _resolve_logical_cuda_device_index(device: str) -> int:
+    raw = str(device or "cuda:0").strip().lower()
+    if ":" in raw:
+        _, idx_raw = raw.rsplit(":", 1)
+        if re.fullmatch(r"[0-9]+", idx_raw.strip()):
+            return int(idx_raw.strip())
+    return 0
+
+
+def _nvml_capability_via_pynvml(logical_index: int) -> tuple[int, int, str] | None:
+    try:
+        import pynvml
+    except Exception:
+        return None
+    pynvml.nvmlInit()
+    try:
+        cvd = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip()
+        handle = None
+        if cvd:
+            entries = [tok.strip() for tok in cvd.split(",") if tok.strip()]
+            if 0 <= logical_index < len(entries):
+                sel = entries[logical_index]
+                if re.fullmatch(r"[0-9]+", sel):
+                    handle = pynvml.nvmlDeviceGetHandleByIndex(int(sel))
+                else:
+                    handle = pynvml.nvmlDeviceGetHandleByUUID(sel)
+        if handle is None:
+            handle = pynvml.nvmlDeviceGetHandleByIndex(int(logical_index))
+        major, minor = pynvml.nvmlDeviceGetCudaComputeCapability(handle)
+        return int(major), int(minor), "pynvml"
+    finally:
+        try:
+            pynvml.nvmlShutdown()
+        except Exception:
+            pass
+
+
+def _nvml_capability_via_nvidia_smi(logical_index: int) -> tuple[int, int, str] | None:
+    try:
+        res = subprocess.run(
+            ["nvidia-smi", "--query-gpu=compute_cap", "--format=csv,noheader,nounits"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except OSError:
+        return None
+    if int(getattr(res, "returncode", 1)) != 0:
+        return None
+    rows = [ln.strip() for ln in (getattr(res, "stdout", "") or "").splitlines() if ln.strip()]
+    if not rows:
+        return None
+    target_idx = logical_index if 0 <= logical_index < len(rows) else 0
+    match = _COMPUTE_CAP_RE.match(rows[target_idx])
+    if not match:
+        return None
+    return int(match.group(1)), int(match.group(2)), "nvidia-smi"
+
+
+def verify_qwen36_sm12x_compute_capability(*, device: str = "cuda:0") -> dict[str, Any]:
+    """Query GPU SM compute capability via NVML (`pynvml` or `nvidia-smi`) without initializing CUDA; require 12.x."""
+    logical_idx = _resolve_logical_cuda_device_index(device)
+    parsed: tuple[int, int, str] | None = None
+    nvml_err: str | None = None
+    try:
+        parsed = _nvml_capability_via_pynvml(logical_idx)
+    except Exception as exc:
+        nvml_err = f"{type(exc).__name__}: {exc}"
+    if parsed is None:
+        parsed = _nvml_capability_via_nvidia_smi(logical_idx)
+    if parsed is None:
+        detail = f" ({nvml_err})" if nvml_err else ""
+        raise refused_error(
+            JUDGE_GPU_COMPUTE_CAP_MISMATCH,
+            f"Unable to read GPU SM compute capability via NVML or nvidia-smi{detail} before setting {QWEN36_FLASHINFER_CUDA_ARCH_LIST!r}.",
+            "Ensure NVML / nvidia-smi is available and an SM 12.x GPU is attached before running qwen3.6-35b-a3b.",
+        )
+    major, minor, source = parsed
+    if int(major) != 12:
+        raise refused_error(
+            JUDGE_GPU_COMPUTE_CAP_MISMATCH,
+            f"Qwen3.6 prebuilt sm_120f kernels require SM 12.x GPU capability, got {major}.{minor} via {source}.",
+            "Run qwen3.6-35b-a3b on an SM 12.x GPU matching FLASHINFER_CUDA_ARCH_LIST=12.0f.",
+        )
+    return {
+        "major": int(major),
+        "minor": int(minor),
+        "compute_capability": f"{int(major)}.{int(minor)}",
+        "source": source,
+    }
+
+
+def prepare_qwen36_no_compile_process_env(*, device: str = "cuda:0") -> dict[str, Any]:
+    """Verify SM 12.x via NVML without initializing CUDA, then pin `FLASHINFER_CUDA_ARCH_LIST=12.0f` before any flashinfer/vLLM import."""
+    cap_info = verify_qwen36_sm12x_compute_capability(device=device)
+    os.environ["FLASHINFER_CUDA_ARCH_LIST"] = QWEN36_FLASHINFER_CUDA_ARCH_LIST
+    return cap_info
 
 
 def read_mapped_libcudart_path(proc_maps_path: Path | None = None) -> str | None:
@@ -10373,12 +10489,9 @@ def read_mapped_libcudart_path(proc_maps_path: Path | None = None) -> str | None
     return None
 
 
-def scan_flashinfer_workspace_build_entered(
+def _resolve_flashinfer_workspace_candidates(
     workspace_dirs: Sequence[Path | str | None] | None = None,
-    *,
-    run_ninja_called: bool = False,
-) -> dict[str, Any]:
-    """Detect whether a FlashInfer JIT build was entered (`run_ninja`, `.ninja_log`, or `cached_ops/<module>`), ignoring generated `.cu` files."""
+) -> list[Path]:
     candidates: list[Path] = []
     seen_roots: set[str] = set()
     raw_dirs: list[Path | str | None] = list(workspace_dirs) if workspace_dirs is not None else []
@@ -10404,38 +10517,272 @@ def scan_flashinfer_workspace_build_entered(
         if key not in seen_roots:
             seen_roots.add(key)
             candidates.append(p)
+    return candidates
+
+
+def _is_cached_ops_build_artifact(file_path: Path) -> bool:
+    name = file_path.name
+    return name == "build.ninja" or name.endswith(".o") or name.endswith(".so") or ".so." in name
+
+
+def _iter_cached_ops_roots(root: Path) -> list[Path]:
+    cached_roots: list[Path] = []
+    if root.name == "cached_ops":
+        cached_roots.append(root)
+    for match in sorted(root.rglob("cached_ops")):
+        if match.is_dir() and match not in cached_roots:
+            cached_roots.append(match)
+    return cached_roots
+
+
+def _safe_file_sig(file_path: Path) -> tuple[int, int] | None:
+    try:
+        st = file_path.stat()
+        return (int(st.st_mtime_ns), int(st.st_size))
+    except OSError:
+        return None
+
+
+def _safe_iterdir(dir_path: Path) -> list[Path]:
+    try:
+        return sorted(dir_path.iterdir())
+    except OSError:
+        return []
+
+
+def snapshot_flashinfer_workspaces(
+    workspace_dirs: Sequence[Path | str | None] | None = None,
+) -> dict[str, Any]:
+    """Snapshot `.ninja_log` files and existing build artifacts under `cached_ops/<module>` before `LLM(...)`."""
+    candidates = _resolve_flashinfer_workspace_candidates(workspace_dirs)
+    ninja_logs: dict[str, tuple[int, int]] = {}
+    cached_ops_artifacts: dict[str, tuple[int, int]] = {}
+    for root in candidates:
+        if not root.is_dir():
+            continue
+        for match in sorted(root.rglob(".ninja_log")):
+            sig = _safe_file_sig(match) if match.is_file() else None
+            if sig is not None:
+                ninja_logs[match.as_posix()] = sig
+        for cr in _iter_cached_ops_roots(root):
+            for child in _safe_iterdir(cr):
+                if not child.is_dir() or child.name == "tmp":
+                    continue
+                for fpath in sorted(child.rglob("*")):
+                    if fpath.is_file() and _is_cached_ops_build_artifact(fpath):
+                        sig = _safe_file_sig(fpath)
+                        if sig is not None:
+                            cached_ops_artifacts[fpath.as_posix()] = sig
+    return {
+        "ninja_logs": ninja_logs,
+        "cached_ops_artifacts": cached_ops_artifacts,
+    }
+
+
+def read_jit_shim_marker(marker_path: Path | None = None) -> list[str]:
+    """Read recorded refusing-shim invocation lines from `marker_path` or `RDLAB_JIT_SHIM_MARKER_FILE`."""
+    eff_path = marker_path
+    if eff_path is None:
+        raw_env = os.environ.get(QWEN36_JIT_SHIM_MARKER_ENV_VAR, "").strip()
+        if raw_env:
+            eff_path = Path(raw_env)
+    if eff_path is None or not Path(eff_path).is_file():
+        return []
+    return [ln.strip() for ln in Path(eff_path).read_text(encoding="utf-8", errors="replace").splitlines() if ln.strip()]
+
+
+def scan_flashinfer_workspace_build_entered(
+    workspace_dirs: Sequence[Path | str | None] | None = None,
+    *,
+    baseline: Mapping[str, Any] | None = None,
+    run_ninja_called: bool = False,
+    shim_marker_path: Path | None = None,
+) -> dict[str, Any]:
+    """Detect whether a FlashInfer JIT build entered (`run_ninja`, shim marker, new/updated `.ninja_log`, or `cached_ops/<module>` `build.ninja`/`*.o`/`.so`)."""
+    candidates = _resolve_flashinfer_workspace_candidates(workspace_dirs)
+    base_nlogs = dict((baseline or {}).get("ninja_logs") or {})
+    base_arts = dict((baseline or {}).get("cached_ops_artifacts") or {})
 
     ninja_logs: list[str] = []
     cached_ops_dirs: list[str] = []
+    cached_ops_build_files: list[str] = []
     for root in candidates:
         if not root.is_dir():
             continue
         for match in sorted(root.rglob(".ninja_log")):
             if match.is_file():
-                ninja_logs.append(match.as_posix())
-        cached_roots: list[Path] = []
-        if root.name == "cached_ops":
-            cached_roots.append(root)
-        for match in sorted(root.rglob("cached_ops")):
-            if match.is_dir() and match not in cached_roots:
-                cached_roots.append(match)
-        for cr in cached_roots:
-            try:
-                for child in sorted(cr.iterdir()):
-                    if child.is_dir():
-                        cached_ops_dirs.append(child.as_posix())
-            except OSError:
-                continue
+                key = match.as_posix()
+                sig = _safe_file_sig(match)
+                if key not in base_nlogs or tuple(base_nlogs[key]) != sig:
+                    ninja_logs.append(key)
+        for cr in _iter_cached_ops_roots(root):
+            for child in _safe_iterdir(cr):
+                if not child.is_dir() or child.name == "tmp":
+                    continue
+                new_artifacts: list[str] = []
+                for fpath in sorted(child.rglob("*")):
+                    if fpath.is_file() and _is_cached_ops_build_artifact(fpath):
+                        fkey = fpath.as_posix()
+                        fsig = _safe_file_sig(fpath)
+                        if fkey not in base_arts or tuple(base_arts[fkey]) != fsig:
+                            new_artifacts.append(fkey)
+                if new_artifacts:
+                    cached_ops_dirs.append(child.as_posix())
+                    cached_ops_build_files.extend(new_artifacts)
 
     ninja_logs = sorted(set(ninja_logs))
     cached_ops_dirs = sorted(set(cached_ops_dirs))
-    build_entered = bool(run_ninja_called or ninja_logs or cached_ops_dirs)
+    cached_ops_build_files = sorted(set(cached_ops_build_files))
+    shim_records = read_jit_shim_marker(shim_marker_path)
+    build_entered = bool(run_ninja_called or shim_records or ninja_logs or cached_ops_dirs)
     return {
         "build_entered": build_entered,
         "run_ninja_called": bool(run_ninja_called),
+        "shim_invocations": shim_records,
         "ninja_logs": ninja_logs,
         "cached_ops_dirs": cached_ops_dirs,
+        "cached_ops_build_files": cached_ops_build_files,
     }
+
+
+class FlashInferBuildShimGuard:
+    """Stages refusing `ninja`/`nvcc` shims in `PATH`, `NINJA`, `FLASHINFER_NVCC`, `CUDACXX`, `CUDA_HOME`, and `CUDA_PATH` so spawned EngineCore processes inherit them."""
+
+    _ENV_KEYS: tuple[str, ...] = (
+        "PATH",
+        "NINJA",
+        "FLASHINFER_NVCC",
+        "CUDACXX",
+        "CUDA_HOME",
+        "CUDA_PATH",
+        QWEN36_JIT_SHIM_MARKER_ENV_VAR,
+    )
+
+    def __init__(self, *, marker_dir: Path | None = None) -> None:
+        self._marker_dir: Path | None = Path(marker_dir) if marker_dir is not None else None
+        self._temp_dir: tempfile.TemporaryDirectory[str] | None = None
+        self._installed: bool = False
+        self._saved_env: dict[str, str | None] = {}
+        self.shim_root: Path | None = None
+        self.shim_bin_dir: Path | None = None
+        self.marker_path: Path | None = None
+        self._ninja_pkg: Any = None
+        self._orig_ninja_bin_dir: str | None = None
+
+    @staticmethod
+    def _write_exec(path: Path, body: str) -> None:
+        path.write_text(body, encoding="utf-8", newline="\n")
+        try:
+            path.chmod(0o755)
+        except OSError:
+            pass
+
+    def install(self) -> None:
+        if self._installed:
+            return
+        self._temp_dir = tempfile.TemporaryDirectory(prefix="rdlab-jit-shim-")
+        root = Path(self._temp_dir.name).resolve()
+        bin_dir = root / "bin"
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        existing_marker = os.environ.get(QWEN36_JIT_SHIM_MARKER_ENV_VAR, "").strip()
+        if existing_marker:
+            marker_p = Path(existing_marker).resolve()
+        elif self._marker_dir is not None:
+            self._marker_dir.mkdir(parents=True, exist_ok=True)
+            marker_p = (self._marker_dir / "jit_shim_marker.log").resolve()
+        else:
+            marker_p = (root / "jit_shim_marker.log").resolve()
+        marker_p.parent.mkdir(parents=True, exist_ok=True)
+
+        ninja_sh = bin_dir / "ninja"
+        self._write_exec(
+            ninja_sh,
+            (
+                "#!/bin/sh\n"
+                f'marker="${{{QWEN36_JIT_SHIM_MARKER_ENV_VAR}:-{marker_p.as_posix()}}}"\n'
+                'mkdir -p "$(dirname "$marker")" 2>/dev/null || true\n'
+                'printf \'JUDGE_JIT_BUILD_ENTERED\\tninja\\t%s\\n\' "$*" >> "$marker"\n'
+                f'printf \'%s (tool=ninja args=%s)\\n\' "{JUDGE_JIT_BUILD_ENTERED_MARKER_LINE}" "$*" >&2\n'
+                "exit 97\n"
+            ),
+        )
+        nvcc_sh = bin_dir / "nvcc"
+        self._write_exec(
+            nvcc_sh,
+            (
+                "#!/bin/sh\n"
+                'if [ "$#" -eq 1 ]; then\n'
+                '  case "$1" in\n'
+                "    --version|-V|--list-gpu-arch|--list-gpu-code)\n"
+                "      exit 1\n"
+                "      ;;\n"
+                "  esac\n"
+                "fi\n"
+                f'marker="${{{QWEN36_JIT_SHIM_MARKER_ENV_VAR}:-{marker_p.as_posix()}}}"\n'
+                'mkdir -p "$(dirname "$marker")" 2>/dev/null || true\n'
+                'printf \'JUDGE_JIT_BUILD_ENTERED\\tnvcc\\t%s\\n\' "$*" >> "$marker"\n'
+                f'printf \'%s (tool=nvcc args=%s)\\n\' "{JUDGE_JIT_BUILD_ENTERED_MARKER_LINE}" "$*" >&2\n'
+                "exit 97\n"
+            ),
+        )
+
+        existing_cuda = os.environ.get("CUDA_HOME") or os.environ.get("CUDA_PATH") or ""
+        if existing_cuda:
+            cuda_src = Path(existing_cuda)
+            for sub in ("include", "lib64"):
+                sub_src = cuda_src / sub
+                sub_dst = root / sub
+                if sub_src.exists() and not sub_dst.exists():
+                    try:
+                        os.symlink(str(sub_src), str(sub_dst))
+                    except OSError:
+                        pass
+
+        self._saved_env = {k: os.environ.get(k) for k in self._ENV_KEYS}
+        old_path = os.environ.get("PATH", "")
+        parts = [p for p in old_path.split(os.pathsep) if p and p != str(bin_dir)]
+        os.environ["PATH"] = os.pathsep.join([str(bin_dir), *parts])
+        ninja_bin = str(ninja_sh)
+        nvcc_bin = str(nvcc_sh)
+        os.environ["NINJA"] = ninja_bin
+        os.environ["FLASHINFER_NVCC"] = nvcc_bin
+        os.environ["CUDACXX"] = nvcc_bin
+        os.environ["CUDA_HOME"] = str(root)
+        os.environ["CUDA_PATH"] = str(root)
+        os.environ[QWEN36_JIT_SHIM_MARKER_ENV_VAR] = str(marker_p)
+
+        try:
+            import ninja as ninja_pkg
+
+            self._ninja_pkg = ninja_pkg
+            self._orig_ninja_bin_dir = getattr(ninja_pkg, "BIN_DIR", None)
+            ninja_pkg.BIN_DIR = str(bin_dir)
+        except Exception:
+            self._ninja_pkg = None
+
+        self.shim_root = root
+        self.shim_bin_dir = bin_dir
+        self.marker_path = marker_p
+        self._installed = True
+
+    def uninstall(self) -> None:
+        if not self._installed:
+            return
+        if self._ninja_pkg is not None:
+            self._ninja_pkg.BIN_DIR = self._orig_ninja_bin_dir
+            self._ninja_pkg = None
+        for k, prev in self._saved_env.items():
+            if prev is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = prev
+        self._saved_env = {}
+        if self._temp_dir is not None:
+            self._temp_dir.cleanup()
+            self._temp_dir = None
+        self.shim_root = None
+        self.shim_bin_dir = None
+        self._installed = False
 
 
 class FlashInferRunNinjaGuard:
@@ -10785,39 +11132,56 @@ class VllmJudgeTransport:
         self._build_entered: bool = False
         self._build_scan_report: dict[str, Any] | None = None
         self._run_ninja_guard: FlashInferRunNinjaGuard | None = None
+        self._build_shim_guard: FlashInferBuildShimGuard | None = None
+        self._workspace_baseline: dict[str, Any] | None = None
+        self._compute_cap_info: dict[str, Any] | None = None
+        self._jit_shim_marker_dir: Path | None = None
 
     def verify_no_build_entered(
         self,
         *,
         workspace_dirs: Sequence[Path | str | None] | None = None,
+        chain_from: BaseException | None = None,
     ) -> dict[str, Any]:
-        """Verify neither `run_ninja` nor the FlashInfer workspace indicates a JIT build was entered."""
+        """Verify neither `run_ninja`, the `ninja`/`nvcc` shims, nor the FlashInfer workspace indicates a JIT build was entered."""
         guard_called = bool(self._run_ninja_guard is not None and self._run_ninja_guard.run_ninja_called)
+        marker_p = self._build_shim_guard.marker_path if self._build_shim_guard is not None else None
         scan = scan_flashinfer_workspace_build_entered(
             workspace_dirs=workspace_dirs,
+            baseline=self._workspace_baseline,
             run_ninja_called=bool(guard_called or self._build_entered),
+            shim_marker_path=marker_p,
         )
         self._build_scan_report = scan
         self._build_entered = bool(scan["build_entered"])
         if self._prebuilt_jit_cache_info is not None:
             self._prebuilt_jit_cache_info["build_entered"] = self._build_entered
         if self._build_entered:
-            raise refused_error(
+            if isinstance(chain_from, RdlabError) and chain_from.code == JUDGE_JIT_BUILD_ENTERED:
+                raise chain_from
+            exc = refused_error(
                 JUDGE_JIT_BUILD_ENTERED,
                 (
                     f"FlashInfer JIT build entered unexpectedly during judge run: "
                     f"run_ninja_called={scan['run_ninja_called']}, "
+                    f"shim_invocations={scan['shim_invocations'][:3]}, "
                     f"ninja_logs={scan['ninja_logs'][:3]}, "
                     f"cached_ops_dirs={scan['cached_ops_dirs'][:3]}."
                 ),
                 "Install matching prebuilt flashinfer-jit-cache and flashinfer-jit-cache-sm120f wheels so FlashInfer loads AOT kernels without building.",
             )
+            if chain_from is not None:
+                raise exc from chain_from
+            raise exc
         return scan
 
     def close_build_guard(self) -> None:
         if self._run_ninja_guard is not None:
             self._run_ninja_guard.uninstall()
             self._run_ninja_guard = None
+        if self._build_shim_guard is not None:
+            self._build_shim_guard.uninstall()
+            self._build_shim_guard = None
 
     def verify_ready(self, spec: JudgeSpec, *, allow_remote_code_reviewed: str | None = None) -> str:
         check_remote_code_gate(spec, allow_remote_code_reviewed=allow_remote_code_reviewed)
@@ -10884,6 +11248,8 @@ class VllmJudgeTransport:
         max_model_len = QWEN36_PROMPT_TOKEN_CAP + max_new_tokens
         max_num_batched_tokens = compute_qwen36_max_num_batched_tokens(max_model_len)
         self._ensure_tokenizer_loaded(spec)
+        if not self.device.lower().startswith("cpu"):
+            self._compute_cap_info = prepare_qwen36_no_compile_process_env(device=self.device)
         configured_jit_log = os.environ.get(QWEN36_FLASHINFER_JIT_BUILD_LOG_ENV_VAR, "").strip()
         temp_jit_dir: tempfile.TemporaryDirectory[str] | None = None
         if configured_jit_log:
@@ -10892,16 +11258,29 @@ class VllmJudgeTransport:
             temp_jit_dir = tempfile.TemporaryDirectory(prefix="rdlab-flashinfer-jit-log-")
             eff_jit_log_path = Path(temp_jit_dir.name) / "jit_build.jsonl"
             os.environ[QWEN36_FLASHINFER_JIT_BUILD_LOG_ENV_VAR] = str(eff_jit_log_path)
-        from vllm import LLM
 
-        # Take the cgroup non-reclaimable memory reading right before constructing `LLM(...)`.
+        # Take the cgroup non-reclaimable memory reading and install child-inherited shims before importing flashinfer or vLLM.
         self._jit_build_plan = ensure_qwen36_jit_build_env_before_llm()
-        # Require prebuilt FlashInfer AOT kernels and install lifetime run_ninja guard before `LLM(...)`.
+        if self._build_shim_guard is None:
+            self._build_shim_guard = FlashInferBuildShimGuard(marker_dir=self._jit_shim_marker_dir)
+        self._build_shim_guard.install()
         if self._run_ninja_guard is None:
             self._run_ninja_guard = FlashInferRunNinjaGuard()
         self._run_ninja_guard.install()
-        self._prebuilt_jit_cache_info = verify_qwen36_prebuilt_kernels_before_llm()
+        try:
+            self._prebuilt_jit_cache_info = verify_qwen36_prebuilt_kernels_before_llm()
+        except Exception as llm_exc:
+            try:
+                self.verify_no_build_entered(chain_from=llm_exc)
+            finally:
+                self.close_build_guard()
+            raise
+        if self._compute_cap_info is not None:
+            self._prebuilt_jit_cache_info["compute_capability"] = self._compute_cap_info["compute_capability"]
+            self._prebuilt_jit_cache_info["compute_capability_source"] = self._compute_cap_info["source"]
+        self._workspace_baseline = snapshot_flashinfer_workspaces()
         self._build_entered = False
+        from vllm import LLM
         child_progress_raw = os.environ.get("RDLAB_JUDGE_CHILD_PROGRESS_FILE", "").strip()
         eff_child_progress: Path | None = (
             Path(child_progress_raw) if child_progress_raw else getattr(self, "_progress_file", None)
@@ -10953,8 +11332,11 @@ class VllmJudgeTransport:
                 max_num_batched_tokens=max_num_batched_tokens,
                 enable_prefix_caching=QWEN36_ENABLE_PREFIX_CACHING,
             )
-        except Exception:
-            self.close_build_guard()
+        except Exception as llm_exc:
+            try:
+                self.verify_no_build_entered(chain_from=llm_exc)
+            finally:
+                self.close_build_guard()
             raise
         finally:
             self._llm_init_seconds = round(max(0.0, time.monotonic() - t_llm_init), 6)
@@ -11053,7 +11435,12 @@ class VllmJudgeTransport:
         )
 
         t0 = time.monotonic()
-        outputs = self._llm.generate([rendered_prompt], sampling_params=sampling_params)
+        try:
+            outputs = self._llm.generate([rendered_prompt], sampling_params=sampling_params)
+        except Exception as gen_exc:
+            self.verify_no_build_entered(chain_from=gen_exc)
+            raise
+        self.verify_no_build_entered()
         elapsed = max(0.0001, time.monotonic() - t0)
 
         req_out = outputs[0]

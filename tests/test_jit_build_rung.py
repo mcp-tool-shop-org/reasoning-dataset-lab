@@ -1204,7 +1204,10 @@ def test_rung_refuses_nvcc_cudart_mismatch_keeps_worker_tail_finds_venv_ninja_an
     assert res_tail["worker_stderr_tail"][0] == "ninja-err-40" and res_tail["worker_stderr_tail"][-1] == "ninja-err-239"
     wlog = Path(res_tail["worker_log_path"])
     assert wlog.is_file()
-    assert "ninja-err-239" in wlog.read_text(encoding="utf-8")
+    wlog_txt = wlog.read_text(encoding="utf-8")
+    assert "ninja-err-239" in wlog_txt
+    assert "out-50" in wlog_txt and "out-0\n" not in wlog_txt
+    assert "ninja-err-40" in wlog_txt and "ninja-err-0\n" not in wlog_txt
     rec_disk = json.loads(tail_receipt.read_text(encoding="utf-8"))
     assert rec_disk["worker_stderr_tail"][-1] == "ninja-err-239"
 

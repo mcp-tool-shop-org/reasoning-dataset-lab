@@ -1411,9 +1411,9 @@ def run_jit_build_rung(
                 f"=== WORKER COMMAND ===\n{' '.join(scope_cmd)}\n"
                 f"=== RETURNCODE: {getattr(res, 'returncode', 1)} ===\n"
                 f"=== STDOUT (last {WORKER_OUTPUT_TAIL_LINES} lines; total {len(raw_stdout.splitlines())}) ===\n"
-                f"{raw_stdout}\n"
+                f"{chr(10).join(stdout_tail)}\n"
                 f"=== STDERR (last {WORKER_OUTPUT_TAIL_LINES} lines; total {len(raw_stderr.splitlines())}) ===\n"
-                f"{raw_stderr}\n"
+                f"{chr(10).join(stderr_tail)}\n"
             ),
             encoding="utf-8",
             newline="\n",

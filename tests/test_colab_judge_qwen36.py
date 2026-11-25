@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import multiprocessing
 import os
 import subprocess
 import sys
@@ -53,6 +54,18 @@ QWEN36_REPO = "Qwen/Qwen3.6-35B-A3B"
 QWEN36_REV = "345d467b117d1fd5eda9b879a5988de9ae5f47a7"
 CONTRA = "three_way_contradicted"
 INTERNAL = ("supported", "unsupported", "cannot_tell")
+
+
+def _spawn_engine_core_ninja_worker(tool: str, args: list[str], q: Any) -> None:
+    """Spawned child standing in for vLLM EngineCore invoking `ninja` or `nvcc` from inherited `PATH`."""
+    proc = subprocess.run(
+        [tool, *args],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    q.put((int(proc.returncode), proc.stderr or "", proc.stdout or ""))
 
 
 def _synth_items(n: int = 10) -> list[JudgeInputItem]:
@@ -714,6 +727,14 @@ def _install_fake_aot_flashinfer(
     fi_jit.cpp_ext = fi_cpp_ext  # type: ignore[attr-defined]
     fi_jit.core = fi_core  # type: ignore[attr-defined]
     fi_jit.fused_moe = fi_fused  # type: ignore[attr-defined]
+    fake_pynvml = SimpleNamespace(
+        nvmlInit=lambda: None,
+        nvmlShutdown=lambda: None,
+        nvmlDeviceGetHandleByIndex=lambda _i=0: object(),
+        nvmlDeviceGetHandleByUUID=lambda _u: object(),
+        nvmlDeviceGetCudaComputeCapability=lambda _h: (12, 0),
+    )
+    monkeypatch.setitem(sys.modules, "pynvml", fake_pynvml)
     monkeypatch.setitem(sys.modules, "flashinfer", fi_mod)
     monkeypatch.setitem(sys.modules, "flashinfer.jit", fi_jit)
     monkeypatch.setitem(sys.modules, "flashinfer.jit.env", fi_env)
@@ -4231,20 +4252,35 @@ def test_build_entered_detection_and_exclusions(
     (ws_nlog / ".ninja_log").write_text("# ninja log v5\n", encoding="utf-8")
     assert bakeoff_judge.scan_flashinfer_workspace_build_entered([ws_nlog])["build_entered"] is True
 
-    # cached_ops/<module> directory -> build_entered is True
+    # cached_ops/<module> containing build.ninja -> build_entered is True
     ws_mod = tmp_path / "ws_mod"
     (ws_mod / "cached_ops" / "fused_moe_120").mkdir(parents=True, exist_ok=True)
+    (ws_mod / "cached_ops" / "fused_moe_120" / "build.ninja").write_text("# ninja\n", encoding="utf-8")
     assert bakeoff_judge.scan_flashinfer_workspace_build_entered([ws_mod])["build_entered"] is True
 
-    # run_ninja call during judge lifetime -> sets build_entered=True and raises JUDGE_JIT_BUILD_ENTERED
+    # run_ninja call during judge lifetime -> raises at the call itself (never returns) and sets build_entered=True
     assert bakeoff_judge.scan_flashinfer_workspace_build_entered([ws_gen], run_ninja_called=True)["build_entered"] is True
     env = _setup_fake_vllm_env(tmp_path / "run_ninja_trigger", monkeypatch, responses=[])
     monkeypatch.setenv(bakeoff_judge.QWEN36_MAX_NEW_TOKENS_ENV_VAR, "4096")
+    guard_direct = bakeoff_judge.FlashInferRunNinjaGuard()
+    guard_direct.install()
+    try:
+        with pytest.raises(RdlabError) as exc_direct_cpp:
+            sys.modules["flashinfer.jit.cpp_ext"].run_ninja("/tmp", "/tmp/build.ninja", True)
+        assert exc_direct_cpp.value.code == "JUDGE_JIT_BUILD_ENTERED"
+        with pytest.raises(RdlabError) as exc_direct_core:
+            sys.modules["flashinfer.jit.core"].run_ninja("/tmp", "/tmp/build.ninja", True)
+        assert exc_direct_core.value.code == "JUDGE_JIT_BUILD_ENTERED"
+    finally:
+        guard_direct.uninstall()
+
     orig_llm = sys.modules["vllm"].LLM
+    post_call_reached: list[bool] = []
 
     class _NinjaCallingLLM(orig_llm):  # type: ignore[misc,valid-type]
         def __init__(self, **kwargs: Any) -> None:
             sys.modules["flashinfer.jit.core"].run_ninja("/tmp", "/tmp/build.ninja", True)
+            post_call_reached.append(True)
             super().__init__(**kwargs)
 
     monkeypatch.setattr(sys.modules["vllm"], "LLM", _NinjaCallingLLM)
@@ -4254,6 +4290,7 @@ def test_build_entered_detection_and_exclusions(
     with pytest.raises(RdlabError) as exc_ninja:
         t._ensure_loaded(spec)
     assert exc_ninja.value.code == "JUDGE_JIT_BUILD_ENTERED"
+    assert post_call_reached == []
 
 
 def test_cgroup_tightest_headroom_across_chain_and_stat_parity_table(
@@ -4460,7 +4497,9 @@ def test_prebuilt_aot_and_guard_edge_branches(
 
     # scan_flashinfer_workspace_build_entered default discovery via FLASHINFER_WORKSPACE_BASE
     ws_base = tmp_path / "fi_base"
-    (ws_base / ".cache" / "flashinfer" / "cached_ops" / "sample_mod").mkdir(parents=True, exist_ok=True)
+    sample_mod = ws_base / ".cache" / "flashinfer" / "cached_ops" / "sample_mod"
+    sample_mod.mkdir(parents=True, exist_ok=True)
+    (sample_mod / "kernel.o").write_bytes(b"obj")
     monkeypatch.setenv("FLASHINFER_WORKSPACE_BASE", str(ws_base))
     monkeypatch.delitem(sys.modules, "flashinfer.jit.env", raising=False)
     monkeypatch.delitem(sys.modules, "flashinfer.jit.cpp_ext", raising=False)
@@ -4530,6 +4569,7 @@ def test_prebuilt_aot_and_guard_edge_branches(
     # Additional scan_flashinfer_workspace_build_entered edge inputs (None, absent dir, direct cached_ops dir, file-named cached_ops, OSError on iterdir)
     direct_cached_ops = tmp_path / "direct_ws" / "cached_ops"
     (direct_cached_ops / "mod_x").mkdir(parents=True, exist_ok=True)
+    (direct_cached_ops / "mod_x" / "build.ninja").write_text("# ninja\n", encoding="utf-8")
     (direct_cached_ops / "note.txt").write_text("plain", encoding="utf-8")
     (direct_cached_ops / ".ninja_log").mkdir(exist_ok=True)
     ws_file_co = tmp_path / "ws_file_co"
@@ -4613,6 +4653,407 @@ def test_prebuilt_aot_and_guard_edge_branches(
         assert "prebuilt_jit_cache" not in resp_edge.library_pins
     finally:
         t_edge.close_build_guard()
+
+
+def test_spawned_child_shim_blocks_ninja_and_nvcc_and_chains_engine_exception(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 1. child_env from vm_judges sets FLASHINFER_CUDA_ARCH_LIST=12.0f, stages refusing shims, unlinks stale marker, symlinks CUDA_HOME
+    fake_cuda = tmp_path / "fake_cuda"
+    (fake_cuda / "include").mkdir(parents=True, exist_ok=True)
+    (fake_cuda / "lib64").mkdir(parents=True, exist_ok=True)
+    stale_vm_marker = tmp_path / "vm_run" / "shim.log"
+    stale_vm_marker.parent.mkdir(parents=True, exist_ok=True)
+    stale_vm_marker.write_text("stale\n", encoding="utf-8")
+    cenv = vm_judges.build_judge_child_env(
+        tmp_path / "hf",
+        REPO_ROOT,
+        base_env={"CUDA_HOME": str(fake_cuda), "PATH": "/usr/bin"},
+        judge_id=QWEN36_ID,
+        venv_name=vm_judges.VLLM_VENV_NAME,
+        jit_shim_dir=tmp_path / "vm_shim",
+        jit_shim_marker_file=stale_vm_marker,
+    )
+    assert not stale_vm_marker.exists()
+    assert (tmp_path / "vm_shim" / "include").is_symlink()
+    assert cenv["FLASHINFER_CUDA_ARCH_LIST"] == "12.0f"
+    assert cenv["PATH"].split(os.pathsep)[0] == str((tmp_path / "vm_shim" / "bin").resolve())
+    assert Path(cenv["FLASHINFER_NVCC"]).is_file()
+    assert Path(cenv["NINJA"]).is_file()
+
+    # 2. Spawned multiprocessing EngineCore child trying to run `ninja` or `nvcc` is blocked by the shim,
+    #    writes marker file, and generic engine exception in LLM() raises chained JUDGE_JIT_BUILD_ENTERED.
+    out_dir = tmp_path / "run_out"
+    env = _setup_fake_vllm_env(tmp_path / "spawn_shim", monkeypatch, responses=[])
+    monkeypatch.setenv(bakeoff_judge.QWEN36_MAX_NEW_TOKENS_ENV_VAR, "4096")
+    monkeypatch.setenv("CUDA_HOME", str(fake_cuda))
+    monkeypatch.delenv("RDLAB_JIT_SHIM_MARKER_FILE", raising=False)
+
+    spawn_results: list[tuple[int, str, str]] = []
+    orig_llm = sys.modules["vllm"].LLM
+
+    class _SpawningEngineCoreLLM(orig_llm):  # type: ignore[misc,valid-type]
+        def __init__(self, **kwargs: Any) -> None:
+            _ = kwargs
+            ctx = multiprocessing.get_context("spawn")
+            # nvcc read-only query flags must fail silently without writing the marker file
+            for qflag in ("--version", "--list-gpu-arch"):
+                q0: Any = ctx.Queue()
+                p0 = ctx.Process(target=_spawn_engine_core_ninja_worker, args=("nvcc", [qflag], q0))
+                p0.start()
+                p0.join(timeout=30)
+                assert p0.exitcode == 0
+                spawn_results.append(q0.get(timeout=5))
+            # real compile attempt via ninja in spawned EngineCore hits the shim and writes marker
+            q1: Any = ctx.Queue()
+            p1 = ctx.Process(target=_spawn_engine_core_ninja_worker, args=("ninja", ["-f", "build.ninja"], q1))
+            p1.start()
+            p1.join(timeout=30)
+            assert p1.exitcode == 0
+            spawn_results.append(q1.get(timeout=5))
+            # real compile attempt via nvcc -c also hits the shim
+            q2: Any = ctx.Queue()
+            p2 = ctx.Process(target=_spawn_engine_core_ninja_worker, args=("nvcc", ["-c", "k.cu", "-o", "k.o"], q2))
+            p2.start()
+            p2.join(timeout=30)
+            assert p2.exitcode == 0
+            spawn_results.append(q2.get(timeout=5))
+            raise RuntimeError("Engine core initialization failed")
+
+    monkeypatch.setattr(sys.modules["vllm"], "LLM", _SpawningEngineCoreLLM)
+    items_dir = tmp_path / "spawn_items"
+    items_dir.mkdir(parents=True, exist_ok=True)
+    _write_items_jsonl(items_dir / "items.jsonl", _synth_items(1))
+    with pytest.raises(RdlabError) as exc_spawn:
+        run_bakeoff_judge(
+            judge=QWEN36_ID,
+            part_dir=items_dir,
+            output_dir=out_dir,
+            receipts_dir=env["receipts_dir"],
+            hf_home=env["hf_home"],
+            device="cuda",
+            pass_mode=CONTRA,
+            window_mode="stub",
+            fake_transport=False,
+            vram_probe=lambda: 0,
+            run_canary=False,
+            synthetic_items=False,
+        )
+    assert exc_spawn.value.code == "JUDGE_JIT_BUILD_ENTERED"
+    assert isinstance(exc_spawn.value.__cause__, RuntimeError)
+    assert "Engine core initialization failed" in str(exc_spawn.value.__cause__)
+    # Query invocations exited non-zero without marker text
+    assert spawn_results[0][0] == 1 and "JUDGE_JIT_BUILD_ENTERED" not in spawn_results[0][1]
+    assert spawn_results[1][0] == 1 and "JUDGE_JIT_BUILD_ENTERED" not in spawn_results[1][1]
+    # Ninja + nvcc -c invocations exited non-zero with marker text
+    assert spawn_results[2][0] != 0 and "JUDGE_JIT_BUILD_ENTERED" in spawn_results[2][1]
+    assert spawn_results[3][0] != 0 and "JUDGE_JIT_BUILD_ENTERED" in spawn_results[3][1]
+    marker_file = out_dir / "jit_shim_marker.log"
+    assert marker_file.is_file()
+    marker_txt = marker_file.read_text(encoding="utf-8")
+    assert "JUDGE_JIT_BUILD_ENTERED" in marker_txt and "ninja" in marker_txt and "nvcc" in marker_txt
+
+    # 3. Also verify generate() exception boundary catches lazy EngineCore compile refusal AND re-raises unrelated errors
+    env_gen = _setup_fake_vllm_env(tmp_path / "gen_shim", monkeypatch, responses=[])
+    orig_gen_llm = sys.modules["vllm"].LLM
+    raise_non_build = {"flag": False}
+
+    class _LazyCompileOnGenerateLLM(orig_gen_llm):  # type: ignore[misc,valid-type]
+        def generate(self, prompts: list[str], sampling_params: Any) -> list[Any]:
+            _ = (prompts, sampling_params)
+            if not raise_non_build["flag"]:
+                (env_gen["fi_ws_dir"] / "cached_ops" / "lazy_mod").mkdir(parents=True, exist_ok=True)
+                (env_gen["fi_ws_dir"] / "cached_ops" / "lazy_mod" / "build.ninja").write_text("# lazy\n", encoding="utf-8")
+            raise RuntimeError("EngineCore encountered a fatal error during step")
+
+    monkeypatch.setattr(sys.modules["vllm"], "LLM", _LazyCompileOnGenerateLLM)
+    spec = JUDGE_SPECS[QWEN36_ID]
+    t_gen = bakeoff_judge.VllmJudgeTransport(receipts_dir=env_gen["receipts_dir"], hf_home=env_gen["hf_home"], device="cuda")
+    t_gen.verify_ready(spec)
+    prompt_gen = bakeoff_judge.Qwen36ChoiceAdapter(spec).assemble_prompt(_synth_items(1)[0], order="AB", pass_mode=CONTRA)
+    try:
+        with pytest.raises(RdlabError) as exc_gen:
+            t_gen.generate(spec, prompt_gen, seed=1)
+        assert exc_gen.value.code == "JUDGE_JIT_BUILD_ENTERED"
+        assert isinstance(exc_gen.value.__cause__, RuntimeError)
+    finally:
+        t_gen.close_build_guard()
+
+    # Clean transport where no build entered re-raises unrelated RuntimeError unchanged
+    (env_gen["fi_ws_dir"] / "cached_ops" / "lazy_mod" / "build.ninja").unlink()
+    raise_non_build["flag"] = True
+    t_gen_clean = bakeoff_judge.VllmJudgeTransport(receipts_dir=env_gen["receipts_dir"], hf_home=env_gen["hf_home"], device="cuda")
+    t_gen_clean.verify_ready(spec)
+    try:
+        with pytest.raises(RuntimeError, match="EngineCore encountered a fatal error"):
+            t_gen_clean.generate(spec, prompt_gen, seed=2)
+    finally:
+        t_gen_clean.close_build_guard()
+
+
+def test_arch_list_set_before_first_flashinfer_import_and_non_sm12x_stops(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Install import hook BEFORE flashinfer is imported to record FLASHINFER_CUDA_ARCH_LIST at first import
+    env = _setup_fake_vllm_env(tmp_path / "arch_order", monkeypatch, responses=[])
+    monkeypatch.setenv(bakeoff_judge.QWEN36_MAX_NEW_TOKENS_ENV_VAR, "4096")
+    for mod_name in list(sys.modules):
+        if mod_name == "flashinfer" or mod_name.startswith("flashinfer."):
+            monkeypatch.delitem(sys.modules, mod_name, raising=False)
+    monkeypatch.delenv("FLASHINFER_CUDA_ARCH_LIST", raising=False)
+
+    observed_at_first_import: list[tuple[str | None, int]] = []
+    nvml_calls = {"count": 0}
+    real_fi = ModuleType("flashinfer")
+    real_fi.__path__ = []  # type: ignore[attr-defined]
+    real_fi_jit = ModuleType("flashinfer.jit")
+    real_fi_jit.__path__ = []  # type: ignore[attr-defined]
+    provider = SimpleNamespace(
+        provider_id="sm120f",
+        distribution="flashinfer-jit-cache-sm120f",
+        version="0.7.3+cu130",
+        jit_cache_dir=env["fi_so_path"].parent.parent,
+        cuda_architectures=frozenset({"sm120f"}),
+        modules=frozenset({"fused_moe_120"}),
+    )
+    artifact = SimpleNamespace(provider_id="sm120f", path=env["fi_so_path"], cuda_architectures=frozenset({"sm120f"}))
+    spec_obj = SimpleNamespace(name="fused_moe_120", is_aot=True, aot_artifacts=(artifact,), aot_path=env["fi_so_path"])
+    submods = {
+        "flashinfer": real_fi,
+        "flashinfer.jit": real_fi_jit,
+        "flashinfer.jit.env": SimpleNamespace(
+            FLASHINFER_AOT_PROVIDERS=(provider,),
+            FLASHINFER_WORKSPACE_DIR=env["fi_ws_dir"],
+            FLASHINFER_CACHE_DIR=env["fi_ws_dir"],
+        ),
+        "flashinfer.jit.cpp_ext": SimpleNamespace(run_ninja=lambda *_a, **_kw: None),
+        "flashinfer.jit.core": SimpleNamespace(run_ninja=lambda *_a, **_kw: None, refresh_current_compilation_context=lambda: None),
+        "flashinfer.jit.fused_moe": SimpleNamespace(gen_cutlass_fused_moe_sm120_module=lambda use_fast_build=False: spec_obj),
+    }
+
+    class _ImportOrderFinder:
+        def find_spec(self, fullname: str, _path: Any, _target: Any = None) -> Any:
+            if fullname in submods:
+                import importlib.machinery
+                import importlib.abc
+
+                class _Loader(importlib.abc.Loader):
+                    def create_module(self, spec: Any) -> Any:
+                        if fullname == "flashinfer":
+                            observed_at_first_import.append(
+                                (os.environ.get("FLASHINFER_CUDA_ARCH_LIST"), nvml_calls["count"])
+                            )
+                        return submods[fullname]
+
+                    def exec_module(self, _mod: Any) -> None:
+                        return None
+
+                return importlib.machinery.ModuleSpec(fullname, _Loader())
+            return None
+
+    finder = _ImportOrderFinder()
+    monkeypatch.setattr(sys, "meta_path", [finder, *sys.meta_path])
+    fake_pynvml_ok = SimpleNamespace(
+        nvmlInit=lambda: None,
+        nvmlShutdown=lambda: None,
+        nvmlDeviceGetHandleByIndex=lambda _i=0: object(),
+        nvmlDeviceGetHandleByUUID=lambda _u: object(),
+        nvmlDeviceGetCudaComputeCapability=lambda _h: (nvml_calls.__setitem__("count", nvml_calls["count"] + 1) or (12, 0)),
+    )
+    monkeypatch.setitem(sys.modules, "pynvml", fake_pynvml_ok)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+
+    spec = JUDGE_SPECS[QWEN36_ID]
+    t = bakeoff_judge.VllmJudgeTransport(receipts_dir=env["receipts_dir"], hf_home=env["hf_home"], device="cuda:0")
+    t.verify_ready(spec)
+    t._ensure_loaded(spec)
+    try:
+        assert observed_at_first_import == [("12.0f", 1)]
+        assert os.environ.get("FLASHINFER_CUDA_ARCH_LIST") == "12.0f"
+        assert t._prebuilt_jit_cache_info["compute_capability"] == "12.0"
+    finally:
+        t.close_build_guard()
+
+    # Non-12.x GPU capability from pynvml (8.0) -> JUDGE_GPU_COMPUTE_CAP_MISMATCH before any flashinfer/LLM
+    env["llm_inits"].clear()
+    monkeypatch.delitem(sys.modules, "flashinfer", raising=False)
+    monkeypatch.delenv("FLASHINFER_CUDA_ARCH_LIST", raising=False)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-uuid-0")
+    monkeypatch.setitem(
+        sys.modules,
+        "pynvml",
+        SimpleNamespace(
+            nvmlInit=lambda: None,
+            nvmlShutdown=lambda: None,
+            nvmlDeviceGetHandleByIndex=lambda _i=0: object(),
+            nvmlDeviceGetHandleByUUID=lambda _u: object(),
+            nvmlDeviceGetCudaComputeCapability=lambda _h: (8, 0),
+        ),
+    )
+    t_bad_cc = bakeoff_judge.VllmJudgeTransport(receipts_dir=env["receipts_dir"], hf_home=env["hf_home"], device="cuda")
+    t_bad_cc.verify_ready(spec)
+    with pytest.raises(RdlabError) as exc_cc:
+        t_bad_cc._ensure_loaded(spec)
+    assert exc_cc.value.code == "JUDGE_GPU_COMPUTE_CAP_MISMATCH"
+    assert env["llm_inits"] == []
+    assert "flashinfer" not in sys.modules
+
+    # Fallback via nvidia-smi when pynvml absent or raises: rc!=0, empty, unparseable, OSError stop; (12, 0) passes
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    monkeypatch.setitem(
+        sys.modules,
+        "pynvml",
+        SimpleNamespace(
+            nvmlInit=lambda: (_ for _ in ()).throw(RuntimeError("nvml unavailable")),
+            nvmlShutdown=lambda: None,
+            nvmlDeviceGetHandleByIndex=lambda _i=0: object(),
+            nvmlDeviceGetHandleByUUID=lambda _u: object(),
+            nvmlDeviceGetCudaComputeCapability=lambda _h: (12, 0),
+        ),
+    )
+    monkeypatch.setattr(
+        bakeoff_judge.subprocess,
+        "run",
+        lambda *_a, **_kw: SimpleNamespace(returncode=1, stdout="", stderr="err"),
+    )
+    with pytest.raises(RdlabError) as exc_rc1:
+        bakeoff_judge.verify_qwen36_sm12x_compute_capability(device="cuda")
+    assert exc_rc1.value.code == "JUDGE_GPU_COMPUTE_CAP_MISMATCH"
+    monkeypatch.setattr(
+        bakeoff_judge.subprocess,
+        "run",
+        lambda *_a, **_kw: SimpleNamespace(returncode=0, stdout="\n", stderr=""),
+    )
+    with pytest.raises(RdlabError):
+        bakeoff_judge.verify_qwen36_sm12x_compute_capability(device="cuda")
+    monkeypatch.setattr(
+        bakeoff_judge.subprocess,
+        "run",
+        lambda *_a, **_kw: SimpleNamespace(returncode=0, stdout="invalid\n", stderr=""),
+    )
+    with pytest.raises(RdlabError):
+        bakeoff_judge.verify_qwen36_sm12x_compute_capability(device="cuda")
+    monkeypatch.setattr(
+        bakeoff_judge.subprocess,
+        "run",
+        lambda *_a, **_kw: SimpleNamespace(returncode=0, stdout="8.9\n", stderr=""),
+    )
+    with pytest.raises(RdlabError) as exc_smi:
+        bakeoff_judge.verify_qwen36_sm12x_compute_capability(device="cuda")
+    assert exc_smi.value.code == "JUDGE_GPU_COMPUTE_CAP_MISMATCH"
+    monkeypatch.setattr(
+        bakeoff_judge.subprocess,
+        "run",
+        lambda *_a, **_kw: (_ for _ in ()).throw(FileNotFoundError("no nvidia-smi")),
+    )
+    with pytest.raises(RdlabError) as exc_no_nvml:
+        bakeoff_judge.verify_qwen36_sm12x_compute_capability(device="cuda")
+    assert exc_no_nvml.value.code == "JUDGE_GPU_COMPUTE_CAP_MISMATCH"
+    # When pynvml cannot be imported, nvidia-smi returning 12.0 succeeds cleanly
+    monkeypatch.setitem(sys.modules, "pynvml", None)  # type: ignore[arg-type]
+    monkeypatch.setattr(
+        bakeoff_judge.subprocess,
+        "run",
+        lambda *_a, **_kw: SimpleNamespace(returncode=0, stdout="12.0\n", stderr=""),
+    )
+    smi_ok = bakeoff_judge.verify_qwen36_sm12x_compute_capability(device="cuda")
+    assert smi_ok["compute_capability"] == "12.0" and smi_ok["source"] == "nvidia-smi"
+
+    # CLI entry main_judge_runner also runs prepare_qwen36_no_compile_process_env before run_bakeoff_judge
+    monkeypatch.setitem(
+        sys.modules,
+        "pynvml",
+        SimpleNamespace(
+            nvmlInit=lambda: None,
+            nvmlShutdown=lambda: (_ for _ in ()).throw(RuntimeError("shutdown ignore")),
+            nvmlDeviceGetHandleByIndex=lambda _i=0: object(),
+            nvmlDeviceGetHandleByUUID=lambda _u: object(),
+            nvmlDeviceGetCudaComputeCapability=lambda _h: (12, 0),
+        ),
+    )
+    monkeypatch.delenv("FLASHINFER_CUDA_ARCH_LIST", raising=False)
+    monkeypatch.setattr(
+        bakeoff_judge,
+        "run_bakeoff_judge",
+        lambda **_kw: {"ok": True, "arch": os.environ.get("FLASHINFER_CUDA_ARCH_LIST")},
+    )
+    cli_out = tmp_path / "cli_out"
+    cli_items = tmp_path / "cli_items"
+    cli_items.mkdir(parents=True, exist_ok=True)
+    _write_items_jsonl(cli_items / "items.jsonl", _synth_items(1))
+    assert bakeoff_judge.main_judge_runner([
+        "--judge", QWEN36_ID,
+        "--items", str(cli_items),
+        "--output-dir", str(cli_out),
+        "--receipts-dir", str(env["receipts_dir"]),
+        "--hf-home", str(env["hf_home"]),
+        "--device", "cuda",
+        "--pass-mode", CONTRA,
+        "--window-mode", "stub",
+        "--no-canary",
+    ]) == 0
+    assert os.environ.get("FLASHINFER_CUDA_ARCH_LIST") == "12.0f"
+
+
+def test_workspace_baseline_snapshot_and_trtllm_tmp_exclusions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ws = tmp_path / "fi_ws"
+    missing_ws = tmp_path / "missing_fi_ws"
+    # 1. trtllm_fmha_v2 with generated .cu files ONLY + cached_ops/tmp + missing ws -> build_entered is False
+    fmha_gen = ws / "cached_ops" / "trtllm_fmha_v2" / "generated"
+    fmha_gen.mkdir(parents=True, exist_ok=True)
+    (fmha_gen / "fmha_v2_flash_attention.cu").write_text("// gen\n", encoding="utf-8")
+    (ws / "cached_ops" / "tmp").mkdir(parents=True, exist_ok=True)
+    (ws / "cached_ops" / "tmp" / "scratch.txt").write_text("tmp\n", encoding="utf-8")
+    scan_clean = bakeoff_judge.scan_flashinfer_workspace_build_entered([ws, missing_ws])
+    assert scan_clean["build_entered"] is False
+    assert scan_clean["cached_ops_dirs"] == []
+
+    # 2. cached_ops/trtllm_fmha_v2 with build.ninja (or .o / .so) -> build_entered is True
+    (ws / "cached_ops" / "trtllm_fmha_v2" / "build.ninja").write_text("rule compile\n", encoding="utf-8")
+    scan_ninja = bakeoff_judge.scan_flashinfer_workspace_build_entered([ws])
+    assert scan_ninja["build_entered"] is True
+    assert len(scan_ninja["cached_ops_dirs"]) == 1
+
+    # 3. Pre-existing cache from before baseline snapshot does NOT trigger build_entered
+    pre_mod = ws / "cached_ops" / "fused_moe_120"
+    pre_mod.mkdir(parents=True, exist_ok=True)
+    (pre_mod / "fused_moe_120.so").write_bytes(b"prebuilt")
+    (ws / ".ninja_log").write_text("# ninja log v5\n", encoding="utf-8")
+    baseline = bakeoff_judge.snapshot_flashinfer_workspaces([ws, missing_ws])
+    scan_unchanged = bakeoff_judge.scan_flashinfer_workspace_build_entered([ws, missing_ws], baseline=baseline)
+    assert scan_unchanged["build_entered"] is False
+
+    # Adding a new object file after baseline DOES trigger build_entered
+    (pre_mod / "new_unit.cuda.o").write_bytes(b"obj")
+    scan_after = bakeoff_judge.scan_flashinfer_workspace_build_entered([ws], baseline=baseline)
+    assert scan_after["build_entered"] is True
+    assert any(p.endswith("new_unit.cuda.o") for p in scan_after["cached_ops_build_files"])
+
+    # read_jit_shim_marker via env var & missing/empty cases + _safe_file_sig + FlashInferBuildShimGuard ninja.BIN_DIR
+    assert bakeoff_judge._safe_file_sig(tmp_path / "nonexistent") is None
+    monkeypatch.delenv(bakeoff_judge.QWEN36_JIT_SHIM_MARKER_ENV_VAR, raising=False)
+    assert bakeoff_judge.read_jit_shim_marker() == []
+    assert bakeoff_judge.read_jit_shim_marker(tmp_path) == []
+    mfile = tmp_path / "env_marker.log"
+    mfile.write_text("JUDGE_JIT_BUILD_ENTERED\tninja\t-j1\n", encoding="utf-8")
+    monkeypatch.setenv(bakeoff_judge.QWEN36_JIT_SHIM_MARKER_ENV_VAR, str(mfile))
+    assert len(bakeoff_judge.read_jit_shim_marker()) == 1
+
+    fake_ninja_pkg = SimpleNamespace(BIN_DIR="/orig/ninja")
+    monkeypatch.setitem(sys.modules, "ninja", fake_ninja_pkg)
+    guard = bakeoff_judge.FlashInferBuildShimGuard()
+    guard.install()
+    guard.install()  # idempotent second install
+    assert fake_ninja_pkg.BIN_DIR == str(guard.shim_bin_dir)
+    guard.uninstall()
+    guard.uninstall()  # idempotent second uninstall
+    assert fake_ninja_pkg.BIN_DIR == "/orig/ninja"
+
 
 
 

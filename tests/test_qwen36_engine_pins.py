@@ -216,7 +216,9 @@ def _install_fake_runtime(
         get_library_path=lambda: so_path,
     )
     fi_mod = ModuleType("flashinfer")
+    fi_mod.__path__ = []  # type: ignore[attr-defined]
     fi_jit = ModuleType("flashinfer.jit")
+    fi_jit.__path__ = []  # type: ignore[attr-defined]
     fi_env = SimpleNamespace(
         FLASHINFER_AOT_PROVIDERS=(provider,),
         FLASHINFER_WORKSPACE_DIR=ws_dir,
@@ -230,6 +232,19 @@ def _install_fake_runtime(
         refresh_current_compilation_context=lambda: None,
     )
     fi_fused = SimpleNamespace(gen_cutlass_fused_moe_sm120_module=lambda use_fast_build=False: spec_obj)
+    fi_mod.jit = fi_jit  # type: ignore[attr-defined]
+    fi_jit.env = fi_env  # type: ignore[attr-defined]
+    fi_jit.cpp_ext = fi_cpp_ext  # type: ignore[attr-defined]
+    fi_jit.core = fi_core  # type: ignore[attr-defined]
+    fi_jit.fused_moe = fi_fused  # type: ignore[attr-defined]
+    fake_pynvml = SimpleNamespace(
+        nvmlInit=lambda: None,
+        nvmlShutdown=lambda: None,
+        nvmlDeviceGetHandleByIndex=lambda _i=0: object(),
+        nvmlDeviceGetHandleByUUID=lambda _u: object(),
+        nvmlDeviceGetCudaComputeCapability=lambda _h: (12, 0),
+    )
+    monkeypatch.setitem(sys.modules, "pynvml", fake_pynvml)
     monkeypatch.setitem(sys.modules, "flashinfer", fi_mod)
     monkeypatch.setitem(sys.modules, "flashinfer.jit", fi_jit)
     monkeypatch.setitem(sys.modules, "flashinfer.jit.env", fi_env)

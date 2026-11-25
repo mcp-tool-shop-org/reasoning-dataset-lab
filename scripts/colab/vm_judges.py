@@ -3877,12 +3877,107 @@ def build_download_child_env(
     return child_env
 
 
+QWEN36_FLASHINFER_CUDA_ARCH_LIST = "12.0f"
+QWEN36_JIT_SHIM_MARKER_ENV_VAR = "RDLAB_JIT_SHIM_MARKER_FILE"
+JUDGE_JIT_BUILD_ENTERED_MARKER_LINE = "JUDGE_JIT_BUILD_ENTERED: runtime compilation forbidden on judge pod"
+
+
+def _ensure_executable_shim_file(path: Path, body: str) -> None:
+    path.write_text(body, encoding="utf-8", newline="\n")
+    try:
+        path.chmod(0o755)
+    except OSError:
+        pass
+
+
+def stage_qwen36_no_compile_shim(
+    shim_root: Path,
+    marker_file: Path,
+    child_env: MutableMapping[str, str],
+) -> dict[str, str]:
+    """Stage refusing `ninja` and `nvcc` shims first on `PATH` and compiler env vars for every spawned child."""
+    shim_root_resolved = Path(shim_root).resolve()
+    bin_dir = shim_root_resolved / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    marker_resolved = Path(marker_file).resolve()
+    marker_resolved.parent.mkdir(parents=True, exist_ok=True)
+    if marker_resolved.exists():
+        marker_resolved.unlink()
+
+    ninja_sh = bin_dir / "ninja"
+    _ensure_executable_shim_file(
+        ninja_sh,
+        (
+            "#!/bin/sh\n"
+            f'marker="${{{QWEN36_JIT_SHIM_MARKER_ENV_VAR}:-{marker_resolved.as_posix()}}}"\n'
+            'mkdir -p "$(dirname "$marker")" 2>/dev/null || true\n'
+            'printf \'JUDGE_JIT_BUILD_ENTERED\\tninja\\t%s\\n\' "$*" >> "$marker"\n'
+            f'printf \'%s (tool=ninja args=%s)\\n\' "{JUDGE_JIT_BUILD_ENTERED_MARKER_LINE}" "$*" >&2\n'
+            "exit 97\n"
+        ),
+    )
+    nvcc_sh = bin_dir / "nvcc"
+    _ensure_executable_shim_file(
+        nvcc_sh,
+        (
+            "#!/bin/sh\n"
+            'if [ "$#" -eq 1 ]; then\n'
+            '  case "$1" in\n'
+            "    --version|-V|--list-gpu-arch|--list-gpu-code)\n"
+            "      exit 1\n"
+            "      ;;\n"
+            "  esac\n"
+            "fi\n"
+            f'marker="${{{QWEN36_JIT_SHIM_MARKER_ENV_VAR}:-{marker_resolved.as_posix()}}}"\n'
+            'mkdir -p "$(dirname "$marker")" 2>/dev/null || true\n'
+            'printf \'JUDGE_JIT_BUILD_ENTERED\\tnvcc\\t%s\\n\' "$*" >> "$marker"\n'
+            f'printf \'%s (tool=nvcc args=%s)\\n\' "{JUDGE_JIT_BUILD_ENTERED_MARKER_LINE}" "$*" >&2\n'
+            "exit 97\n"
+        ),
+    )
+
+    existing_cuda_home = child_env.get("CUDA_HOME") or child_env.get("CUDA_PATH") or ""
+    if existing_cuda_home:
+        cuda_src = Path(existing_cuda_home)
+        for sub in ("include", "lib64"):
+            sub_src = cuda_src / sub
+            sub_dst = shim_root_resolved / sub
+            if sub_src.exists() and not sub_dst.exists():
+                try:
+                    os.symlink(str(sub_src), str(sub_dst))
+                except OSError:
+                    pass
+
+    old_path = child_env.get("PATH", "")
+    path_parts = [p for p in old_path.split(os.pathsep) if p and p != str(bin_dir)]
+    child_env["PATH"] = os.pathsep.join([str(bin_dir), *path_parts])
+    ninja_bin = str(ninja_sh)
+    nvcc_bin = str(nvcc_sh)
+    child_env["NINJA"] = ninja_bin
+    child_env["FLASHINFER_NVCC"] = nvcc_bin
+    child_env["CUDACXX"] = nvcc_bin
+    child_env["CUDA_HOME"] = str(shim_root_resolved)
+    child_env["CUDA_PATH"] = str(shim_root_resolved)
+    child_env[QWEN36_JIT_SHIM_MARKER_ENV_VAR] = str(marker_resolved)
+    return {
+        "shim_root": str(shim_root_resolved),
+        "bin_dir": str(bin_dir),
+        "ninja_shim": ninja_bin,
+        "nvcc_shim": nvcc_bin,
+        "marker_file": str(marker_resolved),
+    }
+
+
 def build_judge_child_env(
     hf_home: Path,
     repo_dir: Path,
     *,
     base_env: Mapping[str, str] | None = None,
     progress_file: Path | None = None,
+    judge_id: str | None = None,
+    venv_name: str | None = None,
+    jit_shim_dir: Path | None = None,
+    jit_shim_marker_file: Path | None = None,
 ) -> dict[str, str]:
     """Build the judge child subprocess environment, dropping `HF_TOKEN*` and `HUGGING_FACE_HUB_TOKEN` and setting `HF_HUB_OFFLINE=1`."""
     source_env = os.environ if base_env is None else base_env
@@ -3913,6 +4008,10 @@ def build_judge_child_env(
         else src_path
     )
     _prepend_pinned_uv_to_path(child_env)
+    if judge_id == QWEN36_JUDGE_ID or venv_name == VLLM_VENV_NAME:
+        child_env["FLASHINFER_CUDA_ARCH_LIST"] = QWEN36_FLASHINFER_CUDA_ARCH_LIST
+        if jit_shim_dir is not None and jit_shim_marker_file is not None:
+            stage_qwen36_no_compile_shim(jit_shim_dir, jit_shim_marker_file, child_env)
     return child_env
 
 
@@ -8124,7 +8223,13 @@ def _run_p0a_judge_child(
     (`build_judge_child_env`, `_run_child_with_group_timeout`, the VRAM sampler, the cgroup OOM read, the same failure
     classes), and return its telemetry. The child's model is unloaded when the child exits."""
     child_cmd = list(child_cmd_base)
-    child_env = build_judge_child_env(hf_home, repo_root, progress_file=child_progress_file)
+    child_env = build_judge_child_env(
+        hf_home,
+        repo_root,
+        progress_file=child_progress_file,
+        judge_id=judge_id,
+        venv_name=venv_name,
+    )
     eff_child_timeout = compute_child_timeout_seconds(child_timeout_seconds)
     cg_before = read_cgroup_memory_events(cgroup_root=cgroup_root, proc_cgroup_path=proc_cgroup_path)
     sampler = VramSampler(interval_s=float(VRAM_SAMPLE_INTERVAL_SECONDS), dryrun=dryrun)
@@ -9071,6 +9176,10 @@ def _run_judges_pipeline_body(
             hf_home,
             eff_repo_dir,
             progress_file=child_progress_file,
+            judge_id=judge_id,
+            venv_name=venv_name,
+            jit_shim_dir=(child_progress_dir / f"jit_shim_{pass_key_j}"),
+            jit_shim_marker_file=(child_progress_dir / f"jit_shim_marker_{pass_key_j}.log"),
         )
         jit_build_log_path: Path | None = None
         if venv_name == "venv-vllm" or judge_id == QWEN36_JUDGE_ID:
@@ -9295,6 +9404,18 @@ def _run_judges_pipeline_body(
         elif venv_name == "venv-vllm" or judge_id == QWEN36_JUDGE_ID:
             failure_build_extra["build_wall_seconds"] = round(wall_elapsed, 6)
             failure_build_extra["build_seconds_source"] = "child_wall_fallback"
+        shim_marker_str = child_env.get(QWEN36_JIT_SHIM_MARKER_ENV_VAR, "").strip()
+        if shim_marker_str and Path(shim_marker_str).is_file():
+            try:
+                shim_lines = [
+                    ln.strip()
+                    for ln in Path(shim_marker_str).read_text(encoding="utf-8", errors="replace").splitlines()
+                    if ln.strip()
+                ]
+            except OSError:
+                shim_lines = []
+            if shim_lines:
+                failure_build_extra["jit_shim_invocations"] = shim_lines[:10]
 
         if child_res["timed_out"]:
             gpu_mem_mib = read_gpu_memory_used_mib(dryrun=dryrun)
@@ -14968,7 +15089,7 @@ def run_boot_gatekeeper_subprocess(
             if sp.get("prompt_id")
         ],
     }
-    child_env = build_judge_child_env(child_hf_home, repo_root)
+    child_env = build_judge_child_env(child_hf_home, repo_root, judge_id=judge_id)
     gk_cmd = [str(venv_py), "-c", _BOOT_GATEKEEPER_SUBPROCESS_SCRIPT, json.dumps(cfg_payload)]
     t_gk = time.monotonic()
     try:
