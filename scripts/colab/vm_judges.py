@@ -9178,8 +9178,8 @@ def _run_judges_pipeline_body(
             progress_file=child_progress_file,
             judge_id=judge_id,
             venv_name=venv_name,
-            jit_shim_dir=(child_progress_dir / f"jit_shim_{pass_key_j}"),
-            jit_shim_marker_file=(child_progress_dir / f"jit_shim_marker_{pass_key_j}.log"),
+            jit_shim_dir=(eff_work_dir / "jit_shim" / pass_key_j),
+            jit_shim_marker_file=(eff_work_dir / "jit_shim" / f"{pass_key_j}_marker.log"),
         )
         jit_build_log_path: Path | None = None
         if venv_name == "venv-vllm" or judge_id == QWEN36_JUDGE_ID:
