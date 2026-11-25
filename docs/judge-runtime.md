@@ -80,7 +80,7 @@ When a judge child finishes, it writes `<run_dir>/judge_done/<judge>.json` (`row
 `rows/<judge>.jsonl`), and the parent records `judge_pass_done` in `progress.jsonl`. If a judge child is killed by the
 Linux OOM killer (`SIGKILL` / signal `9`, exit `137`, or cgroup `memory.events` `oom_kill` delta `> 0`) or exits
 non-zero, the parent stays alive, records `judge_failed` (`JUDGE_CHILD_OOM`, a named Qwen3.6 stop recovered from
-`RDLAB_JUDGE_ENGINE_STOP_FILE`, shim markers, or the 16 KB child stderr tail such as `JUDGE_JIT_BUILD_ENTERED` /
+`RDLAB_JUDGE_ENGINE_STOP_FILE`, shim markers, or the 16 KB `qwen3.6-35b-a3b` child stderr tail (keeping 4 KB for other judges) such as `JUDGE_JIT_BUILD_ENTERED` /
 `JUDGE_PREBUILT_KERNELS_MISSING` / `JUDGE_CUDA_HOME_MISSING` / `JUDGE_GPU_COMPUTE_CAP_MISMATCH` /
 `JUDGE_JIT_SHIM_SYMLINK_FAILED`, or `JUDGE_CHILD_FAILED`), deletes uploaded items, packs `result.tar.gz` (preserving
 completed judges' `rows/<judge>.jsonl` and `judge_done/<judge>.json`), and exits `2` without starting later judges.
