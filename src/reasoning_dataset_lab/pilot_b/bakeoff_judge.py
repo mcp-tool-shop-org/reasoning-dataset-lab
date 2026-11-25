@@ -5183,6 +5183,17 @@ def run_bakeoff_judge(
         "rss_bytes": _read_process_rss_bytes(),
     }
     if spec.judge_id == QWEN36_JUDGE_ID and transport is not None:
+        jit_plan = getattr(transport, "_jit_build_plan", None)
+        if isinstance(jit_plan, Mapping):
+            load_done_payload["jit_build_jobs"] = {
+                "jobs": jit_plan.get("jobs"),
+                "limit_bytes": jit_plan.get("limit_bytes"),
+                "current_bytes": jit_plan.get("current_bytes"),
+                "anon_shmem_bytes": jit_plan.get("anon_shmem_bytes"),
+                "used_bytes": jit_plan.get("used_bytes"),
+                "used_source": jit_plan.get("used_source"),
+                "source": jit_plan.get("source"),
+            }
         cg_peak = getattr(transport, "_cgroup_memory_peak_bytes", None)
         if cg_peak is not None:
             load_done_payload["cgroup_memory_peak_bytes"] = int(cg_peak)
@@ -9949,18 +9960,43 @@ def _read_cgroup_int_value(path: Path) -> int | None:
     return None
 
 
+def _read_cgroup_nonreclaimable_from_stat(cg_dir: Path) -> tuple[int | None, str]:
+    """Read `(anon_shmem_bytes, used_source)` from `cg_dir/memory.stat`.
+
+    cgroup v2 uses `anon` + `shmem`; cgroup v1 uses `total_rss` + `total_shmem` (else `rss` + `shmem`);
+    when missing or unreadable, returns `(None, 'memory.current_fallback')`.
+    """
+    stat_path = cg_dir / "memory.stat"
+    try:
+        text = stat_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None, "memory.current_fallback"
+    stats: dict[str, int] = {}
+    for raw_ln in text.splitlines():
+        parts = raw_ln.strip().split()
+        if len(parts) == 2 and re.fullmatch(r"\d+", parts[1]):
+            stats[parts[0]] = int(parts[1])
+    if "anon" in stats and "shmem" in stats:
+        return int(stats["anon"]) + int(stats["shmem"]), "memory.stat:anon+shmem"
+    if "total_rss" in stats and "total_shmem" in stats:
+        return int(stats["total_rss"]) + int(stats["total_shmem"]), "memory.stat_v1:total_rss+total_shmem"
+    if "rss" in stats and "shmem" in stats:
+        return int(stats["rss"]) + int(stats["shmem"]), "memory.stat_v1:rss+shmem"
+    return None, "memory.current_fallback"
+
+
 def _read_cgroup_memory_state(
     *,
     cgroup_root: Path | None = None,
     proc_cgroup_path: Path | None = None,
-) -> dict[str, int | None]:
-    """Read nearest finite cgroup `memory.max`, `memory.current`, and `memory.peak`."""
+) -> dict[str, Any]:
+    """Read nearest finite cgroup `memory.max`, `memory.current`, `memory.peak`, and `memory.stat` usage."""
     cg_root = Path(cgroup_root) if cgroup_root is not None else Path(os.environ.get("RDLAB_CGROUP_DIR", "").strip() or "/sys/fs/cgroup")
     cg_proc = Path(proc_cgroup_path) if proc_cgroup_path is not None else Path("/proc/self/cgroup")
     first_peak: int | None = None
     try:
         if not cg_proc.is_file():
-            return {"limit_bytes": None, "current_bytes": None, "peak_bytes": None}
+            return {"limit_bytes": None, "current_bytes": None, "peak_bytes": None, "anon_shmem_bytes": None, "used_source": None}
         v2_rel: str | None = None
         v1_rel: str | None = None
         for line in cg_proc.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -9998,10 +10034,17 @@ def _read_cgroup_memory_state(
                 cur = _read_cgroup_int_value(cand / "memory.current")
                 if cur is None:
                     cur = _read_cgroup_int_value(cand / "memory.usage_in_bytes")
-                return {"limit_bytes": limit, "current_bytes": cur, "peak_bytes": peak}
+                anon_shmem, used_src = _read_cgroup_nonreclaimable_from_stat(cand)
+                return {
+                    "limit_bytes": limit,
+                    "current_bytes": cur,
+                    "peak_bytes": peak,
+                    "anon_shmem_bytes": anon_shmem,
+                    "used_source": used_src,
+                }
     except OSError:
         pass
-    return {"limit_bytes": None, "current_bytes": None, "peak_bytes": first_peak}
+    return {"limit_bytes": None, "current_bytes": None, "peak_bytes": first_peak, "anon_shmem_bytes": None, "used_source": None}
 
 
 def _read_cgroup_memory_peak_bytes(
@@ -10019,18 +10062,30 @@ def compute_qwen36_jit_build_jobs(
     *,
     limit_bytes: int | None,
     current_bytes: int | None,
+    anon_shmem_bytes: int | None = None,
+    used_source: str | None = None,
     reserve_bytes: int = QWEN36_JIT_BUILD_RESERVE_BYTES,
     per_job_bytes: int = QWEN36_JIT_BUILD_PER_JOB_BYTES,
     nproc: int | None = None,
     overrides: Mapping[str, int] | None = None,
 ) -> dict[str, Any]:
-    """Compute bounded JIT build job count (`clamp(floor((limit - current - reserve) / per_job), 1, 8)`)."""
+    """Compute bounded JIT build job count (`clamp(floor((limit - used - reserve) / per_job), 1, 8)`)."""
     eff_nproc = max(1, int(nproc if nproc is not None else (os.cpu_count() or 1)))
-    if limit_bytes is not None and current_bytes is not None:
-        raw_jobs = (int(limit_bytes) - int(current_bytes) - int(reserve_bytes)) // int(per_job_bytes)
+    eff_anon_shmem = int(anon_shmem_bytes) if anon_shmem_bytes is not None else None
+    if limit_bytes is not None and (eff_anon_shmem is not None or current_bytes is not None):
+        if eff_anon_shmem is not None:
+            used_bytes: int | None = eff_anon_shmem
+            eff_used_source = str(used_source) if used_source else "memory.stat:anon+shmem"
+        else:
+            assert current_bytes is not None
+            used_bytes = int(current_bytes)
+            eff_used_source = str(used_source) if used_source else "memory.current_fallback"
+        raw_jobs = (int(limit_bytes) - used_bytes - int(reserve_bytes)) // int(per_job_bytes)
         jobs = max(QWEN36_MIN_JIT_BUILD_JOBS, min(QWEN36_MAX_JIT_BUILD_JOBS, int(raw_jobs)))
         source = "cgroup"
     else:
+        used_bytes = None
+        eff_used_source = "none"
         raw_jobs = eff_nproc
         jobs = max(QWEN36_MIN_JIT_BUILD_JOBS, min(QWEN36_MAX_JIT_BUILD_JOBS, eff_nproc))
         source = "fallback"
@@ -10039,6 +10094,9 @@ def compute_qwen36_jit_build_jobs(
         "raw_jobs": raw_jobs,
         "limit_bytes": (int(limit_bytes) if limit_bytes is not None else None),
         "current_bytes": (int(current_bytes) if current_bytes is not None else None),
+        "anon_shmem_bytes": eff_anon_shmem,
+        "used_bytes": used_bytes,
+        "used_source": eff_used_source,
         "reserve_bytes": int(reserve_bytes),
         "per_job_bytes": int(per_job_bytes),
         "source": source,
@@ -10110,6 +10168,8 @@ def ensure_qwen36_jit_build_env_before_llm(
     plan = compute_qwen36_jit_build_jobs(
         limit_bytes=cg_state.get("limit_bytes"),
         current_bytes=cg_state.get("current_bytes"),
+        anon_shmem_bytes=cg_state.get("anon_shmem_bytes"),
+        used_source=cg_state.get("used_source"),
         reserve_bytes=reserve_bytes,
         per_job_bytes=per_job_bytes,
         nproc=nproc,
@@ -10119,10 +10179,15 @@ def ensure_qwen36_jit_build_env_before_llm(
         os.environ[k] = v
     limit_tok = str(plan["limit_bytes"]) if plan.get("limit_bytes") is not None else "none"
     cur_tok = str(plan["current_bytes"]) if plan.get("current_bytes") is not None else "none"
+    anon_tok = str(plan["anon_shmem_bytes"]) if plan.get("anon_shmem_bytes") is not None else "none"
+    used_tok = str(plan["used_bytes"]) if plan.get("used_bytes") is not None else "none"
+    used_src_tok = str(plan.get("used_source") or "none")
     env_tok = ",".join(plan["env"])
     log_line = (
         f"QWEN36_JIT_BUILD_JOBS jobs={plan['jobs']} limit_bytes={limit_tok} "
-        f"current_bytes={cur_tok} reserve_bytes={plan['reserve_bytes']} "
+        f"current_bytes={cur_tok} anon_shmem_bytes={anon_tok} "
+        f"used_bytes={used_tok} used_source={used_src_tok} "
+        f"reserve_bytes={plan['reserve_bytes']} "
         f"per_job_bytes={plan['per_job_bytes']} source={plan['source']} env={env_tok}"
     )
     if plan["source"] == "fallback":

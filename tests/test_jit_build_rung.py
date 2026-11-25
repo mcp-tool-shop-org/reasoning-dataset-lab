@@ -66,6 +66,16 @@ def test_plan_only_cli_prints_versions_targets_cap_and_jobs_without_compiling(
     assert plan["cap_bytes"] == 64 * 1024**3
     # (64 GiB - 0 - 16 GiB reserve) // 8 GiB == 6
     assert plan["jobs"] == 6
+    assert plan["projection_formula"] == "ceil(units / jobs) * median_seconds_per_unit"
+    assert plan["compile_unit_count"] == "not measured"
+    assert plan["median_seconds_per_unit"] == "not measured"
+    assert plan["max_seconds_per_unit"] == "not measured"
+    assert plan["pod_reference"]["projection_formula"] == "ceil(units / jobs) * median_seconds_per_unit"
+    assert plan["pod_reference"]["projected_build_seconds"] == {
+        "before_drop": "not measured",
+        "before_drop_with_measured_per_job": "not measured",
+        "with_anon_shmem": "not measured",
+    }
     assert plan["env"]["FLASHINFER_CUDA_ARCH_LIST"] == "12.0f"
     assert plan["env"]["MAX_JOBS"] == "6"
     assert plan["env"]["FLASHINFER_JIT_PREBUILD_MAX_JOBS"] == "6"
@@ -265,6 +275,8 @@ def test_ensure_vllm_venv_and_run_jit_build_rung_mocked(
                     "sources_count": 96,
                     "build_seconds": 12.5,
                     "memory_peak_bytes": 28_000_000_000,
+                    "scope_memory_max": str(64 * 1024**3),
+                    "scope_memory_max_bytes": 64 * 1024**3,
                 }
             )
             + "\n",
@@ -489,13 +501,22 @@ def test_pod_reference_hand_computed_in_receipt_and_plan_only(tmp_path: Path) ->
         "pod_date": "2026-11-24",
         "limit_bytes": 124_999_999_488,
         "current_bytes": 93_410_516_992,
+        "anon_shmem_bytes": None,
         "reserve_bytes": 17_179_869_184,
         "per_job_bytes_assumed": 8_589_934_592,
         "jobs_before_drop": 1,
         "raw_jobs_before_drop": 1,
+        "jobs_with_anon_shmem": None,
+        "raw_jobs_with_anon_shmem": None,
         "measured_per_job_bytes": 6_442_450_944,
         "jobs_before_drop_with_measured_per_job": 2,
         "raw_jobs_before_drop_with_measured_per_job": 2,
+        "projection_formula": "ceil(units / jobs) * median_seconds_per_unit",
+        "projected_build_seconds": {
+            "before_drop": None,
+            "before_drop_with_measured_per_job": None,
+            "with_anon_shmem": None,
+        },
     }
 
     # Measured peak = 16 GiB (17_179_869_184): 14_409_613_312 // 17_179_869_184 == 0 -> clamped to 1
@@ -562,13 +583,331 @@ def test_pod_reference_hand_computed_in_receipt_and_plan_only(tmp_path: Path) ->
         "pod_date": "2026-11-24",
         "limit_bytes": 124_999_999_488,
         "current_bytes": 93_410_516_992,
+        "anon_shmem_bytes": None,
         "reserve_bytes": 17_179_869_184,
         "per_job_bytes_assumed": 8_589_934_592,
         "jobs_before_drop": 1,
         "raw_jobs_before_drop": 1,
+        "jobs_with_anon_shmem": None,
+        "raw_jobs_with_anon_shmem": None,
         "measured_per_job_bytes": None,
         "jobs_before_drop_with_measured_per_job": None,
         "raw_jobs_before_drop_with_measured_per_job": None,
+        "projection_formula": "ceil(units / jobs) * median_seconds_per_unit",
+        "projected_build_seconds": {
+            "before_drop": "not measured",
+            "before_drop_with_measured_per_job": "not measured",
+            "with_anon_shmem": "not measured",
+        },
     }
+
+
+def _setup_synthetic_rung_venv_and_flashinfer(
+    base_dir: Path,
+    *,
+    compile_sentinel: Path | None = None,
+    ninja_log_target_dir: Path | None = None,
+) -> tuple[Path, Path]:
+    venv_dir = base_dir / "venv"
+    venv_py_rel = Path("Scripts/python.exe") if sys.platform.startswith("win") else Path("bin/python")
+    py_p = venv_dir / venv_py_rel
+    py_p.parent.mkdir(parents=True, exist_ok=True)
+    py_p.write_text("", encoding="utf-8")
+    sp_dir = venv_dir / "lib" / "python3.13" / "site-packages"
+    cu13 = sp_dir / "nvidia" / "cu13"
+    (cu13 / "bin").mkdir(parents=True, exist_ok=True)
+    (cu13 / "nvvm" / "bin").mkdir(parents=True, exist_ok=True)
+    (cu13 / "include").mkdir(parents=True, exist_ok=True)
+    (cu13 / "lib" / "stubs").mkdir(parents=True, exist_ok=True)
+    (cu13 / "bin" / "nvcc").write_text("#!/bin/sh\n", encoding="utf-8")
+    (cu13 / "lib" / "libcudart.so.13").write_bytes(b"")
+    (cu13 / "lib" / "libnvrtc.so.13").write_bytes(b"")
+    (cu13 / "lib" / "stubs" / "libcuda.so").write_bytes(b"")
+    for pkg in ("vllm-0.34.0", "flashinfer_python-0.7.3", "nvidia_cuda_nvcc-13.5.37"):
+        (sp_dir / f"{pkg}.dist-info").mkdir(parents=True, exist_ok=True)
+    (venv_dir / ".rdlab_vllm_lock.sha256").write_text(
+        jit_build_rung.parse_vllm_lock_versions()["lock_sha256"] + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    fake_pkg_root = base_dir / "fake_pkgs"
+    fi_jit = fake_pkg_root / "flashinfer" / "jit"
+    fi_jit.mkdir(parents=True, exist_ok=True)
+    (fake_pkg_root / "flashinfer" / "__init__.py").write_text("", encoding="utf-8")
+    (fi_jit / "__init__.py").write_text("", encoding="utf-8")
+    sentinel_repr = repr(str(compile_sentinel)) if compile_sentinel is not None else "None"
+    (fi_jit / "fused_moe.py").write_text(
+        "import pathlib\n"
+        f"_SENTINEL = {sentinel_repr}\n"
+        "def gen_cutlass_fused_moe_sm120_module(use_fast_build=False):\n"
+        "    if _SENTINEL:\n"
+        "        pathlib.Path(_SENTINEL).write_text('compiled', encoding='utf-8')\n"
+        "    class _Spec:\n"
+        "        name = 'fused_moe_120'\n"
+        "        sources = ['a.cu', 'b.cu']\n"
+        "    return _Spec()\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    ninja_dir_repr = repr(str(ninja_log_target_dir)) if ninja_log_target_dir is not None else "None"
+    (fi_jit / "core.py").write_text(
+        "import os, pathlib\n"
+        f"_NINJA_DIR = {ninja_dir_repr}\n"
+        "def build_jit_specs(specs, verbose=True):\n"
+        "    if _NINJA_DIR:\n"
+        "        d = pathlib.Path(_NINJA_DIR)\n"
+        "        d.mkdir(parents=True, exist_ok=True)\n"
+        "        (d / '.ninja_log').write_text('# ninja log v5\\n0\\t20000\\t0\\ta.cu.o\\th1\\n20000\\t60000\\t0\\tb.cu.o\\th2\\n', encoding='utf-8')\n"
+        "    return None\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    return venv_dir, fake_pkg_root
+
+
+def test_rung_worker_refuses_when_cgroup_memory_max_differs_from_cap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requested_cap = 64 * 1024**3
+    wrong_cap = 32 * 1024**3
+    sentinel = tmp_path / "should_not_compile.txt"
+    venv_dir, fake_pkg_root = _setup_synthetic_rung_venv_and_flashinfer(
+        tmp_path,
+        compile_sentinel=sentinel,
+    )
+
+    cg_root = tmp_path / "cg"
+    cg_scope = cg_root / "rung.scope"
+    cg_scope.mkdir(parents=True, exist_ok=True)
+    (cg_scope / "memory.max").write_text(f"{wrong_cap}\n", encoding="utf-8", newline="\n")
+    (cg_scope / "memory.peak").write_text("123456\n", encoding="utf-8", newline="\n")
+    proc_cg = tmp_path / "proc_cgroup"
+    proc_cg.write_text("0::/rung.scope\n", encoding="utf-8", newline="\n")
+
+    def _run_real_worker_script(cmd: list[str], **kwargs: Any) -> Any:
+        # Execute the exact worker Python `-c` payload inside sys.executable with fake cgroup env
+        worker_code = cmd[cmd.index("-c") + 1]
+        env = dict(kwargs.get("env") or {})
+        env["RDLAB_JIT_RUNG_PROC_CGROUP"] = str(proc_cg)
+        env["RDLAB_JIT_RUNG_CGROUP_ROOT"] = str(cg_root)
+        env["PYTHONPATH"] = str(fake_pkg_root) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+        return subprocess.run(
+            [sys.executable, "-c", worker_code],
+            env=env,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+
+    monkeypatch.setattr(jit_build_rung.shutil, "which", lambda name: "/usr/bin/systemd-run" if name == "systemd-run" else None)
+    monkeypatch.setattr(jit_build_rung, "prepare_venv_cuda_home", lambda *_a, **_kw: {
+        "cuda_home": str(tmp_path / "ch"),
+        "nvcc": str(tmp_path / "ch" / "bin" / "nvcc"),
+        "lib64_dir": str(tmp_path / "ch" / "lib64"),
+    })
+
+    # Case 1: scope memory.max (32 GiB) != requested cap_bytes (64 GiB) -> fail closed RUNG_CAP_NOT_ENFORCED & build nothing
+    receipt_mismatch = tmp_path / "receipt_mismatch.json"
+    with pytest.raises(jit_build_rung.JitBuildRungError) as exc_mis:
+        jit_build_rung.run_jit_build_rung(
+            venv_dir=venv_dir,
+            cap_bytes=requested_cap,
+            cache_dir=tmp_path / "cache_1",
+            receipt_path=receipt_mismatch,
+            runner=_run_real_worker_script,
+        )
+    assert exc_mis.value.code == "RUNG_CAP_NOT_ENFORCED"
+    assert not sentinel.exists(), "Worker compiled even though memory.max did not match cap"
+    rec_mis = json.loads(receipt_mismatch.read_text(encoding="utf-8"))
+    assert rec_mis["success"] is False
+    assert rec_mis["error_code"] == "RUNG_CAP_NOT_ENFORCED"
+    assert rec_mis["scope_memory_max"] == str(wrong_cap)
+    assert rec_mis["scope_memory_max_bytes"] == wrong_cap
+
+    # Case 2: scope memory.max is "max" (unbounded) -> refuse RUNG_CAP_NOT_ENFORCED
+    (cg_scope / "memory.max").write_text("max\n", encoding="utf-8", newline="\n")
+    receipt_max = tmp_path / "receipt_max.json"
+    with pytest.raises(jit_build_rung.JitBuildRungError) as exc_max:
+        jit_build_rung.run_jit_build_rung(
+            venv_dir=venv_dir,
+            cap_bytes=requested_cap,
+            cache_dir=tmp_path / "cache_2",
+            receipt_path=receipt_max,
+            runner=_run_real_worker_script,
+        )
+    assert exc_max.value.code == "RUNG_CAP_NOT_ENFORCED"
+    assert not sentinel.exists()
+    rec_max = json.loads(receipt_max.read_text(encoding="utf-8"))
+    assert rec_max["scope_memory_max"] == "max"
+    assert rec_max["scope_memory_max_bytes"] is None
+
+    # Case 3: scope memory.max unreadable/missing -> refuse RUNG_CAP_NOT_ENFORCED
+    (cg_scope / "memory.max").unlink()
+    receipt_missing = tmp_path / "receipt_missing.json"
+    with pytest.raises(jit_build_rung.JitBuildRungError) as exc_none:
+        jit_build_rung.run_jit_build_rung(
+            venv_dir=venv_dir,
+            cap_bytes=requested_cap,
+            cache_dir=tmp_path / "cache_3",
+            receipt_path=receipt_missing,
+            runner=_run_real_worker_script,
+        )
+    assert exc_none.value.code == "RUNG_CAP_NOT_ENFORCED"
+    assert not sentinel.exists()
+    assert json.loads(receipt_missing.read_text(encoding="utf-8"))["scope_memory_max"] is None
+
+    # Case 4: worker memory.max == requested cap -> succeeds, runs mock flashinfer, records enforced cap
+    (cg_scope / "memory.max").write_text(f"{requested_cap}\n", encoding="utf-8", newline="\n")
+    cache_ok = tmp_path / "cache_ok"
+    receipt_ok = tmp_path / "receipt_ok.json"
+    venv_ok, fake_pkg_ok = _setup_synthetic_rung_venv_and_flashinfer(
+        tmp_path / "ok_run",
+        compile_sentinel=sentinel,
+        ninja_log_target_dir=cache_ok / "cached_ops" / "fused_moe_120",
+    )
+
+    def _run_ok_worker(cmd: list[str], **kwargs: Any) -> Any:
+        worker_code = cmd[cmd.index("-c") + 1]
+        env = dict(kwargs.get("env") or {})
+        env["RDLAB_JIT_RUNG_PROC_CGROUP"] = str(proc_cg)
+        env["RDLAB_JIT_RUNG_CGROUP_ROOT"] = str(cg_root)
+        env["PYTHONPATH"] = str(fake_pkg_ok) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+        return subprocess.run(
+            [sys.executable, "-c", worker_code],
+            env=env,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+
+    rec_ok = jit_build_rung.run_jit_build_rung(
+        venv_dir=venv_ok,
+        cap_bytes=requested_cap,
+        cache_dir=cache_ok,
+        receipt_path=receipt_ok,
+        runner=_run_ok_worker,
+    )
+    assert sentinel.read_text(encoding="utf-8") == "compiled"
+    assert rec_ok["success"] is True
+    assert rec_ok["scope_memory_max"] == str(requested_cap)
+    assert rec_ok["scope_memory_max_bytes"] == requested_cap
+    assert rec_ok["compile_unit_count"] == 2
+    assert rec_ok["median_seconds_per_unit"] == 30.0
+    assert rec_ok["max_seconds_per_unit"] == 40.0
+
+
+def test_receipt_and_plan_only_build_time_projection_from_fake_ninja_log(
+    tmp_path: Path,
+) -> None:
+    cache_dir = tmp_path / "fi_cache_ninja"
+    build_dir = cache_dir / "12.0f" / "cached_ops" / "fused_moe_120"
+    build_dir.mkdir(parents=True, exist_ok=True)
+    # 5 targets: 10s (re-compiled -> 20s), 30s, 40s, 60s, 100s => median=40.0, max=100.0, count=5
+    (build_dir / ".ninja_log").write_text(
+        "# ninja log v5\n"
+        "\n"
+        "bad line\n"
+        "x\ty\t0\tbad_num.o\th0\n"
+        "0\t5000\t0\t\th_empty\n"
+        "0\t10000\t1\tu1.cu.o\th1\n"
+        "10000\t30000\t2\tu1.cu.o\th1b\n"
+        "0\t30000\t3\tu2.cu.o\th2\n"
+        "1000\t41000\t4\tu3.cu.o\th3\n"
+        "5000\t65000\t5\tu4.cu.o\th4\n"
+        "0\t100000\t6\tfused_moe_120.so\th5\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    timings = jit_build_rung.collect_ninja_unit_timings(cache_dir)
+    assert timings == {
+        "compile_unit_count": 5,
+        "median_seconds_per_unit": 40.0,
+        "max_seconds_per_unit": 100.0,
+        "unit_timing_source": "ninja_log",
+    }
+    assert jit_build_rung.parse_ninja_log(tmp_path / "missing_log") == {}
+    assert jit_build_rung.collect_ninja_unit_timings(None)["compile_unit_count"] is None
+
+    # Hand check:
+    # - units=5, median=40.0
+    # - jobs_before_drop = 1 -> ceil(5 / 1) * 40.0 = 200.0
+    # - jobs_before_drop_with_measured_per_job (peak 6 GiB -> 2 jobs) -> ceil(5 / 2) * 40.0 = 120.0
+    # - jobs_with_anon_shmem (anon+shmem 4.5 GiB -> 8 jobs) -> ceil(5 / 8) * 40.0 = 40.0
+    anon_shmem = 4 * 1024**3 + 512 * 1024**2
+    receipt_path = tmp_path / "receipt_proj.json"
+    jit_build_rung.write_jit_build_receipt(
+        receipt_path,
+        {
+            "versions": {"vllm": "0.34.0", "flashinfer": "0.7.3", "nvcc": "13.5.37"},
+            "targets": ["fused_moe_120"],
+            "cap_bytes": 64 * 1024**3,
+            "scope_memory_max": str(64 * 1024**3),
+            "scope_memory_max_bytes": 64 * 1024**3,
+            "jobs": 1,
+            "memory_peak_bytes": 6 * 1024**3,
+            "anon_shmem_bytes": anon_shmem,
+            "build_seconds": 180.0,
+            "success": True,
+            "cache_dir": str(cache_dir),
+        },
+    )
+    written = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert written["compile_unit_count"] == 5
+    assert written["median_seconds_per_unit"] == 40.0
+    assert written["max_seconds_per_unit"] == 100.0
+    assert written["unit_timing_source"] == "ninja_log"
+    pod_ref = written["pod_reference"]
+    assert pod_ref["anon_shmem_bytes"] == anon_shmem
+    assert pod_ref["jobs_before_drop"] == 1
+    assert pod_ref["jobs_before_drop_with_measured_per_job"] == 2
+    assert pod_ref["jobs_with_anon_shmem"] == 8
+    assert pod_ref["projection_formula"] == "ceil(units / jobs) * median_seconds_per_unit"
+    assert pod_ref["projected_build_seconds"] == {
+        "before_drop": 200.0,
+        "before_drop_with_measured_per_job": 120.0,
+        "with_anon_shmem": 40.0,
+    }
+
+    # Verify --plan-only prints the formula with "not measured" for the seconds (including anon-shmem pod ref)
+    env = dict(os.environ)
+    env["CUDA_VISIBLE_DEVICES"] = ""
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPTS_COLAB_DIR / "jit_build_rung.py"),
+            "--plan-only",
+            "--memory-max",
+            "64GiB",
+            "--anon-shmem-bytes",
+            str(anon_shmem),
+        ],
+        env=env,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    plan = json.loads(proc.stdout)
+    assert plan["projection_formula"] == "ceil(units / jobs) * median_seconds_per_unit"
+    assert plan["compile_unit_count"] == "not measured"
+    assert plan["median_seconds_per_unit"] == "not measured"
+    assert plan["max_seconds_per_unit"] == "not measured"
+    assert plan["pod_reference"]["jobs_with_anon_shmem"] == 8
+    assert plan["pod_reference"]["projection_formula"] == "ceil(units / jobs) * median_seconds_per_unit"
+    assert plan["pod_reference"]["projected_build_seconds"] == {
+        "before_drop": "not measured",
+        "before_drop_with_measured_per_job": "not measured",
+        "with_anon_shmem": "not measured",
+    }
+
 
 

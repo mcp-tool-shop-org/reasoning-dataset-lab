@@ -13,10 +13,12 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
 import shutil
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -36,6 +38,7 @@ DEFAULT_CURRENT_BYTES: int = 0
 POD_2026_11_24_LIMIT_BYTES: int = 124_999_999_488
 POD_2026_11_24_CURRENT_BYTES_BEFORE_DROP: int = 93_410_516_992
 PER_JOB_PEAK_MULTI_JOB_NOTE: str = "only measured at jobs=1"
+PROJECTED_BUILD_SECONDS_FORMULA: str = "ceil(units / jobs) * median_seconds_per_unit"
 DEFAULT_CGROUP_V2_ROOT = Path("/sys/fs/cgroup")
 FLASHINFER_CUDA_ARCH_LIST = "12.0f"
 FUSED_MOE_120_MODULE_NAME = "fused_moe_120"
@@ -434,13 +437,93 @@ def resolve_fused_moe_120_target_spec() -> dict[str, Any]:
     }
 
 
+def parse_ninja_log(ninja_log_path: Path) -> dict[str, float]:
+    """Parse a `.ninja_log` (v5) file into `{output_target: seconds}` keeping the latest entry per target."""
+    durations_by_target: dict[str, float] = {}
+    try:
+        lines = Path(ninja_log_path).read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return durations_by_target
+    for raw_line in lines:
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        cols = raw_line.split("\t")
+        if len(cols) < 4:
+            continue
+        try:
+            start_ms = int(cols[0].strip())
+            end_ms = int(cols[1].strip())
+        except ValueError:
+            continue
+        target = cols[3].strip()
+        if not target:
+            continue
+        durations_by_target[target] = max(0.0, (end_ms - start_ms) / 1000.0)
+    return durations_by_target
+
+
+def collect_ninja_unit_timings(cache_dir: Path | None) -> dict[str, Any]:
+    """Measure per-compile-unit seconds from `.ninja_log` files inside `cache_dir`."""
+    empty = {
+        "compile_unit_count": None,
+        "median_seconds_per_unit": None,
+        "max_seconds_per_unit": None,
+        "unit_timing_source": None,
+    }
+    if cache_dir is None:
+        return empty
+    root = Path(cache_dir)
+    if not root.is_dir():
+        return empty
+    all_durations: list[float] = []
+    for log_path in sorted(root.rglob(".ninja_log")):
+        if not log_path.is_file():
+            continue
+        per_target = parse_ninja_log(log_path)
+        all_durations.extend(per_target.values())
+    if not all_durations:
+        return empty
+    return {
+        "compile_unit_count": len(all_durations),
+        "median_seconds_per_unit": round(float(statistics.median(all_durations)), 6),
+        "max_seconds_per_unit": round(float(max(all_durations)), 6),
+        "unit_timing_source": "ninja_log",
+    }
+
+
+def compute_projected_build_seconds(
+    *,
+    units: int | None,
+    jobs: int | None,
+    median_seconds_per_unit: float | None,
+    plan_only: bool = False,
+) -> float | str | None:
+    """Compute `ceil(units / jobs) * median_seconds_per_unit`, returning `'not measured'` under `--plan-only`."""
+    if plan_only:
+        return "not measured"
+    if (
+        units is not None
+        and int(units) > 0
+        and jobs is not None
+        and int(jobs) > 0
+        and median_seconds_per_unit is not None
+    ):
+        return round(math.ceil(int(units) / int(jobs)) * float(median_seconds_per_unit), 6)
+    return None
+
+
 def build_pod_reference(
     *,
     reserve_bytes: int = vm_judges.DEFAULT_JIT_BUILD_RESERVE_BYTES,
     per_job_bytes_assumed: int = vm_judges.DEFAULT_JIT_BUILD_PER_JOB_BYTES,
     measured_per_job_bytes: int | None = None,
+    anon_shmem_bytes: int | None = None,
+    compile_unit_count: int | None = None,
+    median_seconds_per_unit: float | None = None,
+    plan_only: bool = False,
 ) -> dict[str, Any]:
-    """Evaluate `compute_jit_build_jobs` on the 2026-11-24 RunPod pod pre-drop memory readings."""
+    """Evaluate `compute_jit_build_jobs` and build-time projections on the 2026-11-24 RunPod pod numbers."""
     assumed_plan = vm_judges.compute_jit_build_jobs(
         limit_bytes=POD_2026_11_24_LIMIT_BYTES,
         current_bytes=POD_2026_11_24_CURRENT_BYTES_BEFORE_DROP,
@@ -462,26 +545,66 @@ def build_pod_reference(
         if eff_measured is not None
         else None
     )
+    eff_anon_shmem = int(anon_shmem_bytes) if anon_shmem_bytes is not None else None
+    anon_plan = (
+        vm_judges.compute_jit_build_jobs(
+            limit_bytes=POD_2026_11_24_LIMIT_BYTES,
+            current_bytes=POD_2026_11_24_CURRENT_BYTES_BEFORE_DROP,
+            anon_shmem_bytes=eff_anon_shmem,
+            used_source="memory.stat:anon+shmem",
+            reserve_bytes=int(reserve_bytes),
+            per_job_bytes=int(per_job_bytes_assumed),
+        )
+        if eff_anon_shmem is not None
+        else None
+    )
+    jobs_before_drop = int(assumed_plan["jobs"])
+    jobs_before_drop_measured = int(measured_plan["jobs"]) if measured_plan is not None else None
+    jobs_with_anon_shmem = int(anon_plan["jobs"]) if anon_plan is not None else None
     return {
         "pod_date": "2026-11-24",
         "limit_bytes": POD_2026_11_24_LIMIT_BYTES,
         "current_bytes": POD_2026_11_24_CURRENT_BYTES_BEFORE_DROP,
+        "anon_shmem_bytes": eff_anon_shmem,
         "reserve_bytes": int(reserve_bytes),
         "per_job_bytes_assumed": int(per_job_bytes_assumed),
-        "jobs_before_drop": int(assumed_plan["jobs"]),
+        "jobs_before_drop": jobs_before_drop,
         "raw_jobs_before_drop": int(assumed_plan["raw_jobs"]),
-        "measured_per_job_bytes": eff_measured,
-        "jobs_before_drop_with_measured_per_job": (
-            int(measured_plan["jobs"]) if measured_plan is not None else None
+        "jobs_with_anon_shmem": jobs_with_anon_shmem,
+        "raw_jobs_with_anon_shmem": (
+            int(anon_plan["raw_jobs"]) if anon_plan is not None else None
         ),
+        "measured_per_job_bytes": eff_measured,
+        "jobs_before_drop_with_measured_per_job": jobs_before_drop_measured,
         "raw_jobs_before_drop_with_measured_per_job": (
             int(measured_plan["raw_jobs"]) if measured_plan is not None else None
         ),
+        "projection_formula": PROJECTED_BUILD_SECONDS_FORMULA,
+        "projected_build_seconds": {
+            "before_drop": compute_projected_build_seconds(
+                units=compile_unit_count,
+                jobs=jobs_before_drop,
+                median_seconds_per_unit=median_seconds_per_unit,
+                plan_only=plan_only,
+            ),
+            "before_drop_with_measured_per_job": compute_projected_build_seconds(
+                units=compile_unit_count,
+                jobs=jobs_before_drop_measured,
+                median_seconds_per_unit=median_seconds_per_unit,
+                plan_only=plan_only,
+            ),
+            "with_anon_shmem": compute_projected_build_seconds(
+                units=compile_unit_count,
+                jobs=jobs_with_anon_shmem,
+                median_seconds_per_unit=median_seconds_per_unit,
+                plan_only=plan_only,
+            ),
+        },
     }
 
 
 def enrich_jit_build_receipt(receipt: Mapping[str, Any]) -> dict[str, Any]:
-    """Populate `per_job_peak_*` and `pod_reference` beside the measured receipt fields."""
+    """Populate `per_job_peak_*`, compile-unit timings, and `pod_reference` beside the measured receipt fields."""
     jobs = int(receipt["jobs"])
     raw_peak = receipt.get("memory_peak_bytes")
     memory_peak_bytes = (
@@ -511,10 +634,37 @@ def enrich_jit_build_receipt(receipt: Mapping[str, Any]) -> dict[str, Any]:
         if per_job_peak_bytes is not None
         else None
     )
+    raw_cache_dir = receipt.get("cache_dir")
+    ninja_timings = collect_ninja_unit_timings(
+        Path(str(raw_cache_dir)) if raw_cache_dir else None
+    )
+    compile_unit_count = (
+        int(receipt["compile_unit_count"])
+        if receipt.get("compile_unit_count") is not None
+        else ninja_timings["compile_unit_count"]
+    )
+    median_seconds_per_unit = (
+        float(receipt["median_seconds_per_unit"])
+        if receipt.get("median_seconds_per_unit") is not None
+        else ninja_timings["median_seconds_per_unit"]
+    )
+    max_seconds_per_unit = (
+        float(receipt["max_seconds_per_unit"])
+        if receipt.get("max_seconds_per_unit") is not None
+        else ninja_timings["max_seconds_per_unit"]
+    )
+    unit_timing_source = receipt.get("unit_timing_source") or ninja_timings["unit_timing_source"]
+    anon_shmem_bytes = receipt.get("anon_shmem_bytes")
+    if anon_shmem_bytes is None:
+        anon_shmem_bytes = job_plan.get("anon_shmem_bytes")
     pod_reference = build_pod_reference(
         reserve_bytes=reserve_bytes,
         per_job_bytes_assumed=per_job_bytes_assumed,
         measured_per_job_bytes=per_job_peak_bytes,
+        anon_shmem_bytes=(int(anon_shmem_bytes) if anon_shmem_bytes is not None else None),
+        compile_unit_count=compile_unit_count,
+        median_seconds_per_unit=median_seconds_per_unit,
+        plan_only=False,
     )
     computed = {
         "memory_peak_bytes": memory_peak_bytes,
@@ -522,6 +672,10 @@ def enrich_jit_build_receipt(receipt: Mapping[str, Any]) -> dict[str, Any]:
         "per_job_peak_note": per_job_peak_note,
         "per_job_bytes_assumed": per_job_bytes_assumed,
         "per_job_peak_exceeds_assumption": per_job_peak_exceeds_assumption,
+        "compile_unit_count": compile_unit_count,
+        "median_seconds_per_unit": median_seconds_per_unit,
+        "max_seconds_per_unit": max_seconds_per_unit,
+        "unit_timing_source": unit_timing_source,
         "pod_reference": pod_reference,
     }
     ordered_keys = (
@@ -529,6 +683,8 @@ def enrich_jit_build_receipt(receipt: Mapping[str, Any]) -> dict[str, Any]:
         "lock_sha256",
         "targets",
         "cap_bytes",
+        "scope_memory_max",
+        "scope_memory_max_bytes",
         "jobs",
         "memory_peak_bytes",
         "per_job_peak_bytes",
@@ -537,9 +693,14 @@ def enrich_jit_build_receipt(receipt: Mapping[str, Any]) -> dict[str, Any]:
         "per_job_peak_exceeds_assumption",
         "pod_reference",
         "build_seconds",
+        "compile_unit_count",
+        "median_seconds_per_unit",
+        "max_seconds_per_unit",
+        "unit_timing_source",
         "wall_seconds",
         "scope_mode",
         "success",
+        "error_code",
         "cache_dir",
         "error",
     )
@@ -559,6 +720,7 @@ def build_jit_rung_plan(
     *,
     cap_bytes: int,
     current_bytes: int = DEFAULT_CURRENT_BYTES,
+    anon_shmem_bytes: int | None = None,
     venv_dir: Path | None = None,
     lock_path: Path = DEFAULT_LOCK_PATH,
     cache_dir: Path | None = None,
@@ -578,6 +740,7 @@ def build_jit_rung_plan(
     job_plan = vm_judges.compute_jit_build_jobs(
         limit_bytes=int(cap_bytes),
         current_bytes=int(current_bytes),
+        anon_shmem_bytes=anon_shmem_bytes,
         reserve_bytes=eff_reserve,
         per_job_bytes=eff_per_job,
         nproc=nproc,
@@ -587,6 +750,8 @@ def build_jit_rung_plan(
         reserve_bytes=eff_reserve,
         per_job_bytes_assumed=eff_per_job,
         measured_per_job_bytes=None,
+        anon_shmem_bytes=anon_shmem_bytes,
+        plan_only=True,
     )
     eff_cache_dir = (
         validate_fresh_cache_dir(cache_dir).as_posix()
@@ -612,8 +777,13 @@ def build_jit_rung_plan(
         "targets": [FUSED_MOE_120_MODULE_NAME],
         "cap_bytes": int(cap_bytes),
         "current_bytes": int(current_bytes),
+        "anon_shmem_bytes": (int(anon_shmem_bytes) if anon_shmem_bytes is not None else None),
         "jobs": int(job_plan["jobs"]),
         "per_job_bytes_assumed": eff_per_job,
+        "projection_formula": PROJECTED_BUILD_SECONDS_FORMULA,
+        "compile_unit_count": "not measured",
+        "median_seconds_per_unit": "not measured",
+        "max_seconds_per_unit": "not measured",
         "pod_reference": pod_reference,
         "log_line": vm_judges.format_jit_build_jobs_log_line(job_plan),
         "cache_dir": eff_cache_dir,
@@ -635,33 +805,90 @@ def build_jit_rung_plan(
 
 
 def _worker_build_script() -> str:
-    """Return Python source run inside the venv + memory-capped scope to build `fused_moe_120` only."""
+    """Return Python source run inside the venv + memory-capped scope to enforce `memory.max` and build `fused_moe_120`."""
     return (
         "import json, os, pathlib, sys, time\n"
-        "from flashinfer.jit.fused_moe import gen_cutlass_fused_moe_sm120_module\n"
-        "from flashinfer.jit.core import build_jit_specs\n"
-        "def _read_self_peak():\n"
+        "def _resolve_self_cgroup_dir():\n"
+        "    proc_cg = pathlib.Path(os.environ.get('RDLAB_JIT_RUNG_PROC_CGROUP', '/proc/self/cgroup'))\n"
+        "    cg_root = pathlib.Path(os.environ.get('RDLAB_JIT_RUNG_CGROUP_ROOT', '/sys/fs/cgroup'))\n"
         "    try:\n"
-        "        for ln in pathlib.Path('/proc/self/cgroup').read_text(encoding='utf-8').splitlines():\n"
+        "        v2_rel = None\n"
+        "        v1_rel = None\n"
+        "        for ln in proc_cg.read_text(encoding='utf-8').splitlines():\n"
         "            parts = ln.strip().split(':', 2)\n"
-        "            if len(parts) == 3 and not parts[1]:\n"
-        "                rel = parts[2].strip().lstrip('/')\n"
-        "                cg = pathlib.Path('/sys/fs/cgroup') / rel if rel else pathlib.Path('/sys/fs/cgroup')\n"
-        "                for fname in ('memory.peak', 'memory.max_usage_in_bytes'):\n"
-        "                    p = cg / fname\n"
-        "                    if p.is_file():\n"
-        "                        txt = p.read_text(encoding='utf-8').strip()\n"
-        "                        if txt.isdigit():\n"
-        "                            return int(txt)\n"
+        "            if len(parts) != 3:\n"
+        "                continue\n"
+        "            ctrls = [c.strip() for c in parts[1].split(',') if c.strip()]\n"
+        "            if not ctrls and v2_rel is None:\n"
+        "                v2_rel = parts[2].strip().lstrip('/')\n"
+        "            elif 'memory' in ctrls and v1_rel is None:\n"
+        "                v1_rel = parts[2].strip().lstrip('/')\n"
+        "        if v2_rel is not None:\n"
+        "            return (cg_root / v2_rel if v2_rel else cg_root), 'v2'\n"
+        "        if v1_rel is not None:\n"
+        "            base = cg_root / 'memory' if (cg_root / 'memory').is_dir() else cg_root\n"
+        "            return (base / v1_rel if v1_rel else base), 'v1'\n"
         "    except Exception:\n"
         "        pass\n"
+        "    return None, None\n"
+        "def _read_self_memory_max(cg_dir, cg_ver):\n"
+        "    if cg_dir is None:\n"
+        "        return None, None\n"
+        "    fname = 'memory.limit_in_bytes' if cg_ver == 'v1' else 'memory.max'\n"
+        "    try:\n"
+        "        raw = (cg_dir / fname).read_text(encoding='utf-8').strip()\n"
+        "        parsed = int(raw) if raw.isdigit() else None\n"
+        "        return raw, parsed\n"
+        "    except Exception:\n"
+        "        return None, None\n"
+        "def _read_self_peak(cg_dir):\n"
+        "    if cg_dir is None:\n"
+        "        return None\n"
+        "    for fname in ('memory.peak', 'memory.max_usage_in_bytes'):\n"
+        "        try:\n"
+        "            p = cg_dir / fname\n"
+        "            if p.is_file():\n"
+        "                txt = p.read_text(encoding='utf-8').strip()\n"
+        "                if txt.isdigit():\n"
+        "                    return int(txt)\n"
+        "        except Exception:\n"
+        "            pass\n"
         "    return None\n"
+        "def _write_meta(payload):\n"
+        "    meta_path = os.environ.get('RDLAB_JIT_RUNG_WORKER_META', '')\n"
+        "    if meta_path:\n"
+        "        pathlib.Path(meta_path).write_text(json.dumps(payload, sort_keys=True) + '\\n', encoding='utf-8')\n"
+        "cg_dir, cg_ver = _resolve_self_cgroup_dir()\n"
+        "scope_max_raw, scope_max_bytes = _read_self_memory_max(cg_dir, cg_ver)\n"
+        "expected_cap_raw = os.environ.get('RDLAB_JIT_RUNG_EXPECTED_CAP_BYTES', '').strip()\n"
+        "expected_cap = int(expected_cap_raw) if expected_cap_raw.isdigit() else None\n"
+        "if expected_cap is None or scope_max_bytes != expected_cap:\n"
+        "    err_msg = (\n"
+        "        f'[RUNG_CAP_NOT_ENFORCED] worker cgroup memory.max={scope_max_raw!r} '\n"
+        "        f'({scope_max_bytes}) does not equal requested cap_bytes={expected_cap}'\n"
+        "    )\n"
+        "    _write_meta({\n"
+        "        'success': False,\n"
+        "        'compiled': False,\n"
+        "        'error_code': 'RUNG_CAP_NOT_ENFORCED',\n"
+        "        'error': err_msg,\n"
+        "        'spec_name': None,\n"
+        "        'sources_count': 0,\n"
+        "        'build_seconds': 0.0,\n"
+        "        'memory_peak_bytes': _read_self_peak(cg_dir),\n"
+        "        'scope_memory_max': scope_max_raw,\n"
+        "        'scope_memory_max_bytes': scope_max_bytes,\n"
+        "    })\n"
+        "    sys.stderr.write(err_msg + '\\n')\n"
+        "    sys.exit(2)\n"
         "t0 = time.monotonic()\n"
         "ok = False\n"
         "err = None\n"
         "spec_name = None\n"
         "sources_count = 0\n"
         "try:\n"
+        "    from flashinfer.jit.fused_moe import gen_cutlass_fused_moe_sm120_module\n"
+        "    from flashinfer.jit.core import build_jit_specs\n"
         "    spec = gen_cutlass_fused_moe_sm120_module(use_fast_build=False)\n"
         "    spec_name = spec.name\n"
         "    sources_count = len(getattr(spec, 'sources', []))\n"
@@ -671,13 +898,19 @@ def _worker_build_script() -> str:
         "    err = f'{type(exc).__name__}: {exc}'\n"
         "finally:\n"
         "    elapsed = round(max(0.0, time.monotonic() - t0), 6)\n"
-        "    peak = _read_self_peak()\n"
-        "    meta_path = os.environ.get('RDLAB_JIT_RUNG_WORKER_META', '')\n"
-        "    if meta_path:\n"
-        "        pathlib.Path(meta_path).write_text(\n"
-        "            json.dumps({'success': ok, 'error': err, 'spec_name': spec_name, 'sources_count': sources_count, 'build_seconds': elapsed, 'memory_peak_bytes': peak}, sort_keys=True) + '\\n',\n"
-        "            encoding='utf-8',\n"
-        "        )\n"
+        "    peak = _read_self_peak(cg_dir)\n"
+        "    _write_meta({\n"
+        "        'success': ok,\n"
+        "        'compiled': ok,\n"
+        "        'error_code': (None if ok else 'JIT_BUILD_FAILED'),\n"
+        "        'error': err,\n"
+        "        'spec_name': spec_name,\n"
+        "        'sources_count': sources_count,\n"
+        "        'build_seconds': elapsed,\n"
+        "        'memory_peak_bytes': peak,\n"
+        "        'scope_memory_max': scope_max_raw,\n"
+        "        'scope_memory_max_bytes': scope_max_bytes,\n"
+        "    })\n"
         "if not ok:\n"
         "    sys.stderr.write((err or 'build failed') + '\\n')\n"
         "    sys.exit(1)\n"
@@ -772,6 +1005,7 @@ def run_jit_build_rung(
     venv_dir: Path,
     cap_bytes: int,
     current_bytes: int = DEFAULT_CURRENT_BYTES,
+    anon_shmem_bytes: int | None = None,
     lock_path: Path = DEFAULT_LOCK_PATH,
     cache_dir: Path | None = None,
     receipt_path: Path | None = None,
@@ -789,6 +1023,7 @@ def run_jit_build_rung(
         plan = build_jit_rung_plan(
             cap_bytes=cap_bytes,
             current_bytes=current_bytes,
+            anon_shmem_bytes=anon_shmem_bytes,
             venv_dir=venv_dir,
             lock_path=lock_path,
             cache_dir=cache_dir,
@@ -820,6 +1055,7 @@ def run_jit_build_rung(
         job_plan = vm_judges.compute_jit_build_jobs(
             limit_bytes=int(cap_bytes),
             current_bytes=int(current_bytes),
+            anon_shmem_bytes=anon_shmem_bytes,
             **{k: vm_judges.resolve_jit_build_budget_params()[k] for k in ("reserve_bytes", "per_job_bytes", "overrides")},
         )
         jit_log_path = ws_dir / "flashinfer_jit_build.jsonl"
@@ -833,6 +1069,7 @@ def run_jit_build_rung(
         child_env["FLASHINFER_WORKSPACE_BASE"] = str(eff_cache_dir)
         child_env["FLASHINFER_JIT_BUILD_LOG"] = str(jit_log_path)
         child_env["RDLAB_JIT_RUNG_WORKER_META"] = str(worker_meta_path)
+        child_env["RDLAB_JIT_RUNG_EXPECTED_CAP_BYTES"] = str(int(cap_bytes))
         child_env["PATH"] = os.pathsep.join(
             [
                 str(Path(toolkit["cuda_home"]) / "bin"),
@@ -871,31 +1108,62 @@ def run_jit_build_rung(
                 worker_meta = json.loads(worker_meta_path.read_text(encoding="utf-8"))
             except json.JSONDecodeError:
                 worker_meta = {}
+        scope_memory_max = worker_meta.get("scope_memory_max")
+        scope_memory_max_bytes = worker_meta.get("scope_memory_max_bytes")
+        cap_enforced = (
+            worker_meta.get("error_code") != "RUNG_CAP_NOT_ENFORCED"
+            and isinstance(scope_memory_max_bytes, int)
+            and not isinstance(scope_memory_max_bytes, bool)
+            and scope_memory_max_bytes == int(cap_bytes)
+        )
         jit_log_summary = vm_judges.read_flashinfer_jit_build_log(jit_log_path)
+        ninja_timings = collect_ninja_unit_timings(eff_cache_dir)
         build_s = jit_log_summary.get("jit_build_seconds")
         if build_s is None:
             build_s = worker_meta.get("build_seconds", wall_s)
         targets = jit_log_summary.get("jit_build_targets") or [FUSED_MOE_120_MODULE_NAME]
+        error_code = worker_meta.get("error_code")
+        error_msg = worker_meta.get("error")
+        if not cap_enforced:
+            error_code = "RUNG_CAP_NOT_ENFORCED"
+            if not error_msg:
+                error_msg = (
+                    f"[RUNG_CAP_NOT_ENFORCED] worker cgroup memory.max={scope_memory_max!r} "
+                    f"({scope_memory_max_bytes}) does not equal requested cap_bytes={int(cap_bytes)}"
+                )
         receipt = enrich_jit_build_receipt(
             {
                 "versions": venv_info["versions"],
                 "lock_sha256": venv_info["lock_sha256"],
                 "targets": targets,
                 "cap_bytes": int(cap_bytes),
+                "scope_memory_max": scope_memory_max,
+                "scope_memory_max_bytes": scope_memory_max_bytes,
                 "jobs": int(job_plan["jobs"]),
                 "memory_peak_bytes": worker_meta.get("memory_peak_bytes"),
                 "build_seconds": round(float(build_s), 6),
+                "compile_unit_count": ninja_timings["compile_unit_count"],
+                "median_seconds_per_unit": ninja_timings["median_seconds_per_unit"],
+                "max_seconds_per_unit": ninja_timings["max_seconds_per_unit"],
+                "unit_timing_source": ninja_timings["unit_timing_source"],
                 "wall_seconds": wall_s,
                 "scope_mode": eff_scope_mode,
-                "success": bool(int(getattr(res, "returncode", 1)) == 0 and worker_meta.get("success", False)),
+                "success": bool(
+                    cap_enforced
+                    and int(getattr(res, "returncode", 1)) == 0
+                    and worker_meta.get("success", False)
+                ),
+                "error_code": error_code,
                 "cache_dir": str(eff_cache_dir),
-                "error": worker_meta.get("error"),
+                "error": error_msg,
                 "job_plan": job_plan,
                 "target_details": resolve_fused_moe_120_target_spec(),
             }
         )
         if receipt_path is not None:
             write_jit_build_receipt(receipt_path, receipt)
+        if not cap_enforced:
+            raise JitBuildRungError("RUNG_CAP_NOT_ENFORCED", str(error_msg))
         return receipt
 
 
@@ -932,6 +1200,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         type=int,
         default=DEFAULT_CURRENT_BYTES,
         help="Baseline resident/page-cache bytes in the scope before JIT build (default: 0).",
+    )
+    parser.add_argument(
+        "--anon-shmem-bytes",
+        type=int,
+        default=None,
+        help="Optional non-reclaimable anon+shmem bytes reading for job-count and pod-reference projection.",
     )
     parser.add_argument(
         "--cache-dir",
@@ -987,6 +1261,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         venv_dir=args.venv_dir,
         cap_bytes=cap_bytes,
         current_bytes=int(args.current_bytes),
+        anon_shmem_bytes=(int(args.anon_shmem_bytes) if args.anon_shmem_bytes is not None else None),
         lock_path=args.lock_path,
         cache_dir=args.cache_dir,
         receipt_path=args.receipt_out,

@@ -3392,6 +3392,43 @@ def read_cgroup_memory_peak(
     return None
 
 
+def _parse_cgroup_memory_stat_text(text: str) -> tuple[int | None, str]:
+    """Extract non-reclaimable memory bytes from cgroup `memory.stat` text.
+
+    - cgroup v2 (`anon` + `shmem`): returns `(anon + shmem, 'memory.stat:anon+shmem')`.
+    - cgroup v1 (`total_rss` + `total_shmem`, else `rss` + `shmem`): returns
+      `(rss + shmem, 'memory.stat_v1:total_rss+total_shmem')` or `'memory.stat_v1:rss+shmem'`.
+    - When required keys are absent: returns `(None, 'memory.current_fallback')`.
+    """
+    stats: dict[str, int] = {}
+    for raw_line in text.splitlines():
+        parts = raw_line.strip().split()
+        if len(parts) == 2 and re.fullmatch(r"\d+", parts[1]):
+            stats[parts[0]] = int(parts[1])
+    if "anon" in stats and "shmem" in stats:
+        return int(stats["anon"]) + int(stats["shmem"]), "memory.stat:anon+shmem"
+    if "total_rss" in stats and "total_shmem" in stats:
+        return int(stats["total_rss"]) + int(stats["total_shmem"]), "memory.stat_v1:total_rss+total_shmem"
+    if "rss" in stats and "shmem" in stats:
+        return int(stats["rss"]) + int(stats["shmem"]), "memory.stat_v1:rss+shmem"
+    return None, "memory.current_fallback"
+
+
+def read_cgroup_nonreclaimable_bytes(cgroup_dir: Path | str | None) -> tuple[int | None, str]:
+    """Read `(nonreclaimable_bytes, used_source)` from `cgroup_dir/memory.stat`, falling back to `memory.current`."""
+    if not cgroup_dir:
+        return None, "memory.current_fallback"
+    stat_path = Path(cgroup_dir) / "memory.stat"
+    try:
+        if not stat_path.is_file():
+            return None, "memory.current_fallback"
+        return _parse_cgroup_memory_stat_text(
+            stat_path.read_text(encoding="utf-8", errors="replace")
+        )
+    except OSError:
+        return None, "memory.current_fallback"
+
+
 def _parse_positive_or_zero_int_env(
     env: Mapping[str, str],
     var_name: str,
@@ -3451,6 +3488,8 @@ def compute_jit_build_jobs(
     *,
     limit_bytes: int | None,
     current_bytes: int | None,
+    anon_shmem_bytes: int | None = None,
+    used_source: str | None = None,
     reserve_bytes: int = DEFAULT_JIT_BUILD_RESERVE_BYTES,
     per_job_bytes: int = DEFAULT_JIT_BUILD_PER_JOB_BYTES,
     nproc: int | None = None,
@@ -3468,13 +3507,23 @@ def compute_jit_build_jobs(
             f"per_job_bytes must be >= 1, got {per_job_bytes!r}",
         )
     eff_nproc = max(1, int(nproc if nproc is not None else (os.cpu_count() or 1)))
-    if limit_bytes is not None and current_bytes is not None:
-        raw_jobs = (int(limit_bytes) - int(current_bytes) - int(reserve_bytes)) // int(
+    eff_anon_shmem = int(anon_shmem_bytes) if anon_shmem_bytes is not None else None
+    if limit_bytes is not None and (eff_anon_shmem is not None or current_bytes is not None):
+        if eff_anon_shmem is not None:
+            used_bytes: int | None = eff_anon_shmem
+            eff_used_source = str(used_source) if used_source else "memory.stat:anon+shmem"
+        else:
+            assert current_bytes is not None
+            used_bytes = int(current_bytes)
+            eff_used_source = str(used_source) if used_source else "memory.current_fallback"
+        raw_jobs = (int(limit_bytes) - used_bytes - int(reserve_bytes)) // int(
             per_job_bytes
         )
         jobs = max(MIN_JIT_BUILD_JOBS, min(MAX_JIT_BUILD_JOBS, int(raw_jobs)))
         source = "cgroup"
     else:
+        used_bytes = None
+        eff_used_source = "none"
         raw_jobs = eff_nproc
         jobs = max(MIN_JIT_BUILD_JOBS, min(MAX_JIT_BUILD_JOBS, eff_nproc))
         source = "fallback"
@@ -3490,6 +3539,9 @@ def compute_jit_build_jobs(
         "raw_jobs": raw_jobs,
         "limit_bytes": (int(limit_bytes) if limit_bytes is not None else None),
         "current_bytes": (int(current_bytes) if current_bytes is not None else None),
+        "anon_shmem_bytes": eff_anon_shmem,
+        "used_bytes": used_bytes,
+        "used_source": eff_used_source,
         "reserve_bytes": int(reserve_bytes),
         "per_job_bytes": int(per_job_bytes),
         "source": source,
@@ -3504,10 +3556,15 @@ def format_jit_build_jobs_log_line(plan: Mapping[str, Any]) -> str:
     """Format the single-line `QWEN36_JIT_BUILD_JOBS` diagnostic log summary."""
     limit_tok = str(plan["limit_bytes"]) if plan.get("limit_bytes") is not None else "none"
     cur_tok = str(plan["current_bytes"]) if plan.get("current_bytes") is not None else "none"
+    anon_tok = str(plan["anon_shmem_bytes"]) if plan.get("anon_shmem_bytes") is not None else "none"
+    used_tok = str(plan["used_bytes"]) if plan.get("used_bytes") is not None else "none"
+    used_src_tok = str(plan.get("used_source") or "none")
     env_tok = ",".join(str(x) for x in plan.get("env", JIT_BUILD_PARALLELISM_ENV_VARS))
     line = (
         f"QWEN36_JIT_BUILD_JOBS jobs={plan['jobs']} limit_bytes={limit_tok} "
-        f"current_bytes={cur_tok} reserve_bytes={plan['reserve_bytes']} "
+        f"current_bytes={cur_tok} anon_shmem_bytes={anon_tok} "
+        f"used_bytes={used_tok} used_source={used_src_tok} "
+        f"reserve_bytes={plan['reserve_bytes']} "
         f"per_job_bytes={plan['per_job_bytes']} source={plan['source']} env={env_tok}"
     )
     if plan.get("source") == "fallback":
@@ -3533,15 +3590,21 @@ def apply_jit_build_jobs_to_env(
         proc_cgroup_path=proc_cgroup_path,
     )
     budget = resolve_jit_build_budget_params(os.environ if config_env is None else config_env)
+    nf_path = cg_chain.get("nearest_finite_path")
+    anon_shmem_bytes, used_source = (
+        read_cgroup_nonreclaimable_bytes(nf_path) if nf_path is not None else (None, "none")
+    )
     plan = compute_jit_build_jobs(
         limit_bytes=cg_chain.get("nearest_finite_memory_max"),
         current_bytes=cg_chain.get("nearest_finite_memory_current"),
+        anon_shmem_bytes=anon_shmem_bytes,
+        used_source=used_source,
         reserve_bytes=budget["reserve_bytes"],
         per_job_bytes=budget["per_job_bytes"],
         nproc=nproc,
         overrides=budget["overrides"],
     )
-    plan["nearest_finite_cgroup_path"] = cg_chain.get("nearest_finite_path")
+    plan["nearest_finite_cgroup_path"] = nf_path
     for k, v in plan["env_values"].items():
         target_env[k] = v
     plan["log_line"] = format_jit_build_jobs_log_line(plan)
@@ -4521,6 +4584,51 @@ def _collect_verified_snapshot_files(
     return out
 
 
+def _sync_before_page_cache_drop(
+    snapshot_files: Sequence[tuple[Path, int]],
+    *,
+    sync_fn: Callable[[], Any] | None = None,
+) -> tuple[bool, str, float, str | None]:
+    """Flush dirty filesystem pages before dropping page cache so dirty pages become reclaimable."""
+    t_sync = time.monotonic()
+    sync_ran = False
+    sync_method = "none"
+    sync_error: str | None = None
+    try:
+        if sync_fn is not None:
+            sync_fn()
+            sync_ran = True
+            sync_method = "sync_fn"
+        else:
+            os_sync = getattr(os, "sync", None)
+            if callable(os_sync):
+                os_sync()
+                sync_ran = True
+                sync_method = "os.sync"
+            else:
+                fdatasync_fn = getattr(os, "fdatasync", None) or getattr(os, "fsync", None)
+                synced_files = 0
+                if callable(fdatasync_fn):
+                    for file_path, _sz in snapshot_files:
+                        fd: int | None = None
+                        try:
+                            fd = os.open(file_path, os.O_RDONLY)
+                            fdatasync_fn(fd)
+                            synced_files += 1
+                        finally:
+                            if fd is not None:
+                                try:
+                                    os.close(fd)
+                                except OSError:
+                                    pass
+                sync_ran = True
+                sync_method = f"fdatasync({synced_files})"
+    except OSError as exc:
+        sync_error = f"{type(exc).__name__}: {exc}"
+    sync_seconds = round(max(0.0, time.monotonic() - t_sync), 6)
+    return sync_ran, sync_method, sync_seconds, sync_error
+
+
 def drop_verified_snapshots_page_cache(
     hf_home: Path,
     *,
@@ -4532,8 +4640,11 @@ def drop_verified_snapshots_page_cache(
     proc_meminfo_path: Path | None = None,
     drop_caches_path: Path | None = None,
     fadvise_fn: Callable[[int, int, int, int], Any] | None = None,
+    sync_fn: Callable[[], Any] | None = None,
+    dryrun: bool = False,
+    skip_real_drop: bool = False,
 ) -> dict[str, Any]:
-    """Release Linux page cache held by verified weight snapshots without ever failing the run."""
+    """Sync dirty pages and release Linux page cache held by verified weight snapshots without ever failing the run."""
     mem_before = _read_cgroup_current_for_drop(
         cgroup_root=cgroup_root,
         proc_cgroup_path=proc_cgroup_path,
@@ -4545,6 +4656,27 @@ def drop_verified_snapshots_page_cache(
     files_advised = 0
     files_failed = 0
     bytes_targeted = 0
+    sync_ran = False
+    sync_method = "none"
+    sync_seconds = 0.0
+    sync_error: str | None = None
+
+    should_skip_drop = bool(
+        dryrun
+        or skip_real_drop
+        or (
+            drop_caches_path is None
+            and fadvise_fn is None
+            and sync_fn is None
+            and (
+                os.environ.get("VM_DRYRUN", "").strip() == "1"
+                or (
+                    "PYTEST_CURRENT_TEST" in os.environ
+                    and Path(eff_drop_caches) == Path("/proc/sys/vm/drop_caches")
+                )
+            )
+        )
+    )
 
     try:
         snapshot_files = _collect_verified_snapshot_files(
@@ -4558,34 +4690,42 @@ def drop_verified_snapshots_page_cache(
 
     bytes_targeted = sum(sz for _, sz in snapshot_files)
 
-    try:
-        with Path(eff_drop_caches).open("wb") as fh:
-            fh.write(b"1\n")
-            fh.flush()
-        method = "drop_caches"
-    except OSError as exc:
-        drop_caches_error = f"{type(exc).__name__}: {exc}"
-        eff_fadvise = fadvise_fn if fadvise_fn is not None else getattr(os, "posix_fadvise", None)
-        dontneed = int(getattr(os, "POSIX_FADV_DONTNEED", 4))
-        if callable(eff_fadvise):
-            for file_path, _sz in snapshot_files:
-                fd: int | None = None
-                try:
-                    fd = os.open(file_path, os.O_RDONLY)
-                    eff_fadvise(fd, 0, 0, dontneed)
-                    files_advised += 1
-                except OSError:
-                    files_failed += 1
-                finally:
-                    if fd is not None:
-                        try:
-                            os.close(fd)
-                        except OSError:
-                            pass
-            if files_advised > 0 or (len(snapshot_files) == 0 and files_failed == 0):
-                method = "posix_fadvise"
-        else:
-            drop_caches_error = f"{drop_caches_error}; posix_fadvise unavailable"
+    if should_skip_drop:
+        method = "skipped_dryrun"
+        sync_method = "skipped_dryrun"
+    else:
+        sync_ran, sync_method, sync_seconds, sync_error = _sync_before_page_cache_drop(
+            snapshot_files,
+            sync_fn=sync_fn,
+        )
+        try:
+            with Path(eff_drop_caches).open("wb") as fh:
+                fh.write(b"1\n")
+                fh.flush()
+            method = "drop_caches"
+        except OSError as exc:
+            drop_caches_error = f"{type(exc).__name__}: {exc}"
+            eff_fadvise = fadvise_fn if fadvise_fn is not None else getattr(os, "posix_fadvise", None)
+            dontneed = int(getattr(os, "POSIX_FADV_DONTNEED", 4))
+            if callable(eff_fadvise):
+                for file_path, _sz in snapshot_files:
+                    fd: int | None = None
+                    try:
+                        fd = os.open(file_path, os.O_RDONLY)
+                        eff_fadvise(fd, 0, 0, dontneed)
+                        files_advised += 1
+                    except OSError:
+                        files_failed += 1
+                    finally:
+                        if fd is not None:
+                            try:
+                                os.close(fd)
+                            except OSError:
+                                pass
+                if files_advised > 0 or (len(snapshot_files) == 0 and files_failed == 0):
+                    method = "posix_fadvise"
+            else:
+                drop_caches_error = f"{drop_caches_error}; posix_fadvise unavailable"
 
     mem_after = _read_cgroup_current_for_drop(
         cgroup_root=cgroup_root,
@@ -4599,6 +4739,10 @@ def drop_verified_snapshots_page_cache(
     summary: dict[str, Any] = {
         "kind": "weights_page_cache_drop",
         "method": method,
+        "sync_ran": sync_ran,
+        "sync_method": sync_method,
+        "sync_seconds": sync_seconds,
+        "sync_error": sync_error,
         "memory_current_before": mem_before,
         "memory_current_after": mem_after,
         "reclaimed_bytes": reclaimed_bytes,
@@ -4610,7 +4754,8 @@ def drop_verified_snapshots_page_cache(
     }
     _append_vm_log_line(
         "WEIGHTS_PAGE_CACHE_DROP "
-        f"method={method} before={mem_before} after={mem_after} "
+        f"method={method} sync_ran={sync_ran} sync_method={sync_method} sync_seconds={sync_seconds} "
+        f"before={mem_before} after={mem_after} "
         f"files={len(snapshot_files)} advised={files_advised} failed={files_failed}"
     )
     try:
@@ -4717,6 +4862,7 @@ def download_and_verify_all_judge_weights(
         cgroup_root=cgroup_root,
         proc_cgroup_path=proc_cgroup_path,
         proc_meminfo_path=proc_meminfo_path,
+        dryrun=dryrun,
     )
     return verified
 
@@ -8629,6 +8775,9 @@ def _run_judges_pipeline_body(
                     "jobs": jit_plan["jobs"],
                     "limit_bytes": jit_plan["limit_bytes"],
                     "current_bytes": jit_plan["current_bytes"],
+                    "anon_shmem_bytes": jit_plan["anon_shmem_bytes"],
+                    "used_bytes": jit_plan["used_bytes"],
+                    "used_source": jit_plan["used_source"],
                     "reserve_bytes": jit_plan["reserve_bytes"],
                     "per_job_bytes": jit_plan["per_job_bytes"],
                     "source": jit_plan["source"],
