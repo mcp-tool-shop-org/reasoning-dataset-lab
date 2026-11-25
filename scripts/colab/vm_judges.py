@@ -3956,9 +3956,10 @@ def _ensure_executable_shim_file(path: Path, body: str) -> None:
         pass
 
 
-def _build_engine_stop_sitecustomize_source() -> str:
+def _build_engine_stop_sitecustomize_source(self_dir: Path | str | None = None) -> str:
     """Return stdlib-only `sitecustomize.py` source so spawned `EngineCore` processes record named stop codes."""
     codes_literal = repr(QWEN36_NAMED_CHILD_STOP_CODES)
+    self_dir_expr = f"os.path.realpath({str(self_dir)!r})" if self_dir is not None else "os.path.realpath(os.path.dirname(os.path.abspath(sys.modules[__name__].__spec__.origin)))"
     return f'''"""Runtime hook for spawned judge worker subprocesses: record named Qwen3.6 stop codes before exit."""
 
 from __future__ import annotations
@@ -3975,7 +3976,7 @@ from pathlib import Path
 _STOP_ENV_VAR = {QWEN36_ENGINE_STOP_ENV_VAR!r}
 _JIT_STOP_CODE = "JUDGE_JIT_BUILD_ENTERED"
 _NAMED_STOP_CODES = {codes_literal}
-_SELF_DIR = os.path.realpath(os.path.dirname(__file__))
+_SELF_DIR = {self_dir_expr}
 
 
 def _record_stop(code: str, source: str, detail: str) -> None:
@@ -4194,7 +4195,7 @@ def stage_qwen36_no_compile_shim(
 
     py_hook_dir = shim_root_resolved / "py_hook"
     py_hook_dir.mkdir(parents=True, exist_ok=True)
-    _ensure_executable_shim_file(py_hook_dir / "sitecustomize.py", _build_engine_stop_sitecustomize_source())
+    _ensure_executable_shim_file(py_hook_dir / "sitecustomize.py", _build_engine_stop_sitecustomize_source(py_hook_dir))
     old_py_path = child_env.get("PYTHONPATH", "")
     py_parts = [p for p in old_py_path.split(os.pathsep) if p and p != str(py_hook_dir)]
     child_env["PYTHONPATH"] = os.pathsep.join([str(py_hook_dir), *py_parts])
@@ -9587,8 +9588,12 @@ def _run_judges_pipeline_body(
         mem_info = read_vm_memory_snapshot(proc_meminfo_path=proc_meminfo_path)
         mem_avail_bytes = mem_info.get("mem_available_bytes")
 
+        is_qwen36_child = venv_name == VLLM_VENV_NAME or judge_id == QWEN36_JUDGE_ID
         stdout_tail = _scrub_and_tail(child_res["stdout"] or "")
-        stderr_tail = _scrub_and_tail(child_res["stderr"] or "", max_bytes=JUDGE_CHILD_STDERR_TAIL_BYTES)
+        stderr_tail = _scrub_and_tail(
+            child_res["stderr"] or "",
+            max_bytes=(JUDGE_CHILD_STDERR_TAIL_BYTES if is_qwen36_child else SUBPROCESS_TAIL_BYTES),
+        )
         if _ACTIVE_VM_LOG_PATH is not None:
             try:
                 _ACTIVE_VM_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
