@@ -1723,6 +1723,9 @@ build_exec_env_args() {
   if [[ -n "${RDLAB_JIT_BUILD_PER_JOB_BYTES+x}" ]] && [[ -n "${RDLAB_JIT_BUILD_PER_JOB_BYTES}" ]]; then
     EXEC_ENV_ARGS+=(--env "RDLAB_JIT_BUILD_PER_JOB_BYTES=$RDLAB_JIT_BUILD_PER_JOB_BYTES")
   fi
+  if [[ -n "${RDLAB_WEIGHTS_SYNC_TIMEOUT_SECONDS+x}" ]] && [[ -n "${RDLAB_WEIGHTS_SYNC_TIMEOUT_SECONDS}" ]]; then
+    EXEC_ENV_ARGS+=(--env "RDLAB_WEIGHTS_SYNC_TIMEOUT_SECONDS=$RDLAB_WEIGHTS_SYNC_TIMEOUT_SECONDS")
+  fi
   if [[ "$EFFECTIVE_RESUME" -eq 1 ]] && [[ -f "$OUT_DIR/schedule.json" ]]; then
     EXEC_ENV_ARGS+=(--env "RDLAB_RESUME_TAR=${VM_ROOT}/resume_state.tar.gz")
   fi

@@ -250,6 +250,8 @@ MIN_JIT_BUILD_JOBS: int = 1
 MAX_JIT_BUILD_JOBS: int = 8
 JIT_BUILD_RESERVE_ENV_VAR: str = "RDLAB_JIT_BUILD_RESERVE_BYTES"
 JIT_BUILD_PER_JOB_ENV_VAR: str = "RDLAB_JIT_BUILD_PER_JOB_BYTES"
+WEIGHTS_SYNC_TIMEOUT_ENV_VAR: str = "RDLAB_WEIGHTS_SYNC_TIMEOUT_SECONDS"
+DEFAULT_WEIGHTS_SYNC_TIMEOUT_SECONDS: float = 30.0
 FLASHINFER_JIT_BUILD_LOG_ENV_VAR: str = "FLASHINFER_JIT_BUILD_LOG"
 # Pinned flashinfer==0.7.3 + vllm==0.34.0 parallelism env vars:
 # - MAX_JOBS: flashinfer/jit/cpp_ext.py:404-408,426-428 (`_get_num_workers` -> `run_ninja -j <n>`); vllm/envs.py:98,706
@@ -3395,9 +3397,10 @@ def read_cgroup_memory_peak(
 def _parse_cgroup_memory_stat_text(text: str) -> tuple[int | None, str]:
     """Extract non-reclaimable memory bytes from cgroup `memory.stat` text.
 
-    - cgroup v2 (`anon` + `shmem`): returns `(anon + shmem, 'memory.stat:anon+shmem')`.
-    - cgroup v1 (`total_rss` + `total_shmem`, else `rss` + `shmem`): returns
-      `(rss + shmem, 'memory.stat_v1:total_rss+total_shmem')` or `'memory.stat_v1:rss+shmem'`.
+    - cgroup v2 (`anon` + `shmem`): includes `anon + shmem + file_dirty + file_writeback + kernel`
+      (or sums `slab_unreclaimable + kernel_stack + pagetables + percpu + sock` when `kernel` is absent).
+    - cgroup v1 (`total_rss` + `total_shmem` + `total_dirty` + `total_writeback`, else
+      `rss` + `shmem` + `dirty` + `writeback`).
     - When required keys are absent: returns `(None, 'memory.current_fallback')`.
     """
     stats: dict[str, int] = {}
@@ -3406,11 +3409,34 @@ def _parse_cgroup_memory_stat_text(text: str) -> tuple[int | None, str]:
         if len(parts) == 2 and re.fullmatch(r"\d+", parts[1]):
             stats[parts[0]] = int(parts[1])
     if "anon" in stats and "shmem" in stats:
-        return int(stats["anon"]) + int(stats["shmem"]), "memory.stat:anon+shmem"
+        dirty = int(stats.get("file_dirty", 0))
+        writeback = int(stats.get("file_writeback", 0))
+        if "kernel" in stats:
+            kernel_bytes = int(stats["kernel"])
+            used_source = "memory.stat:anon+shmem+file_dirty+file_writeback+kernel"
+        else:
+            kernel_bytes = sum(
+                int(stats.get(k, 0))
+                for k in ("slab_unreclaimable", "kernel_stack", "pagetables", "percpu", "sock")
+            )
+            used_source = "memory.stat:anon+shmem+file_dirty+file_writeback+kernel_parts"
+        return int(stats["anon"]) + int(stats["shmem"]) + dirty + writeback + kernel_bytes, used_source
     if "total_rss" in stats and "total_shmem" in stats:
-        return int(stats["total_rss"]) + int(stats["total_shmem"]), "memory.stat_v1:total_rss+total_shmem"
+        total = (
+            int(stats["total_rss"])
+            + int(stats["total_shmem"])
+            + int(stats.get("total_dirty", 0))
+            + int(stats.get("total_writeback", 0))
+        )
+        return total, "memory.stat_v1:total_rss+total_shmem+total_dirty+total_writeback"
     if "rss" in stats and "shmem" in stats:
-        return int(stats["rss"]) + int(stats["shmem"]), "memory.stat_v1:rss+shmem"
+        total = (
+            int(stats["rss"])
+            + int(stats["shmem"])
+            + int(stats.get("dirty", 0))
+            + int(stats.get("writeback", 0))
+        )
+        return total, "memory.stat_v1:rss+shmem+dirty+writeback"
     return None, "memory.current_fallback"
 
 
@@ -3488,7 +3514,7 @@ def compute_jit_build_jobs(
     *,
     limit_bytes: int | None,
     current_bytes: int | None,
-    anon_shmem_bytes: int | None = None,
+    nonreclaimable_bytes: int | None = None,
     used_source: str | None = None,
     reserve_bytes: int = DEFAULT_JIT_BUILD_RESERVE_BYTES,
     per_job_bytes: int = DEFAULT_JIT_BUILD_PER_JOB_BYTES,
@@ -3507,11 +3533,15 @@ def compute_jit_build_jobs(
             f"per_job_bytes must be >= 1, got {per_job_bytes!r}",
         )
     eff_nproc = max(1, int(nproc if nproc is not None else (os.cpu_count() or 1)))
-    eff_anon_shmem = int(anon_shmem_bytes) if anon_shmem_bytes is not None else None
-    if limit_bytes is not None and (eff_anon_shmem is not None or current_bytes is not None):
-        if eff_anon_shmem is not None:
-            used_bytes: int | None = eff_anon_shmem
-            eff_used_source = str(used_source) if used_source else "memory.stat:anon+shmem"
+    eff_nonreclaimable = int(nonreclaimable_bytes) if nonreclaimable_bytes is not None else None
+    if limit_bytes is not None and (eff_nonreclaimable is not None or current_bytes is not None):
+        if eff_nonreclaimable is not None:
+            used_bytes: int | None = eff_nonreclaimable
+            eff_used_source = (
+                str(used_source)
+                if used_source
+                else "memory.stat:anon+shmem+file_dirty+file_writeback+kernel"
+            )
         else:
             assert current_bytes is not None
             used_bytes = int(current_bytes)
@@ -3539,7 +3569,7 @@ def compute_jit_build_jobs(
         "raw_jobs": raw_jobs,
         "limit_bytes": (int(limit_bytes) if limit_bytes is not None else None),
         "current_bytes": (int(current_bytes) if current_bytes is not None else None),
-        "anon_shmem_bytes": eff_anon_shmem,
+        "nonreclaimable_bytes": eff_nonreclaimable,
         "used_bytes": used_bytes,
         "used_source": eff_used_source,
         "reserve_bytes": int(reserve_bytes),
@@ -3556,13 +3586,17 @@ def format_jit_build_jobs_log_line(plan: Mapping[str, Any]) -> str:
     """Format the single-line `QWEN36_JIT_BUILD_JOBS` diagnostic log summary."""
     limit_tok = str(plan["limit_bytes"]) if plan.get("limit_bytes") is not None else "none"
     cur_tok = str(plan["current_bytes"]) if plan.get("current_bytes") is not None else "none"
-    anon_tok = str(plan["anon_shmem_bytes"]) if plan.get("anon_shmem_bytes") is not None else "none"
+    nonrec_tok = (
+        str(plan["nonreclaimable_bytes"])
+        if plan.get("nonreclaimable_bytes") is not None
+        else "none"
+    )
     used_tok = str(plan["used_bytes"]) if plan.get("used_bytes") is not None else "none"
     used_src_tok = str(plan.get("used_source") or "none")
     env_tok = ",".join(str(x) for x in plan.get("env", JIT_BUILD_PARALLELISM_ENV_VARS))
     line = (
         f"QWEN36_JIT_BUILD_JOBS jobs={plan['jobs']} limit_bytes={limit_tok} "
-        f"current_bytes={cur_tok} anon_shmem_bytes={anon_tok} "
+        f"current_bytes={cur_tok} nonreclaimable_bytes={nonrec_tok} "
         f"used_bytes={used_tok} used_source={used_src_tok} "
         f"reserve_bytes={plan['reserve_bytes']} "
         f"per_job_bytes={plan['per_job_bytes']} source={plan['source']} env={env_tok}"
@@ -3591,13 +3625,13 @@ def apply_jit_build_jobs_to_env(
     )
     budget = resolve_jit_build_budget_params(os.environ if config_env is None else config_env)
     nf_path = cg_chain.get("nearest_finite_path")
-    anon_shmem_bytes, used_source = (
+    nonreclaimable_bytes, used_source = (
         read_cgroup_nonreclaimable_bytes(nf_path) if nf_path is not None else (None, "none")
     )
     plan = compute_jit_build_jobs(
         limit_bytes=cg_chain.get("nearest_finite_memory_max"),
         current_bytes=cg_chain.get("nearest_finite_memory_current"),
-        anon_shmem_bytes=anon_shmem_bytes,
+        nonreclaimable_bytes=nonreclaimable_bytes,
         used_source=used_source,
         reserve_bytes=budget["reserve_bytes"],
         per_job_bytes=budget["per_job_bytes"],
@@ -4584,49 +4618,103 @@ def _collect_verified_snapshot_files(
     return out
 
 
+def resolve_weights_sync_timeout_seconds(
+    env: Mapping[str, str] | None = None,
+    *,
+    timeout_seconds: float | None = None,
+) -> tuple[float, float | None]:
+    """Resolve deadline in seconds (`RDLAB_WEIGHTS_SYNC_TIMEOUT_SECONDS`) for syncing verified weight snapshots."""
+    if timeout_seconds is not None:
+        return max(0.001, float(timeout_seconds)), None
+    src_env = os.environ if env is None else env
+    raw = str(src_env.get(WEIGHTS_SYNC_TIMEOUT_ENV_VAR, "") or "").strip()
+    if raw:
+        try:
+            parsed = float(raw)
+        except ValueError:
+            parsed = float("nan")
+        if math.isfinite(parsed) and parsed > 0.0:
+            return parsed, parsed
+        _append_vm_log_line(
+            f"WEIGHTS_SYNC_TIMEOUT_INVALID var={WEIGHTS_SYNC_TIMEOUT_ENV_VAR} value={raw!r} using_default={DEFAULT_WEIGHTS_SYNC_TIMEOUT_SECONDS}"
+        )
+    return DEFAULT_WEIGHTS_SYNC_TIMEOUT_SECONDS, None
+
+
+def _sync_verified_files_once(
+    snapshot_files: Sequence[tuple[Path, int]],
+    *,
+    sync_fn: Callable[[], Any] | None = None,
+    cancel_event: threading.Event | None = None,
+) -> tuple[bool, str, str | None]:
+    """Run `sync_fn()` or per-file `os.fdatasync(fd)` strictly over verified weight snapshot files."""
+    try:
+        if sync_fn is not None:
+            sync_fn()
+            return True, "sync_fn", None
+        fdatasync_fn = getattr(os, "fdatasync", None) or getattr(os, "fsync", None)
+        synced_files = 0
+        if callable(fdatasync_fn):
+            for file_path, _sz in snapshot_files:
+                if cancel_event is not None and cancel_event.is_set():
+                    break
+                fd: int | None = None
+                try:
+                    fd = os.open(file_path, os.O_RDONLY)
+                    fdatasync_fn(fd)
+                    synced_files += 1
+                finally:
+                    if fd is not None:
+                        try:
+                            os.close(fd)
+                        except OSError:
+                            pass
+        return True, f"fdatasync({synced_files})", None
+    except OSError as exc:
+        return False, ("sync_fn" if sync_fn is not None else "fdatasync"), f"{type(exc).__name__}: {exc}"
+
+
 def _sync_before_page_cache_drop(
     snapshot_files: Sequence[tuple[Path, int]],
     *,
     sync_fn: Callable[[], Any] | None = None,
-) -> tuple[bool, str, float, str | None]:
-    """Flush dirty filesystem pages before dropping page cache so dirty pages become reclaimable."""
+    sync_timeout_seconds: float = DEFAULT_WEIGHTS_SYNC_TIMEOUT_SECONDS,
+) -> tuple[bool, str, float, str | None, bool]:
+    """Flush dirty snapshot file pages in a bounded worker thread so a stalled filesystem cannot hang a run."""
     t_sync = time.monotonic()
-    sync_ran = False
-    sync_method = "none"
-    sync_error: str | None = None
-    try:
-        if sync_fn is not None:
-            sync_fn()
-            sync_ran = True
-            sync_method = "sync_fn"
-        else:
-            os_sync = getattr(os, "sync", None)
-            if callable(os_sync):
-                os_sync()
-                sync_ran = True
-                sync_method = "os.sync"
-            else:
-                fdatasync_fn = getattr(os, "fdatasync", None) or getattr(os, "fsync", None)
-                synced_files = 0
-                if callable(fdatasync_fn):
-                    for file_path, _sz in snapshot_files:
-                        fd: int | None = None
-                        try:
-                            fd = os.open(file_path, os.O_RDONLY)
-                            fdatasync_fn(fd)
-                            synced_files += 1
-                        finally:
-                            if fd is not None:
-                                try:
-                                    os.close(fd)
-                                except OSError:
-                                    pass
-                sync_ran = True
-                sync_method = f"fdatasync({synced_files})"
-    except OSError as exc:
-        sync_error = f"{type(exc).__name__}: {exc}"
+    outcome: dict[str, Any] = {"sync_ran": False, "sync_method": "none", "sync_error": None}
+    cancel_event = threading.Event()
+
+    def _worker() -> None:
+        ran, meth, err = _sync_verified_files_once(
+            snapshot_files,
+            sync_fn=sync_fn,
+            cancel_event=cancel_event,
+        )
+        outcome["sync_ran"] = ran
+        outcome["sync_method"] = meth
+        outcome["sync_error"] = err
+
+    worker = threading.Thread(target=_worker, name="rdlab-weights-sync", daemon=True)
+    worker.start()
+    worker.join(timeout=max(0.001, float(sync_timeout_seconds)))
     sync_seconds = round(max(0.0, time.monotonic() - t_sync), 6)
-    return sync_ran, sync_method, sync_seconds, sync_error
+    if worker.is_alive():
+        cancel_event.set()
+        return (
+            True,
+            ("sync_fn" if sync_fn is not None else "fdatasync"),
+            sync_seconds,
+            f"TimeoutError: sync exceeded {sync_timeout_seconds}s",
+            True,
+        )
+    return (
+        bool(outcome["sync_ran"]),
+        str(outcome["sync_method"]),
+        sync_seconds,
+        outcome["sync_error"],
+        False,
+    )
 
 
 def drop_verified_snapshots_page_cache(
@@ -4641,10 +4729,11 @@ def drop_verified_snapshots_page_cache(
     drop_caches_path: Path | None = None,
     fadvise_fn: Callable[[int, int, int, int], Any] | None = None,
     sync_fn: Callable[[], Any] | None = None,
+    sync_timeout_seconds: float | None = None,
     dryrun: bool = False,
     skip_real_drop: bool = False,
 ) -> dict[str, Any]:
-    """Sync dirty pages and release Linux page cache held by verified weight snapshots without ever failing the run."""
+    """Sync verified weight snapshot files under a bounded deadline and release Linux page cache safely."""
     mem_before = _read_cgroup_current_for_drop(
         cgroup_root=cgroup_root,
         proc_cgroup_path=proc_cgroup_path,
@@ -4660,8 +4749,11 @@ def drop_verified_snapshots_page_cache(
     sync_method = "none"
     sync_seconds = 0.0
     sync_error: str | None = None
+    sync_timed_out = False
+    eff_sync_timeout: float | None = None
+    sync_timeout_override: float | None = None
 
-    should_skip_drop = bool(
+    skip_all_dryrun = bool(
         dryrun
         or skip_real_drop
         or (
@@ -4677,6 +4769,10 @@ def drop_verified_snapshots_page_cache(
             )
         )
     )
+    skip_real_drop_caches = bool(
+        Path(eff_drop_caches) == Path("/proc/sys/vm/drop_caches")
+        and ("PYTEST_CURRENT_TEST" in os.environ or os.environ.get("VM_DRYRUN", "").strip() == "1")
+    )
 
     try:
         snapshot_files = _collect_verified_snapshot_files(
@@ -4690,42 +4786,73 @@ def drop_verified_snapshots_page_cache(
 
     bytes_targeted = sum(sz for _, sz in snapshot_files)
 
-    if should_skip_drop:
+    if skip_all_dryrun:
         method = "skipped_dryrun"
         sync_method = "skipped_dryrun"
     else:
-        sync_ran, sync_method, sync_seconds, sync_error = _sync_before_page_cache_drop(
+        eff_sync_timeout, sync_timeout_override = resolve_weights_sync_timeout_seconds(
+            timeout_seconds=sync_timeout_seconds
+        )
+        sync_start_line = (
+            f"SYNC_START files={len(snapshot_files)} bytes={bytes_targeted} "
+            f"timeout_seconds={eff_sync_timeout}"
+        )
+        if sync_timeout_override is not None:
+            sync_start_line += f" override={WEIGHTS_SYNC_TIMEOUT_ENV_VAR}={sync_timeout_override}"
+        _append_vm_log_line(sync_start_line)
+        try:
+            append_progress_line(
+                progress_path,
+                {
+                    "kind": "weights_sync_start",
+                    "event": "SYNC_START",
+                    "snapshot_files_count": len(snapshot_files),
+                    "bytes_targeted": bytes_targeted,
+                    "sync_timeout_seconds": eff_sync_timeout,
+                    "sync_timeout_override": sync_timeout_override,
+                },
+                proc_meminfo_path=proc_meminfo_path,
+                cgroup_root=cgroup_root,
+                proc_cgroup_path=proc_cgroup_path,
+            )
+        except Exception:
+            pass
+        sync_ran, sync_method, sync_seconds, sync_error, sync_timed_out = _sync_before_page_cache_drop(
             snapshot_files,
             sync_fn=sync_fn,
+            sync_timeout_seconds=eff_sync_timeout,
         )
-        try:
-            with Path(eff_drop_caches).open("wb") as fh:
-                fh.write(b"1\n")
-                fh.flush()
-            method = "drop_caches"
-        except OSError as exc:
-            drop_caches_error = f"{type(exc).__name__}: {exc}"
-            eff_fadvise = fadvise_fn if fadvise_fn is not None else getattr(os, "posix_fadvise", None)
-            dontneed = int(getattr(os, "POSIX_FADV_DONTNEED", 4))
-            if callable(eff_fadvise):
-                for file_path, _sz in snapshot_files:
-                    fd: int | None = None
-                    try:
-                        fd = os.open(file_path, os.O_RDONLY)
-                        eff_fadvise(fd, 0, 0, dontneed)
-                        files_advised += 1
-                    except OSError:
-                        files_failed += 1
-                    finally:
-                        if fd is not None:
-                            try:
-                                os.close(fd)
-                            except OSError:
-                                pass
-                if files_advised > 0 or (len(snapshot_files) == 0 and files_failed == 0):
-                    method = "posix_fadvise"
-            else:
-                drop_caches_error = f"{drop_caches_error}; posix_fadvise unavailable"
+        if skip_real_drop_caches:
+            method = "skipped_dryrun"
+        else:
+            try:
+                with Path(eff_drop_caches).open("wb") as fh:
+                    fh.write(b"1\n")
+                    fh.flush()
+                method = "drop_caches"
+            except OSError as exc:
+                drop_caches_error = f"{type(exc).__name__}: {exc}"
+                eff_fadvise = fadvise_fn if fadvise_fn is not None else getattr(os, "posix_fadvise", None)
+                dontneed = int(getattr(os, "POSIX_FADV_DONTNEED", 4))
+                if callable(eff_fadvise):
+                    for file_path, _sz in snapshot_files:
+                        fd: int | None = None
+                        try:
+                            fd = os.open(file_path, os.O_RDONLY)
+                            eff_fadvise(fd, 0, 0, dontneed)
+                            files_advised += 1
+                        except OSError:
+                            files_failed += 1
+                        finally:
+                            if fd is not None:
+                                try:
+                                    os.close(fd)
+                                except OSError:
+                                    pass
+                    if files_advised > 0 or (len(snapshot_files) == 0 and files_failed == 0):
+                        method = "posix_fadvise"
+                else:
+                    drop_caches_error = f"{drop_caches_error}; posix_fadvise unavailable"
 
     mem_after = _read_cgroup_current_for_drop(
         cgroup_root=cgroup_root,
@@ -4742,6 +4869,9 @@ def drop_verified_snapshots_page_cache(
         "sync_ran": sync_ran,
         "sync_method": sync_method,
         "sync_seconds": sync_seconds,
+        "sync_timed_out": sync_timed_out,
+        "sync_timeout_seconds": eff_sync_timeout,
+        "sync_timeout_override": sync_timeout_override,
         "sync_error": sync_error,
         "memory_current_before": mem_before,
         "memory_current_after": mem_after,
@@ -4755,7 +4885,7 @@ def drop_verified_snapshots_page_cache(
     _append_vm_log_line(
         "WEIGHTS_PAGE_CACHE_DROP "
         f"method={method} sync_ran={sync_ran} sync_method={sync_method} sync_seconds={sync_seconds} "
-        f"before={mem_before} after={mem_after} "
+        f"sync_timed_out={sync_timed_out} before={mem_before} after={mem_after} "
         f"files={len(snapshot_files)} advised={files_advised} failed={files_failed}"
     )
     try:
@@ -8775,7 +8905,7 @@ def _run_judges_pipeline_body(
                     "jobs": jit_plan["jobs"],
                     "limit_bytes": jit_plan["limit_bytes"],
                     "current_bytes": jit_plan["current_bytes"],
-                    "anon_shmem_bytes": jit_plan["anon_shmem_bytes"],
+                    "nonreclaimable_bytes": jit_plan["nonreclaimable_bytes"],
                     "used_bytes": jit_plan["used_bytes"],
                     "used_source": jit_plan["used_source"],
                     "reserve_bytes": jit_plan["reserve_bytes"],
@@ -8823,6 +8953,22 @@ def _run_judges_pipeline_body(
                     ) as mfh:
                         for cp_ln in raw_cp_lines:
                             mfh.write(cp_ln + "\n")
+                            try:
+                                cp_obj = json.loads(cp_ln)
+                            except json.JSONDecodeError:
+                                cp_obj = None
+                            if (
+                                isinstance(cp_obj, Mapping)
+                                and cp_obj.get("kind") == "jit_build_jobs"
+                                and progress_path is not None
+                            ):
+                                append_progress_line(
+                                    progress_path,
+                                    {k: v for k, v in cp_obj.items()},
+                                    proc_meminfo_path=proc_meminfo_path,
+                                    cgroup_root=cgroup_root,
+                                    proc_cgroup_path=proc_cgroup_path,
+                                )
                         mfh.flush()
                         os.fsync(mfh.fileno())
             except OSError:

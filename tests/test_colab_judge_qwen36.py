@@ -8,6 +8,7 @@ import math
 import os
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -2746,7 +2747,6 @@ def test_jit_build_jobs_budget_env_overrides_and_refusals(
             nproc=16,
         )
         assert ov_plan["jobs"] == 3
-        assert bakeoff_judge.ensure_qwen36_jit_build_env_before_llm()["source"] == "preconfigured"
         monkeypatch_mod.delenv("MAX_JOBS", raising=False)
         monkeypatch_mod.setenv("RDLAB_JIT_BUILD_RESERVE_BYTES", "bad")
         with pytest.raises(RdlabError):
@@ -2794,7 +2794,7 @@ def test_jit_build_jobs_budget_env_overrides_and_refusals(
             "limit_bytes": None,
             "current_bytes": None,
             "peak_bytes": None,
-            "anon_shmem_bytes": None,
+            "nonreclaimable_bytes": None,
             "used_source": None,
         }
         assert bakeoff_judge.read_flashinfer_jit_build_log(bad_jit_log) == {
@@ -3227,7 +3227,7 @@ def test_weights_page_cache_drop_and_posix_fadvise_fallback(
     assert res_1["method"] == "drop_caches"
     assert res_1["memory_current_before"] == 93410516992
     assert res_1["memory_current_after"] == 21483657850
-    rec_1 = [json.loads(ln) for ln in prog_1.read_text(encoding="utf-8").splitlines() if ln.strip()][0]
+    rec_1 = [json.loads(ln) for ln in prog_1.read_text(encoding="utf-8").splitlines() if ln.strip()][-1]
     assert rec_1["kind"] == "weights_page_cache_drop"
     assert rec_1["memory_current_before"] == 93410516992
     assert rec_1["memory_current_after"] == 21483657850
@@ -3267,7 +3267,7 @@ def test_weights_page_cache_drop_and_posix_fadvise_fallback(
     assert all(call[1:] == (0, 0, 4) for call in fadvise_calls)
     assert res_2["memory_current_before"] == 93410516992
     assert res_2["memory_current_after"] == 21483657850
-    rec_2 = [json.loads(ln) for ln in prog_2.read_text(encoding="utf-8").splitlines() if ln.strip()][0]
+    rec_2 = [json.loads(ln) for ln in prog_2.read_text(encoding="utf-8").splitlines() if ln.strip()][-1]
     assert rec_2["method"] == "posix_fadvise"
     assert rec_2["memory_current_before"] == 93410516992
     assert rec_2["memory_current_after"] == 21483657850
@@ -3337,11 +3337,12 @@ def test_weights_page_cache_drop_syncs_dirty_pages_before_drop(
     drop_caches_file = tmp_path / "drop_caches"
     drop_caches_file.write_text("0\n", encoding="utf-8")
 
-    # Simulate dirty weight pages: drop_caches only reclaims pages after os.sync() runs first.
-    dirty_state = {"dirty": True, "events": []}
+    # Simulate dirty weight pages: drop_caches only reclaims pages after per-file fdatasync runs first.
+    dirty_state = {"dirty": True, "events": [], "fds": []}
 
-    def _fake_os_sync() -> None:
-        dirty_state["events"].append("sync")
+    def _fake_fdatasync(fd: int) -> None:
+        dirty_state["events"].append("fdatasync")
+        dirty_state["fds"].append(fd)
         dirty_state["dirty"] = False
 
     real_open = Path.open
@@ -3354,7 +3355,9 @@ def test_weights_page_cache_drop_syncs_dirty_pages_before_drop(
                 mem_cur_file.write_text("21483657850\n", encoding="utf-8")
         return fh
 
-    monkeypatch.setattr(os, "sync", _fake_os_sync, raising=False)
+    os_sync_calls: list[str] = []
+    monkeypatch.setattr(os, "sync", lambda: os_sync_calls.append("sync"), raising=False)
+    monkeypatch.setattr(os, "fdatasync", _fake_fdatasync, raising=False)
     monkeypatch.setattr(Path, "open", _drop_open)
     prog_1 = tmp_path / "prog_sync.jsonl"
     res_1 = vm_judges.drop_verified_snapshots_page_cache(
@@ -3366,22 +3369,26 @@ def test_weights_page_cache_drop_syncs_dirty_pages_before_drop(
         proc_cgroup_path=proc_cg,
         drop_caches_path=drop_caches_file,
     )
-    assert dirty_state["events"] == ["sync", "drop"]
+    assert os_sync_calls == []
+    assert dirty_state["events"][0] == "fdatasync"
+    assert dirty_state["events"][-1] == "drop"
+    assert len(dirty_state["fds"]) == res_1["snapshot_files_count"] >= 1
     assert res_1["method"] == "drop_caches"
-    assert res_1["snapshot_files_count"] >= 1
     assert res_1["sync_ran"] is True
-    assert res_1["sync_method"] == "os.sync"
+    assert res_1["sync_method"] == f"fdatasync({res_1['snapshot_files_count']})"
+    assert res_1["sync_timed_out"] is False
     assert isinstance(res_1["sync_seconds"], float) and res_1["sync_seconds"] >= 0.0
     assert res_1["sync_error"] is None
     assert res_1["memory_current_before"] == 93410516992
     assert res_1["memory_current_after"] == 21483657850
-    rec_1 = [json.loads(ln) for ln in prog_1.read_text(encoding="utf-8").splitlines() if ln.strip()][0]
-    assert rec_1["kind"] == "weights_page_cache_drop"
-    assert rec_1["sync_ran"] is True
-    assert rec_1["sync_method"] == "os.sync"
-    assert rec_1["sync_seconds"] == res_1["sync_seconds"]
+    recs_1 = [json.loads(ln) for ln in prog_1.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    assert [r["kind"] for r in recs_1] == ["weights_sync_start", "weights_page_cache_drop"]
+    assert recs_1[0]["event"] == "SYNC_START"
+    assert recs_1[1]["sync_ran"] is True
+    assert recs_1[1]["sync_method"] == f"fdatasync({res_1['snapshot_files_count']})"
+    assert recs_1[1]["sync_seconds"] == res_1["sync_seconds"]
 
-    # Also exercise per-file fdatasync fallback when os.sync is absent, custom sync_fn, plus OSError tolerance.
+    # Custom sync_fn and OSError tolerance.
     res_fn = vm_judges.drop_verified_snapshots_page_cache(
         hf_home,
         only_judge_ids=("mu-judge",),
@@ -3394,23 +3401,6 @@ def test_weights_page_cache_drop_syncs_dirty_pages_before_drop(
     )
     assert res_fn["sync_ran"] is True
     assert res_fn["sync_method"] == "sync_fn"
-
-    monkeypatch.setattr(os, "sync", None, raising=False)
-    fdatasync_fds: list[int] = []
-    monkeypatch.setattr(os, "fdatasync", lambda fd: fdatasync_fds.append(fd), raising=False)
-    mem_cur_file.write_text("93410516992\n", encoding="utf-8")
-    res_2 = vm_judges.drop_verified_snapshots_page_cache(
-        hf_home,
-        only_judge_ids=("mu-judge",),
-        repo_dir=REPO_ROOT,
-        progress_path=tmp_path / "prog_fdatasync.jsonl",
-        cgroup_root=cg_root,
-        proc_cgroup_path=proc_cg,
-        drop_caches_path=drop_caches_file,
-    )
-    assert res_2["sync_ran"] is True
-    assert res_2["sync_method"] == f"fdatasync({res_2['snapshot_files_count']})"
-    assert len(fdatasync_fds) == res_2["snapshot_files_count"] >= 1
 
     def _failing_sync() -> None:
         raise OSError("simulated sync io error")
@@ -3508,7 +3498,7 @@ def test_jit_build_jobs_page_cache_heavy_cgroup_uses_anon_plus_shmem(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     # Page-cache-heavy cgroup: memory.current is 93.41 GB (which previously gave 1 job),
-    # but memory.stat shows anon + shmem = 4.5 GiB -> headroom gives 8 jobs.
+    # while clean memory.stat shows low anon + shmem + zero dirty/writeback + low kernel -> headroom gives 8 jobs.
     cg_root, proc_cg = _write_fake_cgroup_tree(
         tmp_path / "v2",
         limit_raw="124999999488",
@@ -3516,9 +3506,9 @@ def test_jit_build_jobs_page_cache_heavy_cgroup_uses_anon_plus_shmem(
     )
     anon_bytes = 4 * 1024**3
     shmem_bytes = 512 * 1024**2
-    expected_anon_shmem = anon_bytes + shmem_bytes
+    expected_nonrec = anon_bytes + shmem_bytes
     (cg_root / "pod.scope" / "memory.stat").write_text(
-        f"anon {anon_bytes}\nfile 88500000000\nshmem {shmem_bytes}\n",
+        f"anon {anon_bytes}\nfile 88500000000\nshmem {shmem_bytes}\nfile_dirty 0\nfile_writeback 0\nkernel 0\n",
         encoding="utf-8",
         newline="\n",
     )
@@ -3534,10 +3524,13 @@ def test_jit_build_jobs_page_cache_heavy_cgroup_uses_anon_plus_shmem(
     assert vm_plan["jobs"] == 8
     assert vm_plan["source"] == "cgroup"
     assert vm_plan["current_bytes"] == 93_410_516_992
-    assert vm_plan["anon_shmem_bytes"] == expected_anon_shmem
-    assert vm_plan["used_bytes"] == expected_anon_shmem
-    assert vm_plan["used_source"] == "memory.stat:anon+shmem"
-    assert f"current_bytes=93410516992 anon_shmem_bytes={expected_anon_shmem} used_bytes={expected_anon_shmem} used_source=memory.stat:anon+shmem" in vm_plan["log_line"]
+    assert vm_plan["nonreclaimable_bytes"] == expected_nonrec
+    assert vm_plan["used_bytes"] == expected_nonrec
+    assert vm_plan["used_source"] == "memory.stat:anon+shmem+file_dirty+file_writeback+kernel"
+    assert (
+        f"current_bytes=93410516992 nonreclaimable_bytes={expected_nonrec} used_bytes={expected_nonrec} "
+        "used_source=memory.stat:anon+shmem+file_dirty+file_writeback+kernel"
+    ) in vm_plan["log_line"]
 
     for k in bakeoff_judge.QWEN36_JIT_BUILD_PARALLELISM_ENV_VARS:
         monkeypatch.delenv(k, raising=False)
@@ -3549,54 +3542,53 @@ def test_jit_build_jobs_page_cache_heavy_cgroup_uses_anon_plus_shmem(
     captured_out = capsys.readouterr().out
     assert src_plan["jobs"] == 8
     assert src_plan["current_bytes"] == 93_410_516_992
-    assert src_plan["anon_shmem_bytes"] == expected_anon_shmem
-    assert src_plan["used_bytes"] == expected_anon_shmem
-    assert src_plan["used_source"] == "memory.stat:anon+shmem"
-    assert f"current_bytes=93410516992 anon_shmem_bytes={expected_anon_shmem} used_bytes={expected_anon_shmem} used_source=memory.stat:anon+shmem" in captured_out
+    assert src_plan["nonreclaimable_bytes"] == expected_nonrec
+    assert src_plan["used_bytes"] == expected_nonrec
+    assert src_plan["used_source"] == "memory.stat:anon+shmem+file_dirty+file_writeback+kernel"
+    assert (
+        f"current_bytes=93410516992 nonreclaimable_bytes={expected_nonrec} used_bytes={expected_nonrec} "
+        "used_source=memory.stat:anon+shmem+file_dirty+file_writeback+kernel"
+    ) in captured_out
     assert vm_judges.compute_jit_build_jobs(
         limit_bytes=124_999_999_488,
         current_bytes=93_410_516_992,
-        anon_shmem_bytes=expected_anon_shmem,
-        used_source="memory.stat:anon+shmem",
+        nonreclaimable_bytes=expected_nonrec,
+        used_source="memory.stat:anon+shmem+file_dirty+file_writeback+kernel",
         nproc=64,
     ) == bakeoff_judge.compute_qwen36_jit_build_jobs(
         limit_bytes=124_999_999_488,
         current_bytes=93_410_516_992,
-        anon_shmem_bytes=expected_anon_shmem,
-        used_source="memory.stat:anon+shmem",
+        nonreclaimable_bytes=expected_nonrec,
+        used_source="memory.stat:anon+shmem+file_dirty+file_writeback+kernel",
         nproc=64,
     )
 
-    # Verify cgroup v1 keys: total_rss + total_shmem, and rss + shmem
+    # Verify cgroup v1 keys: total_rss + total_shmem + total_dirty + total_writeback, and rss + shmem + dirty + writeback
     v1_root = tmp_path / "v1"
     v1_dir_1 = v1_root / "memory" / "g1.slice"
     v1_dir_1.mkdir(parents=True, exist_ok=True)
     (v1_dir_1 / "memory.limit_in_bytes").write_text("124999999488\n", encoding="utf-8")
     (v1_dir_1 / "memory.usage_in_bytes").write_text("93410516992\n", encoding="utf-8")
     (v1_dir_1 / "memory.stat").write_text(
-        f"rss 1000\nshmem 200\ntotal_rss {anon_bytes}\ntotal_shmem {shmem_bytes}\n",
+        f"rss 1000\nshmem 200\ntotal_rss {anon_bytes}\ntotal_shmem {shmem_bytes}\ntotal_dirty 0\ntotal_writeback 0\n",
         encoding="utf-8",
     )
     v1_proc_1 = tmp_path / "v1_proc_1"
     v1_proc_1.write_text("3:memory:/g1.slice\n", encoding="utf-8")
     v1_plan_1 = vm_judges.apply_jit_build_jobs_to_env({}, cgroup_root=v1_root, proc_cgroup_path=v1_proc_1, config_env={}, nproc=64)
     assert v1_plan_1["jobs"] == 8
-    assert v1_plan_1["anon_shmem_bytes"] == expected_anon_shmem
-    assert v1_plan_1["used_source"] == "memory.stat_v1:total_rss+total_shmem"
-    for k in bakeoff_judge.QWEN36_JIT_BUILD_PARALLELISM_ENV_VARS:
-        monkeypatch.delenv(k, raising=False)
+    assert v1_plan_1["nonreclaimable_bytes"] == expected_nonrec
+    assert v1_plan_1["used_source"] == "memory.stat_v1:total_rss+total_shmem+total_dirty+total_writeback"
     src_v1_1 = bakeoff_judge.ensure_qwen36_jit_build_env_before_llm(cgroup_root=v1_root, proc_cgroup_path=v1_proc_1, nproc=64)
-    assert src_v1_1["used_source"] == "memory.stat_v1:total_rss+total_shmem"
-    assert src_v1_1["anon_shmem_bytes"] == expected_anon_shmem
+    assert src_v1_1["used_source"] == "memory.stat_v1:total_rss+total_shmem+total_dirty+total_writeback"
+    assert src_v1_1["nonreclaimable_bytes"] == expected_nonrec
 
     (v1_dir_1 / "memory.stat").write_text(f"rss {anon_bytes}\nshmem {shmem_bytes}\n", encoding="utf-8")
     v1_plan_2 = vm_judges.apply_jit_build_jobs_to_env({}, cgroup_root=v1_root, proc_cgroup_path=v1_proc_1, config_env={}, nproc=64)
-    assert v1_plan_2["used_source"] == "memory.stat_v1:rss+shmem"
-    assert v1_plan_2["anon_shmem_bytes"] == expected_anon_shmem
-    for k in bakeoff_judge.QWEN36_JIT_BUILD_PARALLELISM_ENV_VARS:
-        monkeypatch.delenv(k, raising=False)
+    assert v1_plan_2["used_source"] == "memory.stat_v1:rss+shmem+dirty+writeback"
+    assert v1_plan_2["nonreclaimable_bytes"] == expected_nonrec
     src_v1_2 = bakeoff_judge.ensure_qwen36_jit_build_env_before_llm(cgroup_root=v1_root, proc_cgroup_path=v1_proc_1, nproc=64)
-    assert src_v1_2["used_source"] == "memory.stat_v1:rss+shmem"
+    assert src_v1_2["used_source"] == "memory.stat_v1:rss+shmem+dirty+writeback"
 
     # Also verify pipeline progress.jsonl (kind="jit_build_jobs") logs both readings & used_source
     part_dir = _make_builder_part(tmp_path / "pipe", triads=1)
@@ -3663,9 +3655,9 @@ def test_jit_build_jobs_page_cache_heavy_cgroup_uses_anon_plus_shmem(
     assert len(jit_recs) == 1
     assert jit_recs[0]["jobs"] == 8
     assert jit_recs[0]["current_bytes"] == 93_410_516_992
-    assert jit_recs[0]["anon_shmem_bytes"] == expected_anon_shmem
-    assert jit_recs[0]["used_bytes"] == expected_anon_shmem
-    assert jit_recs[0]["used_source"] == "memory.stat:anon+shmem"
+    assert jit_recs[0]["nonreclaimable_bytes"] == expected_nonrec
+    assert jit_recs[0]["used_bytes"] == expected_nonrec
+    assert jit_recs[0]["used_source"] == "memory.stat:anon+shmem+file_dirty+file_writeback+kernel"
 
 
 def test_jit_build_jobs_memory_stat_missing_falls_back_to_memory_current(
@@ -3691,10 +3683,10 @@ def test_jit_build_jobs_memory_stat_missing_falls_back_to_memory_current(
     assert vm_plan["jobs"] == 1
     assert vm_plan["source"] == "cgroup"
     assert vm_plan["current_bytes"] == 93_410_516_992
-    assert vm_plan["anon_shmem_bytes"] is None
+    assert vm_plan["nonreclaimable_bytes"] is None
     assert vm_plan["used_bytes"] == 93_410_516_992
     assert vm_plan["used_source"] == "memory.current_fallback"
-    assert "current_bytes=93410516992 anon_shmem_bytes=none used_bytes=93410516992 used_source=memory.current_fallback" in vm_plan["log_line"]
+    assert "current_bytes=93410516992 nonreclaimable_bytes=none used_bytes=93410516992 used_source=memory.current_fallback" in vm_plan["log_line"]
 
     for k in bakeoff_judge.QWEN36_JIT_BUILD_PARALLELISM_ENV_VARS:
         monkeypatch.delenv(k, raising=False)
@@ -3705,10 +3697,10 @@ def test_jit_build_jobs_memory_stat_missing_falls_back_to_memory_current(
     )
     captured_out = capsys.readouterr().out
     assert src_plan["jobs"] == 1
-    assert src_plan["anon_shmem_bytes"] is None
+    assert src_plan["nonreclaimable_bytes"] is None
     assert src_plan["used_bytes"] == 93_410_516_992
     assert src_plan["used_source"] == "memory.current_fallback"
-    assert "current_bytes=93410516992 anon_shmem_bytes=none used_bytes=93410516992 used_source=memory.current_fallback" in captured_out
+    assert "current_bytes=93410516992 nonreclaimable_bytes=none used_bytes=93410516992 used_source=memory.current_fallback" in captured_out
 
     # Also verify missing keys in memory.stat triggers the same memory.current fallback
     (cg_root / "pod.scope" / "memory.stat").write_text("file 80000000000\nbad line\n", encoding="utf-8")
@@ -3721,8 +3713,6 @@ def test_jit_build_jobs_memory_stat_missing_falls_back_to_memory_current(
     )
     assert vm_plan_2["used_source"] == "memory.current_fallback"
     assert vm_plan_2["used_bytes"] == 93_410_516_992
-    for k in bakeoff_judge.QWEN36_JIT_BUILD_PARALLELISM_ENV_VARS:
-        monkeypatch.delenv(k, raising=False)
     src_plan_2 = bakeoff_judge.ensure_qwen36_jit_build_env_before_llm(cgroup_root=cg_root, proc_cgroup_path=proc_cg, nproc=64)
     assert src_plan_2["used_source"] == "memory.current_fallback"
 
@@ -3731,5 +3721,234 @@ def test_jit_build_jobs_memory_stat_missing_falls_back_to_memory_current(
     with pytest.MonkeyPatch.context() as mp_io:
         mp_io.setattr(Path, "read_text", lambda *_a, **_kw: (_ for _ in ()).throw(OSError("stat err")))
         assert vm_judges.read_cgroup_nonreclaimable_bytes(cg_root / "pod.scope") == (None, "memory.current_fallback")
+
+
+def test_jit_build_jobs_counts_dirty_writeback_and_kernel_in_nonreclaimable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Low anon + shmem (4.5 GiB) alone would give 8 jobs on 125 GB limit,
+    # but high file_dirty + file_writeback + kernel (85 GiB) must restrict to 1 job.
+    cg_root, proc_cg = _write_fake_cgroup_tree(
+        tmp_path / "dirty_cg",
+        limit_raw="124999999488",
+        current_raw="93410516992",
+    )
+    anon = 4 * 1024**3
+    shmem = 512 * 1024**2
+    file_dirty = 60 * 1024**3
+    file_writeback = 20 * 1024**3
+    kernel = 5 * 1024**3
+    expected_nonrec = anon + shmem + file_dirty + file_writeback + kernel
+    (cg_root / "pod.scope" / "memory.stat").write_text(
+        f"anon {anon}\nshmem {shmem}\nfile_dirty {file_dirty}\nfile_writeback {file_writeback}\nkernel {kernel}\n",
+        encoding="utf-8",
+    )
+    vm_plan = vm_judges.apply_jit_build_jobs_to_env({}, cgroup_root=cg_root, proc_cgroup_path=proc_cg, config_env={}, nproc=64)
+    src_plan = bakeoff_judge.ensure_qwen36_jit_build_env_before_llm(cgroup_root=cg_root, proc_cgroup_path=proc_cg, nproc=64)
+    assert vm_plan["nonreclaimable_bytes"] == expected_nonrec
+    assert vm_plan["jobs"] == 1
+    assert vm_plan["used_source"] == "memory.stat:anon+shmem+file_dirty+file_writeback+kernel"
+    assert src_plan["nonreclaimable_bytes"] == expected_nonrec
+    assert src_plan["jobs"] == 1
+
+    # Also test cgroup v2 without `kernel` key -> sums slab_unreclaimable + kernel_stack + pagetables + percpu + sock
+    (cg_root / "pod.scope" / "memory.stat").write_text(
+        (
+            f"anon {anon}\nshmem {shmem}\nfile_dirty {file_dirty}\nfile_writeback {file_writeback}\n"
+            f"slab_unreclaimable {3 * 1024**3}\nkernel_stack {512 * 1024**2}\n"
+            f"pagetables {512 * 1024**2}\npercpu {512 * 1024**2}\nsock {512 * 1024**2}\n"
+        ),
+        encoding="utf-8",
+    )
+    vm_parts = vm_judges.apply_jit_build_jobs_to_env({}, cgroup_root=cg_root, proc_cgroup_path=proc_cg, config_env={}, nproc=64)
+    src_parts = bakeoff_judge.ensure_qwen36_jit_build_env_before_llm(cgroup_root=cg_root, proc_cgroup_path=proc_cg, nproc=64)
+    assert vm_parts["used_source"] == "memory.stat:anon+shmem+file_dirty+file_writeback+kernel_parts"
+    assert vm_parts["nonreclaimable_bytes"] == expected_nonrec
+    assert vm_parts["jobs"] == 1
+    assert src_parts["used_source"] == "memory.stat:anon+shmem+file_dirty+file_writeback+kernel_parts"
+    assert src_parts["nonreclaimable_bytes"] == expected_nonrec
+
+
+def test_jit_build_jobs_reading_taken_immediately_before_llm_constructor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests.test_qwen36_engine_pins import _install_fake_runtime, _make_full_fake_engine
+
+    receipts_dir, hf_home, _ = _write_qwen36_snapshot_fixture(tmp_path / "recheck")
+    cg_root, proc_cg = _write_fake_cgroup_tree(
+        tmp_path / "cg",
+        limit_raw="124999999488",
+        current_raw="93410516992",
+    )
+    stat_file = cg_root / "pod.scope" / "memory.stat"
+    # Initially clean (would give 8 jobs if cached from launch time)
+    stat_file.write_text(
+        f"anon {4 * 1024**3}\nshmem 0\nfile_dirty 0\nfile_writeback 0\nkernel 0\n",
+        encoding="utf-8",
+    )
+    _install_fake_runtime(
+        monkeypatch,
+        hf_home,
+        llm_engine_factory=lambda kw: _make_full_fake_engine(max_num_batched_tokens=kw["max_num_batched_tokens"]).llm_engine,
+    )
+    vllm_mod = sys.modules["vllm"]
+    orig_llm_cls = vllm_mod.LLM
+    events: list[tuple[str, Any]] = []
+    orig_read_state = bakeoff_judge._read_cgroup_memory_state
+
+    def _spy_read_state(**_kw: Any) -> dict[str, Any]:
+        st = orig_read_state(cgroup_root=cg_root, proc_cgroup_path=proc_cg)
+        events.append(("read_cgroup", st["nonreclaimable_bytes"]))
+        return st
+
+    class _OrderCheckLLM(orig_llm_cls):  # type: ignore[misc,valid-type]
+        def __init__(self, **kwargs: Any) -> None:
+            events.append(("llm_init", os.environ.get("MAX_JOBS")))
+            super().__init__(**kwargs)
+
+    monkeypatch.setattr(bakeoff_judge, "_read_cgroup_memory_state", _spy_read_state)
+    monkeypatch.setattr(vllm_mod, "LLM", _OrderCheckLLM)
+    # Pre-populate MAX_JOBS="8" to prove ensure_qwen36_jit_build_env_before_llm does NOT skip re-reading!
+    for k in bakeoff_judge.QWEN36_JIT_BUILD_PARALLELISM_ENV_VARS:
+        monkeypatch.setenv(k, "8")
+    monkeypatch.setenv(bakeoff_judge.QWEN36_MAX_NEW_TOKENS_ENV_VAR, "4096")
+    child_prog = tmp_path / "child_prog.jsonl"
+    monkeypatch.setenv("RDLAB_JUDGE_CHILD_PROGRESS_FILE", str(child_prog))
+
+    spec = JUDGE_SPECS[QWEN36_ID]
+    transport = bakeoff_judge.VllmJudgeTransport(receipts_dir=receipts_dir, hf_home=hf_home, device="cuda")
+    transport.verify_ready(spec)
+
+    # Simulate dirty pages accumulating AFTER drop / tokenizer load, right before LLM(...)
+    orig_tok_load = transport._ensure_tokenizer_loaded
+
+    def _dirty_during_tok(sp: Any) -> None:
+        orig_tok_load(sp)
+        events.append(("tokenizer_loaded", None))
+        stat_file.write_text(
+            f"anon {4 * 1024**3}\nshmem 0\nfile_dirty {86 * 1024**3}\nfile_writeback 0\nkernel 0\n",
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(transport, "_ensure_tokenizer_loaded", _dirty_during_tok)
+    transport._ensure_loaded(spec)
+
+    # Verify cgroup read ran AFTER tokenizer_loaded and IMMEDIATELY BEFORE llm_init, flipping MAX_JOBS 8 -> 1
+    tok_idx = next(i for i, ev in enumerate(events) if ev[0] == "tokenizer_loaded")
+    read_idx = next(i for i, ev in enumerate(events) if ev[0] == "read_cgroup")
+    llm_idx = next(i for i, ev in enumerate(events) if ev[0] == "llm_init")
+    assert tok_idx < read_idx < llm_idx
+    assert events[read_idx] == ("read_cgroup", 90 * 1024**3)
+    assert events[llm_idx] == ("llm_init", "1")
+    child_recs = [json.loads(ln) for ln in child_prog.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    assert any(r.get("kind") == "jit_build_jobs" and r.get("stage") == "before_llm" and r.get("jobs") == 1 for r in child_recs)
+
+
+def test_weights_sync_start_logged_and_deadline_timeout_never_fails_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "data")
+    _ = receipts_dir
+    cg_root, proc_cg = _write_fake_cgroup_tree(
+        tmp_path / "cg",
+        limit_raw="124999999488",
+        current_raw="93410516992",
+    )
+    vm_log = tmp_path / "vm.log"
+    monkeypatch.setattr(vm_judges, "_ACTIVE_VM_LOG_PATH", vm_log)
+    monkeypatch.setenv("RDLAB_WEIGHTS_SYNC_TIMEOUT_SECONDS", "0.05")
+    drop_caches = tmp_path / "drop_caches"
+    drop_caches.write_text("0\n", encoding="utf-8")
+    prog = tmp_path / "prog_timeout.jsonl"
+
+    release_sync = threading.Event()
+    order: list[str] = []
+
+    def _slow_sync() -> None:
+        # Check SYNC_START was already written to vm.log and progress.jsonl BEFORE sync runs!
+        assert "SYNC_START" in vm_log.read_text(encoding="utf-8")
+        assert any(
+            json.loads(ln).get("kind") == "weights_sync_start"
+            for ln in prog.read_text(encoding="utf-8").splitlines()
+            if ln.strip()
+        )
+        order.append("sync_started")
+        release_sync.wait(timeout=2.0)
+
+    try:
+        res = vm_judges.drop_verified_snapshots_page_cache(
+            hf_home,
+            only_judge_ids=("mu-judge",),
+            repo_dir=REPO_ROOT,
+            progress_path=prog,
+            cgroup_root=cg_root,
+            proc_cgroup_path=proc_cg,
+            drop_caches_path=drop_caches,
+            sync_fn=_slow_sync,
+        )
+    finally:
+        release_sync.set()
+
+    assert order == ["sync_started"]
+    assert res["sync_ran"] is True
+    assert res["sync_timed_out"] is True
+    assert res["sync_timeout_seconds"] == 0.05
+    assert res["sync_timeout_override"] == 0.05
+    assert "TimeoutError" in str(res["sync_error"])
+    assert res["method"] == "drop_caches"
+    log_txt = vm_log.read_text(encoding="utf-8")
+    assert "SYNC_START " in log_txt
+    assert "override=RDLAB_WEIGHTS_SYNC_TIMEOUT_SECONDS=0.05" in log_txt
+    assert "sync_timed_out=True" in log_txt
+    prog_recs = [json.loads(ln) for ln in prog.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    assert [r["kind"] for r in prog_recs] == ["weights_sync_start", "weights_page_cache_drop"]
+    assert prog_recs[1]["sync_timed_out"] is True
+
+    # Invalid RDLAB_WEIGHTS_SYNC_TIMEOUT_SECONDS falls back cleanly to default without failing
+    monkeypatch.setenv("RDLAB_WEIGHTS_SYNC_TIMEOUT_SECONDS", "not-a-float")
+    eff_to, ov_to = vm_judges.resolve_weights_sync_timeout_seconds()
+    assert eff_to == vm_judges.DEFAULT_WEIGHTS_SYNC_TIMEOUT_SECONDS
+    assert ov_to is None
+    assert "WEIGHTS_SYNC_TIMEOUT_INVALID" in vm_log.read_text(encoding="utf-8")
+
+
+def test_pytest_guard_skips_real_drop_caches_even_when_sync_fn_injected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "data")
+    cg_root, proc_cg = _write_fake_cgroup_tree(
+        tmp_path / "cg",
+        limit_raw="124999999488",
+        current_raw="93410516992",
+    )
+    real_drop_target = Path("/proc/sys/vm/drop_caches")
+    monkeypatch.setattr(vm_judges, "DEFAULT_DROP_CACHES_PATH", real_drop_target)
+    real_open = Path.open
+
+    def _forbid_real_drop_open(self_p: Path, *args: Any, **kwargs: Any) -> Any:
+        if self_p == real_drop_target:
+            raise AssertionError("drop_verified_snapshots_page_cache attempted to open real /proc/sys/vm/drop_caches under pytest!")
+        return real_open(self_p, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", _forbid_real_drop_open)
+    sync_calls: list[str] = []
+    prog = tmp_path / "prog_guard.jsonl"
+    res = vm_judges.drop_verified_snapshots_page_cache(
+        hf_home,
+        only_judge_ids=("mu-judge",),
+        repo_dir=REPO_ROOT,
+        progress_path=prog,
+        cgroup_root=cg_root,
+        proc_cgroup_path=proc_cg,
+        sync_fn=lambda: sync_calls.append("ran"),
+    )
+    assert sync_calls == ["ran"]
+    assert res["sync_ran"] is True
+    assert res["method"] == "skipped_dryrun"
+
 
 

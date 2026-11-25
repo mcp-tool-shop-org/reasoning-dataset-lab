@@ -5189,7 +5189,7 @@ def run_bakeoff_judge(
                 "jobs": jit_plan.get("jobs"),
                 "limit_bytes": jit_plan.get("limit_bytes"),
                 "current_bytes": jit_plan.get("current_bytes"),
-                "anon_shmem_bytes": jit_plan.get("anon_shmem_bytes"),
+                "nonreclaimable_bytes": jit_plan.get("nonreclaimable_bytes"),
                 "used_bytes": jit_plan.get("used_bytes"),
                 "used_source": jit_plan.get("used_source"),
                 "source": jit_plan.get("source"),
@@ -9961,10 +9961,13 @@ def _read_cgroup_int_value(path: Path) -> int | None:
 
 
 def _read_cgroup_nonreclaimable_from_stat(cg_dir: Path) -> tuple[int | None, str]:
-    """Read `(anon_shmem_bytes, used_source)` from `cg_dir/memory.stat`.
+    """Read `(nonreclaimable_bytes, used_source)` from `cg_dir/memory.stat`.
 
-    cgroup v2 uses `anon` + `shmem`; cgroup v1 uses `total_rss` + `total_shmem` (else `rss` + `shmem`);
-    when missing or unreadable, returns `(None, 'memory.current_fallback')`.
+    cgroup v2 uses `anon + shmem + file_dirty + file_writeback + kernel` (or sums
+    `slab_unreclaimable + kernel_stack + pagetables + percpu + sock` when `kernel` is absent);
+    cgroup v1 uses `total_rss + total_shmem + total_dirty + total_writeback` (else
+    `rss + shmem + dirty + writeback`); when missing or unreadable, returns
+    `(None, 'memory.current_fallback')`.
     """
     stat_path = cg_dir / "memory.stat"
     try:
@@ -9977,11 +9980,34 @@ def _read_cgroup_nonreclaimable_from_stat(cg_dir: Path) -> tuple[int | None, str
         if len(parts) == 2 and re.fullmatch(r"\d+", parts[1]):
             stats[parts[0]] = int(parts[1])
     if "anon" in stats and "shmem" in stats:
-        return int(stats["anon"]) + int(stats["shmem"]), "memory.stat:anon+shmem"
+        dirty = int(stats.get("file_dirty", 0))
+        writeback = int(stats.get("file_writeback", 0))
+        if "kernel" in stats:
+            kernel_bytes = int(stats["kernel"])
+            used_source = "memory.stat:anon+shmem+file_dirty+file_writeback+kernel"
+        else:
+            kernel_bytes = sum(
+                int(stats.get(k, 0))
+                for k in ("slab_unreclaimable", "kernel_stack", "pagetables", "percpu", "sock")
+            )
+            used_source = "memory.stat:anon+shmem+file_dirty+file_writeback+kernel_parts"
+        return int(stats["anon"]) + int(stats["shmem"]) + dirty + writeback + kernel_bytes, used_source
     if "total_rss" in stats and "total_shmem" in stats:
-        return int(stats["total_rss"]) + int(stats["total_shmem"]), "memory.stat_v1:total_rss+total_shmem"
+        total = (
+            int(stats["total_rss"])
+            + int(stats["total_shmem"])
+            + int(stats.get("total_dirty", 0))
+            + int(stats.get("total_writeback", 0))
+        )
+        return total, "memory.stat_v1:total_rss+total_shmem+total_dirty+total_writeback"
     if "rss" in stats and "shmem" in stats:
-        return int(stats["rss"]) + int(stats["shmem"]), "memory.stat_v1:rss+shmem"
+        total = (
+            int(stats["rss"])
+            + int(stats["shmem"])
+            + int(stats.get("dirty", 0))
+            + int(stats.get("writeback", 0))
+        )
+        return total, "memory.stat_v1:rss+shmem+dirty+writeback"
     return None, "memory.current_fallback"
 
 
@@ -9996,7 +10022,7 @@ def _read_cgroup_memory_state(
     first_peak: int | None = None
     try:
         if not cg_proc.is_file():
-            return {"limit_bytes": None, "current_bytes": None, "peak_bytes": None, "anon_shmem_bytes": None, "used_source": None}
+            return {"limit_bytes": None, "current_bytes": None, "peak_bytes": None, "nonreclaimable_bytes": None, "used_source": None}
         v2_rel: str | None = None
         v1_rel: str | None = None
         for line in cg_proc.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -10034,17 +10060,17 @@ def _read_cgroup_memory_state(
                 cur = _read_cgroup_int_value(cand / "memory.current")
                 if cur is None:
                     cur = _read_cgroup_int_value(cand / "memory.usage_in_bytes")
-                anon_shmem, used_src = _read_cgroup_nonreclaimable_from_stat(cand)
+                nonreclaimable, used_src = _read_cgroup_nonreclaimable_from_stat(cand)
                 return {
                     "limit_bytes": limit,
                     "current_bytes": cur,
                     "peak_bytes": peak,
-                    "anon_shmem_bytes": anon_shmem,
+                    "nonreclaimable_bytes": nonreclaimable,
                     "used_source": used_src,
                 }
     except OSError:
         pass
-    return {"limit_bytes": None, "current_bytes": None, "peak_bytes": first_peak, "anon_shmem_bytes": None, "used_source": None}
+    return {"limit_bytes": None, "current_bytes": None, "peak_bytes": first_peak, "nonreclaimable_bytes": None, "used_source": None}
 
 
 def _read_cgroup_memory_peak_bytes(
@@ -10062,7 +10088,7 @@ def compute_qwen36_jit_build_jobs(
     *,
     limit_bytes: int | None,
     current_bytes: int | None,
-    anon_shmem_bytes: int | None = None,
+    nonreclaimable_bytes: int | None = None,
     used_source: str | None = None,
     reserve_bytes: int = QWEN36_JIT_BUILD_RESERVE_BYTES,
     per_job_bytes: int = QWEN36_JIT_BUILD_PER_JOB_BYTES,
@@ -10071,11 +10097,15 @@ def compute_qwen36_jit_build_jobs(
 ) -> dict[str, Any]:
     """Compute bounded JIT build job count (`clamp(floor((limit - used - reserve) / per_job), 1, 8)`)."""
     eff_nproc = max(1, int(nproc if nproc is not None else (os.cpu_count() or 1)))
-    eff_anon_shmem = int(anon_shmem_bytes) if anon_shmem_bytes is not None else None
-    if limit_bytes is not None and (eff_anon_shmem is not None or current_bytes is not None):
-        if eff_anon_shmem is not None:
-            used_bytes: int | None = eff_anon_shmem
-            eff_used_source = str(used_source) if used_source else "memory.stat:anon+shmem"
+    eff_nonreclaimable = int(nonreclaimable_bytes) if nonreclaimable_bytes is not None else None
+    if limit_bytes is not None and (eff_nonreclaimable is not None or current_bytes is not None):
+        if eff_nonreclaimable is not None:
+            used_bytes: int | None = eff_nonreclaimable
+            eff_used_source = (
+                str(used_source)
+                if used_source
+                else "memory.stat:anon+shmem+file_dirty+file_writeback+kernel"
+            )
         else:
             assert current_bytes is not None
             used_bytes = int(current_bytes)
@@ -10094,7 +10124,7 @@ def compute_qwen36_jit_build_jobs(
         "raw_jobs": raw_jobs,
         "limit_bytes": (int(limit_bytes) if limit_bytes is not None else None),
         "current_bytes": (int(current_bytes) if current_bytes is not None else None),
-        "anon_shmem_bytes": eff_anon_shmem,
+        "nonreclaimable_bytes": eff_nonreclaimable,
         "used_bytes": used_bytes,
         "used_source": eff_used_source,
         "reserve_bytes": int(reserve_bytes),
@@ -10136,14 +10166,7 @@ def ensure_qwen36_jit_build_env_before_llm(
     proc_cgroup_path: Path | None = None,
     nproc: int | None = None,
 ) -> dict[str, Any]:
-    """Ensure ninja/nvcc JIT parallelism env vars are bounded in `os.environ` before vLLM imports flashinfer."""
-    if all(os.environ.get(var, "").strip() for var in QWEN36_JIT_BUILD_PARALLELISM_ENV_VARS):
-        return {
-            "source": "preconfigured",
-            "env": list(QWEN36_JIT_BUILD_PARALLELISM_ENV_VARS),
-            "env_values": {var: os.environ[var] for var in QWEN36_JIT_BUILD_PARALLELISM_ENV_VARS},
-            "jobs": int(os.environ["MAX_JOBS"]) if os.environ["MAX_JOBS"].isdigit() else os.environ["MAX_JOBS"],
-        }
+    """Read cgroup headroom fresh and set ninja/nvcc JIT parallelism env vars immediately before `LLM(...)`."""
     overrides: dict[str, int] = {}
     reserve_bytes = QWEN36_JIT_BUILD_RESERVE_BYTES
     per_job_bytes = QWEN36_JIT_BUILD_PER_JOB_BYTES
@@ -10168,7 +10191,7 @@ def ensure_qwen36_jit_build_env_before_llm(
     plan = compute_qwen36_jit_build_jobs(
         limit_bytes=cg_state.get("limit_bytes"),
         current_bytes=cg_state.get("current_bytes"),
-        anon_shmem_bytes=cg_state.get("anon_shmem_bytes"),
+        nonreclaimable_bytes=cg_state.get("nonreclaimable_bytes"),
         used_source=cg_state.get("used_source"),
         reserve_bytes=reserve_bytes,
         per_job_bytes=per_job_bytes,
@@ -10179,13 +10202,13 @@ def ensure_qwen36_jit_build_env_before_llm(
         os.environ[k] = v
     limit_tok = str(plan["limit_bytes"]) if plan.get("limit_bytes") is not None else "none"
     cur_tok = str(plan["current_bytes"]) if plan.get("current_bytes") is not None else "none"
-    anon_tok = str(plan["anon_shmem_bytes"]) if plan.get("anon_shmem_bytes") is not None else "none"
+    nonrec_tok = str(plan["nonreclaimable_bytes"]) if plan.get("nonreclaimable_bytes") is not None else "none"
     used_tok = str(plan["used_bytes"]) if plan.get("used_bytes") is not None else "none"
     used_src_tok = str(plan.get("used_source") or "none")
     env_tok = ",".join(plan["env"])
     log_line = (
         f"QWEN36_JIT_BUILD_JOBS jobs={plan['jobs']} limit_bytes={limit_tok} "
-        f"current_bytes={cur_tok} anon_shmem_bytes={anon_tok} "
+        f"current_bytes={cur_tok} nonreclaimable_bytes={nonrec_tok} "
         f"used_bytes={used_tok} used_source={used_src_tok} "
         f"reserve_bytes={plan['reserve_bytes']} "
         f"per_job_bytes={plan['per_job_bytes']} source={plan['source']} env={env_tok}"
@@ -10336,7 +10359,6 @@ class VllmJudgeTransport:
         max_model_len = QWEN36_PROMPT_TOKEN_CAP + max_new_tokens
         max_num_batched_tokens = compute_qwen36_max_num_batched_tokens(max_model_len)
         self._ensure_tokenizer_loaded(spec)
-        self._jit_build_plan = ensure_qwen36_jit_build_env_before_llm()
         configured_jit_log = os.environ.get(QWEN36_FLASHINFER_JIT_BUILD_LOG_ENV_VAR, "").strip()
         temp_jit_dir: tempfile.TemporaryDirectory[str] | None = None
         if configured_jit_log:
@@ -10347,6 +10369,26 @@ class VllmJudgeTransport:
             os.environ[QWEN36_FLASHINFER_JIT_BUILD_LOG_ENV_VAR] = str(eff_jit_log_path)
         from vllm import LLM
 
+        # Take the cgroup non-reclaimable memory reading right before constructing `LLM(...)`.
+        self._jit_build_plan = ensure_qwen36_jit_build_env_before_llm()
+        child_progress_raw = os.environ.get("RDLAB_JUDGE_CHILD_PROGRESS_FILE", "").strip()
+        if child_progress_raw:
+            _append_child_progress_line(
+                Path(child_progress_raw),
+                {
+                    "kind": "jit_build_jobs",
+                    "stage": "before_llm",
+                    "judge_id": spec.judge_id,
+                    "jobs": self._jit_build_plan.get("jobs"),
+                    "limit_bytes": self._jit_build_plan.get("limit_bytes"),
+                    "current_bytes": self._jit_build_plan.get("current_bytes"),
+                    "nonreclaimable_bytes": self._jit_build_plan.get("nonreclaimable_bytes"),
+                    "used_bytes": self._jit_build_plan.get("used_bytes"),
+                    "used_source": self._jit_build_plan.get("used_source"),
+                    "source": self._jit_build_plan.get("source"),
+                },
+                lock=threading.Lock(),
+            )
         t_llm_init = time.monotonic()
         try:
             self._llm = LLM(

@@ -39,6 +39,12 @@ POD_2026_11_24_LIMIT_BYTES: int = 124_999_999_488
 POD_2026_11_24_CURRENT_BYTES_BEFORE_DROP: int = 93_410_516_992
 PER_JOB_PEAK_MULTI_JOB_NOTE: str = "only measured at jobs=1"
 PROJECTED_BUILD_SECONDS_FORMULA: str = "ceil(units / jobs) * median_seconds_per_unit"
+PROJECTED_BUILD_SECONDS_PESSIMISTIC_FORMULA: str = "sum_unit_seconds / jobs + max_unit_seconds"
+TEST_CGROUP_ENV_VARS: tuple[str, ...] = (
+    "RDLAB_JIT_RUNG_PROC_CGROUP",
+    "RDLAB_JIT_RUNG_CGROUP_ROOT",
+    "RDLAB_JIT_RUNG_TEST_MODE",
+)
 DEFAULT_CGROUP_V2_ROOT = Path("/sys/fs/cgroup")
 FLASHINFER_CUDA_ARCH_LIST = "12.0f"
 FUSED_MOE_120_MODULE_NAME = "fused_moe_120"
@@ -437,13 +443,13 @@ def resolve_fused_moe_120_target_spec() -> dict[str, Any]:
     }
 
 
-def parse_ninja_log(ninja_log_path: Path) -> dict[str, float]:
-    """Parse a `.ninja_log` (v5) file into `{output_target: seconds}` keeping the latest entry per target."""
-    durations_by_target: dict[str, float] = {}
+def parse_ninja_log(ninja_log_path: Path) -> list[float]:
+    """Parse `.ninja_log` (v5) compile edges (`.o` targets only), deduplicated by `(start_ms, end_ms)`."""
+    latest_by_target: dict[str, tuple[int, int]] = {}
     try:
         lines = Path(ninja_log_path).read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
-        return durations_by_target
+        return []
     for raw_line in lines:
         stripped = raw_line.strip()
         if not stripped or stripped.startswith("#"):
@@ -457,16 +463,26 @@ def parse_ninja_log(ninja_log_path: Path) -> dict[str, float]:
         except ValueError:
             continue
         target = cols[3].strip()
-        if not target:
+        if not target or not target.endswith(".o"):
             continue
-        durations_by_target[target] = max(0.0, (end_ms - start_ms) / 1000.0)
-    return durations_by_target
+        latest_by_target[target] = (start_ms, end_ms)
+
+    seen_edges: set[tuple[int, int]] = set()
+    durations: list[float] = []
+    for start_ms, end_ms in latest_by_target.values():
+        edge = (start_ms, end_ms)
+        if edge in seen_edges:
+            continue
+        seen_edges.add(edge)
+        durations.append(max(0.0, (end_ms - start_ms) / 1000.0))
+    return durations
 
 
 def collect_ninja_unit_timings(cache_dir: Path | None) -> dict[str, Any]:
-    """Measure per-compile-unit seconds from `.ninja_log` files inside `cache_dir`."""
+    """Measure per-compile-unit (`.o`) seconds from `.ninja_log` files inside `cache_dir`."""
     empty = {
         "compile_unit_count": None,
+        "sum_unit_seconds": None,
         "median_seconds_per_unit": None,
         "max_seconds_per_unit": None,
         "unit_timing_source": None,
@@ -478,12 +494,12 @@ def collect_ninja_unit_timings(cache_dir: Path | None) -> dict[str, Any]:
         return empty
     all_durations: list[float] = []
     for log_path in sorted(root.rglob(".ninja_log")):
-        per_target = parse_ninja_log(log_path)
-        all_durations.extend(per_target.values())
+        all_durations.extend(parse_ninja_log(log_path))
     if not all_durations:
         return empty
     return {
         "compile_unit_count": len(all_durations),
+        "sum_unit_seconds": round(float(sum(all_durations)), 6),
         "median_seconds_per_unit": round(float(statistics.median(all_durations)), 6),
         "max_seconds_per_unit": round(float(max(all_durations)), 6),
         "unit_timing_source": "ninja_log",
@@ -511,14 +527,61 @@ def compute_projected_build_seconds(
     return None
 
 
+def compute_projected_build_seconds_pessimistic(
+    *,
+    sum_unit_seconds: float | None,
+    max_seconds_per_unit: float | None,
+    jobs: int | None,
+    plan_only: bool = False,
+) -> float | str | None:
+    """Compute `sum_unit_seconds / jobs + max_unit_seconds`, returning `'not measured'` under `--plan-only`."""
+    if plan_only:
+        return "not measured"
+    if (
+        sum_unit_seconds is not None
+        and max_seconds_per_unit is not None
+        and jobs is not None
+        and int(jobs) > 0
+    ):
+        return round(float(sum_unit_seconds) / int(jobs) + float(max_seconds_per_unit), 6)
+    return None
+
+
+def system_page_size_bytes() -> int:
+    """Return the host kernel page size in bytes (`os.sysconf('SC_PAGE_SIZE')` or `4096`)."""
+    sysconf_fn = getattr(os, "sysconf", None)
+    if callable(sysconf_fn):
+        try:
+            pg = int(sysconf_fn("SC_PAGE_SIZE"))
+            if pg > 0:
+                return pg
+        except (OSError, ValueError):
+            pass
+    return 4096
+
+
+def validate_cap_page_aligned(cap_bytes: int, *, page_size: int | None = None) -> int:
+    """Refuse `CAP_NOT_PAGE_ALIGNED` when `cap_bytes` is not an exact multiple of kernel page size."""
+    eff_page = int(page_size) if page_size is not None and int(page_size) > 0 else system_page_size_bytes()
+    val = int(cap_bytes)
+    if val <= 0 or (val % eff_page) != 0:
+        raise JitBuildRungError(
+            "CAP_NOT_PAGE_ALIGNED",
+            f"Memory cap {val} bytes is not aligned to kernel page size {eff_page} bytes (memory.max rounds to page size).",
+        )
+    return val
+
+
 def build_pod_reference(
     *,
     reserve_bytes: int = vm_judges.DEFAULT_JIT_BUILD_RESERVE_BYTES,
     per_job_bytes_assumed: int = vm_judges.DEFAULT_JIT_BUILD_PER_JOB_BYTES,
     measured_per_job_bytes: int | None = None,
-    anon_shmem_bytes: int | None = None,
+    nonreclaimable_bytes: int | None = None,
     compile_unit_count: int | None = None,
+    sum_unit_seconds: float | None = None,
     median_seconds_per_unit: float | None = None,
+    max_seconds_per_unit: float | None = None,
     plan_only: bool = False,
 ) -> dict[str, Any]:
     """Evaluate `compute_jit_build_jobs` and build-time projections on the 2026-11-24 RunPod pod numbers."""
@@ -543,34 +606,34 @@ def build_pod_reference(
         if eff_measured is not None
         else None
     )
-    eff_anon_shmem = int(anon_shmem_bytes) if anon_shmem_bytes is not None else None
-    anon_plan = (
+    eff_nonreclaimable = int(nonreclaimable_bytes) if nonreclaimable_bytes is not None else None
+    nonrec_plan = (
         vm_judges.compute_jit_build_jobs(
             limit_bytes=POD_2026_11_24_LIMIT_BYTES,
             current_bytes=POD_2026_11_24_CURRENT_BYTES_BEFORE_DROP,
-            anon_shmem_bytes=eff_anon_shmem,
-            used_source="memory.stat:anon+shmem",
+            nonreclaimable_bytes=eff_nonreclaimable,
+            used_source="memory.stat:anon+shmem+file_dirty+file_writeback+kernel",
             reserve_bytes=int(reserve_bytes),
             per_job_bytes=int(per_job_bytes_assumed),
         )
-        if eff_anon_shmem is not None
+        if eff_nonreclaimable is not None
         else None
     )
     jobs_before_drop = int(assumed_plan["jobs"])
     jobs_before_drop_measured = int(measured_plan["jobs"]) if measured_plan is not None else None
-    jobs_with_anon_shmem = int(anon_plan["jobs"]) if anon_plan is not None else None
+    jobs_with_nonreclaimable = int(nonrec_plan["jobs"]) if nonrec_plan is not None else None
     return {
         "pod_date": "2026-11-24",
         "limit_bytes": POD_2026_11_24_LIMIT_BYTES,
         "current_bytes": POD_2026_11_24_CURRENT_BYTES_BEFORE_DROP,
-        "anon_shmem_bytes": eff_anon_shmem,
+        "nonreclaimable_bytes": eff_nonreclaimable,
         "reserve_bytes": int(reserve_bytes),
         "per_job_bytes_assumed": int(per_job_bytes_assumed),
         "jobs_before_drop": jobs_before_drop,
         "raw_jobs_before_drop": int(assumed_plan["raw_jobs"]),
-        "jobs_with_anon_shmem": jobs_with_anon_shmem,
-        "raw_jobs_with_anon_shmem": (
-            int(anon_plan["raw_jobs"]) if anon_plan is not None else None
+        "jobs_with_nonreclaimable": jobs_with_nonreclaimable,
+        "raw_jobs_with_nonreclaimable": (
+            int(nonrec_plan["raw_jobs"]) if nonrec_plan is not None else None
         ),
         "measured_per_job_bytes": eff_measured,
         "jobs_before_drop_with_measured_per_job": jobs_before_drop_measured,
@@ -578,6 +641,7 @@ def build_pod_reference(
             int(measured_plan["raw_jobs"]) if measured_plan is not None else None
         ),
         "projection_formula": PROJECTED_BUILD_SECONDS_FORMULA,
+        "projection_pessimistic_formula": PROJECTED_BUILD_SECONDS_PESSIMISTIC_FORMULA,
         "projected_build_seconds": {
             "before_drop": compute_projected_build_seconds(
                 units=compile_unit_count,
@@ -591,10 +655,30 @@ def build_pod_reference(
                 median_seconds_per_unit=median_seconds_per_unit,
                 plan_only=plan_only,
             ),
-            "with_anon_shmem": compute_projected_build_seconds(
+            "with_nonreclaimable": compute_projected_build_seconds(
                 units=compile_unit_count,
-                jobs=jobs_with_anon_shmem,
+                jobs=jobs_with_nonreclaimable,
                 median_seconds_per_unit=median_seconds_per_unit,
+                plan_only=plan_only,
+            ),
+        },
+        "projected_build_seconds_pessimistic": {
+            "before_drop": compute_projected_build_seconds_pessimistic(
+                sum_unit_seconds=sum_unit_seconds,
+                max_seconds_per_unit=max_seconds_per_unit,
+                jobs=jobs_before_drop,
+                plan_only=plan_only,
+            ),
+            "before_drop_with_measured_per_job": compute_projected_build_seconds_pessimistic(
+                sum_unit_seconds=sum_unit_seconds,
+                max_seconds_per_unit=max_seconds_per_unit,
+                jobs=jobs_before_drop_measured,
+                plan_only=plan_only,
+            ),
+            "with_nonreclaimable": compute_projected_build_seconds_pessimistic(
+                sum_unit_seconds=sum_unit_seconds,
+                max_seconds_per_unit=max_seconds_per_unit,
+                jobs=jobs_with_nonreclaimable,
                 plan_only=plan_only,
             ),
         },
@@ -641,6 +725,11 @@ def enrich_jit_build_receipt(receipt: Mapping[str, Any]) -> dict[str, Any]:
         if receipt.get("compile_unit_count") is not None
         else ninja_timings["compile_unit_count"]
     )
+    sum_unit_seconds = (
+        float(receipt["sum_unit_seconds"])
+        if receipt.get("sum_unit_seconds") is not None
+        else ninja_timings["sum_unit_seconds"]
+    )
     median_seconds_per_unit = (
         float(receipt["median_seconds_per_unit"])
         if receipt.get("median_seconds_per_unit") is not None
@@ -652,16 +741,18 @@ def enrich_jit_build_receipt(receipt: Mapping[str, Any]) -> dict[str, Any]:
         else ninja_timings["max_seconds_per_unit"]
     )
     unit_timing_source = receipt.get("unit_timing_source") or ninja_timings["unit_timing_source"]
-    anon_shmem_bytes = receipt.get("anon_shmem_bytes")
-    if anon_shmem_bytes is None:
-        anon_shmem_bytes = job_plan.get("anon_shmem_bytes")
+    nonreclaimable_bytes = receipt.get("nonreclaimable_bytes")
+    if nonreclaimable_bytes is None:
+        nonreclaimable_bytes = job_plan.get("nonreclaimable_bytes")
     pod_reference = build_pod_reference(
         reserve_bytes=reserve_bytes,
         per_job_bytes_assumed=per_job_bytes_assumed,
         measured_per_job_bytes=per_job_peak_bytes,
-        anon_shmem_bytes=(int(anon_shmem_bytes) if anon_shmem_bytes is not None else None),
+        nonreclaimable_bytes=(int(nonreclaimable_bytes) if nonreclaimable_bytes is not None else None),
         compile_unit_count=compile_unit_count,
+        sum_unit_seconds=sum_unit_seconds,
         median_seconds_per_unit=median_seconds_per_unit,
+        max_seconds_per_unit=max_seconds_per_unit,
         plan_only=False,
     )
     computed = {
@@ -671,6 +762,7 @@ def enrich_jit_build_receipt(receipt: Mapping[str, Any]) -> dict[str, Any]:
         "per_job_bytes_assumed": per_job_bytes_assumed,
         "per_job_peak_exceeds_assumption": per_job_peak_exceeds_assumption,
         "compile_unit_count": compile_unit_count,
+        "sum_unit_seconds": sum_unit_seconds,
         "median_seconds_per_unit": median_seconds_per_unit,
         "max_seconds_per_unit": max_seconds_per_unit,
         "unit_timing_source": unit_timing_source,
@@ -692,6 +784,7 @@ def enrich_jit_build_receipt(receipt: Mapping[str, Any]) -> dict[str, Any]:
         "pod_reference",
         "build_seconds",
         "compile_unit_count",
+        "sum_unit_seconds",
         "median_seconds_per_unit",
         "max_seconds_per_unit",
         "unit_timing_source",
@@ -718,7 +811,7 @@ def build_jit_rung_plan(
     *,
     cap_bytes: int,
     current_bytes: int = DEFAULT_CURRENT_BYTES,
-    anon_shmem_bytes: int | None = None,
+    nonreclaimable_bytes: int | None = None,
     venv_dir: Path | None = None,
     lock_path: Path = DEFAULT_LOCK_PATH,
     cache_dir: Path | None = None,
@@ -727,6 +820,7 @@ def build_jit_rung_plan(
     per_job_bytes: int | None = None,
 ) -> dict[str, Any]:
     """Resolve lockfile versions, target metadata, memory cap, and `compute_jit_build_jobs` bounded job count without compiling."""
+    validate_cap_page_aligned(int(cap_bytes))
     lock_info = parse_vllm_lock_versions(lock_path)
     installed = inspect_venv_installed_versions(Path(venv_dir)) if venv_dir is not None else None
     versions = installed or dict(lock_info["versions"])
@@ -738,7 +832,7 @@ def build_jit_rung_plan(
     job_plan = vm_judges.compute_jit_build_jobs(
         limit_bytes=int(cap_bytes),
         current_bytes=int(current_bytes),
-        anon_shmem_bytes=anon_shmem_bytes,
+        nonreclaimable_bytes=nonreclaimable_bytes,
         reserve_bytes=eff_reserve,
         per_job_bytes=eff_per_job,
         nproc=nproc,
@@ -748,7 +842,7 @@ def build_jit_rung_plan(
         reserve_bytes=eff_reserve,
         per_job_bytes_assumed=eff_per_job,
         measured_per_job_bytes=None,
-        anon_shmem_bytes=anon_shmem_bytes,
+        nonreclaimable_bytes=nonreclaimable_bytes,
         plan_only=True,
     )
     eff_cache_dir = (
@@ -775,11 +869,13 @@ def build_jit_rung_plan(
         "targets": [FUSED_MOE_120_MODULE_NAME],
         "cap_bytes": int(cap_bytes),
         "current_bytes": int(current_bytes),
-        "anon_shmem_bytes": (int(anon_shmem_bytes) if anon_shmem_bytes is not None else None),
+        "nonreclaimable_bytes": (int(nonreclaimable_bytes) if nonreclaimable_bytes is not None else None),
         "jobs": int(job_plan["jobs"]),
         "per_job_bytes_assumed": eff_per_job,
         "projection_formula": PROJECTED_BUILD_SECONDS_FORMULA,
+        "projection_pessimistic_formula": PROJECTED_BUILD_SECONDS_PESSIMISTIC_FORMULA,
         "compile_unit_count": "not measured",
+        "sum_unit_seconds": "not measured",
         "median_seconds_per_unit": "not measured",
         "max_seconds_per_unit": "not measured",
         "pod_reference": pod_reference,
@@ -807,8 +903,12 @@ def _worker_build_script() -> str:
     return (
         "import json, os, pathlib, sys, time\n"
         "def _resolve_self_cgroup_dir():\n"
-        "    proc_cg = pathlib.Path(os.environ.get('RDLAB_JIT_RUNG_PROC_CGROUP', '/proc/self/cgroup'))\n"
-        "    cg_root = pathlib.Path(os.environ.get('RDLAB_JIT_RUNG_CGROUP_ROOT', '/sys/fs/cgroup'))\n"
+        "    if os.environ.get('RDLAB_JIT_RUNG_TEST_MODE') == '1':\n"
+        "        proc_cg = pathlib.Path(os.environ.get('RDLAB_JIT_RUNG_PROC_CGROUP', '/proc/self/cgroup'))\n"
+        "        cg_root = pathlib.Path(os.environ.get('RDLAB_JIT_RUNG_CGROUP_ROOT', '/sys/fs/cgroup'))\n"
+        "    else:\n"
+        "        proc_cg = pathlib.Path('/proc/self/cgroup')\n"
+        "        cg_root = pathlib.Path('/sys/fs/cgroup')\n"
         "    try:\n"
         "        v2_rel = None\n"
         "        v1_rel = None\n"
@@ -1003,7 +1103,7 @@ def run_jit_build_rung(
     venv_dir: Path,
     cap_bytes: int,
     current_bytes: int = DEFAULT_CURRENT_BYTES,
-    anon_shmem_bytes: int | None = None,
+    nonreclaimable_bytes: int | None = None,
     lock_path: Path = DEFAULT_LOCK_PATH,
     cache_dir: Path | None = None,
     receipt_path: Path | None = None,
@@ -1013,15 +1113,17 @@ def run_jit_build_rung(
     ensure_venv_in_plan: bool = False,
     plan_only: bool = False,
     runner: Callable[..., Any] = subprocess.run,
+    _test_mode: bool = False,
 ) -> dict[str, Any]:
     """Execute the CPU-only JIT build rung or return its `--plan-only` document without compiling."""
+    validate_cap_page_aligned(int(cap_bytes))
     if plan_only:
         if ensure_venv_in_plan:
             ensure_vllm_venv_from_lock(venv_dir, lock_path=lock_path, runner=runner)
         plan = build_jit_rung_plan(
             cap_bytes=cap_bytes,
             current_bytes=current_bytes,
-            anon_shmem_bytes=anon_shmem_bytes,
+            nonreclaimable_bytes=nonreclaimable_bytes,
             venv_dir=venv_dir,
             lock_path=lock_path,
             cache_dir=cache_dir,
@@ -1053,12 +1155,16 @@ def run_jit_build_rung(
         job_plan = vm_judges.compute_jit_build_jobs(
             limit_bytes=int(cap_bytes),
             current_bytes=int(current_bytes),
-            anon_shmem_bytes=anon_shmem_bytes,
+            nonreclaimable_bytes=nonreclaimable_bytes,
             **{k: vm_judges.resolve_jit_build_budget_params()[k] for k in ("reserve_bytes", "per_job_bytes", "overrides")},
         )
         jit_log_path = ws_dir / "flashinfer_jit_build.jsonl"
         worker_meta_path = ws_dir / "worker_meta.json"
         child_env = dict(os.environ)
+        for env_k in TEST_CGROUP_ENV_VARS:
+            child_env.pop(env_k, None)
+        if _test_mode:
+            child_env["RDLAB_JIT_RUNG_TEST_MODE"] = "1"
         child_env["CUDA_VISIBLE_DEVICES"] = ""
         child_env["CUDA_HOME"] = toolkit["cuda_home"]
         child_env["CUDA_PATH"] = toolkit["cuda_home"]
@@ -1141,6 +1247,7 @@ def run_jit_build_rung(
                 "memory_peak_bytes": worker_meta.get("memory_peak_bytes"),
                 "build_seconds": round(float(build_s), 6),
                 "compile_unit_count": ninja_timings["compile_unit_count"],
+                "sum_unit_seconds": ninja_timings["sum_unit_seconds"],
                 "median_seconds_per_unit": ninja_timings["median_seconds_per_unit"],
                 "max_seconds_per_unit": ninja_timings["max_seconds_per_unit"],
                 "unit_timing_source": ninja_timings["unit_timing_source"],
@@ -1167,7 +1274,8 @@ def run_jit_build_rung(
 
 def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="CPU-only FlashInfer fused_moe_120 (sm_120f) JIT build rung using pinned vllm.lock.txt wheels."
+        description="CPU-only FlashInfer fused_moe_120 (sm_120f) JIT build rung using pinned vllm.lock.txt wheels.",
+        epilog="Note: memory.max caps are rounded to the kernel page size, so a non-page-aligned cap is refused (CAP_NOT_PAGE_ALIGNED).",
     )
     parser.add_argument(
         "--venv-dir",
@@ -1185,13 +1293,13 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--cap-bytes",
         type=int,
         default=None,
-        help="Memory cap in bytes applied to the build scope and compute_jit_build_jobs job calculation.",
+        help="Memory cap in bytes (must be page-size aligned; memory.max rounds to kernel page size and a non-aligned cap is refused).",
     )
     parser.add_argument(
         "--memory-max",
         type=str,
         default=None,
-        help="Memory cap with optional suffix (e.g. 64GiB, 96G); alternative to --cap-bytes.",
+        help="Memory cap with optional suffix (e.g. 64GiB, 96G; must be page-size aligned); alternative to --cap-bytes.",
     )
     parser.add_argument(
         "--current-bytes",
@@ -1200,10 +1308,10 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Baseline resident/page-cache bytes in the scope before JIT build (default: 0).",
     )
     parser.add_argument(
-        "--anon-shmem-bytes",
+        "--nonreclaimable-bytes",
         type=int,
         default=None,
-        help="Optional non-reclaimable anon+shmem bytes reading for job-count and pod-reference projection.",
+        help="Optional non-reclaimable memory.stat bytes reading for job-count and pod-reference projection.",
     )
     parser.add_argument(
         "--cache-dir",
@@ -1259,7 +1367,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         venv_dir=args.venv_dir,
         cap_bytes=cap_bytes,
         current_bytes=int(args.current_bytes),
-        anon_shmem_bytes=(int(args.anon_shmem_bytes) if args.anon_shmem_bytes is not None else None),
+        nonreclaimable_bytes=(
+            int(args.nonreclaimable_bytes) if args.nonreclaimable_bytes is not None else None
+        ),
         lock_path=args.lock_path,
         cache_dir=args.cache_dir,
         receipt_path=args.receipt_out,

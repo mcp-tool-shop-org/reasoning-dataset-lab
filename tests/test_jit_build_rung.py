@@ -67,14 +67,22 @@ def test_plan_only_cli_prints_versions_targets_cap_and_jobs_without_compiling(
     # (64 GiB - 0 - 16 GiB reserve) // 8 GiB == 6
     assert plan["jobs"] == 6
     assert plan["projection_formula"] == "ceil(units / jobs) * median_seconds_per_unit"
+    assert plan["projection_pessimistic_formula"] == "sum_unit_seconds / jobs + max_unit_seconds"
     assert plan["compile_unit_count"] == "not measured"
+    assert plan["sum_unit_seconds"] == "not measured"
     assert plan["median_seconds_per_unit"] == "not measured"
     assert plan["max_seconds_per_unit"] == "not measured"
     assert plan["pod_reference"]["projection_formula"] == "ceil(units / jobs) * median_seconds_per_unit"
+    assert plan["pod_reference"]["projection_pessimistic_formula"] == "sum_unit_seconds / jobs + max_unit_seconds"
     assert plan["pod_reference"]["projected_build_seconds"] == {
         "before_drop": "not measured",
         "before_drop_with_measured_per_job": "not measured",
-        "with_anon_shmem": "not measured",
+        "with_nonreclaimable": "not measured",
+    }
+    assert plan["pod_reference"]["projected_build_seconds_pessimistic"] == {
+        "before_drop": "not measured",
+        "before_drop_with_measured_per_job": "not measured",
+        "with_nonreclaimable": "not measured",
     }
     assert plan["env"]["FLASHINFER_CUDA_ARCH_LIST"] == "12.0f"
     assert plan["env"]["MAX_JOBS"] == "6"
@@ -501,21 +509,27 @@ def test_pod_reference_hand_computed_in_receipt_and_plan_only(tmp_path: Path) ->
         "pod_date": "2026-11-24",
         "limit_bytes": 124_999_999_488,
         "current_bytes": 93_410_516_992,
-        "anon_shmem_bytes": None,
+        "nonreclaimable_bytes": None,
         "reserve_bytes": 17_179_869_184,
         "per_job_bytes_assumed": 8_589_934_592,
         "jobs_before_drop": 1,
         "raw_jobs_before_drop": 1,
-        "jobs_with_anon_shmem": None,
-        "raw_jobs_with_anon_shmem": None,
+        "jobs_with_nonreclaimable": None,
+        "raw_jobs_with_nonreclaimable": None,
         "measured_per_job_bytes": 6_442_450_944,
         "jobs_before_drop_with_measured_per_job": 2,
         "raw_jobs_before_drop_with_measured_per_job": 2,
         "projection_formula": "ceil(units / jobs) * median_seconds_per_unit",
+        "projection_pessimistic_formula": "sum_unit_seconds / jobs + max_unit_seconds",
         "projected_build_seconds": {
             "before_drop": None,
             "before_drop_with_measured_per_job": None,
-            "with_anon_shmem": None,
+            "with_nonreclaimable": None,
+        },
+        "projected_build_seconds_pessimistic": {
+            "before_drop": None,
+            "before_drop_with_measured_per_job": None,
+            "with_nonreclaimable": None,
         },
     }
 
@@ -583,21 +597,27 @@ def test_pod_reference_hand_computed_in_receipt_and_plan_only(tmp_path: Path) ->
         "pod_date": "2026-11-24",
         "limit_bytes": 124_999_999_488,
         "current_bytes": 93_410_516_992,
-        "anon_shmem_bytes": None,
+        "nonreclaimable_bytes": None,
         "reserve_bytes": 17_179_869_184,
         "per_job_bytes_assumed": 8_589_934_592,
         "jobs_before_drop": 1,
         "raw_jobs_before_drop": 1,
-        "jobs_with_anon_shmem": None,
-        "raw_jobs_with_anon_shmem": None,
+        "jobs_with_nonreclaimable": None,
+        "raw_jobs_with_nonreclaimable": None,
         "measured_per_job_bytes": None,
         "jobs_before_drop_with_measured_per_job": None,
         "raw_jobs_before_drop_with_measured_per_job": None,
         "projection_formula": "ceil(units / jobs) * median_seconds_per_unit",
+        "projection_pessimistic_formula": "sum_unit_seconds / jobs + max_unit_seconds",
         "projected_build_seconds": {
             "before_drop": "not measured",
             "before_drop_with_measured_per_job": "not measured",
-            "with_anon_shmem": "not measured",
+            "with_nonreclaimable": "not measured",
+        },
+        "projected_build_seconds_pessimistic": {
+            "before_drop": "not measured",
+            "before_drop_with_measured_per_job": "not measured",
+            "with_nonreclaimable": "not measured",
         },
     }
 
@@ -719,6 +739,7 @@ def test_rung_worker_refuses_when_cgroup_memory_max_differs_from_cap(
             cache_dir=tmp_path / "cache_1",
             receipt_path=receipt_mismatch,
             runner=_run_real_worker_script,
+            _test_mode=True,
         )
     assert exc_mis.value.code == "RUNG_CAP_NOT_ENFORCED"
     assert not sentinel.exists(), "Worker compiled even though memory.max did not match cap"
@@ -738,6 +759,7 @@ def test_rung_worker_refuses_when_cgroup_memory_max_differs_from_cap(
             cache_dir=tmp_path / "cache_2",
             receipt_path=receipt_max,
             runner=_run_real_worker_script,
+            _test_mode=True,
         )
     assert exc_max.value.code == "RUNG_CAP_NOT_ENFORCED"
     assert not sentinel.exists()
@@ -755,6 +777,7 @@ def test_rung_worker_refuses_when_cgroup_memory_max_differs_from_cap(
             cache_dir=tmp_path / "cache_3",
             receipt_path=receipt_missing,
             runner=_run_real_worker_script,
+            _test_mode=True,
         )
     assert exc_none.value.code == "RUNG_CAP_NOT_ENFORCED"
     assert not sentinel.exists()
@@ -792,12 +815,14 @@ def test_rung_worker_refuses_when_cgroup_memory_max_differs_from_cap(
         cache_dir=cache_ok,
         receipt_path=receipt_ok,
         runner=_run_ok_worker,
+        _test_mode=True,
     )
     assert sentinel.read_text(encoding="utf-8") == "compiled"
     assert rec_ok["success"] is True
     assert rec_ok["scope_memory_max"] == str(requested_cap)
     assert rec_ok["scope_memory_max_bytes"] == requested_cap
     assert rec_ok["compile_unit_count"] == 2
+    assert rec_ok["sum_unit_seconds"] == 60.0
     assert rec_ok["median_seconds_per_unit"] == 30.0
     assert rec_ok["max_seconds_per_unit"] == 40.0
 
@@ -821,7 +846,7 @@ def test_receipt_and_plan_only_build_time_projection_from_fake_ninja_log(
     cache_dir = tmp_path / "fi_cache_ninja"
     build_dir = cache_dir / "12.0f" / "cached_ops" / "fused_moe_120"
     build_dir.mkdir(parents=True, exist_ok=True)
-    # 5 targets: 10s (re-compiled -> 20s), 30s, 40s, 60s, 100s => median=40.0, max=100.0, count=5
+    # 5 .o targets: 10s (re-compiled -> 20s), 30s, 40s, 60s, 100s => sum=250.0, median=40.0, max=100.0, count=5 (.so excluded)
     (build_dir / ".ninja_log").write_text(
         "# ninja log v5\n"
         "\n"
@@ -833,7 +858,8 @@ def test_receipt_and_plan_only_build_time_projection_from_fake_ninja_log(
         "0\t30000\t3\tu2.cu.o\th2\n"
         "1000\t41000\t4\tu3.cu.o\th3\n"
         "5000\t65000\t5\tu4.cu.o\th4\n"
-        "0\t100000\t6\tfused_moe_120.so\th5\n",
+        "0\t100000\t6\tu5.cu.o\th5\n"
+        "0\t5000\t7\tfused_moe_120.so\th6\n",
         encoding="utf-8",
         newline="\n",
     )
@@ -841,19 +867,20 @@ def test_receipt_and_plan_only_build_time_projection_from_fake_ninja_log(
     timings = jit_build_rung.collect_ninja_unit_timings(cache_dir)
     assert timings == {
         "compile_unit_count": 5,
+        "sum_unit_seconds": 250.0,
         "median_seconds_per_unit": 40.0,
         "max_seconds_per_unit": 100.0,
         "unit_timing_source": "ninja_log",
     }
-    assert jit_build_rung.parse_ninja_log(tmp_path / "missing_log") == {}
+    assert jit_build_rung.parse_ninja_log(tmp_path / "missing_log") == []
     assert jit_build_rung.collect_ninja_unit_timings(None)["compile_unit_count"] is None
 
     # Hand check:
-    # - units=5, median=40.0
-    # - jobs_before_drop = 1 -> ceil(5 / 1) * 40.0 = 200.0
-    # - jobs_before_drop_with_measured_per_job (peak 6 GiB -> 2 jobs) -> ceil(5 / 2) * 40.0 = 120.0
-    # - jobs_with_anon_shmem (anon+shmem 4.5 GiB -> 8 jobs) -> ceil(5 / 8) * 40.0 = 40.0
-    anon_shmem = 4 * 1024**3 + 512 * 1024**2
+    # - units=5, sum=250.0, median=40.0, max=100.0
+    # - jobs_before_drop = 1 -> median ceil(5/1)*40 = 200.0; pessimistic 250/1 + 100 = 350.0
+    # - jobs_before_drop_with_measured_per_job (peak 6 GiB -> 2 jobs) -> median 120.0; pessimistic 250/2 + 100 = 225.0
+    # - jobs_with_nonreclaimable (4.5 GiB -> 8 jobs) -> median 40.0; pessimistic 250/8 + 100 = 131.25
+    nonrec = 4 * 1024**3 + 512 * 1024**2
     receipt_path = tmp_path / "receipt_proj.json"
     jit_build_rung.write_jit_build_receipt(
         receipt_path,
@@ -865,7 +892,7 @@ def test_receipt_and_plan_only_build_time_projection_from_fake_ninja_log(
             "scope_memory_max_bytes": 64 * 1024**3,
             "jobs": 1,
             "memory_peak_bytes": 6 * 1024**3,
-            "anon_shmem_bytes": anon_shmem,
+            "nonreclaimable_bytes": nonrec,
             "build_seconds": 180.0,
             "success": True,
             "cache_dir": str(cache_dir),
@@ -873,22 +900,29 @@ def test_receipt_and_plan_only_build_time_projection_from_fake_ninja_log(
     )
     written = json.loads(receipt_path.read_text(encoding="utf-8"))
     assert written["compile_unit_count"] == 5
+    assert written["sum_unit_seconds"] == 250.0
     assert written["median_seconds_per_unit"] == 40.0
     assert written["max_seconds_per_unit"] == 100.0
     assert written["unit_timing_source"] == "ninja_log"
     pod_ref = written["pod_reference"]
-    assert pod_ref["anon_shmem_bytes"] == anon_shmem
+    assert pod_ref["nonreclaimable_bytes"] == nonrec
     assert pod_ref["jobs_before_drop"] == 1
     assert pod_ref["jobs_before_drop_with_measured_per_job"] == 2
-    assert pod_ref["jobs_with_anon_shmem"] == 8
+    assert pod_ref["jobs_with_nonreclaimable"] == 8
     assert pod_ref["projection_formula"] == "ceil(units / jobs) * median_seconds_per_unit"
+    assert pod_ref["projection_pessimistic_formula"] == "sum_unit_seconds / jobs + max_unit_seconds"
     assert pod_ref["projected_build_seconds"] == {
         "before_drop": 200.0,
         "before_drop_with_measured_per_job": 120.0,
-        "with_anon_shmem": 40.0,
+        "with_nonreclaimable": 40.0,
+    }
+    assert pod_ref["projected_build_seconds_pessimistic"] == {
+        "before_drop": 350.0,
+        "before_drop_with_measured_per_job": 225.0,
+        "with_nonreclaimable": 131.25,
     }
 
-    # Verify --plan-only prints the formula with "not measured" for the seconds (including anon-shmem pod ref)
+    # Verify --plan-only prints both formulas with "not measured" for the seconds
     env = dict(os.environ)
     env["CUDA_VISIBLE_DEVICES"] = ""
     proc = subprocess.run(
@@ -898,8 +932,8 @@ def test_receipt_and_plan_only_build_time_projection_from_fake_ninja_log(
             "--plan-only",
             "--memory-max",
             "64GiB",
-            "--anon-shmem-bytes",
-            str(anon_shmem),
+            "--nonreclaimable-bytes",
+            str(nonrec),
         ],
         env=env,
         stdin=subprocess.DEVNULL,
@@ -911,16 +945,145 @@ def test_receipt_and_plan_only_build_time_projection_from_fake_ninja_log(
     assert proc.returncode == 0, proc.stderr
     plan = json.loads(proc.stdout)
     assert plan["projection_formula"] == "ceil(units / jobs) * median_seconds_per_unit"
+    assert plan["projection_pessimistic_formula"] == "sum_unit_seconds / jobs + max_unit_seconds"
     assert plan["compile_unit_count"] == "not measured"
+    assert plan["sum_unit_seconds"] == "not measured"
     assert plan["median_seconds_per_unit"] == "not measured"
     assert plan["max_seconds_per_unit"] == "not measured"
-    assert plan["pod_reference"]["jobs_with_anon_shmem"] == 8
-    assert plan["pod_reference"]["projection_formula"] == "ceil(units / jobs) * median_seconds_per_unit"
+    assert plan["pod_reference"]["jobs_with_nonreclaimable"] == 8
     assert plan["pod_reference"]["projected_build_seconds"] == {
         "before_drop": "not measured",
         "before_drop_with_measured_per_job": "not measured",
-        "with_anon_shmem": "not measured",
+        "with_nonreclaimable": "not measured",
     }
+    assert plan["pod_reference"]["projected_build_seconds_pessimistic"] == {
+        "before_drop": "not measured",
+        "before_drop_with_measured_per_job": "not measured",
+        "with_nonreclaimable": "not measured",
+    }
+
+
+def test_pessimistic_projection_from_fake_ninja_log_with_heavy_tail_and_multi_output_edge(
+    tmp_path: Path,
+) -> None:
+    cache_dir = tmp_path / "fi_cache_pess"
+    build_dir = cache_dir / "12.0f" / "cached_ops" / "fused_moe_120"
+    build_dir.mkdir(parents=True, exist_ok=True)
+    # Mix `.so` link edge (excluded), a multi-output `.o` edge sharing (start=0, end=20000),
+    # 3 fast `.o` units (10s each), and 1 heavy-tail `.o` unit (200s):
+    # -> deduplicated compile units = 5 (20 + 10 + 10 + 10 + 200 = 250s, median = 10s, max = 200s).
+    # At 8 jobs on pod (nonreclaimable 4.5 GiB):
+    #   median-based projection  = ceil(5 / 8) * 10 = 10.0s (misses the 200s heavy tail!)
+    #   pessimistic projection   = 250 / 8 + 200 = 231.25s (captures both sum/jobs and the 200s tail)
+    (build_dir / ".ninja_log").write_text(
+        "# ninja log v5\n"
+        "0\t20000\t1\tu_multi_a.cu.o\th1\n"
+        "0\t20000\t1\tu_multi_b.cu.o\th1\n"
+        "20000\t30000\t2\tu_fast_1.cu.o\th2\n"
+        "30000\t40000\t3\tu_fast_2.cu.o\th3\n"
+        "40000\t50000\t4\tu_fast_3.cu.o\th4\n"
+        "50000\t250000\t5\tu_heavy_tail.cu.o\th5\n"
+        "250000\t255000\t6\tfused_moe_120.so\th6\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    timings = jit_build_rung.collect_ninja_unit_timings(cache_dir)
+    assert timings == {
+        "compile_unit_count": 5,
+        "sum_unit_seconds": 250.0,
+        "median_seconds_per_unit": 10.0,
+        "max_seconds_per_unit": 200.0,
+        "unit_timing_source": "ninja_log",
+    }
+    rec_path = tmp_path / "rec_pess.json"
+    jit_build_rung.write_jit_build_receipt(
+        rec_path,
+        {
+            "versions": {"vllm": "0.34.0", "flashinfer": "0.7.3", "nvcc": "13.5.37"},
+            "targets": ["fused_moe_120"],
+            "cap_bytes": 64 * 1024**3,
+            "jobs": 8,
+            "memory_peak_bytes": 40 * 1024**3,
+            "nonreclaimable_bytes": 4 * 1024**3 + 512 * 1024**2,
+            "build_seconds": 240.0,
+            "success": True,
+            "cache_dir": str(cache_dir),
+        },
+    )
+    rec = json.loads(rec_path.read_text(encoding="utf-8"))
+    assert rec["pod_reference"]["projected_build_seconds"]["with_nonreclaimable"] == 10.0
+    assert rec["pod_reference"]["projected_build_seconds_pessimistic"] == {
+        "before_drop": 450.0,
+        "before_drop_with_measured_per_job": None,
+        "with_nonreclaimable": 231.25,
+    }
+
+
+def test_rung_strips_inherited_cgroup_env_outside_test_mode_and_help_mentions_page_alignment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requested_cap = 64 * 1024**3
+    venv_dir, _ = _setup_synthetic_rung_venv_and_flashinfer(tmp_path)
+    monkeypatch.setenv("RDLAB_JIT_RUNG_PROC_CGROUP", "/tmp/evil_proc_cgroup")
+    monkeypatch.setenv("RDLAB_JIT_RUNG_CGROUP_ROOT", "/tmp/evil_cg_root")
+    monkeypatch.setenv("RDLAB_JIT_RUNG_TEST_MODE", "1")
+    monkeypatch.setattr(jit_build_rung.shutil, "which", lambda name: "/usr/bin/systemd-run" if name == "systemd-run" else None)
+    monkeypatch.setattr(jit_build_rung, "prepare_venv_cuda_home", lambda *_a, **_kw: {
+        "cuda_home": str(tmp_path / "ch"),
+        "nvcc": str(tmp_path / "ch" / "bin" / "nvcc"),
+        "lib64_dir": str(tmp_path / "ch" / "lib64"),
+    })
+
+    seen_envs: list[dict[str, str]] = []
+    seen_worker_scripts: list[str] = []
+
+    def _inspect_env_runner(cmd: list[str], **kwargs: Any) -> Any:
+        env = dict(kwargs.get("env") or {})
+        seen_envs.append(env)
+        seen_worker_scripts.append(cmd[cmd.index("-c") + 1])
+        Path(env["RDLAB_JIT_RUNG_WORKER_META"]).write_text(
+            json.dumps({"success": True, "scope_memory_max": str(requested_cap), "scope_memory_max_bytes": requested_cap}),
+            encoding="utf-8",
+        )
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    jit_build_rung.run_jit_build_rung(
+        venv_dir=venv_dir,
+        cap_bytes=requested_cap,
+        cache_dir=tmp_path / "c_strip",
+        runner=_inspect_env_runner,
+    )
+    assert len(seen_envs) == 1
+    assert "RDLAB_JIT_RUNG_PROC_CGROUP" not in seen_envs[0]
+    assert "RDLAB_JIT_RUNG_CGROUP_ROOT" not in seen_envs[0]
+    assert "RDLAB_JIT_RUNG_TEST_MODE" not in seen_envs[0]
+    assert "RDLAB_JIT_RUNG_TEST_MODE" in seen_worker_scripts[0]
+
+    # Verify non-page-aligned cap is refused with CAP_NOT_PAGE_ALIGNED, and --help documents page alignment
+    with pytest.raises(jit_build_rung.JitBuildRungError) as exc_align:
+        jit_build_rung.run_jit_build_rung(
+            venv_dir=venv_dir,
+            cap_bytes=5000,
+            plan_only=True,
+        )
+    assert exc_align.value.code == "CAP_NOT_PAGE_ALIGNED"
+
+    env = dict(os.environ)
+    env["CUDA_VISIBLE_DEVICES"] = ""
+    help_proc = subprocess.run(
+        [sys.executable, str(SCRIPTS_COLAB_DIR / "jit_build_rung.py"), "--help"],
+        env=env,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert help_proc.returncode == 0
+    assert "page size" in help_proc.stdout.lower()
+    assert "refused" in help_proc.stdout.lower()
+
 
 
 
