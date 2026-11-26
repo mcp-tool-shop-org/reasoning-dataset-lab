@@ -154,7 +154,7 @@
       "confidence": "full",
       "highWater": null,
       "name": "tests",
-      "qualifyingSourceCommits": 134,
+      "qualifyingSourceCommits": 135,
       "rebaseline": null
     }
   ],
@@ -268,7 +268,7 @@
       },
       {
         "commits": 66,
-        "lines": 1113,
+        "lines": 1111,
         "path": "atlas/README.md"
       },
       {
@@ -278,12 +278,12 @@
       },
       {
         "commits": 66,
-        "lines": 3580,
+        "lines": 3543,
         "path": "atlas/page.json"
       },
       {
         "commits": 66,
-        "lines": 10668,
+        "lines": 10677,
         "path": "atlas/statistics.json"
       },
       {
@@ -452,8 +452,8 @@
         "path": "scripts/colab/README.md"
       },
       {
-        "commits": 61,
-        "lines": 1579,
+        "commits": 62,
+        "lines": 1585,
         "path": "scripts/colab/REAL_SERVICE_ASSUMPTIONS.md"
       },
       {
@@ -1242,8 +1242,8 @@
         "path": "tests/test_qwen36_engine_pins.py"
       },
       {
-        "commits": 1,
-        "lines": 1476,
+        "commits": 2,
+        "lines": 1650,
         "path": "tests/test_qwen36_non_thinking_arms.py"
       },
       {
@@ -1302,9 +1302,9 @@
     "level": "low",
     "reason": "fewer than 25 source files reach 10 revisions in the window"
   },
-  "generatedAt": "2026-11-26T10:14:01.563Z",
+  "generatedAt": "2026-11-26T11:57:44.155Z",
   "generatedFrom": {
-    "commit": "aa8b3c24d7d119f8d3c7be28ce78245a5a4513c2"
+    "commit": "f42f16e333b60800477f415eee8a4430a8f5ba60"
   },
   "pairs": [
     {
@@ -1625,23 +1625,23 @@
     {
       "a": "scripts/colab/REAL_SERVICE_ASSUMPTIONS.md",
       "b": "scripts/colab/launch_judges.sh",
-      "either": 66,
+      "either": 67,
       "shared": 49,
-      "strength": 0.742424
+      "strength": 0.731343
     },
     {
       "a": "scripts/colab/REAL_SERVICE_ASSUMPTIONS.md",
       "b": "scripts/colab/vm_judges.py",
-      "either": 70,
+      "either": 71,
       "shared": 51,
-      "strength": 0.728571
+      "strength": 0.71831
     },
     {
       "a": "scripts/colab/REAL_SERVICE_ASSUMPTIONS.md",
       "b": "tests/test_colab_judge_launcher.py",
-      "either": 67,
+      "either": 68,
       "shared": 38,
-      "strength": 0.567164
+      "strength": 0.558824
     },
     {
       "a": "scripts/colab/launch_judges.sh",
@@ -1759,16 +1759,16 @@
     "floor": "fallen",
     "floorHeld": false,
     "floorTrigger": "revision-depth",
-    "headDate": "2026-11-26T05:09:19-05:00",
+    "headDate": "2026-11-26T06:04:10-05:00",
     "inScopeFiles": 227,
     "pinnedStart": null,
     "priorFloor": "fallen",
-    "qualifyingCommits": 151,
+    "qualifyingCommits": 153,
     "qualifyingMinimum": 30,
     "revisions": 5,
     "shared": 10,
     "sharedFloorUsed": 3,
-    "since": "2026-05-30T10:09:19.000Z",
+    "since": "2026-05-30T11:04:10.000Z",
     "sourceExtensions": [
       ".js",
       ".mjs",

@@ -149,6 +149,10 @@ class _TemplateMirrorTokenizer:
         "therefore ": 43,
         "Answer:": 44,
         ".": 45,
+        "<": 50,
+        "think": 51,
+        ">": 52,
+        "</": 53,
     }
     _ID_TO_TOKEN = {v: k for k, v in _TOKEN_TO_ID.items()}
 
@@ -936,14 +940,26 @@ def test_repeated_scoring_uses_means_product_and_joint_rate_never_voting_and_exc
 
     rep_with_canary = _run_dir_score("with_canary", True)
     rep_no_canary = _run_dir_score("no_canary", False)
-    assert rep_with_canary["three_way_pass"][0]["three_way_accuracy"]["point"] == pytest.approx(0.36)
+    assert "three_way_accuracy" not in rep_with_canary["three_way_pass"][0]
+    assert rep_with_canary["three_way_pass"][0]["three_way_mean_strict_score"] == {
+        "point": pytest.approx(0.36),
+        "low": None,
+        "high": None,
+        "n": 1,
+    }
+    assert rep_with_canary["dev_fit"]["three_way_pass"][0]["three_way_mean_strict_score"] == {
+        "point": pytest.approx(0.36),
+        "low": None,
+        "high": None,
+        "n": 1,
+    }
     assert rep_with_canary["three_way_pass"][0]["repeat_scoring_by_split"]["test"]["mean_joint_repeat_rate"] == pytest.approx(0.6)
     assert rep_with_canary["three_way_pass"][0]["repeat_scoring_by_split"]["pooled"]["mean_joint_repeat_rate"] == pytest.approx(0.4)
     assert rep_with_canary["three_way_pass"][0]["canary_rows_excluded"] == 2
     assert "canary_rows_excluded" not in rep_no_canary["three_way_pass"][0]
     assert (
-        rep_with_canary["three_way_pass"][0]["three_way_accuracy"]["point"]
-        == rep_no_canary["three_way_pass"][0]["three_way_accuracy"]["point"]
+        rep_with_canary["three_way_pass"][0]["three_way_mean_strict_score"]
+        == rep_no_canary["three_way_pass"][0]["three_way_mean_strict_score"]
     )
     assert (
         rep_with_canary["three_way_pass"][0]["repeat_scoring_by_split"]
@@ -1134,6 +1150,42 @@ def test_proof_checks_suffix_mismatch_and_think_tag_abort_before_next_call(
         assert exc_tag.value.code == bakeoff_judge.QWEN36_NOTHINK_THINK_TAG_GENERATED
         assert env_tag["generate_calls"] == 1
 
+    # (c) Split think tag spelled across ordinary tokens (`<` + `think` + `>`, or `</` + `think` + `>`) also aborts immediately.
+    for split_label, split_ids in (("split_open", [50, 51, 52, 32]), ("split_close", [53, 51, 52, 32])):
+        sub_split = tmp_path / split_label
+        comp_split = SimpleNamespace(
+            text="".join(_TemplateMirrorTokenizer._ID_TO_TOKEN[i] for i in split_ids),
+            token_ids=split_ids,
+            finish_reason="stop",
+            logprobs=[{32: SimpleNamespace(logprob=-0.1, decoded_token="A")}] * len(split_ids),
+        )
+        env_split = _setup_fake_vllm_env(
+            sub_split,
+            monkeypatch,
+            responses=[
+                _req_out(comp_split, prompt_token_ids=[102, 41, 248068, 271, 248069, 271]),
+                _req_out(_nothink_comp("B"), prompt_token_ids=[102, 41, 248068, 271, 248069, 271]),
+            ],
+        )
+        monkeypatch.setenv(bakeoff_judge.QWEN36_MAX_NEW_TOKENS_ENV_VAR, "256")
+        monkeypatch.setenv(bakeoff_judge.QWEN36_ARM_ENV_VAR, "nothink-greedy")
+        with pytest.raises(RdlabError) as exc_split:
+            run_bakeoff_judge(
+                part_dir=items_path,
+                output_dir=sub_split / "out",
+                judge=QWEN36_ID,
+                pass_mode=CONTRA,
+                fake_transport=False,
+                receipts_dir=env_split["receipts_dir"],
+                hf_home=env_split["hf_home"],
+                device="cpu",
+                window_mode="time-one",
+                shard_spec="1/1",
+                run_canary=False,
+            )
+        assert exc_split.value.code == bakeoff_judge.QWEN36_NOTHINK_THINK_TAG_GENERATED
+        assert env_split["generate_calls"] == 1
+
 
 def test_proof_checks_length_audit_and_text_before_letter_via_fake_engine(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1295,18 +1347,29 @@ def test_duplicate_canary_selection_validation_and_diff_counting(
         run_canary=False,
     )
     assert res["duplicate_canary_calls"] == 4
+    assert res["duplicate_canary_row_count"] == 4
     assert res["duplicate_canary_letter_diff_count"] == 1
-    all_rows = [
+    assert res["calls_count"] == 6
+    assert res["row_count"] == 6
+    assert res["duplicate_canary_rows_file"] == f"rows/{QWEN36_ID}.{CONTRA}.canary.jsonl"
+    assert res["duplicate_canary_counts_by_state"] == {"parsed": 4, "unparseable": 0, "length_stop": 0, "aborted": 0}
+    main_rows = [
         json.loads(ln)
         for ln in (out_dir / "rows" / f"{QWEN36_ID}.{CONTRA}.jsonl").read_text(encoding="utf-8").splitlines()
         if ln.strip()
     ]
-    canary_rows = [r for r in all_rows if r.get("canary") is True]
-    assert [(r["item_id"], r["order"], r["arm"]) for r in canary_rows] == [
-        ("synth-a", "AB", "nothink-greedy"),
-        ("synth-a", "BA", "nothink-greedy"),
-        ("synth-b", "AB", "nothink-greedy"),
-        ("synth-b", "BA", "nothink-greedy"),
+    assert len(main_rows) == 6
+    assert all(not r.get("canary") for r in main_rows)
+    canary_rows = [
+        json.loads(ln)
+        for ln in (out_dir / "rows" / f"{QWEN36_ID}.{CONTRA}.canary.jsonl").read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    assert [(r["item_id"], r["order"], r["arm"], r.get("canary")) for r in canary_rows] == [
+        ("synth-a", "AB", "nothink-greedy", True),
+        ("synth-a", "BA", "nothink-greedy", True),
+        ("synth-b", "AB", "nothink-greedy", True),
+        ("synth-b", "BA", "nothink-greedy", True),
     ]
 
 
@@ -1648,3 +1711,265 @@ def test_qwen36_non_thinking_helper_and_scorer_edge_branches(
             for r_i in range(2)
         ],
     )
+
+
+def test_repeats_mid_repeat_cut_keeps_completed_pairs_and_matches_uninterrupted_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _clear_qwen36_env(monkeypatch)
+    items = _synth_items(4)
+    items_path = _write_items_jsonl(tmp_path / "items.jsonl", items)
+    monkeypatch.setenv(bakeoff_judge.QWEN36_ARM_ENV_VAR, "nothink-matched")
+    monkeypatch.setenv(bakeoff_judge.QWEN36_REPEATS_ENV_VAR, "3")
+    monkeypatch.setenv(bakeoff_judge.QWEN36_SEED_VARIANT_ENV_VAR, "cut1")
+
+    full_dir = tmp_path / "out_full"
+    res_full = run_bakeoff_judge(
+        part_dir=items_path,
+        output_dir=full_dir,
+        judge=QWEN36_ID,
+        pass_mode=CONTRA,
+        fake_transport=True,
+        schedule_seed=42,
+        shard_spec="1/1",
+        window_mode="stub",
+        run_canary=False,
+    )
+    assert res_full["calls_count"] == 24
+    full_row_path = full_dir / "rows" / f"{QWEN36_ID}.{CONTRA}.jsonl"
+    full_bytes = full_row_path.read_bytes()
+    full_lines = full_bytes.decode("utf-8").splitlines()
+    assert len(full_lines) == 24
+
+    # Cut in the middle of repeat 2 (keep repeats 0-1 = 16 rows + 4 pass-1 + 2 pass-2 rows of repeat 2 = 22 rows).
+    cut_dir = tmp_path / "out_cut"
+    run_bakeoff_judge(
+        part_dir=items_path,
+        output_dir=cut_dir,
+        judge=QWEN36_ID,
+        pass_mode=CONTRA,
+        fake_transport=True,
+        schedule_seed=42,
+        shard_spec="1/1",
+        window_mode="stub",
+        run_canary=False,
+    )
+    cut_row_path = cut_dir / "rows" / f"{QWEN36_ID}.{CONTRA}.jsonl"
+    cut_row_path.write_text("\n".join(full_lines[:22]) + "\n", encoding="utf-8", newline="\n")
+
+    class _SpyTransport(bakeoff_judge.DeterministicFakeJudgeTransport):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls: list[tuple[str, str, int | None]] = []
+
+        def generate(
+            self,
+            spec: bakeoff_judge.JudgeSpec,
+            prompt: bakeoff_judge.AssembledPrompt,
+            *,
+            seed: int,
+        ) -> JudgeTransportResponse:
+            _, _, rep_i = bakeoff_judge.VllmJudgeTransport._prompt_arm_and_repeat(prompt)
+            self.calls.append((prompt.item_id, prompt.order, rep_i))
+            return super().generate(spec, prompt, seed=seed)
+
+    spy = _SpyTransport()
+    res_resumed = run_bakeoff_judge(
+        part_dir=items_path,
+        output_dir=cut_dir,
+        judge=QWEN36_ID,
+        pass_mode=CONTRA,
+        transport=spy,
+        schedule_seed=42,
+        shard_spec="1/1",
+        window_mode="stub",
+        run_canary=False,
+    )
+    assert res_resumed["calls_count"] == 24
+    assert len(res_resumed["discarded_incomplete_item_ids"]) == 2
+    assert len(spy.calls) == 4
+    assert {c[2] for c in spy.calls} == {2}
+    assert cut_row_path.read_bytes() == full_bytes
+
+
+def test_duplicate_canary_sharded_pool_and_separate_file_and_generations_arm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _clear_qwen36_env(monkeypatch)
+    items = [
+        JudgeInputItem(
+            item_id=f"eval-can-{idx:02d}",
+            material=f"1. Fact A{idx}.\n2. Fact B{idx}.",
+            claim=f"Claim {idx} holds.",
+        )
+        for idx in (5, 2, 0, 4, 1, 3)
+    ]
+    items_path = _write_items_jsonl(tmp_path / "items.jsonl", items)
+
+    # Unsharded no-canary baseline vs with-canary run under nothink-greedy.
+    monkeypatch.setenv(bakeoff_judge.QWEN36_ARM_ENV_VAR, "nothink-greedy")
+    out_no_can = tmp_path / "out_no_can"
+    res_no = run_bakeoff_judge(
+        part_dir=items_path,
+        output_dir=out_no_can,
+        judge=QWEN36_ID,
+        pass_mode=CONTRA,
+        fake_transport=True,
+        schedule_seed=42,
+        window_mode="stub",
+        run_canary=False,
+    )
+    assert not (out_no_can / "rows" / f"{QWEN36_ID}.{CONTRA}.canary.jsonl").exists()
+
+    monkeypatch.setenv(bakeoff_judge.QWEN36_CANARY_CALLS_ENV_VAR, "4")
+    out_with_can = tmp_path / "out_with_can"
+    res_with = run_bakeoff_judge(
+        part_dir=items_path,
+        output_dir=out_with_can,
+        judge=QWEN36_ID,
+        pass_mode=CONTRA,
+        fake_transport=True,
+        schedule_seed=42,
+        window_mode="stub",
+        run_canary=False,
+    )
+    main_no_bytes = (out_no_can / "rows" / f"{QWEN36_ID}.{CONTRA}.jsonl").read_bytes()
+    main_with_bytes = (out_with_can / "rows" / f"{QWEN36_ID}.{CONTRA}.jsonl").read_bytes()
+    assert main_with_bytes == main_no_bytes
+    assert res_with["calls_count"] == res_no["calls_count"] == 12
+    assert res_with["row_count"] == res_no["row_count"] == 12
+    assert res_with["duplicate_canary_calls"] == 4
+    assert res_with["duplicate_canary_row_count"] == 4
+    canary_path = out_with_can / "rows" / f"{QWEN36_ID}.{CONTRA}.canary.jsonl"
+    assert canary_path.is_file()
+    assert res_with["duplicate_canary_rows_file"] == f"rows/{QWEN36_ID}.{CONTRA}.canary.jsonl"
+    assert res_with["duplicate_canary_rows_sha256"] == hashlib.sha256(canary_path.read_bytes()).hexdigest()
+    assert res_with["duplicate_canary_counts_by_state"] == {"parsed": 4, "unparseable": 0, "length_stop": 0, "aborted": 0}
+    unsharded_canary_keys = {
+        (r["item_id"], r["order"])
+        for ln in canary_path.read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+        for r in (json.loads(ln),)
+    }
+    assert unsharded_canary_keys == {
+        ("eval-can-00", "AB"),
+        ("eval-can-00", "BA"),
+        ("eval-can-01", "AB"),
+        ("eval-can-01", "BA"),
+    }
+
+    # Three shards partition the exact same N canary calls over the part's sorted item IDs.
+    manifest = bakeoff_judge.build_shard_manifest(items_path, num_shards=3, schedule_seed=42, pass_mode=CONTRA)
+    manifest_path = tmp_path / "shard_manifest.json"
+    manifest_sha = bakeoff_judge.write_shard_manifest(manifest, manifest_path)
+    sharded_canary_keys: set[tuple[str, str]] = set()
+    sharded_canary_total = 0
+    for k in range(1, 4):
+        s_dir = tmp_path / f"shard_{k}"
+        s_res = run_bakeoff_judge(
+            part_dir=items_path,
+            output_dir=s_dir,
+            judge=QWEN36_ID,
+            pass_mode=CONTRA,
+            fake_transport=True,
+            schedule_seed=42,
+            shard_spec=f"{k}/3",
+            shard_manifest_path=manifest_path,
+            shard_manifest_sha256=manifest_sha,
+            window_mode="stub",
+            run_canary=False,
+        )
+        sharded_canary_total += int(s_res["duplicate_canary_calls"])
+        s_can_path = s_dir / "rows" / f"{QWEN36_ID}.{CONTRA}.canary.jsonl"
+        if s_can_path.is_file():
+            for ln in s_can_path.read_text(encoding="utf-8").splitlines():
+                if ln.strip():
+                    rec = json.loads(ln)
+                    sharded_canary_keys.add((rec["item_id"], rec["order"]))
+    assert sharded_canary_total == 4
+    assert sharded_canary_keys == unsharded_canary_keys
+
+    # outputs-closed includes the .canary.jsonl file, and score_bakeoff_outputs scores main rows while skipping .canary.jsonl.
+    closed_doc = close_bakeoff_outputs(out_with_can)
+    assert f"rows/{QWEN36_ID}.{CONTRA}.canary.jsonl" in closed_doc["files"]
+    keys_path = tmp_path / "eval_keys.sealed.jsonl"
+    keys_path.write_text(
+        "\n".join(
+            json.dumps(
+                {
+                    "id": it.item_id,
+                    "triad_id": f"T-{idx // 3}",
+                    "key": ("supported", "unsupported", "cannot_tell")[idx % 3],
+                    "class": ("supported", "unsupported", "cannot_tell")[idx % 3],
+                    "key_source": "construction",
+                    "value_set_id": "vs1",
+                    "closure": "open",
+                    "split": "dev" if idx < 3 else "test",
+                },
+                sort_keys=True,
+            )
+            for idx, it in enumerate(sorted(items, key=lambda x: x.item_id))
+        )
+        + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    scored_with_can = score_bakeoff_outputs(
+        judge_output_dir=out_with_can,
+        keys_path=keys_path,
+        public_out_path=tmp_path / "pub_can.json",
+        sealed_rows_out_path=tmp_path / "sealed_can.sealed.jsonl",
+    )
+    assert scored_with_can["status"] == "ok"
+    assert len(scored_with_can["three_way_pass"]) == 1
+
+    # generations.jsonl preserves `arm` as judge_id and adds `qwen36_arm` for Qwen3.6 runs only.
+    gens_nt = [
+        json.loads(ln)
+        for ln in (out_with_can / "generations.jsonl").read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    assert len(gens_nt) == 16
+    assert {g["arm"] for g in gens_nt} == {QWEN36_ID}
+    assert {g["qwen36_arm"] for g in gens_nt} == {"nothink-greedy"}
+
+    monkeypatch.delenv(bakeoff_judge.QWEN36_CANARY_CALLS_ENV_VAR, raising=False)
+    monkeypatch.setenv(bakeoff_judge.QWEN36_ARM_ENV_VAR, "nothink-card")
+    out_card = tmp_path / "out_card_gen"
+    run_bakeoff_judge(
+        part_dir=items_path,
+        output_dir=out_card,
+        judge=QWEN36_ID,
+        pass_mode=CONTRA,
+        fake_transport=True,
+        schedule_seed=42,
+        window_mode="stub",
+        run_canary=False,
+    )
+    gens_card = [
+        json.loads(ln)
+        for ln in (out_card / "generations.jsonl").read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    assert {g["arm"] for g in gens_card} == {QWEN36_ID}
+    assert {g["qwen36_arm"] for g in gens_card} == {"nothink-card"}
+
+    _clear_qwen36_env(monkeypatch)
+    out_mu = tmp_path / "out_mu_gen"
+    run_bakeoff_judge(
+        part_dir=items_path,
+        output_dir=out_mu,
+        judge="mu-judge",
+        pass_mode="binary",
+        fake_transport=True,
+        schedule_seed=42,
+        window_mode="stub",
+        run_canary=False,
+    )
+    gens_mu = [
+        json.loads(ln)
+        for ln in (out_mu / "generations.jsonl").read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    assert {g["arm"] for g in gens_mu} == {"mu-judge"}
+    assert all("qwen36_arm" not in g for g in gens_mu)

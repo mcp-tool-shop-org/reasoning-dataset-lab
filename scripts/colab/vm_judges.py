@@ -3151,7 +3151,9 @@ def _check_logprob_mass_one_mode(
             "items_jsonl_sha256": verified_pilot_identity.get("items_jsonl_sha256"),
         }
     row_files = sorted(
-        p for p in rows_dir.glob("*.jsonl") if not rows_filename_is_three_way(p.name)
+        p
+        for p in rows_dir.glob("*.jsonl")
+        if not rows_filename_is_three_way(p.name) and not p.name.endswith(".canary.jsonl")
     )
     if not row_files:
         raise RefusalError(
@@ -10171,6 +10173,10 @@ def _run_judges_pipeline_body(
             "text_before_letter_count",
             "duplicate_canary_calls",
             "duplicate_canary_letter_diff_count",
+            "duplicate_canary_row_count",
+            "duplicate_canary_rows_file",
+            "duplicate_canary_rows_sha256",
+            "duplicate_canary_counts_by_state",
             "empty_closed_think_token_ids",
             "think_tag_token_ids",
             "prompt_suffix_checked_count",

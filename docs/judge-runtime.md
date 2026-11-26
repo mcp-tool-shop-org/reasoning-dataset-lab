@@ -58,7 +58,7 @@ subprocess (`<venv>/bin/python -m reasoning_dataset_lab.pilot_b.bakeoff_judge`) 
   non-Qwen3.6 judges refuse `QWEN36_ARM_UNSUPPORTED_JUDGE`, and resume mismatches refuse `QWEN36_RESUME_ARM_MISMATCH`;
   non-thinking arms pass `enable_thinking=False` to the same `apply_chat_template` call with byte-identical user
   text and verify empty-closed-think suffix token IDs per call [`QWEN36_NOTHINK_PROMPT_SUFFIX_MISMATCH`] and zero
-  generated think-tag token IDs [`QWEN36_NOTHINK_THINK_TAG_GENERATED`]), prompt template byte-identity check refusing
+  generated think-tag token IDs or split-token tag strings [`QWEN36_NOTHINK_THINK_TAG_GENERATED`]), prompt template byte-identity check refusing
   `QWEN36_PROMPT_TEMPLATE_MISMATCH`, prompt token count checked against `QWEN36_PROMPT_TOKEN_CAP` before model load
   and before `generate` refusing `QWEN36_PROMPT_TOO_LONG`, sampling presets (`thinking`: `temperature=1.0`,
   `top_p=0.95`, `top_k=20`, `min_p=0.0`, `presence_penalty=1.5`, `repetition_penalty=1.0`; `nothink-greedy`:
@@ -67,8 +67,7 @@ subprocess (`<venv>/bin/python -m reasoning_dataset_lab.pilot_b.bakeoff_judge`) 
   `repetition_penalty=1.0`; `nothink-matched`: aliases `QWEN36_THINKING_SAMPLING`), repeats (`RDLAB_QWEN36_REPEATS`,
   `1..8`, default `1`; `> 1` allowed only for `nothink-card` and `nothink-matched`, refusing `QWEN36_REPEATS_INVALID`,
   `QWEN36_REPEATS_UNSUPPORTED_ARM`, `QWEN36_REPEATS_UNSUPPORTED_JUDGE`), optional duplicate canary calls
-  (`RDLAB_QWEN36_CANARY_CALLS`, even `0..64`, default `0`, `nothink-greedy` only, re-running the first `N/2` sorted
-  item IDs in both orders marked `canary: true` and excluded from all scores, refusing `QWEN36_CANARY_CALLS_INVALID`,
+  (`RDLAB_QWEN36_CANARY_CALLS`, even `0..64`, default `0`, `nothink-greedy` only, selected from the sorted item IDs of the entire part and filtered to the current shard so shards partition the exact `N/2` sorted IDs in both orders, written separately to `rows/<judge_id>.<pass_mode>.canary.jsonl` marked `canary: true` and excluded from all scores and from `row_count`/`calls_count`, refusing `QWEN36_CANARY_CALLS_INVALID`,
   `QWEN36_CANARY_UNSUPPORTED_ARM`, `QWEN36_CANARY_UNSUPPORTED_JUDGE`, `QWEN36_CANARY_CALLS_EXCEEDS_ITEMS`),
   deterministic per-call seed from `(item_id, order)` (or `(item_id, order, seed_variant)` for `thinking`;
   `(item_id, order, arm, repeat_index[, seed_variant])` for repeatable non-thinking arms; `None` for
@@ -77,17 +76,21 @@ subprocess (`<venv>/bin/python -m reasoning_dataset_lab.pilot_b.bakeoff_judge`) 
   setting it with any non-`qwen3.6-35b-a3b` judge refuses `QWEN36_SEED_VARIANT_UNSUPPORTED_JUDGE` at start; unset/empty
   keeps the default seeds unchanged and records `"none"`), `max_new_tokens` required via `RDLAB_QWEN36_MAX_NEW_TOKENS`
   on real windows (`QWEN36_MAX_NEW_TOKENS_REQUIRED` if unset, `4096` default only on stub/dryrun paths); rows record
-  `arm`, `repeat_index` (on repeatable arms), `canary` (when `true`),
+  `arm`, `repeat_index` (on repeatable arms), `canary` (when `true` in `.canary.jsonl`),
   `prompt_token_count`, `raw_verdict`, and `argmax_verdict` (an argmax tie goes to the first label in label order:
   `supported`, `unsupported`, `cannot_tell`) plus `unparseable_answer_text` on unparseable rows, vLLM `abort` maps
-  to `state="aborted"`, resume recomputes missing `argmax_verdict` from `choice_probabilities` or `top_20_logprobs` or
-  refuses `QWEN36_RESUME_ARGMAX_VERDICT_UNAVAILABLE` and refuses `QWEN36_RESUME_SEED_VARIANT_MISMATCH` / `QWEN36_RESUME_ARM_MISMATCH` if existing rows in
-  `rows/` or `anchor_rows/` carry a `seed_variant` (defaulting legacy/absent/`None` to `"none"`) or `arm` (defaulting legacy to `"thinking"`) differing from the current run,
+  to `state="aborted"`, resume validates completeness per `(item_id, repeat_index)` with both orders (`AB`, `BA`) so completed repeats are preserved, recomputes missing `argmax_verdict` from `choice_probabilities` or `top_20_logprobs` or
+  refuses `QWEN36_RESUME_ARGMAX_VERDICT_UNAVAILABLE`, and refuses `QWEN36_RESUME_SEED_VARIANT_MISMATCH` / `QWEN36_RESUME_ARM_MISMATCH` if existing rows in
+  `rows/` (including `.canary.jsonl`) or `anchor_rows/` carry a `seed_variant` (defaulting legacy/absent/`None` to `"none"`) or `arm` (defaulting legacy to `"thinking"`) differing from the current run,
   `child_end["counts_by_state"]` records all five states
-  (`parsed`, `unparseable`, `length_stop`, `aborted`, `failed_to_run`) summing to total calls, `aborted` counts in
-  the scorer `error_rate` and invalid-rate bar (`THREE_WAY_MAX_INVALID_RATE`), and rows (`seed_variant` beside
-  `call_seed` and in `library_pins`), `judge_done`, run summaries, and `time_one_summary.json` `per_judge_metrics`
-  record `arm`, `repeats`, `seed_derivation`, `seed_variant` (`"none"` or the validated variant) alongside `unparseable_count`, `aborted_count`,
+  (`parsed`, `unparseable`, `length_stop`, `aborted`, `failed_to_run`) summing to total main calls, `aborted` counts in
+  the scorer `error_rate` and invalid-rate bar (`THREE_WAY_MAX_INVALID_RATE`), `generations.jsonl` keeps `arm` equal to
+  the judge ID (`qwen3.6-35b-a3b`) and adds `qwen36_arm` (the Qwen3.6 arm: `thinking`, `nothink-greedy`,
+  `nothink-card`, or `nothink-matched`), rows (`seed_variant` beside `call_seed` and in `library_pins`), `judge_done`,
+  run summaries, and `time_one_summary.json` `per_judge_metrics` record `arm`, `repeats`, `seed_derivation`, `seed_variant`
+  (`"none"` or the validated variant), and separate main (`row_count`, `calls_count`) and canary counts
+  (`duplicate_canary_row_count`, `duplicate_canary_rows_file`, `duplicate_canary_rows_sha256`,
+  `duplicate_canary_counts_by_state`) alongside `unparseable_count`, `aborted_count`,
   `verdict_disagreement_count`, `probs_missing_count`, `generated_length_quantiles` (`p50`, `p95`, `p99`, `max`),
   `long_reply_count` (`> 64` tokens), `text_before_letter_count`, `duplicate_canary_calls`, and
   `duplicate_canary_letter_diff_count`; the `92,000` MiB VRAM

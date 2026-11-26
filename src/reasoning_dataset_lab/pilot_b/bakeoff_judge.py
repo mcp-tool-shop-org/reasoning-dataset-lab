@@ -4749,6 +4749,14 @@ def verify_pinned_pilot_part_dir(part_dir: Path | str | None) -> dict[str, str]:
     return {"part_id": pid, "part_json_sha256": part_json_sha, "items_jsonl_sha256": items_sha}
 
 
+CANARY_ROWS_SUFFIX = ".canary.jsonl"
+
+
+def rows_filename_is_canary(name: str) -> bool:
+    """True for duplicate canary row files (`<judge_id>.<pass_mode>.canary.jsonl`)."""
+    return name.endswith(CANARY_ROWS_SUFFIX)
+
+
 def check_bakeoff_logprob_mass(
     judge_output_dir: Path,
     *,
@@ -4799,7 +4807,11 @@ def check_bakeoff_logprob_mass(
             f"Rows directory '{rows_dir}' not found.",
             "Pass the bakeoff-judge output directory containing rows/*.jsonl.",
         )
-    row_files = sorted(p for p in rows_dir.glob("*.jsonl") if not rows_filename_is_three_way(p.name))
+    row_files = sorted(
+        p
+        for p in rows_dir.glob("*.jsonl")
+        if not rows_filename_is_three_way(p.name) and not rows_filename_is_canary(p.name)
+    )
     if not row_files:
         raise refused_error(
             "BAKEOFF_LOGPROB_MASS_NO_ROWS",
@@ -5071,12 +5083,18 @@ def _run_bakeoff_judge_impl(
         )
     eff_qwen36_canary_calls = resolve_qwen36_canary_calls(arm=eff_qwen36_arm)
     row_filename = f"{spec.judge_id}.jsonl" if pass_mode == "binary" else f"{spec.judge_id}.{pass_mode}.jsonl"
+    canary_row_filename = f"{spec.judge_id}.{pass_mode}{CANARY_ROWS_SUFFIX}"
     if spec.judge_id == QWEN36_JUDGE_ID:
         resolve_qwen36_max_new_tokens(require_explicit=is_real_qwen36)
         _check_qwen36_resume_seed_variant_file(
             resolved_out / ROWS_DIRNAME / row_filename,
             eff_qwen36_seed_variant_recorded,
             expected_arm=eff_qwen36_arm,
+        )
+        _check_qwen36_resume_seed_variant_file(
+            resolved_out / ROWS_DIRNAME / canary_row_filename,
+            eff_qwen36_seed_variant_recorded,
+            expected_arm=None,
         )
         _check_qwen36_resume_seed_variant_file(
             resolved_out / ANCHOR_ROWS_DIRNAME / row_filename,
@@ -5498,16 +5516,24 @@ def _run_bakeoff_judge_impl(
     rows_dir = resolved_out / ROWS_DIRNAME
     rows_dir.mkdir(parents=True, exist_ok=True)
     row_path = rows_dir / row_filename
+    canary_row_path = rows_dir / canary_row_filename
     gen_path = resolved_out / GENERATIONS_FILENAME
 
     eff_repeats = eff_qwen36_repeats if spec.judge_id == QWEN36_JUDGE_ID else 1
-    target_canary_pool = (
-        shard_item_ids if eff_shard_spec is not None else [it.item_id for it in items]
-    )
-    selected_qwen36_canary_calls: list[tuple[str, OrderMode]] = (
-        select_qwen36_duplicate_canary_calls(target_canary_pool, eff_qwen36_canary_calls)
+    part_canary_pool = [it.item_id for it in items]
+    if manifest_doc is not None:
+        manifest_all_pool = manifest_doc.get("all_item_ids") or list((manifest_doc.get("shard_by_item") or {}).keys())
+        if manifest_all_pool:
+            part_canary_pool = [str(x) for x in manifest_all_pool]
+    part_selected_canary_calls: list[tuple[str, OrderMode]] = (
+        select_qwen36_duplicate_canary_calls(part_canary_pool, eff_qwen36_canary_calls)
         if spec.judge_id == QWEN36_JUDGE_ID and eff_qwen36_canary_calls > 0
         else []
+    )
+    selected_qwen36_canary_calls: list[tuple[str, OrderMode]] = (
+        [(can_iid, can_ord) for can_iid, can_ord in part_selected_canary_calls if can_iid in shard_item_id_set]
+        if eff_shard_spec is not None
+        else part_selected_canary_calls
     )
 
     anchor_row_path: Path | None = None
@@ -5538,9 +5564,25 @@ def _run_bakeoff_judge_impl(
     completed_keys: set[tuple[str, str, int]] = set()
     completed_qwen36_canary_keys: set[tuple[str, str]] = set()
     existing_row_objs: list[dict[str, Any]] = []
+    existing_canary_rows: list[dict[str, Any]] = []
     discarded_incomplete_item_ids: list[str] = []
     verified_recovery: dict[str, Any] | None = None
-    expected_item_pairs = {(ord_s, r_i) for ord_s in ("AB", "BA") for r_i in range(eff_repeats)}
+    expected_orders: set[str] = {"AB", "BA"}
+    if canary_row_path.is_file():
+        existing_canary_rows = [
+            parsed_can
+            for raw_ln in canary_row_path.read_text(encoding="utf-8").splitlines()
+            if raw_ln.strip()
+            for parsed_can in (json.loads(raw_ln),)
+            if isinstance(parsed_can, dict)
+            and parsed_can.get("item_id")
+            and parsed_can.get("order")
+            and parsed_can.get("run_status") != "failed_to_run"
+        ]
+        completed_qwen36_canary_keys = {
+            (str(r["item_id"]), str(r["order"]))
+            for r in existing_canary_rows
+        }
     if row_path.is_file():
         raw_existing_rows = [
             parsed_row
@@ -5553,36 +5595,44 @@ def _run_bakeoff_judge_impl(
             and parsed_row.get("run_status") != "failed_to_run"
         ]
         existing_main_rows = [r for r in raw_existing_rows if not r.get("canary")]
-        existing_canary_rows = [r for r in raw_existing_rows if r.get("canary") is True]
-        pairs_by_item: dict[str, set[tuple[str, int]]] = {}
+        if not existing_canary_rows:
+            legacy_canary_rows = [r for r in raw_existing_rows if r.get("canary") is True]
+            if legacy_canary_rows:
+                completed_qwen36_canary_keys = {
+                    (str(r["item_id"]), str(r["order"]))
+                    for r in legacy_canary_rows
+                }
+        orders_by_item_repeat: dict[tuple[str, int], set[str]] = {}
         item_completion_order: list[str] = []
         for r in existing_main_rows:
             iid = str(r["item_id"])
             ord_s = str(r["order"])
             rep_i = int(r.get("repeat_index", 0) or 0)
-            pairs_by_item.setdefault(iid, set()).add((ord_s, rep_i))
-            if pairs_by_item[iid] >= expected_item_pairs and iid not in item_completion_order:
+            orders_by_item_repeat.setdefault((iid, rep_i), set()).add(ord_s)
+            if rep_i == 0 and orders_by_item_repeat[(iid, 0)] >= expected_orders and iid not in item_completion_order:
                 item_completion_order.append(iid)
-        incomplete_iids = sorted(iid for iid, pairs in pairs_by_item.items() if pairs != expected_item_pairs)
-        if incomplete_iids:
-            discarded_incomplete_item_ids = incomplete_iids
-            kept_main = [r for r in existing_main_rows if str(r["item_id"]) not in set(incomplete_iids)]
-            existing_row_objs = [*kept_main, *existing_canary_rows]
+        incomplete_item_repeats = sorted(
+            (iid, rep_i)
+            for (iid, rep_i), ords in orders_by_item_repeat.items()
+            if ords != expected_orders
+        )
+        if incomplete_item_repeats or len(existing_main_rows) != len(raw_existing_rows):
+            incomplete_pair_set = set(incomplete_item_repeats)
+            discarded_incomplete_item_ids = sorted({iid for iid, _ in incomplete_item_repeats})
+            existing_row_objs = [
+                r
+                for r in existing_main_rows
+                if (str(r["item_id"]), int(r.get("repeat_index", 0) or 0)) not in incomplete_pair_set
+            ]
             with row_path.open("w", encoding="utf-8", newline="\n") as rewrite_fh:
                 for r in existing_row_objs:
                     rewrite_fh.write(_canonical_json_line(r) + "\n")
                 rewrite_fh.flush()
         else:
-            existing_row_objs = raw_existing_rows
+            existing_row_objs = existing_main_rows
         completed_keys = {
             (str(r["item_id"]), str(r["order"]), int(r.get("repeat_index", 0) or 0))
             for r in existing_row_objs
-            if not r.get("canary")
-        }
-        completed_qwen36_canary_keys = {
-            (str(r["item_id"]), str(r["order"]))
-            for r in existing_row_objs
-            if r.get("canary") is True
         }
 
         prev_fps = {
@@ -5598,7 +5648,6 @@ def _run_bakeoff_judge_impl(
             existing_by_key = {
                 (str(r["item_id"]), str(r["order"]), int(r.get("repeat_index", 0) or 0)): r
                 for r in existing_row_objs
-                if not r.get("canary")
             }
             mismatches: list[str] = []
             for ov_iid in overlap_iids:
@@ -5645,6 +5694,10 @@ def _run_bakeoff_judge_impl(
     length_stop_count = sum(1 for r in existing_row_objs if r.get("state") == "length_stop")
     aborted_count = sum(1 for r in existing_row_objs if r.get("state") == "aborted")
     parsed_count = sum(1 for r in existing_row_objs if r.get("state") == "parsed")
+    canary_unparseable_count = sum(1 for r in existing_canary_rows if r.get("state") == "unparseable")
+    canary_length_stop_count = sum(1 for r in existing_canary_rows if r.get("state") == "length_stop")
+    canary_aborted_count = sum(1 for r in existing_canary_rows if r.get("state") == "aborted")
+    canary_parsed_count = sum(1 for r in existing_canary_rows if r.get("state") == "parsed")
     verdict_disagreement_count = sum(
         1
         for r in existing_row_objs
@@ -5653,7 +5706,7 @@ def _run_bakeoff_judge_impl(
     )
     probs_missing_count = sum(1 for r in existing_row_objs if spec.judge_id == QWEN36_JUDGE_ID and r.get("state") == "parsed" and r.get("choice_probabilities") is None)
     failed_to_run_count = 0
-    vram_peak_overall = max((int(r.get("vram_peak_mib", 0)) for r in existing_row_objs), default=0)
+    vram_peak_overall = max((int(r.get("vram_peak_mib", 0)) for r in (*existing_row_objs, *existing_canary_rows)), default=0)
     total_seconds = sum(float(r.get("seconds", 0.0)) for r in existing_row_objs)
     calls_so_far = len(existing_row_objs)
     polarity_map = POLARITY_MAP_BY_JUDGE.get(spec.judge_id, {"inverted": "false"})
@@ -5788,6 +5841,10 @@ def _run_bakeoff_judge_impl(
             nonlocal unparseable_count
             nonlocal length_stop_count
             nonlocal aborted_count
+            nonlocal canary_parsed_count
+            nonlocal canary_unparseable_count
+            nonlocal canary_length_stop_count
+            nonlocal canary_aborted_count
             nonlocal verdict_disagreement_count
             nonlocal probs_missing_count
             nonlocal failed_to_run_count
@@ -5873,9 +5930,10 @@ def _run_bakeoff_judge_impl(
                 if hb_thread is not None:
                     hb_thread.join(timeout=1.0)
                 failed_elapsed = max(0.0001, time.monotonic() - t0)
-                total_seconds += failed_elapsed
-                failed_to_run_count += 1
-                calls_so_far += 1
+                if not is_canary:
+                    total_seconds += failed_elapsed
+                    failed_to_run_count += 1
+                    calls_so_far += 1
                 _append_child_progress_line(
                     eff_progress_file,
                     {
@@ -5925,7 +5983,8 @@ def _run_bakeoff_judge_impl(
             )
             call_vram_peak = max(vram_before, vram_after)
             vram_peak_overall = max(vram_peak_overall, call_vram_peak)
-            total_seconds += elapsed
+            if not is_canary:
+                total_seconds += elapsed
 
             if resp.model_digest != verified_digest:
                 raise refused_error(
@@ -5935,22 +5994,33 @@ def _run_bakeoff_judge_impl(
                 )
 
             readout = adapter.parse_response(resp, pass_mode=pass_mode)
-            if readout.state == "length_stop":
-                length_stop_count += 1
-            elif readout.state == "aborted":
-                aborted_count += 1
-            elif readout.state == "unparseable":
-                unparseable_count += 1
+            if is_canary:
+                if readout.state == "length_stop":
+                    canary_length_stop_count += 1
+                elif readout.state == "aborted":
+                    canary_aborted_count += 1
+                elif readout.state == "unparseable":
+                    canary_unparseable_count += 1
+                else:
+                    canary_parsed_count += 1
+                will_halt_error_rate = False
             else:
-                parsed_count += 1
-                if readout.raw_verdict is not None and readout.argmax_verdict is not None and readout.raw_verdict != readout.argmax_verdict:
-                    verdict_disagreement_count += 1
-                if spec.judge_id == QWEN36_JUDGE_ID and readout.choice_probabilities is None:
-                    probs_missing_count += 1
+                if readout.state == "length_stop":
+                    length_stop_count += 1
+                elif readout.state == "aborted":
+                    aborted_count += 1
+                elif readout.state == "unparseable":
+                    unparseable_count += 1
+                else:
+                    parsed_count += 1
+                    if readout.raw_verdict is not None and readout.argmax_verdict is not None and readout.raw_verdict != readout.argmax_verdict:
+                        verdict_disagreement_count += 1
+                    if spec.judge_id == QWEN36_JUDGE_ID and readout.choice_probabilities is None:
+                        probs_missing_count += 1
 
-            calls_so_far += 1
-            bad_calls = unparseable_count + length_stop_count + aborted_count
-            will_halt_error_rate = calls_so_far >= error_rate_min_calls and (bad_calls / calls_so_far) > error_rate_stop
+                calls_so_far += 1
+                bad_calls = unparseable_count + length_stop_count + aborted_count
+                will_halt_error_rate = calls_so_far >= error_rate_min_calls and (bad_calls / calls_so_far) > error_rate_stop
             _append_child_progress_line(
                 eff_progress_file,
                 {
@@ -6055,6 +6125,8 @@ def _run_bakeoff_judge_impl(
                 "marker_line_index": marker_idx,
                 "receipt_sha256": receipt_sha256,
             }
+            if spec.judge_id == QWEN36_JUDGE_ID and call_arm is not None:
+                gen_obj["qwen36_arm"] = call_arm
             if call_arm in QWEN36_REPEATABLE_ARMS:
                 gen_obj["repeat_index"] = call_repeat_idx
             if is_canary:
@@ -6125,8 +6197,13 @@ def _run_bakeoff_judge_impl(
                     "aborted_count": aborted_count,
                 }
             row_obj = _build_sealed_row_with_sha256(base_row_obj)
-            rf.write(_canonical_json_line(row_obj) + "\n")
-            rf.flush()
+            if is_canary:
+                with canary_row_path.open("a", encoding="utf-8", newline="\n") as crf:
+                    crf.write(_canonical_json_line(row_obj) + "\n")
+                    crf.flush()
+            else:
+                rf.write(_canonical_json_line(row_obj) + "\n")
+                rf.flush()
             if not will_halt_error_rate:
                 if is_canary:
                     completed_qwen36_canary_keys.add((item.item_id, call_order))
@@ -6270,6 +6347,20 @@ def _run_bakeoff_judge_impl(
             logprob_tolerance=canary_tol,
         )
 
+    if existing_row_objs and active_item_ids is None and not anchor_prefix_only and row_path.is_file():
+        unsorted_main_rows = [
+            json.loads(ln)
+            for ln in row_path.read_text(encoding="utf-8").splitlines()
+            if ln.strip()
+        ]
+        unsorted_main_rows.sort(
+            key=lambda r: (int(r.get("repeat_index", 0) or 0), int(r.get("slot_index", 0)))
+        )
+        with row_path.open("w", encoding="utf-8", newline="\n") as sort_rf:
+            for r_sorted in unsorted_main_rows:
+                sort_rf.write(_canonical_json_line(r_sorted) + "\n")
+            sort_rf.flush()
+
     row_bytes = row_path.read_bytes()
     rows_sha256 = hashlib.sha256(row_bytes).hexdigest()
     final_row_objs = [
@@ -6312,8 +6403,11 @@ def _run_bakeoff_judge_impl(
         final_main_rows = [
             r for r in final_row_objs if isinstance(r, dict) and not r.get("canary")
         ]
+        canary_row_bytes = canary_row_path.read_bytes() if canary_row_path.is_file() else b""
         final_canary_rows = [
-            r for r in final_row_objs if isinstance(r, dict) and r.get("canary") is True
+            json.loads(ln)
+            for ln in canary_row_bytes.decode("utf-8").splitlines()
+            if ln.strip()
         ]
         generated_len_vals = [
             float(r["generated_token_count"])
@@ -6369,6 +6463,20 @@ def _run_bakeoff_judge_impl(
         qwen36_summary_extra["text_before_letter_count"] = text_before_letter_count
         qwen36_summary_extra["duplicate_canary_calls"] = len(final_canary_rows)
         qwen36_summary_extra["duplicate_canary_letter_diff_count"] = duplicate_canary_letter_diff_count
+        if eff_qwen36_canary_calls > 0 or canary_row_path.is_file():
+            qwen36_summary_extra["duplicate_canary_row_count"] = len(final_canary_rows)
+            qwen36_summary_extra["duplicate_canary_rows_file"] = (
+                f"{ROWS_DIRNAME}/{canary_row_path.name}" if canary_row_path.is_file() else None
+            )
+            qwen36_summary_extra["duplicate_canary_rows_sha256"] = (
+                hashlib.sha256(canary_row_bytes).hexdigest() if canary_row_path.is_file() else None
+            )
+            qwen36_summary_extra["duplicate_canary_counts_by_state"] = {
+                "parsed": canary_parsed_count,
+                "unparseable": canary_unparseable_count,
+                "length_stop": canary_length_stop_count,
+                "aborted": canary_aborted_count,
+            }
         qwen36_summary_extra["call_seconds_quantiles"] = call_seconds_quantiles
         if eff_qwen36_arm in QWEN36_NON_THINKING_ARMS:
             empty_ids = getattr(transport, "_empty_closed_think_token_ids", None) if transport is not None else None
@@ -12762,10 +12870,14 @@ class VllmJudgeTransport:
                     "Abort non-thinking window immediately; verify chat_template and prompt tokenization.",
                 )
             self._prompt_suffix_checked_count += 1
+            joined_tokens_text = "".join(tokens)
             has_think_tag = (
                 self._contains_token_subsequence(token_ids, self._think_open_token_ids or ())
                 or self._contains_token_subsequence(token_ids, self._think_close_token_ids or ())
-                or any(QWEN36_THINK_OPEN_TAG in t or QWEN36_THINK_CLOSE_TAG in t for t in tokens)
+                or QWEN36_THINK_OPEN_TAG in joined_tokens_text
+                or QWEN36_THINK_CLOSE_TAG in joined_tokens_text
+                or QWEN36_THINK_OPEN_TAG in raw_text
+                or QWEN36_THINK_CLOSE_TAG in raw_text
             )
             if has_think_tag:
                 self._generated_think_tag_count += 1

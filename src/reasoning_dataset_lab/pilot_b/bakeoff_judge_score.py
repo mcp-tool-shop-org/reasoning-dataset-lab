@@ -100,6 +100,7 @@ from reasoning_dataset_lab.pilot_b.bakeoff_judge import (
     SCHEDULE_FILENAME,
     check_output_dir_outside_repo,
     load_canary_config,
+    rows_filename_is_canary,
 )
 
 PILOT_BANNER = "shakedown, decision rule not applied"
@@ -2542,9 +2543,17 @@ def score_bakeoff_outputs(
     first_order_by_item = {str(k): str(v) for k, v in schedule_doc.get("first_order_by_item", {}).items()}
 
     rows_dir = resolved_judge_dir / ROWS_DIRNAME
-    binary_row_files = sorted(p for p in rows_dir.glob("*.jsonl") if not rows_filename_is_three_way(p.name))
+    binary_row_files = sorted(
+        p
+        for p in rows_dir.glob("*.jsonl")
+        if not rows_filename_is_three_way(p.name) and not rows_filename_is_canary(p.name)
+    )
     # Every 3-way arm's rows (`*.three_way.jsonl`, `*.three_way_contradicted.jsonl`), scored by the same rules.
-    three_way_row_files = sorted(p for p in rows_dir.glob("*.jsonl") if rows_filename_is_three_way(p.name))
+    three_way_row_files = sorted(
+        p
+        for p in rows_dir.glob("*.jsonl")
+        if rows_filename_is_three_way(p.name) and not rows_filename_is_canary(p.name)
+    )
 
     # Refuse to score any judge that halted with run_status == "failed_to_run" (Card 1 Item 3)
     rows_by_file: dict[Path, list[dict[str, Any]]] = {p: _load_rows_file(p) for p in (*binary_row_files, *three_way_row_files)}
@@ -2857,10 +2866,10 @@ def score_bakeoff_outputs(
                 {
                     "judge_id": j_id,
                     **arm_field_rep,
-                    "three_way_accuracy": {
+                    "three_way_mean_strict_score": {
                         "point": test_rep["mean_strict_score"],
-                        "low": test_rep["mean_strict_score"],
-                        "high": test_rep["mean_strict_score"],
+                        "low": None,
+                        "high": None,
                         "n": test_rep["items_n"],
                     },
                     "repeat_scoring_by_split": repeat_scoring_by_split,
@@ -2871,10 +2880,10 @@ def score_bakeoff_outputs(
                 {
                     "judge_id": j_id,
                     **arm_field_rep,
-                    "three_way_accuracy": {
+                    "three_way_mean_strict_score": {
                         "point": dev_rep["mean_strict_score"],
-                        "low": dev_rep["mean_strict_score"],
-                        "high": dev_rep["mean_strict_score"],
+                        "low": None,
+                        "high": None,
                         "n": dev_rep["items_n"],
                     },
                     "repeat_scoring": dev_rep,
