@@ -1579,8 +1579,12 @@ if identity is not None:
 PY
 }
 
+has_resumable_run_state() {
+  [[ -f "$OUT_DIR/schedule.json" ]] || [[ -f "$OUT_DIR/qwen36_arms_job.json" ]]
+}
+
 EFFECTIVE_RESUME=0
-if [[ "$RESUME_FLAG" -eq 1 ]] || [[ -f "$OUT_DIR/schedule.json" ]]; then
+if [[ "$RESUME_FLAG" -eq 1 ]] || has_resumable_run_state; then
   EFFECTIVE_RESUME=1
 fi
 
@@ -1720,6 +1724,14 @@ build_exec_env_args() {
   if [[ -n "${RDLAB_QWEN36_ARM+x}" ]] && [[ -n "${RDLAB_QWEN36_ARM}" ]]; then
     EXEC_ENV_ARGS+=(--env "RDLAB_QWEN36_ARM=$RDLAB_QWEN36_ARM")
   fi
+  local _emit_qwen36_flashinfer=0
+  if [[ -n "${RDLAB_QWEN36_ARMS+x}" ]] && [[ -n "${RDLAB_QWEN36_ARMS}" ]]; then
+    EXEC_ENV_ARGS+=(--env "RDLAB_QWEN36_ARMS=$RDLAB_QWEN36_ARMS")
+    _emit_qwen36_flashinfer=1
+  fi
+  if [[ -n "${RDLAB_QWEN36_ARMS_STOP_FILE+x}" ]] && [[ -n "${RDLAB_QWEN36_ARMS_STOP_FILE}" ]]; then
+    EXEC_ENV_ARGS+=(--env "RDLAB_QWEN36_ARMS_STOP_FILE=$RDLAB_QWEN36_ARMS_STOP_FILE")
+  fi
   if [[ -n "${RDLAB_QWEN36_REPEATS+x}" ]] && [[ -n "${RDLAB_QWEN36_REPEATS}" ]]; then
     EXEC_ENV_ARGS+=(--env "RDLAB_QWEN36_REPEATS=$RDLAB_QWEN36_REPEATS")
   fi
@@ -1742,12 +1754,15 @@ build_exec_env_args() {
     local _norm_only_judges="${RDLAB_ONLY_JUDGES//[[:space:]]/}"
     case ",${_norm_only_judges}," in
       *,qwen3.6-35b-a3b,*)
-        EXEC_ENV_ARGS+=(--env "FLASHINFER_CUDA_ARCH_LIST=12.0f")
-        EXEC_ENV_ARGS+=(--env "FLASHINFER_DISABLE_JIT=1")
+        _emit_qwen36_flashinfer=1
         ;;
     esac
   fi
-  if [[ "$EFFECTIVE_RESUME" -eq 1 ]] && [[ -f "$OUT_DIR/schedule.json" ]]; then
+  if [[ "$_emit_qwen36_flashinfer" -eq 1 ]]; then
+    EXEC_ENV_ARGS+=(--env "FLASHINFER_CUDA_ARCH_LIST=12.0f")
+    EXEC_ENV_ARGS+=(--env "FLASHINFER_DISABLE_JIT=1")
+  fi
+  if [[ "$EFFECTIVE_RESUME" -eq 1 ]] && has_resumable_run_state; then
     EXEC_ENV_ARGS+=(--env "RDLAB_RESUME_TAR=${VM_ROOT}/resume_state.tar.gz")
   fi
   if [[ -n "${OPENED_CARD_TYPE:-}" ]]; then
@@ -2283,7 +2298,7 @@ PY
       log_msg "PART_BINDING_LAUNCHER record=$RIG_BINDING_FILE $BINDING_SUMMARY"
     fi
   fi
-  if [[ "$EFFECTIVE_RESUME" -eq 1 ]] && [[ -f "$OUT_DIR/schedule.json" ]]; then
+  if [[ "$EFFECTIVE_RESUME" -eq 1 ]] && has_resumable_run_state; then
     "$PYTHON_BIN" - "$OUT_DIR" "$RESUME_TAR" "$DRY_FLAG" <<'PY'
 import contextlib
 import gzip
@@ -2315,38 +2330,41 @@ def _open_tar_gz(path: Path):
                 yield tf
 
 
-with _open_tar_gz(tar_path) as tf:
-    for exact in ("schedule.json", "generations.jsonl", "shard_manifest.json", "shard_manifest.json.sha256", "session_env.json"):
-        p = out_dir / exact
+def _add_file_deterministic(tf: tarfile.TarFile, fpath: Path, arc: str) -> None:
+    if fixed_mtime is None:
+        tf.add(fpath, arcname=arc, recursive=False)
+        return
+    ti = tf.gettarinfo(str(fpath), arcname=arc)
+    ti.mtime = fixed_mtime
+    ti.uid = 0
+    ti.gid = 0
+    ti.uname = "root"
+    ti.gname = "root"
+    with fpath.open("rb") as fh:
+        tf.addfile(ti, fh)
+
+
+def _pack_dir_resume_state(tf: tarfile.TarFile, base_dir: Path, prefix: str = "") -> None:
+    rel_prefix = f"{prefix}/" if prefix else ""
+    for exact in ("schedule.json", "generations.jsonl", "shard_manifest.json", "shard_manifest.json.sha256", "session_env.json", "qwen36_arms_job.json"):
+        p = base_dir / exact
         if p.is_file():
-            if fixed_mtime is None:
-                tf.add(p, arcname=exact, recursive=False)
-            else:
-                ti = tf.gettarinfo(str(p), arcname=exact)
-                ti.mtime = fixed_mtime
-                ti.uid = 0
-                ti.gid = 0
-                ti.uname = "root"
-                ti.gname = "root"
-                with p.open("rb") as fh:
-                    tf.addfile(ti, fh)
+            _add_file_deterministic(tf, p, f"{rel_prefix}{exact}")
     for sub_dir_name, pat in (("rows", "*.jsonl"), ("anchor_rows", "*.jsonl"), ("judge_done", "*.json")):
-        sdir = out_dir / sub_dir_name
+        sdir = base_dir / sub_dir_name
         if sdir.is_dir():
             for rf in sorted(sdir.glob(pat)):
                 if rf.is_file():
-                    arc = f"{sub_dir_name}/{rf.name}"
-                    if fixed_mtime is None:
-                        tf.add(rf, arcname=arc, recursive=False)
-                    else:
-                        ti = tf.gettarinfo(str(rf), arcname=arc)
-                        ti.mtime = fixed_mtime
-                        ti.uid = 0
-                        ti.gid = 0
-                        ti.uname = "root"
-                        ti.gname = "root"
-                        with rf.open("rb") as fh:
-                            tf.addfile(ti, fh)
+                    _add_file_deterministic(tf, rf, f"{rel_prefix}{sub_dir_name}/{rf.name}")
+
+
+with _open_tar_gz(tar_path) as tf:
+    _pack_dir_resume_state(tf, out_dir)
+    arms_dir = out_dir / "arms"
+    if arms_dir.is_dir():
+        for arm_dir in sorted(arms_dir.iterdir()):
+            if arm_dir.is_dir():
+                _pack_dir_resume_state(tf, arm_dir, prefix=f"arms/{arm_dir.name}")
 PY
   fi
 }
@@ -2471,6 +2489,7 @@ for rel_name in (
     "boot_gatekeeper_goldens.filled.json",
     "p0a_report.json",
     "window.json",
+    "qwen36_arms_job.json",
 ):
     src = extract_dir / rel_name
     if src.is_file():
@@ -2499,6 +2518,37 @@ for sub_name, pat in (("rows", "*.jsonl"), ("anchor_rows", "*.jsonl"), ("judge_d
         for rf in sorted(src_sub.glob(pat)):
             if rf.is_file():
                 shutil.copyfile(rf, dst_sub / rf.name)
+
+src_arms_root = extract_dir / "arms"
+if src_arms_root.is_dir():
+    dst_arms_root = out_dir / "arms"
+    dst_arms_root.mkdir(parents=True, exist_ok=True)
+    for src_arm in sorted(src_arms_root.iterdir()):
+        if not src_arm.is_dir():
+            continue
+        dst_arm = dst_arms_root / src_arm.name
+        dst_arm.mkdir(parents=True, exist_ok=True)
+        for rel_name in (
+            "schedule.json",
+            "generations.jsonl",
+            "time_one_summary.json",
+            "vm_receipt.json",
+            "receipt.json",
+            "session_env.json",
+            "shard_manifest.json",
+            "shard_manifest.json.sha256",
+        ):
+            src_f = src_arm / rel_name
+            if src_f.is_file():
+                shutil.copyfile(src_f, dst_arm / rel_name)
+        for sub_name, pat in (("rows", "*.jsonl"), ("anchor_rows", "*.jsonl"), ("judge_done", "*.json")):
+            src_sub = src_arm / sub_name
+            if src_sub.is_dir():
+                dst_sub = dst_arm / sub_name
+                dst_sub.mkdir(parents=True, exist_ok=True)
+                for rf in sorted(src_sub.glob(pat)):
+                    if rf.is_file():
+                        shutil.copyfile(rf, dst_sub / rf.name)
 (out_dir / ".unverified_judge_done").unlink(missing_ok=True)
 
 vm_judges.scrub_log_file_in_place(cli_log)
@@ -2511,11 +2561,13 @@ for extra_f in (
     out_dir / "shard_manifest.json",
     out_dir / "boot_gatekeeper.json",
     out_dir / "elephant_install.json",
+    out_dir / "qwen36_arms_job.json",
     extract_dir / "progress.jsonl",
     extract_dir / "vm_receipt.json",
     extract_dir / "session_env.json",
     extract_dir / "shard_manifest.json",
     extract_dir / "boot_gatekeeper.json",
+    extract_dir / "qwen36_arms_job.json",
 ):
     if extra_f.is_file():
         vm_judges.scrub_log_file_in_place(extra_f)
@@ -2526,6 +2578,19 @@ for jdone_parent in (out_dir / "judge_done", extract_dir / "judge_done"):
         for jf in sorted(jdone_parent.glob("*.json")):
             if jf.is_file():
                 vm_judges.scrub_log_file_in_place(jf)
+for base_arms in (out_dir / "arms", extract_dir / "arms"):
+    if base_arms.is_dir():
+        for arm_dir in sorted(base_arms.iterdir()):
+            if not arm_dir.is_dir():
+                continue
+            for af in ("vm_receipt.json", "receipt.json", "time_one_summary.json", "session_env.json", "shard_manifest.json"):
+                ap = arm_dir / af
+                if ap.is_file():
+                    vm_judges.scrub_log_file_in_place(ap)
+            if (arm_dir / "judge_done").is_dir():
+                for jf in sorted((arm_dir / "judge_done").glob("*.json")):
+                    if jf.is_file():
+                        vm_judges.scrub_log_file_in_place(jf)
 for lf in (extract_dir / "logs").glob("*.log"):
     vm_judges.scrub_log_file_in_place(lf)
 
@@ -2545,6 +2610,7 @@ for top_f in (
     out_dir / "shard_manifest.json",
     out_dir / "boot_gatekeeper.json",
     out_dir / "elephant_install.json",
+    out_dir / "qwen36_arms_job.json",
 ):
     if top_f.is_file():
         paths_to_check.append(top_f)
@@ -2561,6 +2627,26 @@ for copied_sub in ("rows", "anchor_rows"):
         for cf in sorted(copied_dir.glob("*.jsonl")):
             if cf.is_file():
                 generation_output_paths.append(cf)
+if (out_dir / "arms").is_dir():
+    for arm_dir in sorted((out_dir / "arms").iterdir()):
+        if not arm_dir.is_dir():
+            continue
+        for af in ("vm_receipt.json", "receipt.json", "time_one_summary.json", "session_env.json", "shard_manifest.json"):
+            ap = arm_dir / af
+            if ap.is_file():
+                paths_to_check.append(ap)
+        if (arm_dir / "judge_done").is_dir():
+            for jf in sorted((arm_dir / "judge_done").glob("*.json")):
+                if jf.is_file():
+                    paths_to_check.append(jf)
+        if (arm_dir / "generations.jsonl").is_file():
+            generation_output_paths.append(arm_dir / "generations.jsonl")
+        for copied_sub in ("rows", "anchor_rows"):
+            copied_dir = arm_dir / copied_sub
+            if copied_dir.is_dir():
+                for cf in sorted(copied_dir.glob("*.jsonl")):
+                    if cf.is_file():
+                        generation_output_paths.append(cf)
 
 try:
     vm_judges.verify_rig_fetched_outputs_clean(
@@ -2588,6 +2674,7 @@ except vm_judges.RefusalError as exc:
         out_dir / "p0a_report.json",
         out_dir / "window.json",
         out_dir / "outputs-closed.json",
+        out_dir / "qwen36_arms_job.json",
     ):
         if q.is_file():
             q.unlink()
@@ -2595,6 +2682,7 @@ except vm_judges.RefusalError as exc:
     shutil.rmtree(out_dir / "rows", ignore_errors=True)
     shutil.rmtree(out_dir / "anchor_rows", ignore_errors=True)
     shutil.rmtree(out_dir / "judge_done", ignore_errors=True)
+    shutil.rmtree(out_dir / "arms", ignore_errors=True)
     receipt_p = out_dir / "vm_receipt.json"
     receipt_p.write_text(
         json.dumps(
@@ -2920,7 +3008,7 @@ PY
           printf 'offrig_put %s %s/rdlab_items/launcher_part_binding.json\n' "$STAGED_BINDING_FILE" "$VM_ROOT"
         fi
       fi
-      if [[ "$EFFECTIVE_RESUME" -eq 1 ]] && [[ -f "$OUT_DIR/schedule.json" ]]; then
+      if [[ "$EFFECTIVE_RESUME" -eq 1 ]] && has_resumable_run_state; then
         printf 'offrig_put %s %s/resume_state.tar.gz\n' "$RESUME_TAR" "$VM_ROOT"
       fi
       printf 'offrig_exec action=start name=run %s %s/vm_judges.py --timeout=%s\n' "$DRY_ENV_STR" "$VM_ROOT" "$EXEC_TIMEOUT_SECONDS"
@@ -3011,7 +3099,7 @@ PY
         printf 'colab upload -s %s %s /content/rdlab_items/launcher_part_binding.json\n' "$SESSION_NAME" "$STAGED_BINDING_FILE"
       fi
     fi
-    if [[ "$EFFECTIVE_RESUME" -eq 1 ]] && [[ -f "$OUT_DIR/schedule.json" ]]; then
+    if [[ "$EFFECTIVE_RESUME" -eq 1 ]] && has_resumable_run_state; then
       printf 'colab upload -s %s %s /content/resume_state.tar.gz\n' "$SESSION_NAME" "$RESUME_TAR"
     fi
     printf 'colab exec -s %s %s -f %s --timeout=%s\n' "$SESSION_NAME" "$DRY_ENV_STR" "$STAGED_VM_SCRIPT" "$EXEC_TIMEOUT_SECONDS"
@@ -3954,26 +4042,44 @@ if unverified_malformed:
     payload["unverified_passes"] = []
     payload["unverified_passes_malformed"] = True
 else:
-    done_ids: set[str] = set()
-    if jdone_dir.is_dir():
-        for jf in sorted(jdone_dir.glob("*.json")):
-            if jf.is_file() and jf.name not in unverified_names:
-                done_ids.add(jf.stem)
-    ordered_candidates: list[str] = []
-    receipt_file = out_path.parent / "vm_receipt.json"
-    if receipt_file.is_file():
+    arms_job_file = out_path.parent / "qwen36_arms_job.json"
+    arms_job_doc: dict[str, object] | None = None
+    if arms_job_file.is_file():
         try:
-            rdoc = json.loads(receipt_file.read_text(encoding="utf-8"))
-            if isinstance(rdoc.get("judge_order"), list):
-                ordered_candidates = [str(x) for x in rdoc["judge_order"]]
+            loaded_arms = json.loads(arms_job_file.read_text(encoding="utf-8"))
+            if isinstance(loaded_arms, dict):
+                arms_job_doc = loaded_arms
         except Exception:
-            pass
-    if not ordered_candidates and only_judges_list:
-        ordered_candidates = list(only_judges_list)
-    completed_judges: list[str] = [jid for jid in ordered_candidates if jid in done_ids]
-    for jid in sorted(done_ids):
-        if jid not in completed_judges:
-            completed_judges.append(jid)
+            arms_job_doc = None
+    if arms_job_doc is not None:
+        arms_jid = str(arms_job_doc.get("judge_id") or "qwen3.6-35b-a3b")
+        completed_judges = []
+        for arm_name in arms_job_doc.get("completed_arms") or []:
+            arm_jdone = out_path.parent / "arms" / str(arm_name) / "judge_done"
+            if arm_jdone.is_dir() and any(jf.is_file() for jf in arm_jdone.glob("*.json")):
+                completed_judges.append(f"{arms_jid}:{arm_name}")
+        payload["qwen36_arms"] = arms_job_doc
+    else:
+        done_ids: set[str] = set()
+        if jdone_dir.is_dir():
+            for jf in sorted(jdone_dir.glob("*.json")):
+                if jf.is_file() and jf.name not in unverified_names:
+                    done_ids.add(jf.stem)
+        ordered_candidates: list[str] = []
+        receipt_file = out_path.parent / "vm_receipt.json"
+        if receipt_file.is_file():
+            try:
+                rdoc = json.loads(receipt_file.read_text(encoding="utf-8"))
+                if isinstance(rdoc.get("judge_order"), list):
+                    ordered_candidates = [str(x) for x in rdoc["judge_order"]]
+            except Exception:
+                pass
+        if not ordered_candidates and only_judges_list:
+            ordered_candidates = list(only_judges_list)
+        completed_judges: list[str] = [jid for jid in ordered_candidates if jid in done_ids]
+        for jid in sorted(done_ids):
+            if jid not in completed_judges:
+                completed_judges.append(jid)
     payload["judges_completed"] = completed_judges
     payload["unverified_passes"] = unverified_passes
 # The launcher's own part binding (what it checked row by row, against which hashes), labelled checked_by "launcher";
@@ -4013,7 +4119,9 @@ if rate_read_at_utc:
     payload["rate_read_at"] = rate_read_at_utc
     payload["live_usage_rate_read_at"] = rate_read_at_utc
 shard_spec_env = (os.environ.get("RDLAB_SHARD") or "").strip() or "1/1"
-loop_env = (os.environ.get("RDLAB_LOOP") or "").strip() or "subblock"
+loop_env = (os.environ.get("RDLAB_LOOP") or "").strip() or (
+    "judge_outer" if (os.environ.get("RDLAB_QWEN36_ARMS") or "").strip() else "subblock"
+)
 shard_manifest_sha = (os.environ.get("RDLAB_SHARD_MANIFEST_SHA256") or "").strip()
 shard_item_ids_val: list[str] = []
 anchor_item_ids_val: list[str] = []
