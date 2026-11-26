@@ -2540,6 +2540,8 @@ if src_arms_root.is_dir():
             "session_env.json",
             "shard_manifest.json",
             "shard_manifest.json.sha256",
+            ".unverified_judge_done",
+            "outcome.draft.json",
         ):
             src_f = src_arm / rel_name
             if src_f.is_file():
@@ -2586,7 +2588,7 @@ for base_arms in (out_dir / "arms", extract_dir / "arms"):
         for arm_dir in sorted(base_arms.iterdir()):
             if not arm_dir.is_dir():
                 continue
-            for af in ("vm_receipt.json", "receipt.json", "time_one_summary.json", "session_env.json", "shard_manifest.json"):
+            for af in ("vm_receipt.json", "receipt.json", "time_one_summary.json", "session_env.json", "shard_manifest.json", "outcome.draft.json"):
                 ap = arm_dir / af
                 if ap.is_file():
                     vm_judges.scrub_log_file_in_place(ap)
@@ -2634,7 +2636,7 @@ if (out_dir / "arms").is_dir():
     for arm_dir in sorted((out_dir / "arms").iterdir()):
         if not arm_dir.is_dir():
             continue
-        for af in ("vm_receipt.json", "receipt.json", "time_one_summary.json", "session_env.json", "shard_manifest.json"):
+        for af in ("vm_receipt.json", "receipt.json", "time_one_summary.json", "session_env.json", "shard_manifest.json", "outcome.draft.json"):
             ap = arm_dir / af
             if ap.is_file():
                 paths_to_check.append(ap)

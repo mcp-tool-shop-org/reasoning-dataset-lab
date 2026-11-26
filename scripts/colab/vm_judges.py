@@ -194,6 +194,8 @@ GPU_GATE_PYTHON_SCRIPT = (
 SCHEDULE_FILENAME = "schedule.json"
 GENERATIONS_FILENAME = "generations.jsonl"
 OUTPUTS_CLOSED_FILENAME = "outputs-closed.json"
+UNVERIFIED_JUDGE_DONE_FILENAME = ".unverified_judge_done"
+OUTCOME_DRAFT_FILENAME = "outcome.draft.json"
 PROGRESS_FILENAME = "progress.jsonl"
 CHILD_PROGRESS_FILENAME = "child_progress.jsonl"
 CHILD_PROGRESS_DIRNAME = "child_progress"
@@ -1300,6 +1302,7 @@ class JudgeChildProcessError(VmSubprocessError):
         any_member_survived: bool | None = None,
         gpu_memory_used_mib: int | None = None,
         parent_rss_bytes: int | None = None,
+        qwen36_arms: Mapping[str, Any] | None = None,
     ) -> None:
         super().__init__(
             cmd=cmd,
@@ -1320,6 +1323,7 @@ class JudgeChildProcessError(VmSubprocessError):
         self.oom_kill_delta = oom_kill_delta
         self.mem_available_bytes = mem_available_bytes
         self.completed_judges = dict(completed_judges or {})
+        self.qwen36_arms = dict(qwen36_arms) if isinstance(qwen36_arms, Mapping) else None
         self.timeout_seconds = (
             round(float(timeout_seconds), 6) if timeout_seconds is not None else None
         )
@@ -5763,6 +5767,95 @@ def _build_outputs_closed_doc(base_dir: Path, rels: Sequence[str]) -> dict[str, 
     return closed_doc
 
 
+def _write_arm_incomplete_markers(
+    arm_dir: Path,
+    *,
+    judge_id: str,
+    pass_mode: str,
+    arm: str,
+    status: str,
+    failure_class: str | None = None,
+) -> None:
+    """Write fail-closed `.unverified_judge_done` and `outcome.draft.json` markers into an uncompleted arm dir."""
+    arm_dir.mkdir(parents=True, exist_ok=True)
+    eff_pm = pass_mode if pass_mode in PASS_MODES else "three_way_contradicted"
+    done_name = judge_done_filename_for_pass(judge_id, eff_pm)
+    (arm_dir / OUTPUTS_CLOSED_FILENAME).unlink(missing_ok=True)
+    (arm_dir / JUDGE_DONE_DIRNAME / done_name).unlink(missing_ok=True)
+    (arm_dir / UNVERIFIED_JUDGE_DONE_FILENAME).write_text(
+        f"{judge_id}\t{eff_pm}\t{done_name}\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    pass_label = f"{judge_id}:{eff_pm}"
+    outcome_doc = {
+        "judges_completed": [],
+        "unverified_passes": [pass_label],
+        "excluded_incomplete_passes": [
+            {
+                "judge_id": judge_id,
+                "pass_mode": eff_pm,
+                "pass": pass_label,
+                "arm": arm,
+                "status": status,
+                "failure_class": failure_class,
+            }
+        ],
+    }
+    tmp_out = arm_dir / f".{OUTCOME_DRAFT_FILENAME}.tmp.{os.getpid()}"
+    tmp_out.write_text(json.dumps(outcome_doc, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
+    os.replace(tmp_out, arm_dir / OUTCOME_DRAFT_FILENAME)
+
+
+def _infer_arm_pass_mode(arm_dir: Path, default_pass_mode: str = "three_way_contradicted") -> str:
+    if default_pass_mode in PASS_MODES:
+        return default_pass_mode
+    rows_dir = arm_dir / ROWS_DIRNAME
+    if rows_dir.is_dir():
+        for rf in sorted(rows_dir.glob("*.jsonl")):
+            for pm in PASS_MODES:
+                if pm != "binary" and rf.name.endswith(f".{pm}.jsonl"):
+                    return pm
+            return "binary"
+    return "three_way_contradicted"
+
+
+def _is_verified_completed_qwen36_arm(
+    arm_dir: Path,
+    *,
+    arm_name: str,
+    completed_set: set[str],
+    pass_mode: str,
+) -> dict[str, Any] | None:
+    if arm_name not in completed_set:
+        return None
+    marker_p = arm_dir / UNVERIFIED_JUDGE_DONE_FILENAME
+    if marker_p.exists() or marker_p.is_symlink():
+        return None
+    eff_pm = _infer_arm_pass_mode(arm_dir, pass_mode)
+    done_path = arm_dir / JUDGE_DONE_DIRNAME / judge_done_filename_for_pass(QWEN36_JUDGE_ID, eff_pm)
+    row_path = arm_dir / ROWS_DIRNAME / rows_filename_for_pass(QWEN36_JUDGE_ID, eff_pm)
+    if not done_path.is_file() or not row_path.is_file():
+        return None
+    try:
+        done_doc = json.loads(done_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(done_doc, Mapping) or str(done_doc.get("arm") or "") != arm_name:
+        return None
+    try:
+        row_bytes = row_path.read_bytes()
+        actual_rows = sum(1 for ln in row_bytes.decode("utf-8").splitlines() if ln.strip())
+        actual_sha = hashlib.sha256(row_bytes).hexdigest()
+        exp_rows = int(done_doc.get("row_count", -1))
+        exp_sha = str(done_doc.get("sha256") or "")
+    except (OSError, UnicodeDecodeError, TypeError, ValueError):
+        return None
+    if actual_rows != exp_rows or actual_sha != exp_sha:
+        return None
+    return dict(done_doc)
+
+
 def write_outputs_closed(
     output_dir: Path,
     *,
@@ -5776,16 +5869,51 @@ def write_outputs_closed(
 
     arms_dir = output_dir / QWEN36_ARMS_DIRNAME
     if arms_dir.is_dir():
+        jobs_doc: dict[str, Any] = {}
+        jobs_path = output_dir / QWEN36_ARMS_JOB_FILENAME
+        if jobs_path.is_file():
+            try:
+                loaded_jobs = json.loads(jobs_path.read_text(encoding="utf-8"))
+                if isinstance(loaded_jobs, Mapping):
+                    jobs_doc = dict(loaded_jobs)
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                jobs_doc = {}
+        completed_set = {str(a) for a in (jobs_doc.get("completed_arms") or ())}
+        job_pass_mode = str(jobs_doc.get("pass_mode") or "")
+        per_arm_map = jobs_doc.get("per_arm") if isinstance(jobs_doc.get("per_arm"), Mapping) else {}
         for arm_dir in sorted(arms_dir.iterdir()):
             if not arm_dir.is_dir() or arm_dir.name not in QWEN36_VALID_ARMS:
                 continue
-            arm_all_rels = _collect_outputs_closed_rels(arm_dir, include_receipts=True)
+            verified_done = _is_verified_completed_qwen36_arm(
+                arm_dir,
+                arm_name=arm_dir.name,
+                completed_set=completed_set,
+                pass_mode=job_pass_mode,
+            )
             arm_scorer_rels = _collect_outputs_closed_rels(arm_dir, scorer_only=True)
-            if arm_scorer_rels:
+            if verified_done is not None and arm_scorer_rels:
                 _build_outputs_closed_doc(arm_dir, arm_scorer_rels)
                 candidate_rels.append(f"{QWEN36_ARMS_DIRNAME}/{arm_dir.name}/{OUTPUTS_CLOSED_FILENAME}")
+            else:
+                (arm_dir / OUTPUTS_CLOSED_FILENAME).unlink(missing_ok=True)
+                arm_meta = per_arm_map.get(arm_dir.name) if isinstance(per_arm_map.get(arm_dir.name), Mapping) else {}
+                arm_pm = _infer_arm_pass_mode(arm_dir, job_pass_mode)
+                _write_arm_incomplete_markers(
+                    arm_dir,
+                    judge_id=QWEN36_JUDGE_ID,
+                    pass_mode=arm_pm,
+                    arm=arm_dir.name,
+                    status=str(arm_meta.get("status") or ("failed" if arm_dir.name in (jobs_doc.get("failed_arms") or {}) else "incomplete")),
+                    failure_class=str(arm_meta.get("failure_class") or jobs_doc.get("stop_reason") or "ARM_NOT_COMPLETED")
+                    if (arm_meta.get("failure_class") or jobs_doc.get("stop_reason") or verified_done is None)
+                    else None,
+                )
+            arm_all_rels = _collect_outputs_closed_rels(arm_dir, include_receipts=True)
             for arm_rel in arm_all_rels:
                 candidate_rels.append(f"{QWEN36_ARMS_DIRNAME}/{arm_dir.name}/{arm_rel}")
+            for marker_rel in (UNVERIFIED_JUDGE_DONE_FILENAME, OUTCOME_DRAFT_FILENAME):
+                if (arm_dir / marker_rel).is_file():
+                    candidate_rels.append(f"{QWEN36_ARMS_DIRNAME}/{arm_dir.name}/{marker_rel}")
 
     if not candidate_rels:
         raise RefusalError(
@@ -6074,7 +6202,7 @@ def is_allowed_tar_member(rel_posix_path: str) -> bool:
     if len(parts) >= 3 and parts[0] == QWEN36_ARMS_DIRNAME and parts[1] in QWEN36_VALID_ARMS:
         sub_parts = parts[2:]
         sub_cleaned = "/".join(sub_parts)
-        if sub_cleaned in TAR_ALLOWED_DIRS or sub_cleaned in TAR_ALLOWED_EXACT_FILES or sub_cleaned == OUTPUTS_CLOSED_FILENAME:
+        if sub_cleaned in TAR_ALLOWED_DIRS or sub_cleaned in TAR_ALLOWED_EXACT_FILES or sub_cleaned in (OUTPUTS_CLOSED_FILENAME, UNVERIFIED_JUDGE_DONE_FILENAME, OUTCOME_DRAFT_FILENAME):
             return True
         if len(sub_parts) == 2 and sub_parts[0] in (ROWS_DIRNAME, ANCHOR_ROWS_DIRNAME) and sub_parts[1].endswith(".jsonl"):
             return True
@@ -9797,77 +9925,6 @@ def _run_judges_pipeline_body(
             if engine_stop_records:
                 failure_build_extra["engine_stop_records"] = engine_stop_records[:10]
 
-        if child_res["timed_out"]:
-            gpu_mem_mib = read_gpu_memory_used_mib(dryrun=dryrun)
-            parent_rss_b = read_parent_rss_bytes()
-            surviving_pids = list(child_res["surviving_pids"])
-            any_survived = bool(child_res["any_member_survived"])
-            pgid_val = int(child_res["process_group_id"])
-            raw_rc = child_rc
-            sig_num = 9 if raw_rc in (-9, 137) else (
-                -raw_rc if raw_rc < 0 else (raw_rc - 128 if raw_rc > 128 else None)
-            )
-            exit_code = 128 + sig_num if sig_num is not None else raw_rc
-            append_progress_line(
-                progress_path,
-                {
-                    "kind": "judge_failed",
-                    "judge": judge_id,
-                    "judge_id": judge_id,
-                    "venv": venv_name,
-                    "venv_python": venv_python.as_posix(),
-                    "lock_sha256": lock_sha256,
-                    "exit_code": exit_code,
-                    "returncode": raw_rc,
-                    "signal": sig_num,
-                    "oom_kill": oom_after,
-                    "oom": cg_after.get("oom"),
-                    "oom_kill_delta": oom_kill_delta,
-                    "mem_available_bytes": mem_avail_bytes,
-                    "stdout_tail": stdout_tail,
-                    "stderr_tail": stderr_tail,
-                    "failure_class": "JUDGE_CHILD_TIMEOUT",
-                    "elapsed_seconds": round(wall_elapsed, 6),
-                    "timeout_seconds": eff_child_timeout,
-                    "timed_out": True,
-                    "process_group_id": pgid_val,
-                    "surviving_pids": surviving_pids,
-                    "any_member_survived": any_survived,
-                    "gpu_memory_used_mib": gpu_mem_mib,
-                    "parent_rss_bytes": parent_rss_b,
-                    **failure_build_extra,
-                },
-                proc_meminfo_path=proc_meminfo_path,
-                cgroup_root=cgroup_root,
-                proc_cgroup_path=proc_cgroup_path,
-            )
-            raise JudgeChildProcessError(
-                judge_id=judge_id,
-                venv=venv_name,
-                venv_python=venv_python.as_posix(),
-                lock_sha256=lock_sha256,
-                cmd=child_cmd,
-                returncode=raw_rc,
-                exit_code=exit_code,
-                signal_num=sig_num,
-                oom=cg_after.get("oom"),
-                oom_kill=oom_after,
-                oom_kill_delta=oom_kill_delta,
-                mem_available_bytes=mem_avail_bytes,
-                stdout_tail=stdout_tail,
-                stderr_tail=stderr_tail,
-                failure_class="JUDGE_CHILD_TIMEOUT",
-                duration_seconds=wall_elapsed,
-                completed_judges=per_judge_metrics,
-                timeout_seconds=eff_child_timeout,
-                timed_out=True,
-                process_group_id=pgid_val,
-                surviving_pids=surviving_pids,
-                any_member_survived=any_survived,
-                gpu_memory_used_mib=gpu_mem_mib,
-                parent_rss_bytes=parent_rss_b,
-            )
-
         def _fail_child_postcheck(reason_detail: str) -> Any:
             scrubbed_reason = _scrub_and_tail(reason_detail)
             combined_stderr = (
@@ -9918,102 +9975,24 @@ def _run_judges_pipeline_body(
                 timeout_seconds=eff_child_timeout,
             )
 
-        if child_rc != 0:
-            raw_rc = int(child_rc)
-            sig_num = None
-            if raw_rc < 0:
-                sig_num = -raw_rc
-                exit_code = 128 + sig_num
-            elif raw_rc > 128:
-                sig_num = raw_rc - 128
-                exit_code = raw_rc
-            else:
-                exit_code = raw_rc
-
-            is_oom = (
-                sig_num == 9
-                or raw_rc in (-9, 137)
-                or (oom_kill_delta is not None and oom_kill_delta > 0)
-            )
-            named_child_stop = (
-                None
-                if is_oom
-                else classify_judge_child_stop_code(
-                    child_res["stderr"] or "",
-                    child_res["stdout"] or "",
-                    shim_invocations=failure_build_extra.get("jit_shim_invocations", ()),
-                    engine_stop_codes=engine_stop_codes,
-                )
-            )
-            failure_class = "JUDGE_CHILD_OOM" if is_oom else (named_child_stop or "JUDGE_CHILD_FAILED")
-            if is_oom and sig_num is None and raw_rc in (-9, 137):
-                sig_num = 9
-
-            append_progress_line(
-                progress_path,
-                {
-                    "kind": "judge_failed",
-                    "judge": judge_id,
-                    "judge_id": judge_id,
-                    "venv": venv_name,
-                    "venv_python": venv_python.as_posix(),
-                    "lock_sha256": lock_sha256,
-                    "exit_code": exit_code,
-                    "returncode": raw_rc,
-                    "signal": sig_num,
-                    "oom_kill": oom_after,
-                    "oom": cg_after.get("oom"),
-                    "oom_kill_delta": oom_kill_delta,
-                    "mem_available_bytes": mem_avail_bytes,
-                    "stderr_tail": stderr_tail,
-                    "failure_class": failure_class,
-                    **failure_build_extra,
-                },
-                proc_meminfo_path=proc_meminfo_path,
-                cgroup_root=cgroup_root,
-                proc_cgroup_path=proc_cgroup_path,
-            )
-            raise JudgeChildProcessError(
-                judge_id=judge_id,
-                venv=venv_name,
-                venv_python=venv_python.as_posix(),
-                lock_sha256=lock_sha256,
-                cmd=child_cmd,
-                returncode=raw_rc,
-                exit_code=exit_code,
-                signal_num=sig_num,
-                oom=cg_after.get("oom"),
-                oom_kill=oom_after,
-                oom_kill_delta=oom_kill_delta,
-                mem_available_bytes=mem_avail_bytes,
-                stdout_tail=stdout_tail,
-                stderr_tail=stderr_tail,
-                failure_class=failure_class,
-                duration_seconds=wall_elapsed,
-                completed_judges=per_judge_metrics,
-                timeout_seconds=eff_child_timeout,
-            )
-
-        if is_anchor_prefix_pass:
-            anchor_row_file = run_dir / "anchor_rows" / rows_filename_for_pass(judge_id, pass_mode_j)
-            if not anchor_row_file.is_file():
-                _fail_child_postcheck(
-                    f"Judge {judge_id} anchor prefix pass exited 0 but {anchor_row_file} is missing"
-                )
-            continue
-
         def _finalize_pass_outputs(
             target_dir: Path,
             metric_key: str,
             *,
             pass_wall_elapsed: float,
             arm_extra: Mapping[str, Any] | None = None,
-        ) -> None:
+            resumed_skipped: bool = False,
+            fail_on_missing: bool = True,
+        ) -> bool:
             row_file = target_dir / ROWS_DIRNAME / rows_filename_for_pass(judge_id, pass_mode_j)
             done_file = target_dir / JUDGE_DONE_DIRNAME / judge_done_filename_for_pass(judge_id, pass_mode_j)
             if not row_file.is_file():
+                if not fail_on_missing:
+                    return False
                 _fail_child_postcheck(f"Judge {judge_id} exited 0 but {row_file} is missing")
             if not done_file.is_file():
+                if not fail_on_missing:
+                    return False
                 _fail_child_postcheck(f"Judge {judge_id} exited 0 but {done_file} is missing")
 
             try:
@@ -10030,6 +10009,8 @@ def _run_judges_pipeline_body(
                         raise ValueError(f"row line {line_idx} is not a JSON object")
                     row_objs.append(dict(parsed_row))
             except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+                if not fail_on_missing:
+                    return False
                 _fail_child_postcheck(
                     f"Judge {judge_id} wrote malformed rows file {row_file.name}: {type(exc).__name__}: {exc}"
                 )
@@ -10047,11 +10028,15 @@ def _run_judges_pipeline_body(
                 ValueError,
                 TypeError,
             ) as exc:
+                if not fail_on_missing:
+                    return False
                 _fail_child_postcheck(
                     f"Judge {judge_id} wrote malformed done file {done_file.name}: {type(exc).__name__}: {exc}"
                 )
 
             if len(row_objs) != expected_row_count or actual_rows_sha != expected_rows_sha:
+                if not fail_on_missing:
+                    return False
                 _fail_child_postcheck(
                     f"Judge {judge_id} checkpoint mismatch: rows={len(row_objs)} "
                     f"(expected {expected_row_count}), sha256={actual_rows_sha} (expected {expected_rows_sha})"
@@ -10064,24 +10049,64 @@ def _run_judges_pipeline_body(
                 round(float(child_reported_load), 6)
                 if isinstance(child_reported_load, (int, float))
                 and not isinstance(child_reported_load, bool)
-                else round(max(0.0, pass_wall_elapsed - sum_call_s), 6)
+                else (
+                    0.0
+                    if (arm_extra is not None and int(arm_extra.get("arm_index", 0) or 0) > 0 and done_doc.get("llm_init_seconds") is None)
+                    else round(max(0.0, pass_wall_elapsed - sum_call_s), 6)
+                )
             )
-            load_history_by_judge.setdefault(metric_key, []).append(load_time_s)
-            cum_wall_by_judge[metric_key] = round(
-                cum_wall_by_judge.get(metric_key, 0.0) + pass_wall_elapsed, 6
-            )
-            total_load_s = round(sum(load_history_by_judge[metric_key]), 6)
-            per_call_s = (
-                round(float(sum_call_s / len(call_durations)), 6)
-                if call_durations
-                else 0.0
-            )
-            median_s = (
-                round(float(statistics.median(call_durations)), 6)
-                if call_durations
-                else 0.0
-            )
-            p95_s = round(compute_percentile(call_durations, 95.0), 6)
+            if resumed_skipped:
+                existing_hist = done_doc.get("load_wall_seconds_history")
+                if isinstance(existing_hist, list) and existing_hist:
+                    load_history_by_judge[metric_key] = [float(x) for x in existing_hist]
+                else:
+                    load_history_by_judge.setdefault(metric_key, []).append(load_time_s)
+                raw_done_wall = done_doc.get("elapsed_seconds")
+                eff_arm_wall = (
+                    round(float(raw_done_wall), 6)
+                    if isinstance(raw_done_wall, (int, float)) and not isinstance(raw_done_wall, bool)
+                    else round(pass_wall_elapsed, 6)
+                )
+                cum_wall_by_judge[metric_key] = eff_arm_wall
+                raw_done_tot_load = done_doc.get("load_time_seconds", done_doc.get("load_seconds"))
+                total_load_s = (
+                    round(float(raw_done_tot_load), 6)
+                    if isinstance(raw_done_tot_load, (int, float)) and not isinstance(raw_done_tot_load, bool)
+                    else round(sum(load_history_by_judge[metric_key]), 6)
+                )
+                per_call_s = float(
+                    done_doc.get("per_call_seconds")
+                    if isinstance(done_doc.get("per_call_seconds"), (int, float))
+                    else (round(float(sum_call_s / len(call_durations)), 6) if call_durations else 0.0)
+                )
+                median_s = float(
+                    done_doc.get("per_call_median_seconds")
+                    if isinstance(done_doc.get("per_call_median_seconds"), (int, float))
+                    else (round(float(statistics.median(call_durations)), 6) if call_durations else 0.0)
+                )
+                p95_s = float(
+                    done_doc.get("per_call_p95_seconds")
+                    if isinstance(done_doc.get("per_call_p95_seconds"), (int, float))
+                    else round(compute_percentile(call_durations, 95.0), 6)
+                )
+            else:
+                load_history_by_judge.setdefault(metric_key, []).append(load_time_s)
+                cum_wall_by_judge[metric_key] = round(
+                    cum_wall_by_judge.get(metric_key, 0.0) + pass_wall_elapsed, 6
+                )
+                total_load_s = round(sum(load_history_by_judge[metric_key]), 6)
+                per_call_s = (
+                    round(float(sum_call_s / len(call_durations)), 6)
+                    if call_durations
+                    else 0.0
+                )
+                median_s = (
+                    round(float(statistics.median(call_durations)), 6)
+                    if call_durations
+                    else 0.0
+                )
+                p95_s = round(compute_percentile(call_durations, 95.0), 6)
+
             raw_harness_peak = done_doc.get("vram_peak_mib")
             harness_peak: int | None = (
                 int(raw_harness_peak)
@@ -10103,26 +10128,37 @@ def _run_judges_pipeline_body(
             }
             dtype_str = str(done_doc.get("dtype") or DEFAULT_TORCH_DTYPE)
             enriched_done_doc = dict(done_doc)
-            enriched_done_doc["device"] = device_str
-            enriched_done_doc.setdefault("dtype", dtype_str)
-            enriched_done_doc["elapsed_seconds"] = cum_wall_by_judge[metric_key]
-            enriched_done_doc["load_time_seconds"] = total_load_s
-            enriched_done_doc["load_seconds"] = total_load_s
-            enriched_done_doc["load_wall_seconds"] = load_time_s
-            enriched_done_doc["load_wall_seconds_history"] = list(
-                load_history_by_judge[metric_key]
-            )
-            enriched_done_doc["per_call_seconds"] = per_call_s
-            enriched_done_doc["per_call_median_seconds"] = median_s
-            enriched_done_doc["per_call_p95_seconds"] = p95_s
-            if arm_extra:
-                for ak, av in arm_extra.items():
-                    enriched_done_doc[ak] = av
-            done_file.write_text(
-                json.dumps(enriched_done_doc, indent=2, sort_keys=True) + "\n",
-                encoding="utf-8",
-                newline="\n",
-            )
+            if not resumed_skipped:
+                enriched_done_doc["device"] = device_str
+                enriched_done_doc.setdefault("dtype", dtype_str)
+                enriched_done_doc["elapsed_seconds"] = cum_wall_by_judge[metric_key]
+                enriched_done_doc["load_time_seconds"] = total_load_s
+                enriched_done_doc["load_seconds"] = total_load_s
+                enriched_done_doc["load_wall_seconds"] = load_time_s
+                enriched_done_doc["load_wall_seconds_history"] = list(
+                    load_history_by_judge[metric_key]
+                )
+                enriched_done_doc["per_call_seconds"] = per_call_s
+                enriched_done_doc["per_call_median_seconds"] = median_s
+                enriched_done_doc["per_call_p95_seconds"] = p95_s
+                if arm_extra:
+                    for ak, av in arm_extra.items():
+                        enriched_done_doc[ak] = av
+                done_file.write_text(
+                    json.dumps(enriched_done_doc, indent=2, sort_keys=True) + "\n",
+                    encoding="utf-8",
+                    newline="\n",
+                )
+            elif arm_extra:
+                needs_arm_meta = any(enriched_done_doc.get(ak) != av for ak, av in arm_extra.items())
+                if needs_arm_meta:
+                    for ak, av in arm_extra.items():
+                        enriched_done_doc[ak] = av
+                    done_file.write_text(
+                        json.dumps(enriched_done_doc, indent=2, sort_keys=True) + "\n",
+                        encoding="utf-8",
+                        newline="\n",
+                    )
 
             pass_build_extra: dict[str, Any] = {}
             eff_cg_peak = done_doc.get("cgroup_memory_peak_bytes")
@@ -10136,13 +10172,19 @@ def _run_judges_pipeline_body(
                 if isinstance(raw_llm_init_s, (int, float)) and not isinstance(raw_llm_init_s, bool)
                 else None
             )
+            arm_loaded_engine = (
+                arm_extra is None
+                or eff_llm_init_s is not None
+                or load_time_s > 0.0
+                or int(arm_extra.get("arm_index", 0) or 0) == 0
+            )
             raw_jit_s = done_doc.get("jit_build_seconds")
             eff_jit_s: float | None = (
                 round(float(raw_jit_s), 6)
                 if isinstance(raw_jit_s, (int, float)) and not isinstance(raw_jit_s, bool)
-                else jit_build_info.get("jit_build_seconds")
+                else (jit_build_info.get("jit_build_seconds") if arm_loaded_engine else None)
             )
-            eff_jit_targets = done_doc.get("jit_build_targets") or jit_build_info.get("jit_build_targets") or []
+            eff_jit_targets = done_doc.get("jit_build_targets") or (jit_build_info.get("jit_build_targets") if arm_loaded_engine else None) or []
             if eff_llm_init_s is not None:
                 pass_build_extra["llm_init_seconds"] = eff_llm_init_s
             if eff_jit_s is not None:
@@ -10153,7 +10195,7 @@ def _run_judges_pipeline_body(
             elif eff_llm_init_s is not None:
                 pass_build_extra["build_wall_seconds"] = eff_llm_init_s
                 pass_build_extra["build_seconds_source"] = "llm_init"
-            elif venv_name == "venv-vllm" or judge_id == QWEN36_JUDGE_ID:
+            elif arm_loaded_engine and (venv_name == "venv-vllm" or judge_id == QWEN36_JUDGE_ID):
                 pass_build_extra["build_wall_seconds"] = load_time_s
                 pass_build_extra["build_seconds_source"] = "llm_init"
             if isinstance(done_doc.get("prebuilt_jit_cache"), Mapping):
@@ -10172,7 +10214,7 @@ def _run_judges_pipeline_body(
                 "dtype": dtype_str,
                 "row_count": len(row_objs),
                 "sha256": actual_rows_sha,
-                "elapsed_seconds": round(pass_wall_elapsed, 6),
+                "elapsed_seconds": cum_wall_by_judge[metric_key],
                 "load_time_seconds": load_time_s,
                 "load_seconds": load_time_s,
                 "load_wall_seconds_history": list(load_history_by_judge[metric_key]),
@@ -10262,6 +10304,336 @@ def _run_judges_pipeline_body(
                 per_judge_metrics[metric_key]["thinking_length_quantiles"] = enriched_done_doc["thinking_length_quantiles"]
             if enriched_done_doc.get("call_seconds_quantiles") is not None:
                 per_judge_metrics[metric_key]["call_seconds_quantiles"] = enriched_done_doc["call_seconds_quantiles"]
+            return True
+
+        def _arm_wall_elapsed_for(
+            arm_dir: Path,
+            arm_name: str,
+            job_doc: Mapping[str, Any] | None,
+            *,
+            fallback_elapsed: float,
+        ) -> float:
+            if isinstance(job_doc, Mapping):
+                per_arm_m = job_doc.get("per_arm")
+                if isinstance(per_arm_m, Mapping) and isinstance(per_arm_m.get(arm_name), Mapping):
+                    raw_el = per_arm_m[arm_name].get("elapsed_seconds")
+                    if isinstance(raw_el, (int, float)) and not isinstance(raw_el, bool):
+                        return float(raw_el)
+            done_p = arm_dir / JUDGE_DONE_DIRNAME / judge_done_filename_for_pass(judge_id, pass_mode_j)
+            if done_p.is_file():
+                try:
+                    dd = json.loads(done_p.read_text(encoding="utf-8"))
+                    if isinstance(dd, Mapping):
+                        raw_el = dd.get("elapsed_seconds")
+                        if isinstance(raw_el, (int, float)) and not isinstance(raw_el, bool):
+                            return float(raw_el)
+                except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                    pass
+            return fallback_elapsed
+
+        def _reconcile_interrupted_qwen36_arms_job(interrupted_failure_class: str) -> dict[str, Any] | None:
+            if active_qwen36_arms is None or judge_id != QWEN36_JUDGE_ID:
+                return None
+            arms_job_path = run_dir / QWEN36_ARMS_JOB_FILENAME
+            prior_doc: dict[str, Any] = {}
+            if arms_job_path.is_file():
+                try:
+                    loaded = json.loads(arms_job_path.read_text(encoding="utf-8"))
+                    if isinstance(loaded, Mapping):
+                        prior_doc = dict(loaded)
+                except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                    prior_doc = {}
+            resumed_skipped_set = {str(a) for a in (prior_doc.get("resumed_skipped_arms") or ())}
+            prior_failed = prior_doc.get("failed_arms") if isinstance(prior_doc.get("failed_arms"), Mapping) else {}
+            prior_in_progress = str(prior_doc.get("in_progress_arm") or "").strip() or None
+            completed_arms_rec: list[str] = []
+            failed_arms_rec: dict[str, dict[str, Any]] = {}
+            not_started_rec: list[str] = []
+            per_arm_rec: dict[str, dict[str, Any]] = {}
+            prior_completed_set = {str(a) for a in (prior_doc.get("completed_arms") or ())}
+            interrupted_arm_assigned = False
+
+            for arm_pos, arm_name in enumerate(active_qwen36_arms):
+                arm_dir = run_dir / QWEN36_ARMS_DIRNAME / arm_name
+                is_done_verified = (
+                    not (arm_dir / UNVERIFIED_JUDGE_DONE_FILENAME).exists()
+                    and not (arm_dir / UNVERIFIED_JUDGE_DONE_FILENAME).is_symlink()
+                    and _finalize_pass_outputs(
+                        arm_dir,
+                        f"{judge_id}:{arm_name}",
+                        pass_wall_elapsed=_arm_wall_elapsed_for(arm_dir, arm_name, prior_doc, fallback_elapsed=0.0),
+                        arm_extra={"arm": arm_name, "arms": list(active_qwen36_arms), "arm_index": arm_pos},
+                        resumed_skipped=(arm_name in resumed_skipped_set),
+                        fail_on_missing=False,
+                    )
+                )
+                if is_done_verified and (arm_name in prior_completed_set or arm_name != prior_in_progress):
+                    completed_arms_rec.append(arm_name)
+                    for aux_name in (SHARD_MANIFEST_FILENAME, SHARD_MANIFEST_SHA256_FILENAME, SESSION_ENV_FILENAME):
+                        src_aux = run_dir / aux_name
+                        dst_aux = arm_dir / aux_name
+                        if src_aux.is_file() and (aux_name == SESSION_ENV_FILENAME or not dst_aux.is_file()):
+                            shutil.copyfile(src_aux, dst_aux)
+                    m_info = per_judge_metrics.get(f"{judge_id}:{arm_name}", {})
+                    per_arm_rec[arm_name] = {
+                        "arm": arm_name,
+                        "arm_index": arm_pos,
+                        "arms": list(active_qwen36_arms),
+                        "status": "completed",
+                        "resumed": arm_name in resumed_skipped_set,
+                        "output_dir": f"{QWEN36_ARMS_DIRNAME}/{arm_name}",
+                        "rows_sha256": m_info.get("rows_sha256"),
+                        "row_count": m_info.get("row_count"),
+                        "elapsed_seconds": m_info.get("elapsed_seconds"),
+                    }
+                    continue
+                if arm_name in prior_failed and isinstance(prior_failed.get(arm_name), Mapping):
+                    f_rec = dict(prior_failed[arm_name])
+                    fc_arm = str(f_rec.get("failure_class") or "JUDGE_ARM_RUNTIME_ERROR")
+                    _write_arm_incomplete_markers(
+                        arm_dir,
+                        judge_id=judge_id,
+                        pass_mode=pass_mode_j,
+                        arm=arm_name,
+                        status="failed",
+                        failure_class=fc_arm,
+                    )
+                    failed_arms_rec[arm_name] = f_rec
+                    per_arm_rec[arm_name] = f_rec
+                    continue
+                is_interrupted_arm = (
+                    not interrupted_arm_assigned
+                    and (prior_in_progress is None or arm_name == prior_in_progress)
+                )
+                if is_interrupted_arm:
+                    interrupted_arm_assigned = True
+                    _write_arm_incomplete_markers(
+                        arm_dir,
+                        judge_id=judge_id,
+                        pass_mode=pass_mode_j,
+                        arm=arm_name,
+                        status="failed",
+                        failure_class=interrupted_failure_class,
+                    )
+                    f_rec = {
+                        "arm": arm_name,
+                        "arm_index": arm_pos,
+                        "arms": list(active_qwen36_arms),
+                        "status": "failed",
+                        "failure_class": interrupted_failure_class,
+                        "output_dir": f"{QWEN36_ARMS_DIRNAME}/{arm_name}",
+                    }
+                    failed_arms_rec[arm_name] = f_rec
+                    per_arm_rec[arm_name] = f_rec
+                    append_progress_line(
+                        progress_path,
+                        {
+                            "kind": "judge_arm_failed",
+                            "judge": judge_id,
+                            "judge_id": judge_id,
+                            "arm": arm_name,
+                            "arms": list(active_qwen36_arms),
+                            "arm_index": arm_pos,
+                            "failure_class": interrupted_failure_class,
+                        },
+                        proc_meminfo_path=proc_meminfo_path,
+                        cgroup_root=cgroup_root,
+                        proc_cgroup_path=proc_cgroup_path,
+                    )
+                else:
+                    _write_arm_incomplete_markers(
+                        arm_dir,
+                        judge_id=judge_id,
+                        pass_mode=pass_mode_j,
+                        arm=arm_name,
+                        status="not_started",
+                        failure_class=interrupted_failure_class,
+                    )
+                    not_started_rec.append(arm_name)
+                    per_arm_rec[arm_name] = {
+                        "arm": arm_name,
+                        "arm_index": arm_pos,
+                        "arms": list(active_qwen36_arms),
+                        "status": "not_started",
+                        "output_dir": f"{QWEN36_ARMS_DIRNAME}/{arm_name}",
+                    }
+
+            reconciled_doc: dict[str, Any] = {
+                **prior_doc,
+                "status": "partial" if completed_arms_rec else "failed",
+                "judge_id": judge_id,
+                "pass_mode": pass_mode_j,
+                "arms": list(active_qwen36_arms),
+                "completed_arms": completed_arms_rec,
+                "resumed_skipped_arms": [a for a in active_qwen36_arms if a in resumed_skipped_set and a in completed_arms_rec],
+                "failed_arms": failed_arms_rec,
+                "not_started_arms": not_started_rec,
+                "in_progress_arm": None,
+                "per_arm": per_arm_rec,
+            }
+            tmp_job = run_dir / f".{QWEN36_ARMS_JOB_FILENAME}.tmp.{os.getpid()}"
+            tmp_job.write_text(json.dumps(reconciled_doc, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
+            os.replace(tmp_job, arms_job_path)
+            return reconciled_doc
+
+        if child_res["timed_out"]:
+            gpu_mem_mib = read_gpu_memory_used_mib(dryrun=dryrun)
+            parent_rss_b = read_parent_rss_bytes()
+            surviving_pids = list(child_res["surviving_pids"])
+            any_survived = bool(child_res["any_member_survived"])
+            pgid_val = int(child_res["process_group_id"])
+            raw_rc = child_rc
+            sig_num = 9 if raw_rc in (-9, 137) else (
+                -raw_rc if raw_rc < 0 else (raw_rc - 128 if raw_rc > 128 else None)
+            )
+            exit_code = 128 + sig_num if sig_num is not None else raw_rc
+            reconciled_arms = _reconcile_interrupted_qwen36_arms_job("JUDGE_CHILD_TIMEOUT")
+            append_progress_line(
+                progress_path,
+                {
+                    "kind": "judge_failed",
+                    "judge": judge_id,
+                    "judge_id": judge_id,
+                    "venv": venv_name,
+                    "venv_python": venv_python.as_posix(),
+                    "lock_sha256": lock_sha256,
+                    "exit_code": exit_code,
+                    "returncode": raw_rc,
+                    "signal": sig_num,
+                    "oom_kill": oom_after,
+                    "oom": cg_after.get("oom"),
+                    "oom_kill_delta": oom_kill_delta,
+                    "mem_available_bytes": mem_avail_bytes,
+                    "stdout_tail": stdout_tail,
+                    "stderr_tail": stderr_tail,
+                    "failure_class": "JUDGE_CHILD_TIMEOUT",
+                    "elapsed_seconds": round(wall_elapsed, 6),
+                    "timeout_seconds": eff_child_timeout,
+                    "timed_out": True,
+                    "process_group_id": pgid_val,
+                    "surviving_pids": surviving_pids,
+                    "any_member_survived": any_survived,
+                    "gpu_memory_used_mib": gpu_mem_mib,
+                    "parent_rss_bytes": parent_rss_b,
+                    **failure_build_extra,
+                },
+                proc_meminfo_path=proc_meminfo_path,
+                cgroup_root=cgroup_root,
+                proc_cgroup_path=proc_cgroup_path,
+            )
+            raise JudgeChildProcessError(
+                judge_id=judge_id,
+                venv=venv_name,
+                venv_python=venv_python.as_posix(),
+                lock_sha256=lock_sha256,
+                cmd=child_cmd,
+                returncode=raw_rc,
+                exit_code=exit_code,
+                signal_num=sig_num,
+                oom=cg_after.get("oom"),
+                oom_kill=oom_after,
+                oom_kill_delta=oom_kill_delta,
+                mem_available_bytes=mem_avail_bytes,
+                stdout_tail=stdout_tail,
+                stderr_tail=stderr_tail,
+                failure_class="JUDGE_CHILD_TIMEOUT",
+                duration_seconds=wall_elapsed,
+                completed_judges=per_judge_metrics,
+                timeout_seconds=eff_child_timeout,
+                timed_out=True,
+                process_group_id=pgid_val,
+                surviving_pids=surviving_pids,
+                any_member_survived=any_survived,
+                gpu_memory_used_mib=gpu_mem_mib,
+                parent_rss_bytes=parent_rss_b,
+                qwen36_arms=reconciled_arms,
+            )
+
+        if child_rc != 0:
+            raw_rc = int(child_rc)
+            sig_num = None
+            if raw_rc < 0:
+                sig_num = -raw_rc
+                exit_code = 128 + sig_num
+            elif raw_rc > 128:
+                sig_num = raw_rc - 128
+                exit_code = raw_rc
+            else:
+                exit_code = raw_rc
+
+            is_oom = (
+                sig_num == 9
+                or raw_rc in (-9, 137)
+                or (oom_kill_delta is not None and oom_kill_delta > 0)
+            )
+            named_child_stop = (
+                None
+                if is_oom
+                else classify_judge_child_stop_code(
+                    child_res["stderr"] or "",
+                    child_res["stdout"] or "",
+                    shim_invocations=failure_build_extra.get("jit_shim_invocations", ()),
+                    engine_stop_codes=engine_stop_codes,
+                )
+            )
+            failure_class = "JUDGE_CHILD_OOM" if is_oom else (named_child_stop or "JUDGE_CHILD_FAILED")
+            if is_oom and sig_num is None and raw_rc in (-9, 137):
+                sig_num = 9
+            reconciled_arms = _reconcile_interrupted_qwen36_arms_job(failure_class)
+
+            append_progress_line(
+                progress_path,
+                {
+                    "kind": "judge_failed",
+                    "judge": judge_id,
+                    "judge_id": judge_id,
+                    "venv": venv_name,
+                    "venv_python": venv_python.as_posix(),
+                    "lock_sha256": lock_sha256,
+                    "exit_code": exit_code,
+                    "returncode": raw_rc,
+                    "signal": sig_num,
+                    "oom_kill": oom_after,
+                    "oom": cg_after.get("oom"),
+                    "oom_kill_delta": oom_kill_delta,
+                    "mem_available_bytes": mem_avail_bytes,
+                    "stderr_tail": stderr_tail,
+                    "failure_class": failure_class,
+                    **failure_build_extra,
+                },
+                proc_meminfo_path=proc_meminfo_path,
+                cgroup_root=cgroup_root,
+                proc_cgroup_path=proc_cgroup_path,
+            )
+            raise JudgeChildProcessError(
+                judge_id=judge_id,
+                venv=venv_name,
+                venv_python=venv_python.as_posix(),
+                lock_sha256=lock_sha256,
+                cmd=child_cmd,
+                returncode=raw_rc,
+                exit_code=exit_code,
+                signal_num=sig_num,
+                oom=cg_after.get("oom"),
+                oom_kill=oom_after,
+                oom_kill_delta=oom_kill_delta,
+                mem_available_bytes=mem_avail_bytes,
+                stdout_tail=stdout_tail,
+                stderr_tail=stderr_tail,
+                failure_class=failure_class,
+                duration_seconds=wall_elapsed,
+                completed_judges=per_judge_metrics,
+                timeout_seconds=eff_child_timeout,
+                qwen36_arms=reconciled_arms,
+            )
+
+        if is_anchor_prefix_pass:
+            anchor_row_file = run_dir / "anchor_rows" / rows_filename_for_pass(judge_id, pass_mode_j)
+            if not anchor_row_file.is_file():
+                _fail_child_postcheck(
+                    f"Judge {judge_id} anchor prefix pass exited 0 but {anchor_row_file} is missing"
+                )
+            continue
 
         if active_qwen36_arms is not None and judge_id == QWEN36_JUDGE_ID:
             arms_job_path = run_dir / QWEN36_ARMS_JOB_FILENAME
@@ -10279,21 +10651,44 @@ def _run_judges_pipeline_body(
                 )
             qwen36_arms_job_report = dict(arms_job_doc)
             completed_arm_list = [str(a) for a in (arms_job_doc.get("completed_arms") or ())]
+            resumed_skipped_set = {str(a) for a in (arms_job_doc.get("resumed_skipped_arms") or ())}
+            failed_arm_map = dict(arms_job_doc.get("failed_arms") or {})
             for arm_pos, arm_name in enumerate(active_qwen36_arms):
-                if arm_name not in completed_arm_list:
-                    continue
                 arm_dir = run_dir / QWEN36_ARMS_DIRNAME / arm_name
+                if arm_name not in completed_arm_list:
+                    arm_fc = (
+                        str(failed_arm_map[arm_name].get("failure_class") or "JUDGE_ARM_RUNTIME_ERROR")
+                        if arm_name in failed_arm_map and isinstance(failed_arm_map[arm_name], Mapping)
+                        else str(arms_job_doc.get("stop_reason") or "ARM_NOT_COMPLETED")
+                    )
+                    _write_arm_incomplete_markers(
+                        arm_dir,
+                        judge_id=judge_id,
+                        pass_mode=pass_mode_j,
+                        arm=arm_name,
+                        status=("failed" if arm_name in failed_arm_map else "not_started"),
+                        failure_class=arm_fc,
+                    )
+                    continue
+                arm_elapsed = _arm_wall_elapsed_for(
+                    arm_dir,
+                    arm_name,
+                    arms_job_doc,
+                    fallback_elapsed=(wall_elapsed / max(1, len(completed_arm_list))),
+                )
                 _finalize_pass_outputs(
                     arm_dir,
                     f"{judge_id}:{arm_name}",
-                    pass_wall_elapsed=wall_elapsed if arm_pos == 0 else 0.0,
+                    pass_wall_elapsed=arm_elapsed,
                     arm_extra={"arm": arm_name, "arms": list(active_qwen36_arms), "arm_index": arm_pos},
+                    resumed_skipped=(arm_name in resumed_skipped_set),
                 )
                 for aux_name in (SHARD_MANIFEST_FILENAME, SHARD_MANIFEST_SHA256_FILENAME, SESSION_ENV_FILENAME):
                     src_aux = run_dir / aux_name
-                    if src_aux.is_file():
-                        shutil.copyfile(src_aux, arm_dir / aux_name)
-            for fail_arm, fail_info in dict(arms_job_doc.get("failed_arms") or {}).items():
+                    dst_aux = arm_dir / aux_name
+                    if src_aux.is_file() and (aux_name == SESSION_ENV_FILENAME or not dst_aux.is_file()):
+                        shutil.copyfile(src_aux, dst_aux)
+            for fail_arm, fail_info in failed_arm_map.items():
                 append_progress_line(
                     progress_path,
                     {
@@ -17373,6 +17768,111 @@ def build_vm_receipt_doc(
     return receipt_doc
 
 
+def _sync_qwen36_per_arm_receipts(
+    run_dir: Path,
+    doc: Mapping[str, Any],
+    *,
+    default_pass_mode: str = "three_way_contradicted",
+) -> None:
+    """Sync `arms/<arm>/vm_receipt.json` & `receipt.json` from parent receipt without blessing incomplete arms."""
+    arms_meta = doc.get("qwen36_arms")
+    if not isinstance(arms_meta, Mapping):
+        return
+    arms_dir = run_dir / "arms"
+    raw_arms = [str(a) for a in arms_meta.get("arms", []) if isinstance(a, str) and str(a).strip()]
+    if not raw_arms and arms_dir.is_dir():
+        raw_arms = sorted(p.name for p in arms_dir.iterdir() if p.is_dir())
+    if not raw_arms:
+        return
+    completed_set = {
+        str(a) for a in arms_meta.get("completed_arms", []) if isinstance(a, str) and str(a).strip()
+    }
+    raw_failed = arms_meta.get("failed_arms")
+    failed_map: dict[str, dict[str, Any]] = {}
+    if isinstance(raw_failed, Mapping):
+        for k, v in raw_failed.items():
+            failed_map[str(k)] = dict(v) if isinstance(v, Mapping) else {"detail": v}
+    raw_arm_index = arms_meta.get("arm_index")
+    arm_index_map = dict(raw_arm_index) if isinstance(raw_arm_index, Mapping) else {}
+    raw_arm_timing = arms_meta.get("arm_timing")
+    arm_timing_map = dict(raw_arm_timing) if isinstance(raw_arm_timing, Mapping) else {}
+
+    for pos, arm_name in enumerate(raw_arms):
+        arm_dir = arms_dir / arm_name
+        arm_idx = int(arm_index_map.get(arm_name, pos))
+        verified_done = (
+            _is_verified_completed_qwen36_arm(
+                arm_dir,
+                arm_name=arm_name,
+                completed_set=completed_set,
+                pass_mode=default_pass_mode,
+            )
+            if arm_dir.is_dir()
+            else None
+        )
+        if verified_done is not None:
+            arm_doc = dict(doc)
+            arm_doc["arm"] = arm_name
+            arm_doc["arms"] = list(raw_arms)
+            arm_doc["arm_index"] = arm_idx
+            timing_entry = arm_timing_map.get(arm_name)
+            if isinstance(timing_entry, Mapping):
+                arm_doc["arm_timing"] = dict(timing_entry)
+                if "elapsed_seconds" in timing_entry:
+                    arm_doc["arm_elapsed_seconds"] = timing_entry["elapsed_seconds"]
+            # If the outer job failed on a later arm, keep the completed arm's own receipt status `"ok"`.
+            if str(arm_doc.get("status") or "") not in ("ok", "DRYRUN_OK"):
+                arm_doc["status"] = "ok"
+                arm_doc.pop("failure_class", None)
+                arm_doc.pop("error", None)
+                arm_doc.pop("detail", None)
+            payload = json.dumps(arm_doc, indent=2) + "\n"
+            for name in ("vm_receipt.json", "receipt.json"):
+                tmp_p = arm_dir / f".{name}.tmp.{os.getpid()}"
+                tmp_p.write_text(payload, encoding="utf-8", newline="\n")
+                os.replace(tmp_p, arm_dir / name)
+            arm_scorer_rels = _collect_outputs_closed_rels(arm_dir, scorer_only=True)
+            if arm_scorer_rels:
+                _build_outputs_closed_doc(arm_dir, arm_scorer_rels)
+            continue
+
+        # Arm did not complete with a valid verified judge_done: ensure fail-closed markers
+        # exist if its directory is present (or it started/failed), and write a failing receipt.
+        should_mark = arm_dir.is_dir() or arm_name in failed_map
+        if not should_mark:
+            continue
+        fail_info = failed_map.get(arm_name)
+        arm_fc = (
+            str(fail_info.get("failure_class") or "").strip()
+            if isinstance(fail_info, Mapping)
+            else ""
+        ) or (
+            str(doc.get("failure_class") or "").strip()
+            if str(doc.get("status") or "") not in ("ok", "DRYRUN_OK")
+            else "QWEN36_ARM_INCOMPLETE"
+        )
+        eff_pm = _infer_arm_pass_mode(arm_dir, default_pass_mode)
+        _write_arm_incomplete_markers(
+            arm_dir,
+            judge_id=QWEN36_JUDGE_ID,
+            pass_mode=eff_pm,
+            arm=arm_name,
+            status="failed" if arm_name in failed_map else "not_started",
+            failure_class=arm_fc,
+        )
+        arm_doc = dict(doc)
+        arm_doc["status"] = "failed"
+        arm_doc["arm"] = arm_name
+        arm_doc["arms"] = list(raw_arms)
+        arm_doc["arm_index"] = arm_idx
+        arm_doc["failure_class"] = arm_fc
+        payload = json.dumps(arm_doc, indent=2) + "\n"
+        for name in ("vm_receipt.json", "receipt.json"):
+            tmp_p = arm_dir / f".{name}.tmp.{os.getpid()}"
+            tmp_p.write_text(payload, encoding="utf-8", newline="\n")
+            os.replace(tmp_p, arm_dir / name)
+
+
 def main(argv: list[str] | None = None) -> int:
     global _ACTIVE_VM_LOG_PATH, _ACTIVE_RUN_WALL_DEADLINE_MONOTONIC
     if list(sys.argv[1:] if argv is None else argv)[:1] in (["reverify-unverified"], ["exclude-incomplete"]): return _dispatch_offline_rig_subcommand(list(sys.argv[1:] if argv is None else argv))  # noqa: E501
@@ -18351,60 +18851,7 @@ def main(argv: list[str] | None = None) -> int:
             encoding="utf-8",
             newline="\n",
         )
-        def _sync_per_arm_receipts(doc: Mapping[str, Any]) -> None:
-            arms_report = doc.get("qwen36_arms")
-            if not isinstance(arms_report, Mapping):
-                return
-            arms_list = list(arms_report.get("arms") or ())
-            completed_set = {str(a) for a in (arms_report.get("completed_arms") or ())}
-            judges_map = doc.get("judges") if isinstance(doc.get("judges"), Mapping) else {}
-            senv_src = args.run_dir / SESSION_ENV_FILENAME
-            for arm_pos, arm_name in enumerate(arms_list):
-                arm_name_s = str(arm_name)
-                if arm_name_s not in completed_set:
-                    continue
-                arm_dir = args.run_dir / QWEN36_ARMS_DIRNAME / arm_name_s
-                if not arm_dir.is_dir():
-                    continue
-                if senv_src.is_file():
-                    shutil.copyfile(senv_src, arm_dir / SESSION_ENV_FILENAME)
-                mkey = f"{QWEN36_JUDGE_ID}:{arm_name_s}"
-                arm_judges = {QWEN36_JUDGE_ID: judges_map[mkey]} if mkey in judges_map else {}
-                existing_arm_receipt: dict[str, Any] = {}
-                arm_receipt_path = arm_dir / "receipt.json"
-                if arm_receipt_path.is_file():
-                    try:
-                        loaded = json.loads(arm_receipt_path.read_text(encoding="utf-8"))
-                        if isinstance(loaded, Mapping):
-                            existing_arm_receipt = dict(loaded)
-                    except (OSError, json.JSONDecodeError):
-                        existing_arm_receipt = {}
-                arm_vm_doc = {
-                    **dict(doc),
-                    "arm": arm_name_s,
-                    "arms": list(arms_list),
-                    "arm_index": arm_pos,
-                    "judges": arm_judges,
-                }
-                arm_vm_serialized = json.dumps(arm_vm_doc, indent=2) + "\n"
-                (arm_dir / "vm_receipt.json").write_text(arm_vm_serialized, encoding="utf-8", newline="\n")
-                merged_arm_receipt = {
-                    **existing_arm_receipt,
-                    "judge_id": QWEN36_JUDGE_ID,
-                    "pass_mode": existing_arm_receipt.get("pass_mode") or main_pass_mode,
-                    "arm": arm_name_s,
-                    "arms": list(arms_list),
-                    "arm_index": arm_pos,
-                    "qwen36_arms": dict(arms_report),
-                    "judges": arm_judges,
-                }
-                arm_receipt_path.write_text(
-                    json.dumps(merged_arm_receipt, indent=2, sort_keys=True) + "\n",
-                    encoding="utf-8",
-                    newline="\n",
-                )
-
-        _sync_per_arm_receipts(receipt_doc)
+        _sync_qwen36_per_arm_receipts(args.run_dir, receipt_doc, default_pass_mode=main_pass_mode)
         write_window_manifest(
             args.run_dir,
             window_id=getattr(args, "window_id", None),
@@ -18438,7 +18885,7 @@ def main(argv: list[str] | None = None) -> int:
             encoding="utf-8",
             newline="\n",
         )
-        _sync_per_arm_receipts(receipt_doc)
+        _sync_qwen36_per_arm_receipts(args.run_dir, receipt_doc, default_pass_mode=main_pass_mode)
         window_manifest_doc = write_window_manifest(
             args.run_dir,
             window_id=getattr(args, "window_id", None),
@@ -18761,11 +19208,22 @@ def main(argv: list[str] | None = None) -> int:
                 if err_subproc_rec is not None and k in err_subproc_rec:
                     fail_receipt[k] = err_subproc_rec[k]
                     status_fail_extra[k] = err_subproc_rec[k]
+            if isinstance(getattr(err, "qwen36_arms", None), Mapping):
+                fail_receipt["qwen36_arms"] = dict(err.qwen36_arms)
+                status_fail_extra["qwen36_arms"] = dict(err.qwen36_arms)
+                if getattr(err, "completed_judges", None):
+                    fail_receipt["judges"] = dict(err.completed_judges)
         receipt_path.write_text(
             json.dumps(fail_receipt, indent=2) + "\n",
             encoding="utf-8",
             newline="\n",
         )
+        if isinstance(fail_receipt.get("qwen36_arms"), Mapping):
+            _sync_qwen36_per_arm_receipts(
+                args.run_dir,
+                fail_receipt,
+                default_pass_mode=str(locals().get("main_pass_mode") or "three_way_contradicted"),
+            )
         if ok_receipts_written:
             # The OK path also wrote receipt.json (#108 fix 1): rewrite it as the same refusal, so the tar's two receipts agree.
             try:
@@ -20121,9 +20579,6 @@ def write_launcher_halted_pass_verdicts(out_dir: Path, halted_tsv: str, verdicts
             ok, _ = launcher_verify_fetched_pass(out_dir, jid, pmode, staged=False, want_sha256=want_sha)
             fh.write(f"{'OK' if ok else 'BAD'}\t{jid}\t{pmode}\t{done_file}\n")
             fh.flush()
-
-
-UNVERIFIED_JUDGE_DONE_FILENAME = ".unverified_judge_done"
 
 
 def _load_run_records_module() -> Any:

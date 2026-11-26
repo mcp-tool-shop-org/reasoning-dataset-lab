@@ -57,9 +57,13 @@ subprocess (`<venv>/bin/python -m reasoning_dataset_lab.pilot_b.bakeoff_judge`) 
   [default], `nothink-greedy`, `nothink-card`, or `nothink-matched`; `RDLAB_QWEN36_ARMS` runs a comma-separated
   arm list sequentially on one engine load with `thinking` required first when included
   [`QWEN36_ARMS_THINKING_NOT_FIRST`], isolating outputs per arm under `arms/<arm>/`, writing
-  `qwen36_arms_job.json`, continuing across single-arm failures [`failed_arms`], stopping cleanly between arms
-  on cap/wall [`not_started_arms`, `stopped_between_arms`, `stop_reason`], and skipping complete / resuming
-  partial arms on `--resume`; invalid values refuse `QWEN36_ARM_INVALID` / `QWEN36_ARMS_INVALID` /
+  `qwen36_arms_job.json` atomically after every arm [and reconciling it plus completed-arm receipts if the child is killed mid-arm],
+  sealing `arms/<arm>/outputs-closed.json` only for completed arms with verified `judge_done` while writing
+  `.unverified_judge_done` and `outcome.draft.json` into failed or not-started arm dirs, attributing `llm_init_seconds`
+  only to the arm that loaded the engine with per-arm `elapsed_seconds` and verbatim resume timing preservation,
+  continuing across single-arm failures [`failed_arms`], stopping cleanly between arms
+  on cap/wall or when remaining wall budget is below `last_completed_arm_seconds + 30.0` [`WALL_BUDGET_INSUFFICIENT_FOR_NEXT_ARM`, `not_started_arms`, `stopped_between_arms`, `stop_reason`], and skipping complete / resuming
+  partial arms per arm including `max_new_tokens` match on `--resume`; invalid values refuse `QWEN36_ARM_INVALID` / `QWEN36_ARMS_INVALID` /
   `QWEN36_ARMS_DUPLICATE` / `QWEN36_ARMS_CONFLICT` / `QWEN36_ARMS_SUBBLOCK_UNSUPPORTED`, non-Qwen3.6 judges refuse
   `QWEN36_ARM_UNSUPPORTED_JUDGE` / `QWEN36_ARMS_UNSUPPORTED_JUDGE`, and resume mismatches refuse
   `QWEN36_RESUME_ARM_MISMATCH`;

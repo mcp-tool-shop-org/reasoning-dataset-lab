@@ -2685,6 +2685,7 @@ def build_shard_manifest(
     canary_telemetry_sha256: str | None = None,
     golden_anchor_manifest_file_sha256: str | None = None,
     golden_anchor_manifest_sha256: str | None = None,
+    qwen36_arm: str | None = None,
 ) -> dict[str, Any]:
     """Build a pre-registered shard manifest with deterministic stratified interleave over `schedule` and 50 anchors (25 stratified + 25 low-margin anchors)."""
     if num_shards < 1:
@@ -2797,7 +2798,11 @@ def build_shard_manifest(
         for jid, adapter in adapters.items():
             if not judge_supports_pass_mode(adapter.spec, pass_mode):
                 continue
-            prompt = adapter.assemble_prompt(it, order=entry.order, pass_mode=pass_mode)
+            prompt = (
+                adapter.assemble_prompt(it, order=entry.order, pass_mode=pass_mode, arm=qwen36_arm)
+                if qwen36_arm is not None and isinstance(adapter, Qwen36ChoiceAdapter)
+                else adapter.assemble_prompt(it, order=entry.order, pass_mode=pass_mode)
+            )
             call_key = f"{entry.item_id}:{entry.order}:{jid}"
             input_token_ids_sha256_by_call[call_key] = compute_prompt_input_token_ids_sha256(
                 jid, prompt.prompt_text
@@ -5260,14 +5265,24 @@ def _run_bakeoff_judge_impl(
     close_guard_fn = getattr(transport, "close_build_guard", None)
     if _cleanup_callbacks is not None and callable(close_guard_fn):
         _cleanup_callbacks.append(close_guard_fn)
+    engine_loaded_before_pass = (
+        (getattr(transport, "_llm", None) is not None)
+        or bool(getattr(transport, "_llm_init_attributed", False))
+    )
     if callable(ensure_loaded_fn):
         ensure_loaded_fn(spec)
     ensure_arm_meta_fn = getattr(transport, "ensure_arm_metadata_loaded", None)
     if spec.judge_id == QWEN36_JUDGE_ID and callable(ensure_arm_meta_fn):
         ensure_arm_meta_fn(spec, eff_qwen36_arm)
+    attribute_llm_init = not engine_loaded_before_pass
+    if attribute_llm_init and transport is not None and (
+        getattr(transport, "_llm", None) is not None
+        or getattr(transport, "_llm_init_seconds", None) is not None
+    ):
+        setattr(transport, "_llm_init_attributed", True)
     suffix_checked_start = int(getattr(transport, "_prompt_suffix_checked_count", 0) or 0) if transport is not None else 0
     think_tag_gen_start = int(getattr(transport, "_generated_think_tag_count", 0) or 0) if transport is not None else 0
-    load_wall_seconds = round(max(0.0, time.monotonic() - child_start_mono), 6)
+    load_wall_seconds = 0.0 if engine_loaded_before_pass else round(max(0.0, time.monotonic() - child_start_mono), 6)
     load_done_payload: dict[str, Any] = {
         "kind": "load_done",
         "judge_id": spec.judge_id,
@@ -5298,8 +5313,8 @@ def _run_bakeoff_judge_impl(
         cg_peak = getattr(transport, "_cgroup_memory_peak_bytes", None)
         if cg_peak is not None:
             load_done_payload["cgroup_memory_peak_bytes"] = int(cg_peak)
-        llm_init_s = getattr(transport, "_llm_init_seconds", None)
-        jit_sum = getattr(transport, "_jit_build_summary", None) or {}
+        llm_init_s = getattr(transport, "_llm_init_seconds", None) if attribute_llm_init else None
+        jit_sum = (getattr(transport, "_jit_build_summary", None) or {}) if attribute_llm_init else {}
         jit_s = jit_sum.get("jit_build_seconds")
         jit_targets = jit_sum.get("jit_build_targets") or []
         if llm_init_s is not None:
@@ -5336,6 +5351,7 @@ def _run_bakeoff_judge_impl(
                 schedule,
                 num_shards=shard_n if shard_n is not None else 1,
                 pass_mode=pass_mode,
+                qwen36_arm=(eff_qwen36_arm if spec.judge_id == QWEN36_JUDGE_ID else None),
             )
             write_shard_manifest(built_manifest, target_manifest_path)
         manifest_doc, manifest_file_sha256 = verify_shard_manifest(
@@ -6566,8 +6582,8 @@ def _run_bakeoff_judge_impl(
             cg_peak = getattr(transport, "_cgroup_memory_peak_bytes", None)
             if cg_peak is not None:
                 qwen36_summary_extra["cgroup_memory_peak_bytes"] = int(cg_peak)
-            llm_init_s = getattr(transport, "_llm_init_seconds", None)
-            jit_sum = getattr(transport, "_jit_build_summary", None) or {}
+            llm_init_s = getattr(transport, "_llm_init_seconds", None) if attribute_llm_init else None
+            jit_sum = (getattr(transport, "_jit_build_summary", None) or {}) if attribute_llm_init else {}
             jit_s = jit_sum.get("jit_build_seconds")
             jit_targets = jit_sum.get("jit_build_targets") or []
             if llm_init_s is not None:
@@ -6717,6 +6733,7 @@ def _expected_arm_row_counts(
                 num_shards=shard_n,
                 schedule_seed=DEFAULT_SCHEDULE_SEED if schedule_seed is None else int(schedule_seed),
                 pass_mode=pass_mode,
+                qwen36_arm=(arms[0] if arms else None),
             )
         if mf_doc is not None:
             shard_item_ids = [str(x) for x in mf_doc["shards"][str(shard_k)]]
@@ -6750,6 +6767,7 @@ def _is_qwen36_arm_complete(
     expected_canary_rows: int,
     expected_repeats: int,
     expected_seed_variant: str,
+    expected_max_new_tokens: int | None = None,
 ) -> dict[str, Any] | None:
     done_path = arm_dir / JUDGE_DONE_DIRNAME / judge_done_filename_for_pass(judge_id, pass_mode)
     row_filename = f"{judge_id}.jsonl" if pass_mode == "binary" else f"{judge_id}.{pass_mode}.jsonl"
@@ -6768,6 +6786,10 @@ def _is_qwen36_arm_complete(
         return None
     if int(done_doc.get("repeats", 1) or 1) != int(expected_repeats):
         return None
+    if expected_max_new_tokens is not None:
+        raw_mnt = done_doc.get("max_new_tokens")
+        if raw_mnt is None or int(raw_mnt) != int(expected_max_new_tokens):
+            return None
     row_bytes = row_path.read_bytes()
     actual_sha = hashlib.sha256(row_bytes).hexdigest()
     actual_rows = sum(1 for ln in row_bytes.decode("utf-8").splitlines() if ln.strip())
@@ -6787,6 +6809,59 @@ def _is_qwen36_arm_complete(
         if str(done_doc.get("duplicate_canary_rows_sha256") or "") != actual_can_sha:
             return None
     return done_doc
+
+
+def _write_qwen36_arms_job_atomic(output_dir: Path, job_doc: Mapping[str, Any]) -> None:
+    """Atomically replace `qwen36_arms_job.json` via a temp file."""
+    target = output_dir / QWEN36_ARMS_JOB_FILENAME
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = output_dir / f".{QWEN36_ARMS_JOB_FILENAME}.tmp.{os.getpid()}"
+    tmp.write_text(json.dumps(dict(job_doc), indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
+    os.replace(tmp, target)
+
+
+def _write_qwen36_arm_incomplete_markers(
+    arm_dir: Path,
+    *,
+    judge_id: str,
+    pass_mode: PassMode,
+    arm: str,
+    status: str,
+    failure_class: str | None = None,
+) -> None:
+    """Write `.unverified_judge_done` and `outcome.draft.json` inside an incomplete/failed arm dir so scorers refuse it."""
+    arm_dir.mkdir(parents=True, exist_ok=True)
+    done_name = judge_done_filename_for_pass(judge_id, pass_mode)
+    (arm_dir / OUTPUTS_CLOSED_FILENAME).unlink(missing_ok=True)
+    (arm_dir / JUDGE_DONE_DIRNAME / done_name).unlink(missing_ok=True)
+    (arm_dir / UNVERIFIED_JUDGE_DONE_FILENAME).write_text(
+        f"{judge_id}\t{pass_mode}\t{done_name}\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    pass_label = f"{judge_id}:{pass_mode}"
+    outcome_doc = {
+        "judges_completed": [],
+        "unverified_passes": [pass_label],
+        "excluded_incomplete_passes": [
+            {
+                "judge_id": judge_id,
+                "pass_mode": pass_mode,
+                "pass": pass_label,
+                "arm": arm,
+                "status": status,
+                "failure_class": failure_class,
+            }
+        ],
+    }
+    tmp_out = arm_dir / f".{OUTCOME_DRAFT_FILENAME}.tmp.{os.getpid()}"
+    tmp_out.write_text(json.dumps(outcome_doc, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
+    os.replace(tmp_out, arm_dir / OUTCOME_DRAFT_FILENAME)
+
+
+def _clear_qwen36_arm_incomplete_markers(arm_dir: Path) -> None:
+    (arm_dir / UNVERIFIED_JUDGE_DONE_FILENAME).unlink(missing_ok=True)
+    (arm_dir / OUTCOME_DRAFT_FILENAME).unlink(missing_ok=True)
 
 
 def run_qwen36_arms_job(
@@ -6832,6 +6907,7 @@ def run_qwen36_arms_job(
     wall_deadline_monotonic: float | None = None,
     stop_marker_file: Path | None = None,
     should_stop_between_arms: Callable[[int, str], str | bool | None] | None = None,
+    between_arm_margin_seconds: float | None = None,
 ) -> dict[str, object]:
     """Run several Qwen3.6 arms sequentially in one job on one shared engine load."""
     arms = resolve_qwen36_arms(qwen36_arms)
@@ -6890,7 +6966,7 @@ def run_qwen36_arms_job(
     )
     eff_seed_variant = resolve_qwen36_seed_variant()
     eff_seed_variant_recorded = eff_seed_variant if eff_seed_variant is not None else QWEN36_SEED_VARIANT_UNSET
-    resolve_qwen36_max_new_tokens(require_explicit=is_real_qwen36)
+    eff_max_new_tokens = resolve_qwen36_max_new_tokens(require_explicit=is_real_qwen36)
 
     repeatable_target = next((a for a in arms if a in QWEN36_REPEATABLE_ARMS), arms[0])
     configured_repeats = resolve_qwen36_repeats(arm=repeatable_target)
@@ -6926,6 +7002,7 @@ def run_qwen36_arms_job(
     per_arm: dict[str, dict[str, Any]] = {}
     arm_results: dict[str, dict[str, Any]] = {}
     resumed_set: set[str] = set()
+    last_completed_arm_seconds: float | None = None
 
     for arm_idx, arm in enumerate(arms):
         arm_dir = arms_root / arm
@@ -6939,16 +7016,25 @@ def run_qwen36_arms_job(
             expected_canary_rows=exp_can,
             expected_repeats=repeats_by_arm[arm],
             expected_seed_variant=eff_seed_variant_recorded,
+            expected_max_new_tokens=eff_max_new_tokens,
         )
         if existing_done is not None:
-            existing_done["arms"] = list(arms)
-            existing_done["arm_index"] = arm_idx
-            done_path = arm_dir / JUDGE_DONE_DIRNAME / judge_done_filename_for_pass(spec.judge_id, pass_mode)
-            done_path.write_text(json.dumps(existing_done, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
+            _clear_qwen36_arm_incomplete_markers(arm_dir)
+            if existing_done.get("arms") != list(arms) or existing_done.get("arm_index") != arm_idx:
+                existing_done["arms"] = list(arms)
+                existing_done["arm_index"] = arm_idx
+                done_path = arm_dir / JUDGE_DONE_DIRNAME / judge_done_filename_for_pass(spec.judge_id, pass_mode)
+                done_path.write_text(json.dumps(existing_done, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
             resumed_set.add(arm)
             resumed_skipped_arms.append(arm)
             completed_arms.append(arm)
             arm_results[arm] = existing_done
+            raw_done_elapsed = existing_done.get("elapsed_seconds")
+            resumed_elapsed = (
+                float(raw_done_elapsed)
+                if isinstance(raw_done_elapsed, (int, float)) and not isinstance(raw_done_elapsed, bool)
+                else None
+            )
             per_arm[arm] = {
                 "arm": arm,
                 "arm_index": arm_idx,
@@ -6961,6 +7047,22 @@ def run_qwen36_arms_job(
                 "repeats": repeats_by_arm[arm],
                 "duplicate_canary_calls": existing_done.get("duplicate_canary_calls", 0),
                 "duplicate_canary_failed_calls": existing_done.get("duplicate_canary_failed_calls", 0),
+                **(
+                    {"elapsed_seconds": round(resumed_elapsed, 6)}
+                    if resumed_elapsed is not None
+                    else {}
+                ),
+            }
+
+    for arm_idx, arm in enumerate(arms):
+        if arm not in resumed_set:
+            not_started_arms.append(arm)
+            per_arm[arm] = {
+                "arm": arm,
+                "arm_index": arm_idx,
+                "arms": list(arms),
+                "status": "not_started",
+                "output_dir": f"{QWEN36_ARMS_DIRNAME}/{arm}",
             }
 
     effective_dtype = DEFAULT_TORCH_DTYPE if str(torch_dtype).strip().lower() == "auto" else str(torch_dtype)
@@ -6974,7 +7076,92 @@ def run_qwen36_arms_job(
         except ValueError:
             eff_wall_deadline_epoch = None
 
+    stopped_between_arms = False
+    stop_reason: str | None = None
+    in_progress_arm: str | None = None
+    last_remaining_wall_seconds: float | None = None
+    eff_margin_seconds = max(
+        0.0,
+        float(
+            QWEN36_ARMS_BETWEEN_ARM_MARGIN_SECONDS
+            if between_arm_margin_seconds is None
+            else between_arm_margin_seconds
+        ),
+    )
+
+    def _remaining_wall_seconds() -> float | None:
+        cands: list[float] = []
+        if wall_deadline_monotonic is not None:
+            cands.append(float(wall_deadline_monotonic) - time.monotonic())
+        if eff_wall_deadline_epoch is not None:
+            cands.append(float(eff_wall_deadline_epoch) - time.time())
+        return min(cands) if cands else None
+
+    def _build_job_doc(*, finalized: bool) -> dict[str, Any]:
+        if finalized:
+            st = (
+                "ok"
+                if (len(completed_arms) == len(arms) and not failed_arms and not not_started_arms)
+                else ("failed" if (not completed_arms and failed_arms) else "partial")
+            )
+        else:
+            st = "running"
+        doc: dict[str, Any] = {
+            "status": st,
+            "judge_id": spec.judge_id,
+            "pass_mode": pass_mode,
+            "arms": list(arms),
+            "completed_arms": list(completed_arms),
+            "resumed_skipped_arms": list(resumed_skipped_arms),
+            "failed_arms": dict(failed_arms),
+            "not_started_arms": list(not_started_arms),
+            "in_progress_arm": in_progress_arm,
+            "stopped_between_arms": bool(stopped_between_arms),
+            "stop_reason": stop_reason,
+            "between_arm_margin_seconds": round(eff_margin_seconds, 3),
+            "last_completed_arm_seconds": (
+                round(last_completed_arm_seconds, 6)
+                if last_completed_arm_seconds is not None
+                else None
+            ),
+            "remaining_wall_seconds": (
+                round(last_remaining_wall_seconds, 6)
+                if last_remaining_wall_seconds is not None
+                else None
+            ),
+            "per_arm": {k: dict(v) for k, v in per_arm.items()},
+        }
+        return doc
+
+    def _write_arm_receipt(arm_idx_r: int, arm_r: str, job_doc_snapshot: Mapping[str, Any]) -> None:
+        if arm_r not in arm_results:
+            return
+        arm_dir_r = arms_root / arm_r
+        receipt_doc = {
+            **arm_results[arm_r],
+            "judge_id": spec.judge_id,
+            "pass_mode": pass_mode,
+            "arm": arm_r,
+            "arms": list(arms),
+            "arm_index": arm_idx_r,
+            "qwen36_arms": dict(job_doc_snapshot),
+        }
+        receipt_doc.pop("rows_path", None)
+        receipt_doc.pop("judge_done_path", None)
+        receipt_doc.pop("generations_path", None)
+        (arm_dir_r / "receipt.json").write_text(
+            json.dumps(receipt_doc, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+
+    def _flush_job_doc(*, finalized: bool) -> dict[str, Any]:
+        snap = _build_job_doc(finalized=finalized)
+        _write_qwen36_arms_job_atomic(resolved_out, snap)
+        return snap
+
     def _check_between_arm_stop(idx: int, name: str) -> str | None:
+        nonlocal last_remaining_wall_seconds
         if should_stop_between_arms is not None:
             sig = should_stop_between_arms(idx, name)
             if isinstance(sig, str) and sig.strip():
@@ -6984,14 +7171,17 @@ def run_qwen36_arms_job(
         if eff_stop_file is not None and eff_stop_file.is_file():
             raw_sig = eff_stop_file.read_text(encoding="utf-8", errors="replace").strip()
             return raw_sig or CAP_STOP_BETWEEN_ARMS
-        if wall_deadline_monotonic is not None and time.monotonic() >= wall_deadline_monotonic:
-            return WALL_STOP_BETWEEN_ARMS
-        if eff_wall_deadline_epoch is not None and time.time() >= eff_wall_deadline_epoch:
-            return WALL_STOP_BETWEEN_ARMS
+        rem_s = _remaining_wall_seconds()
+        if rem_s is not None:
+            last_remaining_wall_seconds = rem_s
+            if rem_s <= 0.0:
+                return WALL_STOP_BETWEEN_ARMS
+            if last_completed_arm_seconds is not None and rem_s < (last_completed_arm_seconds + eff_margin_seconds):
+                return WALL_BUDGET_INSUFFICIENT_BETWEEN_ARMS
         return None
 
-    stopped_between_arms = False
-    stop_reason: str | None = None
+    _flush_job_doc(finalized=False)
+
     shared_transport: JudgeTransport | None = transport
     owns_transport = False
     if len(resumed_set) < len(arms):
@@ -7031,27 +7221,62 @@ def run_qwen36_arms_job(
                 if stop_hit is not None:
                     stopped_between_arms = True
                     stop_reason = stop_hit
+                    in_progress_arm = None
+                    not_started_arms = [
+                        arms[rem_idx]
+                        for rem_idx in range(arm_idx, len(arms))
+                        if arms[rem_idx] not in resumed_set
+                    ]
                     for rem_idx in range(arm_idx, len(arms)):
                         rem_arm = arms[rem_idx]
                         if rem_arm in resumed_set:
                             continue
-                        not_started_arms.append(rem_arm)
+                        rem_dir = arms_root / rem_arm
+                        if rem_dir.is_dir():
+                            _write_qwen36_arm_incomplete_markers(
+                                rem_dir,
+                                judge_id=spec.judge_id,
+                                pass_mode=pass_mode,
+                                arm=rem_arm,
+                                status="not_started",
+                                failure_class=stop_hit,
+                            )
                         per_arm[rem_arm] = {
                             "arm": rem_arm,
                             "arm_index": rem_idx,
                             "arms": list(arms),
                             "status": "not_started",
+                            "stop_reason": stop_hit,
                             "output_dir": f"{QWEN36_ARMS_DIRNAME}/{rem_arm}",
                         }
+                    _flush_job_doc(finalized=False)
                     break
                 arm_dir = arms_root / arm
                 arm_dir.mkdir(parents=True, exist_ok=True)
+                _write_qwen36_arm_incomplete_markers(
+                    arm_dir,
+                    judge_id=spec.judge_id,
+                    pass_mode=pass_mode,
+                    arm=arm,
+                    status="in_progress",
+                )
+                in_progress_arm = arm
+                not_started_arms = [a for a in not_started_arms if a != arm]
+                per_arm[arm] = {
+                    "arm": arm,
+                    "arm_index": arm_idx,
+                    "arms": list(arms),
+                    "status": "in_progress",
+                    "output_dir": f"{QWEN36_ARMS_DIRNAME}/{arm}",
+                }
+                _flush_job_doc(finalized=False)
                 arm_progress_file = (
                     progress_file.parent / f"{progress_file.stem}.{arm}{progress_file.suffix}"
                     if progress_file is not None
                     else None
                 )
                 done_path = arm_dir / JUDGE_DONE_DIRNAME / judge_done_filename_for_pass(spec.judge_id, pass_mode)
+                t_arm_start = time.monotonic()
                 try:
                     arm_res = _run_bakeoff_judge_impl(
                         part_dir=part_dir,
@@ -7108,6 +7333,15 @@ def run_qwen36_arms_job(
                         done_path.unlink(missing_ok=True)
                     except OSError:
                         pass
+                    _write_qwen36_arm_incomplete_markers(
+                        arm_dir,
+                        judge_id=spec.judge_id,
+                        pass_mode=pass_mode,
+                        arm=arm,
+                        status="failed",
+                        failure_class=failure_class,
+                    )
+                    in_progress_arm = None
                     fail_rec = {
                         "arm": arm,
                         "arm_index": arm_idx,
@@ -7119,7 +7353,18 @@ def run_qwen36_arms_job(
                     }
                     failed_arms[arm] = dict(fail_rec)
                     per_arm[arm] = fail_rec
+                    _flush_job_doc(finalized=False)
                     continue
+                arm_wall_s = round(max(0.0, time.monotonic() - t_arm_start), 6)
+                raw_impl_elapsed = arm_res.get("elapsed_seconds")
+                arm_measured_s = (
+                    float(raw_impl_elapsed)
+                    if isinstance(raw_impl_elapsed, (int, float)) and not isinstance(raw_impl_elapsed, bool)
+                    else arm_wall_s
+                )
+                last_completed_arm_seconds = max(arm_wall_s, arm_measured_s)
+                _clear_qwen36_arm_incomplete_markers(arm_dir)
+                in_progress_arm = None
                 completed_arms.append(arm)
                 arm_results[arm] = dict(arm_res)
                 per_arm[arm] = {
@@ -7134,57 +7379,20 @@ def run_qwen36_arms_job(
                     "repeats": repeats_by_arm[arm],
                     "duplicate_canary_calls": arm_res.get("duplicate_canary_calls", 0),
                     "duplicate_canary_failed_calls": arm_res.get("duplicate_canary_failed_calls", 0),
+                    "elapsed_seconds": round(arm_measured_s, 6),
                 }
+                snap_mid = _flush_job_doc(finalized=False)
+                _write_arm_receipt(arm_idx, arm, snap_mid)
         finally:
             if owns_transport and shared_transport is not None:
                 close_fn = getattr(shared_transport, "close_build_guard", None)
                 if callable(close_fn):
                     close_fn()
 
-    job_status = (
-        "ok"
-        if (len(completed_arms) == len(arms) and not failed_arms and not not_started_arms)
-        else ("failed" if (not completed_arms and failed_arms) else "partial")
-    )
-    job_doc: dict[str, Any] = {
-        "status": job_status,
-        "judge_id": spec.judge_id,
-        "pass_mode": pass_mode,
-        "arms": list(arms),
-        "completed_arms": list(completed_arms),
-        "resumed_skipped_arms": list(resumed_skipped_arms),
-        "failed_arms": dict(failed_arms),
-        "not_started_arms": list(not_started_arms),
-        "stopped_between_arms": bool(stopped_between_arms),
-        "stop_reason": stop_reason,
-        "per_arm": per_arm,
-    }
+    in_progress_arm = None
+    job_doc = _flush_job_doc(finalized=True)
     for arm_idx, arm in enumerate(arms):
-        if arm not in arm_results:
-            continue
-        arm_dir = arms_root / arm
-        receipt_doc = {
-            **arm_results[arm],
-            "judge_id": spec.judge_id,
-            "pass_mode": pass_mode,
-            "arm": arm,
-            "arms": list(arms),
-            "arm_index": arm_idx,
-            "qwen36_arms": job_doc,
-        }
-        receipt_doc.pop("rows_path", None)
-        receipt_doc.pop("judge_done_path", None)
-        receipt_doc.pop("generations_path", None)
-        (arm_dir / "receipt.json").write_text(
-            json.dumps(receipt_doc, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-            newline="\n",
-        )
-    (resolved_out / QWEN36_ARMS_JOB_FILENAME).write_text(
-        json.dumps(job_doc, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-        newline="\n",
-    )
+        _write_arm_receipt(arm_idx, arm, job_doc)
     return {
         **job_doc,
         "arm_results": arm_results,
@@ -7234,6 +7442,7 @@ def run_bakeoff_judge(
     wall_deadline_monotonic: float | None = None,
     stop_marker_file: Path | None = None,
     should_stop_between_arms: Callable[[int, str], str | bool | None] | None = None,
+    between_arm_margin_seconds: float | None = None,
 ) -> dict[str, object]:
     """Run a single judge over `part_bakeoff_sealed/items.jsonl` and write unsealed rows and `generations.jsonl`."""
     resolved_arms = resolve_qwen36_arms(qwen36_arms)
@@ -7280,6 +7489,7 @@ def run_bakeoff_judge(
             wall_deadline_monotonic=wall_deadline_monotonic,
             stop_marker_file=stop_marker_file,
             should_stop_between_arms=should_stop_between_arms,
+            between_arm_margin_seconds=between_arm_margin_seconds,
         )
     cleanup_callbacks: list[Callable[[], None]] = []
     try:
@@ -9811,6 +10021,8 @@ QWEN36_ARMS_DUPLICATE = "QWEN36_ARMS_DUPLICATE"
 QWEN36_ARMS_UNSUPPORTED_JUDGE = "QWEN36_ARMS_UNSUPPORTED_JUDGE"
 QWEN36_ARMS_THINKING_NOT_FIRST = "QWEN36_ARMS_THINKING_NOT_FIRST"
 WALL_STOP_BETWEEN_ARMS = "WALL_STOP_BETWEEN_ARMS"
+WALL_BUDGET_INSUFFICIENT_BETWEEN_ARMS = "WALL_BUDGET_INSUFFICIENT_FOR_NEXT_ARM"
+QWEN36_ARMS_BETWEEN_ARM_MARGIN_SECONDS = 30.0
 CAP_STOP_BETWEEN_ARMS = "CAP_STOP_BETWEEN_ARMS"
 JUDGE_ARM_RUNTIME_ERROR = "JUDGE_ARM_RUNTIME_ERROR"
 QWEN36_THINKING_ARM = "thinking"
@@ -11403,6 +11615,24 @@ class Qwen36ChoiceAdapter(BaseJudgeAdapter):
 
     def __init__(self, spec: JudgeSpec | None = None) -> None:
         super().__init__(spec if spec is not None else JUDGE_SPECS[QWEN36_JUDGE_ID])
+
+    def assemble_prompt(
+        self,
+        item: JudgeInputItem,
+        *,
+        order: OrderMode,
+        pass_mode: PassMode = "binary",
+        arm: str | None = None,
+        repeat_index: int = 0,
+    ) -> AssembledPrompt:
+        """Assemble a Qwen3.6 prompt, forwarding explicit `arm` and `repeat_index` when provided."""
+        return self.assemble_qwen36_prompt(
+            item,
+            order=order,
+            pass_mode=pass_mode,
+            arm=arm,
+            repeat_index=repeat_index,
+        )
 
     def assemble_qwen36_prompt(
         self,
@@ -13371,7 +13601,7 @@ class VllmJudgeTransport:
         if (
             configured_arms is not None
             or resolve_qwen36_arm() in QWEN36_NON_THINKING_ARMS
-            or resolve_qwen36_canary_calls() > 0
+            or resolve_qwen36_canary_calls(arm=QWEN36_NOTHINK_GREEDY_ARM) > 0
         ):
             self._ensure_nothink_token_ids_loaded()
         if not self.device.lower().startswith("cpu"):
