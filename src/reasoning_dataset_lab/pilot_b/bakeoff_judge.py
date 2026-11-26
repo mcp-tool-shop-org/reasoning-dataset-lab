@@ -6833,7 +6833,11 @@ def _write_qwen36_arm_incomplete_markers(
     arm_dir.mkdir(parents=True, exist_ok=True)
     done_name = judge_done_filename_for_pass(judge_id, pass_mode)
     (arm_dir / OUTPUTS_CLOSED_FILENAME).unlink(missing_ok=True)
-    (arm_dir / JUDGE_DONE_DIRNAME / done_name).unlink(missing_ok=True)
+    src_done = arm_dir / JUDGE_DONE_DIRNAME / done_name
+    if src_done.is_file() or src_done.is_symlink():
+        superseded_dir = arm_dir / SUPERSEDED_JUDGE_DONE_DIRNAME
+        superseded_dir.mkdir(parents=True, exist_ok=True)
+        os.replace(src_done, superseded_dir / done_name)
     (arm_dir / UNVERIFIED_JUDGE_DONE_FILENAME).write_text(
         f"{judge_id}\t{pass_mode}\t{done_name}\n",
         encoding="utf-8",
@@ -6993,6 +6997,11 @@ def run_qwen36_arms_job(
         canary_calls_by_arm=canary_calls_by_arm,
     )
 
+    planned_calls_by_arm = {
+        arm: int(expected_counts[arm][0]) + int(expected_counts[arm][1])
+        for arm in arms
+    }
+
     arms_root = resolved_out / QWEN36_ARMS_DIRNAME
     arms_root.mkdir(parents=True, exist_ok=True)
     completed_arms: list[str] = []
@@ -7003,6 +7012,8 @@ def run_qwen36_arms_job(
     arm_results: dict[str, dict[str, Any]] = {}
     resumed_set: set[str] = set()
     last_completed_arm_seconds: float | None = None
+    last_per_call_seconds: float | None = None
+    last_estimated_next_arm_seconds: float | None = None
 
     for arm_idx, arm in enumerate(arms):
         arm_dir = arms_root / arm
@@ -7035,6 +7046,26 @@ def run_qwen36_arms_job(
                 if isinstance(raw_done_elapsed, (int, float)) and not isinstance(raw_done_elapsed, bool)
                 else None
             )
+            if resumed_elapsed is not None and resumed_elapsed >= 0.0:
+                last_completed_arm_seconds = resumed_elapsed
+                recorded_calls = int(existing_done.get("row_count", 0) or 0) + int(
+                    existing_done.get("duplicate_canary_row_count", 0) or 0
+                )
+                if recorded_calls <= 0:
+                    recorded_calls = planned_calls_by_arm[arm]
+                raw_done_init = existing_done.get("llm_init_seconds")
+                resumed_init_s = (
+                    float(raw_done_init)
+                    if isinstance(raw_done_init, (int, float)) and not isinstance(raw_done_init, bool)
+                    else 0.0
+                )
+                eff_resumed_call_wall = (
+                    max(0.0, resumed_elapsed - resumed_init_s)
+                    if resumed_elapsed > resumed_init_s
+                    else resumed_elapsed
+                )
+                if recorded_calls > 0:
+                    last_per_call_seconds = eff_resumed_call_wall / float(recorded_calls)
             per_arm[arm] = {
                 "arm": arm,
                 "arm_index": arm_idx,
@@ -7053,6 +7084,18 @@ def run_qwen36_arms_job(
                     else {}
                 ),
             }
+
+    for arm in arms:
+        existing_arm_dir = arms_root / arm
+        if existing_arm_dir.is_dir() and arm not in resumed_set:
+            _write_qwen36_arm_incomplete_markers(
+                existing_arm_dir,
+                judge_id=spec.judge_id,
+                pass_mode=pass_mode,
+                arm=arm,
+                status="not_started",
+                failure_class="STALE_OR_INCOMPLETE_AT_JOB_START",
+            )
 
     for arm_idx, arm in enumerate(arms):
         if arm not in resumed_set:
@@ -7124,6 +7167,16 @@ def run_qwen36_arms_job(
                 if last_completed_arm_seconds is not None
                 else None
             ),
+            "last_per_call_seconds": (
+                round(last_per_call_seconds, 6)
+                if last_per_call_seconds is not None
+                else None
+            ),
+            "estimated_next_arm_seconds": (
+                round(last_estimated_next_arm_seconds, 6)
+                if last_estimated_next_arm_seconds is not None
+                else None
+            ),
             "remaining_wall_seconds": (
                 round(last_remaining_wall_seconds, 6)
                 if last_remaining_wall_seconds is not None
@@ -7161,7 +7214,7 @@ def run_qwen36_arms_job(
         return snap
 
     def _check_between_arm_stop(idx: int, name: str) -> str | None:
-        nonlocal last_remaining_wall_seconds
+        nonlocal last_remaining_wall_seconds, last_estimated_next_arm_seconds
         if should_stop_between_arms is not None:
             sig = should_stop_between_arms(idx, name)
             if isinstance(sig, str) and sig.strip():
@@ -7176,7 +7229,13 @@ def run_qwen36_arms_job(
             last_remaining_wall_seconds = rem_s
             if rem_s <= 0.0:
                 return WALL_STOP_BETWEEN_ARMS
-            if last_completed_arm_seconds is not None and rem_s < (last_completed_arm_seconds + eff_margin_seconds):
+            if last_per_call_seconds is not None:
+                est_next_s = last_per_call_seconds * float(planned_calls_by_arm.get(name, 0))
+                last_estimated_next_arm_seconds = est_next_s
+                if rem_s < (est_next_s + eff_margin_seconds):
+                    return WALL_BUDGET_INSUFFICIENT_BETWEEN_ARMS
+            elif last_completed_arm_seconds is not None and rem_s < (last_completed_arm_seconds + eff_margin_seconds):
+                last_estimated_next_arm_seconds = last_completed_arm_seconds
                 return WALL_BUDGET_INSUFFICIENT_BETWEEN_ARMS
         return None
 
@@ -7329,10 +7388,6 @@ def run_qwen36_arms_job(
                         if isinstance(exc, (RdlabError, DeviceRefusalError))
                         else JUDGE_ARM_RUNTIME_ERROR
                     )
-                    try:
-                        done_path.unlink(missing_ok=True)
-                    except OSError:
-                        pass
                     _write_qwen36_arm_incomplete_markers(
                         arm_dir,
                         judge_id=spec.judge_id,
@@ -7362,7 +7417,30 @@ def run_qwen36_arms_job(
                     if isinstance(raw_impl_elapsed, (int, float)) and not isinstance(raw_impl_elapsed, bool)
                     else arm_wall_s
                 )
-                last_completed_arm_seconds = max(arm_wall_s, arm_measured_s)
+                arm_duration_s = max(arm_wall_s, arm_measured_s)
+                last_completed_arm_seconds = arm_duration_s
+                completed_calls = int(arm_res.get("row_count", 0) or 0) + int(
+                    arm_res.get("duplicate_canary_row_count", 0) or 0
+                )
+                if completed_calls <= 0:
+                    completed_calls = planned_calls_by_arm[arm]
+                raw_impl_init = arm_res.get("llm_init_seconds")
+                one_time_init_s = (
+                    float(raw_impl_init)
+                    if (
+                        not arm_res.get("engine_loaded_before_pass")
+                        and isinstance(raw_impl_init, (int, float))
+                        and not isinstance(raw_impl_init, bool)
+                    )
+                    else 0.0
+                )
+                eff_call_wall = (
+                    max(0.0, arm_duration_s - one_time_init_s)
+                    if arm_duration_s > one_time_init_s
+                    else arm_duration_s
+                )
+                if completed_calls > 0:
+                    last_per_call_seconds = eff_call_wall / float(completed_calls)
                 _clear_qwen36_arm_incomplete_markers(arm_dir)
                 in_progress_arm = None
                 completed_arms.append(arm)
@@ -10012,6 +10090,7 @@ QWEN36_ARM_ENV_VAR = "RDLAB_QWEN36_ARM"
 QWEN36_ARMS_ENV_VAR = "RDLAB_QWEN36_ARMS"
 QWEN36_ARMS_DIRNAME = "arms"
 JUDGE_DONE_DIRNAME = "judge_done"
+SUPERSEDED_JUDGE_DONE_DIRNAME = "judge_done.superseded"
 QWEN36_ARMS_JOB_FILENAME = "qwen36_arms_job.json"
 QWEN36_ARMS_WALL_DEADLINE_EPOCH_ENV_VAR = "RDLAB_QWEN36_ARMS_WALL_DEADLINE_EPOCH"
 QWEN36_ARMS_STOP_FILE_ENV_VAR = "RDLAB_QWEN36_ARMS_STOP_FILE"

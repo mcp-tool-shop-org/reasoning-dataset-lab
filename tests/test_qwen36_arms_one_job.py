@@ -1767,11 +1767,14 @@ def test_four_arm_job_parity_against_single_arm_runs(
         run_canary=False,
     )
     assert multi_res["completed_arms"] == list(arms)
-    multi_engine_seeds = [req["sampling"]["seed"] for req in env_shared["requests"]]
+    multi_engine_requests = [
+        {"prompt": req["prompt"], "sampling": dict(req["sampling"])}
+        for req in env_shared["requests"]
+    ]
     rows_fn = vm_judges.rows_filename_for_pass(QWEN36_ID, CONTRA)
     canary_fn = f"{QWEN36_ID}.{CONTRA}{bakeoff_judge.CANARY_ROWS_SUFFIX}"
 
-    single_engine_seeds: list[Any] = []
+    single_engine_requests: list[dict[str, Any]] = []
     for arm_name in arms:
         req_start = len(env_shared["requests"])
         monkeypatch.setenv(bakeoff_judge.QWEN36_MAX_NEW_TOKENS_ENV_VAR, "2048")
@@ -1799,7 +1802,10 @@ def test_four_arm_job_parity_against_single_arm_runs(
             window_mode="time-one",
             run_canary=False,
         )
-        single_engine_seeds.extend(req["sampling"]["seed"] for req in env_shared["requests"][req_start:])
+        single_engine_requests.extend(
+            {"prompt": req["prompt"], "sampling": dict(req["sampling"])}
+            for req in env_shared["requests"][req_start:]
+        )
         arm_dir = multi_dir / "arms" / arm_name
 
         m_rows = [
@@ -1856,7 +1862,7 @@ def test_four_arm_job_parity_against_single_arm_runs(
                     repeat_index=(g["repeat_index"] if g.get("repeat_index") is not None else 0),
                 )
 
-    assert multi_engine_seeds == single_engine_seeds
+    assert multi_engine_requests == single_engine_requests
 
 
 def test_fix1_item4_shard_manifest_arm_per_arm_timing_and_max_new_tokens_resume(
@@ -2013,5 +2019,472 @@ def test_fix1_item4_shard_manifest_arm_per_arm_timing_and_max_new_tokens_resume(
         expected_seed_variant="none",
         expected_max_new_tokens=1024,
     )
+
+
+def test_reconcile_rejects_stale_wrong_config_arm_without_side_effects(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reused run_dir with a stale wrong-config arm stays uncompleted, unsealed, and side-effect free on SIGKILL."""
+    import os
+    import signal
+
+    part_dir = _make_builder_part(tmp_path / "part_stale", triads=3)
+    items_path = _project_part_items(part_dir, tmp_path / "items.jsonl")
+    keys_path = part_dir.parent / "sealed_store" / "keys.sealed.jsonl"
+    env_hf = _setup_fake_vllm_with_dynamic_responder(tmp_path / "hf_stale", monkeypatch)
+    receipts_dir, hf_home = env_hf["receipts_dir"], env_hf["hf_home"]
+    rows_fn = vm_judges.rows_filename_for_pass(QWEN36_ID, CONTRA)
+    done_fn = bakeoff_judge.judge_done_filename_for_pass(QWEN36_ID, CONTRA)
+
+    # Pre-populate a complete `nothink-card` arm at max_new_tokens=1024 inside run_dir.
+    run_dir = tmp_path / "reused_run"
+    stale_card_dir = run_dir / "arms" / "nothink-card"
+    monkeypatch.setenv(bakeoff_judge.QWEN36_MAX_NEW_TOKENS_ENV_VAR, "1024")
+    monkeypatch.setenv(bakeoff_judge.QWEN36_ARM_ENV_VAR, "nothink-card")
+    run_bakeoff_judge(
+        part_dir=items_path,
+        output_dir=stale_card_dir,
+        judge=QWEN36_ID,
+        pass_mode=CONTRA,
+        fake_transport=False,
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        device="cpu",
+        schedule_seed=42,
+        shard_spec="1/1",
+        window_mode="stub",
+        run_canary=False,
+    )
+    stale_done_path = stale_card_dir / "judge_done" / done_fn
+    stale_done_bytes_before = stale_done_path.read_bytes()
+    assert json.loads(stale_done_bytes_before)["max_new_tokens"] == 1024
+
+    # Part A: Test direct SIGKILL child in a reused dir where stale `nothink-card` was never started by the job
+    # (and child dies during `thinking`, so `nothink-card` is NOT in `prior_completed_set`).
+    work_dir = tmp_path / "work_stale"
+    status_file = tmp_path / "status_stale.json"
+    result_tar = tmp_path / "result_stale.tar.gz"
+    helper_mod = work_dir / "sigkill_during_thinking.py"
+    helper_mod.parent.mkdir(parents=True, exist_ok=True)
+    helper_mod.write_text(
+        f"""
+import json, os, signal, sys
+from pathlib import Path
+
+out_dir = Path(sys.argv[sys.argv.index("--output-dir") + 1])
+arms = ["thinking", "nothink-greedy", "nothink-card", "nothink-matched"]
+(out_dir / "qwen36_arms_job.json").write_text(json.dumps({{
+    "status": "running",
+    "arms": arms,
+    "completed_arms": [],
+    "resumed_skipped_arms": [],
+    "failed_arms": {{}},
+    "not_started_arms": ["nothink-greedy", "nothink-card", "nothink-matched"],
+    "in_progress_arm": "thinking",
+    "per_arm": {{"thinking": {{"arm": "thinking", "arm_index": 0, "status": "in_progress"}}}},
+}}, indent=2) + "\\n", encoding="utf-8")
+arm0_rows = out_dir / "arms" / "thinking" / "rows" / {rows_fn!r}
+arm0_rows.parent.mkdir(parents=True, exist_ok=True)
+arm0_rows.write_text('{{"item_id": "partial"}}\\n', encoding="utf-8")
+os.kill(os.getpid(), signal.SIGKILL)
+""",
+        encoding="utf-8",
+    )
+    for venv_name in ("venv-vllm", "venv-judge", "venv-d3"):
+        py_bin = work_dir / venv_name / "bin" / "python"
+        py_bin.parent.mkdir(parents=True, exist_ok=True)
+        py_bin.write_text(
+            "#!/bin/sh\n"
+            'if [ "$1" = "-m" ] && [ "$2" = "reasoning_dataset_lab.pilot_b.bakeoff_judge" ]; then\n'
+            f"  exec '{sys.executable}' '{helper_mod}' \"$@\"\n"
+            "fi\n"
+            f"exec '{sys.executable}' \"$@\"\n",
+            encoding="utf-8",
+        )
+        py_bin.chmod(0o755)
+    (work_dir / "venv-vllm" / ".lock_sha256").write_text(vm_judges.EXPECTED_VLLM_LOCK_SHA256 + "\n", encoding="utf-8")
+
+    monkeypatch.delenv(bakeoff_judge.QWEN36_ARM_ENV_VAR, raising=False)
+    monkeypatch.setenv("RDLAB_ONLY_JUDGES", QWEN36_ID)
+    monkeypatch.setenv("RDLAB_PASS_MODE", CONTRA)
+    monkeypatch.setenv("RDLAB_QWEN36_ARMS", "thinking,nothink-greedy,nothink-card,nothink-matched")
+    monkeypatch.setenv("RDLAB_QWEN36_REPEATS", "1")
+    monkeypatch.setenv("RDLAB_QWEN36_MAX_NEW_TOKENS", "2048")
+    monkeypatch.setenv("RDLAB_JUDGE_LOCK_SHA256", vm_judges.EXPECTED_JUDGE_LOCK_SHA256)
+    monkeypatch.setenv("RDLAB_D3_LOCK_SHA256", vm_judges.EXPECTED_D3_LOCK_SHA256)
+    monkeypatch.setenv("RDLAB_VLLM_LOCK_SHA256", vm_judges.EXPECTED_VLLM_LOCK_SHA256)
+
+    rc = vm_judges.main(
+        [
+            "--step",
+            "run",
+            "--mode",
+            "stub",
+            "--repo-dir",
+            str(REPO_ROOT),
+            "--items-file",
+            str(items_path),
+            "--run-dir",
+            str(run_dir),
+            "--work-dir",
+            str(work_dir),
+            "--receipts-dir",
+            str(receipts_dir),
+            "--hf-home",
+            str(hf_home),
+            "--result-tar",
+            str(result_tar),
+            "--status-file",
+            str(status_file),
+            "--dryrun",
+        ]
+    )
+    assert rc != 0
+    reconciled = json.loads((run_dir / "qwen36_arms_job.json").read_text(encoding="utf-8"))
+    assert reconciled["completed_arms"] == []
+    assert "thinking" in reconciled["failed_arms"]
+    assert "nothink-card" in reconciled["not_started_arms"]
+
+    # Reconcile wrote zero judge_pass_done progress lines for stale `nothink-card`.
+    progress_lines = [
+        json.loads(ln)
+        for ln in (run_dir / "progress.jsonl").read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    assert not any(
+        ev.get("kind") == "judge_pass_done" and ev.get("arm") == "nothink-card"
+        for ev in progress_lines
+    )
+
+    # Stale judge_done was moved aside into judge_done.superseded/ (unmodified bytes) and markers refuse scoring.
+    assert not stale_done_path.exists()
+    superseded_done = stale_card_dir / "judge_done.superseded" / done_fn
+    assert superseded_done.is_file()
+    assert superseded_done.read_bytes() == stale_done_bytes_before
+    assert not (stale_card_dir / "outputs-closed.json").exists()
+    assert (stale_card_dir / ".unverified_judge_done").is_file()
+    assert (stale_card_dir / "outcome.draft.json").is_file()
+
+    # Even write_outputs_closed(run_dir) leaves stale `nothink-card` unsealed; scorer refuses it even if sealed by hand.
+    vm_judges.write_outputs_closed(run_dir)
+    assert not (stale_card_dir / "outputs-closed.json").exists()
+    with pytest.raises(RdlabError):
+        score_bakeoff_outputs(
+            judge_output_dir=stale_card_dir,
+            keys_path=keys_path,
+            public_out_path=tmp_path / "pub_stale_unclosed.json",
+            sealed_rows_out_path=tmp_path / "sealed_stale_unclosed.jsonl",
+        )
+    bakeoff_judge.close_bakeoff_outputs(stale_card_dir)
+    with pytest.raises(RdlabError):
+        score_bakeoff_outputs(
+            judge_output_dir=stale_card_dir,
+            keys_path=keys_path,
+            public_out_path=tmp_path / "pub_stale_manual.json",
+            sealed_rows_out_path=tmp_path / "sealed_stale_manual.jsonl",
+        )
+
+    # Part B: At real run_qwen36_arms_job start, any existing non-resumed wrong-config arm dir is marked incomplete immediately.
+    items_path = _project_part_items(part_dir, tmp_path / "items.jsonl")
+    stale_dir_b = tmp_path / "reused_real_job"
+    monkeypatch.delenv(bakeoff_judge.QWEN36_ARMS_ENV_VAR, raising=False)
+    monkeypatch.setenv(bakeoff_judge.QWEN36_MAX_NEW_TOKENS_ENV_VAR, "1024")
+    monkeypatch.setenv(bakeoff_judge.QWEN36_ARM_ENV_VAR, "nothink-card")
+    run_bakeoff_judge(
+        part_dir=items_path,
+        output_dir=stale_dir_b / "arms" / "nothink-card",
+        judge=QWEN36_ID,
+        pass_mode=CONTRA,
+        fake_transport=False,
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        device="cpu",
+        schedule_seed=42,
+        shard_spec="1/1",
+        window_mode="stub",
+        run_canary=False,
+    )
+    monkeypatch.delenv(bakeoff_judge.QWEN36_ARM_ENV_VAR, raising=False)
+    monkeypatch.setenv(bakeoff_judge.QWEN36_MAX_NEW_TOKENS_ENV_VAR, "2048")
+
+    # Stop right after thinking via should_stop_between_arms so we observe job-start marking of `nothink-card`.
+    def _stop_after_thinking(idx: int, arm_n: str) -> str | None:
+        return "WALL_STOP_BETWEEN_ARMS" if arm_n == "nothink-greedy" else None
+
+    job_b = run_qwen36_arms_job(
+        part_dir=items_path,
+        output_dir=stale_dir_b,
+        judge=QWEN36_ID,
+        qwen36_arms="thinking,nothink-greedy,nothink-card,nothink-matched",
+        pass_mode=CONTRA,
+        fake_transport=False,
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        device="cpu",
+        schedule_seed=42,
+        shard_spec="1/1",
+        window_mode="stub",
+        run_canary=False,
+        should_stop_between_arms=_stop_after_thinking,
+    )
+    assert job_b["completed_arms"] == ["thinking"]
+    assert "nothink-card" in job_b["not_started_arms"]
+    stale_b_card = stale_dir_b / "arms" / "nothink-card"
+    assert not (stale_b_card / "judge_done" / done_fn).exists()
+    assert (stale_b_card / "judge_done.superseded" / done_fn).is_file()
+    assert (stale_b_card / ".unverified_judge_done").is_file()
+    assert (stale_b_card / "outcome.draft.json").is_file()
+
+
+def test_per_arm_receipts_preserve_arm_results_and_filter_judges_and_tar_allows_superseded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After a 4-arm job via vm_judges, each arm receipt.json keeps arm_results & filters judges to its own entry."""
+    items_path = _write_items_jsonl(tmp_path / "items.jsonl", _synth_items(count=4, prefix="rec"))
+    env_hf = _setup_fake_vllm_with_dynamic_responder(tmp_path / "hf_rec", monkeypatch)
+    receipts_dir, hf_home = env_hf["receipts_dir"], env_hf["hf_home"]
+
+    work_dir = tmp_path / "work_rec"
+    fake_vm_py = work_dir / "venv-vllm" / "bin" / "python"
+    fake_vm_py.parent.mkdir(parents=True, exist_ok=True)
+    fake_vm_py.write_text(f"#!/bin/sh\nexec '{sys.executable}' \"$@\"\n", encoding="utf-8")
+    fake_vm_py.chmod(0o755)
+    (work_dir / "venv-vllm" / ".lock_sha256").write_text(vm_judges.EXPECTED_VLLM_LOCK_SHA256 + "\n", encoding="utf-8")
+
+    monkeypatch.setenv("RDLAB_ONLY_JUDGES", QWEN36_ID)
+    monkeypatch.setenv("RDLAB_PASS_MODE", CONTRA)
+    monkeypatch.setenv("RDLAB_LIMIT_ITEMS", "4")
+    monkeypatch.setenv("RDLAB_QWEN36_ARMS", "thinking,nothink-greedy,nothink-card,nothink-matched")
+    monkeypatch.setenv("RDLAB_QWEN36_REPEATS", "2")
+    monkeypatch.setenv("RDLAB_QWEN36_CANARY_CALLS", "2")
+    monkeypatch.setenv("RDLAB_QWEN36_MAX_NEW_TOKENS", "2048")
+    monkeypatch.setenv("RDLAB_JUDGE_LOCK_SHA256", vm_judges.EXPECTED_JUDGE_LOCK_SHA256)
+    monkeypatch.setenv("RDLAB_D3_LOCK_SHA256", vm_judges.EXPECTED_D3_LOCK_SHA256)
+    monkeypatch.setenv("RDLAB_VLLM_LOCK_SHA256", vm_judges.EXPECTED_VLLM_LOCK_SHA256)
+
+    run_dir = tmp_path / "run_rec"
+    result_tar = tmp_path / "result_rec.tar.gz"
+    rc = vm_judges.main(
+        [
+            "--step",
+            "run",
+            "--mode",
+            "stub",
+            "--repo-dir",
+            str(REPO_ROOT),
+            "--items-file",
+            str(items_path),
+            "--run-dir",
+            str(run_dir),
+            "--work-dir",
+            str(work_dir),
+            "--receipts-dir",
+            str(receipts_dir),
+            "--hf-home",
+            str(hf_home),
+            "--result-tar",
+            str(result_tar),
+            "--status-file",
+            str(tmp_path / "status_rec.json"),
+            "--dryrun",
+        ]
+    )
+    assert rc == 0
+
+    arms = ("thinking", "nothink-greedy", "nothink-card", "nothink-matched")
+    assert json.loads((run_dir / "qwen36_arms_job.json").read_text(encoding="utf-8"))["completed_arms"] == list(arms)
+    for idx, arm_name in enumerate(arms):
+        arm_dir = run_dir / "arms" / arm_name
+        arm_rec = json.loads((arm_dir / "receipt.json").read_text(encoding="utf-8"))
+        vm_rec = json.loads((arm_dir / "vm_receipt.json").read_text(encoding="utf-8"))
+        # Child arm_results fields preserved:
+        assert arm_rec["arm"] == arm_name
+        assert arm_rec["arm_index"] == idx
+        assert arm_rec["arms"] == list(arms)
+        assert isinstance(arm_rec.get("rows_sha256"), str) and len(arm_rec["rows_sha256"]) == 64
+        assert arm_rec["repeats"] == (2 if arm_name in ("nothink-card", "nothink-matched") else 1)
+        assert arm_rec["max_new_tokens"] == 2048
+        assert "schedule_sha256" in arm_rec
+        assert "qwen36_arms" in arm_rec
+        # Filtered `judges` dict keyed strictly by `qwen3.6-35b-a3b` for that arm:
+        assert list(arm_rec["judges"].keys()) == [QWEN36_ID]
+        assert list(vm_rec["judges"].keys()) == [QWEN36_ID]
+        assert arm_rec["judges"][QWEN36_ID]["arm"] == arm_name
+        assert arm_rec["judges"][QWEN36_ID]["rows_sha256"] == arm_rec["rows_sha256"]
+        assert vm_rec["judges"][QWEN36_ID]["arm"] == arm_name
+        assert (arm_dir / "session_env.json").is_file()
+
+    # Verify build_allowlisted_result_tar & validate_tar_file accept `arms/<arm>/judge_done.superseded/*.json`.
+    sup_file = run_dir / "arms" / "nothink-card" / "judge_done.superseded" / bakeoff_judge.judge_done_filename_for_pass(QWEN36_ID, CONTRA)
+    sup_file.parent.mkdir(parents=True, exist_ok=True)
+    sup_file.write_text('{"stale": true}\n', encoding="utf-8")
+    sup_tar = tmp_path / "with_superseded.tar.gz"
+    members = vm_judges.build_allowlisted_result_tar(run_dir, sup_tar)
+    assert f"arms/nothink-card/judge_done.superseded/{sup_file.name}" in members
+    assert f"arms/nothink-card/judge_done.superseded/{sup_file.name}" in vm_judges.validate_tar_file(sup_tar)
+
+
+def test_between_arm_guard_scales_by_planned_calls_and_seeds_from_resumed_arm(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After short nothink-greedy (1x), nothink-card (5x) is refused using per-call * planned_calls; resumed run seeds it too."""
+    items_path = _write_items_jsonl(tmp_path / "items.jsonl", _synth_items(count=4, prefix="scale"))
+    env_wall = _setup_fake_vllm_with_dynamic_responder(tmp_path / "hf_scale", monkeypatch)
+    monkeypatch.setenv(bakeoff_judge.QWEN36_MAX_NEW_TOKENS_ENV_VAR, "2048")
+    monkeypatch.setenv(bakeoff_judge.QWEN36_REPEATS_ENV_VAR, "5")
+    monkeypatch.setenv(bakeoff_judge.QWEN36_CANARY_CALLS_ENV_VAR, "0")
+
+    # 4 items = 8 calls in thinking/nothink-greedy, 40 calls (5x) in nothink-card.
+    # Each arm takes 0.40 s = 0.05 s/call. Expected nothink-card = 40 * 0.05 = 2.00 s + 0.10 s margin = 2.10 s.
+    # With deadline = 1000 + 0.40 (thinking) + 0.40 (greedy) + 1.20 left = 1002.00:
+    # - old naive guard compared 1.20s against last_completed_arm_seconds (0.40 + 0.10 = 0.50s) and WOULD have started nothink-card;
+    # - new per-call * planned_calls guard compares 1.20s against 2.10s and stops BEFORE nothink-card!
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(bakeoff_judge.time, "monotonic", lambda: clock["now"])
+    orig_impl = bakeoff_judge._run_bakeoff_judge_impl
+
+    def _step_clock(*a: Any, **kw: Any) -> Any:
+        out = orig_impl(*a, **kw)
+        clock["now"] += 0.40
+        out["elapsed_seconds"] = 0.40
+        done_p = Path(out["judge_done_path"])
+        dd = json.loads(done_p.read_text(encoding="utf-8"))
+        dd["elapsed_seconds"] = 0.40
+        dd["llm_init_seconds"] = 0.0
+        done_p.write_text(json.dumps(dd, indent=2) + "\n", encoding="utf-8")
+        return out
+
+    monkeypatch.setattr(bakeoff_judge, "_run_bakeoff_judge_impl", _step_clock)
+    out_dir = tmp_path / "scale_out"
+    res1 = run_qwen36_arms_job(
+        part_dir=items_path,
+        output_dir=out_dir,
+        judge=QWEN36_ID,
+        qwen36_arms="thinking,nothink-greedy,nothink-card,nothink-matched",
+        pass_mode=CONTRA,
+        fake_transport=False,
+        receipts_dir=env_wall["receipts_dir"],
+        hf_home=env_wall["hf_home"],
+        device="cpu",
+        schedule_seed=42,
+        shard_spec="1/1",
+        window_mode="time-one",
+        run_canary=False,
+        wall_deadline_monotonic=1002.0,
+        between_arm_margin_seconds=0.10,
+    )
+    assert res1["completed_arms"] == ["thinking", "nothink-greedy"]
+    assert res1["not_started_arms"] == ["nothink-card", "nothink-matched"]
+    assert res1["stopped_between_arms"] is True
+    assert res1["stop_reason"] == bakeoff_judge.WALL_BUDGET_INSUFFICIENT_BETWEEN_ARMS
+    assert res1["last_per_call_seconds"] == pytest.approx(0.05)
+    assert res1["estimated_next_arm_seconds"] == pytest.approx(2.0)
+
+    # Part B: Resume from out_dir (where thinking & nothink-greedy are already complete with 0.40s / 8 calls)
+    # with only 1.20s remaining before deadline: resumed arm seeds last_per_call_seconds -> stops before nothink-card!
+    clock["now"] = 2000.0
+    res2 = run_qwen36_arms_job(
+        part_dir=items_path,
+        output_dir=out_dir,
+        judge=QWEN36_ID,
+        qwen36_arms="thinking,nothink-greedy,nothink-card,nothink-matched",
+        pass_mode=CONTRA,
+        fake_transport=False,
+        receipts_dir=env_wall["receipts_dir"],
+        hf_home=env_wall["hf_home"],
+        device="cpu",
+        schedule_seed=42,
+        shard_spec="1/1",
+        window_mode="time-one",
+        run_canary=False,
+        wall_deadline_monotonic=2001.20,
+        between_arm_margin_seconds=0.10,
+    )
+    assert res2["resumed_skipped_arms"] == ["thinking", "nothink-greedy"]
+    assert res2["completed_arms"] == ["thinking", "nothink-greedy"]
+    assert res2["not_started_arms"] == ["nothink-card", "nothink-matched"]
+    assert res2["stopped_between_arms"] is True
+    assert res2["stop_reason"] == bakeoff_judge.WALL_BUDGET_INSUFFICIENT_BETWEEN_ARMS
+    assert res2["last_per_call_seconds"] == pytest.approx(0.05)
+    assert res2["estimated_next_arm_seconds"] == pytest.approx(2.0)
+
+
+def test_single_arm_subblock_progress_elapsed_seconds_stays_per_pass(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When RDLAB_QWEN36_ARMS is unset, subblock `judge_pass_done.elapsed_seconds` stays per-pass, not cumulative."""
+    items_path = _write_items_jsonl(tmp_path / "items.jsonl", _synth_items(count=4, prefix="sub"))
+    env_hf = _setup_fake_vllm_with_dynamic_responder(tmp_path / "hf_sub", monkeypatch)
+    receipts_dir, hf_home = env_hf["receipts_dir"], env_hf["hf_home"]
+
+    work_dir = tmp_path / "work_sub"
+    fake_vm_py = work_dir / "venv-vllm" / "bin" / "python"
+    fake_vm_py.parent.mkdir(parents=True, exist_ok=True)
+    fake_vm_py.write_text(f"#!/bin/sh\nexec '{sys.executable}' \"$@\"\n", encoding="utf-8")
+    fake_vm_py.chmod(0o755)
+    (work_dir / "venv-vllm" / ".lock_sha256").write_text(vm_judges.EXPECTED_VLLM_LOCK_SHA256 + "\n", encoding="utf-8")
+
+    durations = iter([10.0, 12.0])
+    orig_exec_group = vm_judges._run_child_with_group_timeout
+
+    def _timed_child(*a: Any, **kw: Any) -> dict[str, Any]:
+        res = orig_exec_group(*a, **kw)
+        cmd_text = " ".join(str(x) for x in a[0]) if a else ""
+        if "reasoning_dataset_lab.pilot_b.bakeoff_judge" in cmd_text:
+            res["elapsed_seconds"] = next(durations)
+        return res
+
+    monkeypatch.setattr(vm_judges, "_run_child_with_group_timeout", _timed_child)
+    monkeypatch.delenv(bakeoff_judge.QWEN36_ARMS_ENV_VAR, raising=False)
+    monkeypatch.delenv(bakeoff_judge.QWEN36_ARM_ENV_VAR, raising=False)
+    monkeypatch.setenv("RDLAB_ONLY_JUDGES", QWEN36_ID)
+    monkeypatch.setenv("RDLAB_PASS_MODE", CONTRA)
+    monkeypatch.setenv("RDLAB_LIMIT_ITEMS", "4")
+    monkeypatch.setenv("RDLAB_QWEN36_MAX_NEW_TOKENS", "2048")
+    monkeypatch.setenv("RDLAB_JUDGE_LOCK_SHA256", vm_judges.EXPECTED_JUDGE_LOCK_SHA256)
+    monkeypatch.setenv("RDLAB_D3_LOCK_SHA256", vm_judges.EXPECTED_D3_LOCK_SHA256)
+    monkeypatch.setenv("RDLAB_VLLM_LOCK_SHA256", vm_judges.EXPECTED_VLLM_LOCK_SHA256)
+
+    run_dir = tmp_path / "run_sub"
+    rc = vm_judges.main(
+        [
+            "--step",
+            "run",
+            "--mode",
+            "stub",
+            "--repo-dir",
+            str(REPO_ROOT),
+            "--items-file",
+            str(items_path),
+            "--run-dir",
+            str(run_dir),
+            "--work-dir",
+            str(work_dir),
+            "--receipts-dir",
+            str(receipts_dir),
+            "--hf-home",
+            str(hf_home),
+            "--result-tar",
+            str(tmp_path / "sub.tar.gz"),
+            "--status-file",
+            str(tmp_path / "status_sub.json"),
+            "--loop",
+            "subblock",
+            "--subblock-items",
+            "2",
+            "--dryrun",
+        ]
+    )
+    assert rc == 0
+    done_evs = [
+        json.loads(ln)
+        for ln in (run_dir / "progress.jsonl").read_text(encoding="utf-8").splitlines()
+        if ln.strip() and json.loads(ln).get("kind") == "judge_pass_done"
+    ]
+    assert [ev["elapsed_seconds"] for ev in done_evs] == [10.0, 12.0]
 
 

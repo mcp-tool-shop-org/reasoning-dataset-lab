@@ -2546,7 +2546,7 @@ if src_arms_root.is_dir():
             src_f = src_arm / rel_name
             if src_f.is_file():
                 shutil.copyfile(src_f, dst_arm / rel_name)
-        for sub_name, pat in (("rows", "*.jsonl"), ("anchor_rows", "*.jsonl"), ("judge_done", "*.json")):
+        for sub_name, pat in (("rows", "*.jsonl"), ("anchor_rows", "*.jsonl"), ("judge_done", "*.json"), ("judge_done.superseded", "*.json")):
             src_sub = src_arm / sub_name
             if src_sub.is_dir():
                 dst_sub = dst_arm / sub_name
@@ -2592,10 +2592,11 @@ for base_arms in (out_dir / "arms", extract_dir / "arms"):
                 ap = arm_dir / af
                 if ap.is_file():
                     vm_judges.scrub_log_file_in_place(ap)
-            if (arm_dir / "judge_done").is_dir():
-                for jf in sorted((arm_dir / "judge_done").glob("*.json")):
-                    if jf.is_file():
-                        vm_judges.scrub_log_file_in_place(jf)
+            for jf_sub in ("judge_done", "judge_done.superseded"):
+                if (arm_dir / jf_sub).is_dir():
+                    for jf in sorted((arm_dir / jf_sub).glob("*.json")):
+                        if jf.is_file():
+                            vm_judges.scrub_log_file_in_place(jf)
 for lf in (extract_dir / "logs").glob("*.log"):
     vm_judges.scrub_log_file_in_place(lf)
 
@@ -2640,10 +2641,11 @@ if (out_dir / "arms").is_dir():
             ap = arm_dir / af
             if ap.is_file():
                 paths_to_check.append(ap)
-        if (arm_dir / "judge_done").is_dir():
-            for jf in sorted((arm_dir / "judge_done").glob("*.json")):
-                if jf.is_file():
-                    paths_to_check.append(jf)
+        for jf_sub in ("judge_done", "judge_done.superseded"):
+            if (arm_dir / jf_sub).is_dir():
+                for jf in sorted((arm_dir / jf_sub).glob("*.json")):
+                    if jf.is_file():
+                        paths_to_check.append(jf)
         if (arm_dir / "generations.jsonl").is_file():
             generation_output_paths.append(arm_dir / "generations.jsonl")
         for copied_sub in ("rows", "anchor_rows"):

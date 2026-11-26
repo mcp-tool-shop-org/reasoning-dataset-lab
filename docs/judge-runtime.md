@@ -62,7 +62,7 @@ subprocess (`<venv>/bin/python -m reasoning_dataset_lab.pilot_b.bakeoff_judge`) 
   `.unverified_judge_done` and `outcome.draft.json` into failed or not-started arm dirs, attributing `llm_init_seconds`
   only to the arm that loaded the engine with per-arm `elapsed_seconds` and verbatim resume timing preservation,
   continuing across single-arm failures [`failed_arms`], stopping cleanly between arms
-  on cap/wall or when remaining wall budget is below `last_completed_arm_seconds + 30.0` [`WALL_BUDGET_INSUFFICIENT_FOR_NEXT_ARM`, `not_started_arms`, `stopped_between_arms`, `stop_reason`], and skipping complete / resuming
+  on cap/wall or when remaining wall budget is below `last_per_call_seconds * planned_calls + 30.0` (seeded across resumed runs from completed arms' elapsed time and recorded call counts; [`WALL_BUDGET_INSUFFICIENT_FOR_NEXT_ARM`, `not_started_arms`, `stopped_between_arms`, `stop_reason`]), keeping per-arm `receipt.json` arm metadata alongside filtered `judges` metrics, moving superseded `judge_done` files into `judge_done.superseded/` when marking incomplete arm directories, and skipping complete / resuming
   partial arms per arm including `max_new_tokens` match on `--resume`; invalid values refuse `QWEN36_ARM_INVALID` / `QWEN36_ARMS_INVALID` /
   `QWEN36_ARMS_DUPLICATE` / `QWEN36_ARMS_CONFLICT` / `QWEN36_ARMS_SUBBLOCK_UNSUPPORTED`, non-Qwen3.6 judges refuse
   `QWEN36_ARM_UNSUPPORTED_JUDGE` / `QWEN36_ARMS_UNSUPPORTED_JUDGE`, and resume mismatches refuse
