@@ -1474,3 +1474,177 @@ def test_vm_judges_and_launcher_forward_and_validate_options(
     assert j_sum["duplicate_canary_calls"] == 0
     assert isinstance(j_sum["long_reply_count"], int) and j_sum["long_reply_count"] >= 0
     assert set(j_sum["generated_length_quantiles"]) == {"p50", "p95", "p99", "max"}
+
+
+def test_qwen36_non_thinking_helper_and_scorer_edge_branches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _clear_qwen36_env(monkeypatch)
+    # Helper edge branches in bakeoff_judge.py: empty quantiles, closed </think> in non-thinking mode, and adapter parse.
+    assert bakeoff_judge._compute_quantiles_with_max([]) is None
+    assert (
+        is_qwen36_text_before_letter(
+            "<think></think>\nReasoning first A",
+            enable_thinking=False,
+            done_reason="stop",
+            pass_mode=CONTRA,
+        )
+        is True
+    )
+    adapter = Qwen36ChoiceAdapter(JUDGE_SPECS[QWEN36_ID])
+    parsed = adapter.parse_response(
+        JudgeTransportResponse(
+            raw_text="<think></think>\nA",
+            tokens=("A",),
+            verdict_top_logprobs=(),
+            done_reason="stop",
+            model_digest="d" * 64,
+            seconds=0.01,
+            server_binary="fake",
+            library_pins={"enable_thinking": False},
+            arm="nothink-greedy",
+        ),
+        pass_mode=CONTRA,
+    )
+    assert parsed.state == "parsed"
+
+    # Fake transport non-thinking stub branches (`synth-q36-0001` BA -> length_stop, `synth-q36-0002` AB -> unparseable)
+    # plus canary resume skip and replacement-session overlap check.
+    items_stub_path = _write_items_jsonl(tmp_path / "stub_items.jsonl", _synth_items(3, prefix="synth-q36"))
+    monkeypatch.setenv(bakeoff_judge.QWEN36_ARM_ENV_VAR, "nothink-greedy")
+    monkeypatch.setenv(bakeoff_judge.QWEN36_CANARY_CALLS_ENV_VAR, "2")
+    out_can_resume = tmp_path / "out_can_resume"
+    res1 = run_bakeoff_judge(
+        part_dir=items_stub_path,
+        output_dir=out_can_resume,
+        judge=QWEN36_ID,
+        pass_mode=CONTRA,
+        fake_transport=True,
+        window_mode="stub",
+        shard_spec="1/1",
+        run_canary=False,
+    )
+    assert res1["duplicate_canary_calls"] == 2
+    assert res1["length_stop_count"] >= 1
+    assert res1["unparseable_count"] >= 1
+
+    # Re-running against completed output hits both completed_qwen36_canary_keys skip and cross-session overlap check.
+    res2 = run_bakeoff_judge(
+        part_dir=items_stub_path,
+        output_dir=out_can_resume,
+        judge=QWEN36_ID,
+        pass_mode=CONTRA,
+        fake_transport=True,
+        window_mode="stub",
+        shard_spec="1/1",
+        run_canary=False,
+        replacement_session=True,
+        resume_overlap_pairs=1,
+    )
+    assert res2["duplicate_canary_calls"] == 2
+    assert res2["verified_recovery"]["verified"] is True
+
+    # Scorer edge branches in bakeoff_judge_score.py.
+    empty_rep = score_repeated_three_way_rows([], {}, pass_mode=CONTRA)
+    assert empty_rep["items_n"] == 0
+    assert empty_rep["mean_strict_score"] == 0.0
+
+    mixed_rep = score_repeated_three_way_rows(
+        [
+            {"item_id": "eval-missing-99", "order": "AB", "repeat_index": 0, "state": "parsed", "done_reason": "stop", "raw_verdict": "supported"},
+            {"item_id": "eval-known-01", "order": "INVALID", "repeat_index": 0, "state": "parsed", "done_reason": "stop", "raw_verdict": "supported"},
+            {"item_id": "eval-known-01", "order": "AB", "repeat_index": 0, "state": "parsed", "done_reason": "stop", "raw_verdict": "supported"},
+            {"item_id": "eval-known-01", "order": "BA", "repeat_index": 0, "state": "parsed", "done_reason": "stop", "raw_verdict": "supported"},
+        ],
+        {"eval-known-01": "supported"},  # plain string value branch
+        pass_mode=CONTRA,
+    )
+    assert mixed_rep["items_n"] == 1
+    assert mixed_rep["mean_strict_score"] == pytest.approx(1.0)
+
+    # Empty, canary-only, and unmatched-repeated 3-way rows files fail closed with BAKEOFF_SCORE_NO_SCORED_ITEMS.
+    keys_file = tmp_path / "edge_keys.sealed.jsonl"
+    keys_file.write_text(
+        json.dumps(
+            {
+                "id": "eval-known-01",
+                "triad_id": "T1",
+                "key": "supported",
+                "class": "supported",
+                "key_source": "construction",
+                "value_set_id": "vs1",
+                "closure": "open",
+                "split": "test",
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    def _score_edge_dir(name: str, row_lines: list[dict[str, Any]]) -> None:
+        jdir = tmp_path / f"score_edge_{name}"
+        (jdir / "rows").mkdir(parents=True, exist_ok=True)
+        sched = {
+            "seed": 42,
+            "items_sha256": "0" * 64,
+            "item_count": 1,
+            "triad_count_by_material": 1,
+            "first_order_by_item": {"eval-known-01": "AB"},
+            "entries": [],
+            "schedule_sha256": "1" * 64,
+        }
+        (jdir / "schedule.json").write_text(json.dumps(sched, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
+        (jdir / "generations.jsonl").write_text('{"arm":"qwen3.6-35b-a3b","prompt":"p"}\n', encoding="utf-8", newline="\n")
+        (jdir / "rows" / f"{QWEN36_ID}.{CONTRA}.jsonl").write_text(
+            "".join(json.dumps(r, sort_keys=True, separators=(",", ":")) + "\n" for r in row_lines),
+            encoding="utf-8",
+            newline="\n",
+        )
+        close_bakeoff_outputs(jdir)
+        with pytest.raises(RdlabError) as exc_zero:
+            score_bakeoff_outputs(
+                judge_output_dir=jdir,
+                keys_path=keys_file,
+                public_out_path=tmp_path / f"pub_edge_{name}.json",
+                sealed_rows_out_path=tmp_path / f"sealed_edge_{name}.sealed.jsonl",
+            )
+        assert exc_zero.value.code == "BAKEOFF_SCORE_NO_SCORED_ITEMS"
+
+    _score_edge_dir("empty", [])
+    _score_edge_dir(
+        "canary_only",
+        [
+            {
+                "judge_id": QWEN36_ID,
+                "judge_label": "Qwen3.6 35B-A3B",
+                "item_id": "eval-known-01",
+                "order": "AB",
+                "arm": "nothink-greedy",
+                "pass_mode": CONTRA,
+                "state": "parsed",
+                "done_reason": "stop",
+                "raw_verdict": "supported",
+                "canary": True,
+            }
+        ],
+    )
+    _score_edge_dir(
+        "unmatched_repeats",
+        [
+            {
+                "judge_id": QWEN36_ID,
+                "judge_label": "Qwen3.6 35B-A3B",
+                "item_id": "eval-unmatched-item-99",
+                "order": "AB",
+                "repeat_index": r_i,
+                "arm": "nothink-card",
+                "pass_mode": CONTRA,
+                "state": "parsed",
+                "done_reason": "stop",
+                "raw_verdict": "supported",
+            }
+            for r_i in range(2)
+        ],
+    )
