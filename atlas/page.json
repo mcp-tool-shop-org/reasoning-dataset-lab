@@ -34,21 +34,21 @@
   "changes": {
     "fileCounts": {
       "added": 0,
-      "changed": 8,
+      "changed": 1,
       "moved": 0,
-      "parts": 5,
+      "parts": 1,
       "removed": 0
     },
     "items": [
       {
         "kind": "counts",
-        "sentence": "Nothing structural changed since 2026-11-26; 8 files changed content.",
+        "sentence": "Nothing structural changed since 2026-11-26; 1 file changed content.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "aa8b3c24d7d119f8d3c7be28ce78245a5a4513c2",
-      "generatedAt": "2026-11-26T10:14:01.563Z"
+      "commit": "f42f16e333b60800477f415eee8a4430a8f5ba60",
+      "generatedAt": "2026-11-26T11:57:44.155Z"
     },
     "unchanged": true
   },
@@ -101,7 +101,7 @@
     {
       "a": "scripts/colab/vm_judges.py",
       "b": "tests/test_colab_judge_launcher.py",
-      "either": 72,
+      "either": 73,
       "partLabels": [
         "scripts",
         "tests"
@@ -135,7 +135,7 @@
     "Window: 180 days; a pair counts from 3 shared commits, since 15 source files reach 10 revisions; the floor rises to 10 when 25 do."
   ],
   "changesTogetherWithTests": 1,
-  "commit": "f42f16e333b60800477f415eee8a4430a8f5ba60",
+  "commit": "fc488c7c37682bb1edadce2b01264b0c7c6499bd",
   "defaultBranch": "main",
   "derived": "9 parts, mostly Python (109 files), shell (4), CSS (2), JavaScript (2), TypeScript (2) and Astro (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.",
   "doors": [
@@ -294,7 +294,7 @@
       ]
     }
   ],
-  "generatedAt": "2026-11-26T11:57:44.155Z",
+  "generatedAt": "2026-11-26T12:26:19.333Z",
   "limits": [
     "8 import sites name a declared dependency that shares its name with a local module (role_set); they are read as the dependency, which is not in this repository.",
     "20 imports could not be resolved: `scripts/colab/vm_judges.py` imports a path built at run time; `scripts/colab/vm_judges.py` imports `device`, which is no module on its import path and no declared dependency, twice; `tests/test_bakeoff_judge_d3_transport.py` imports a path built at run time; and 16 more.",

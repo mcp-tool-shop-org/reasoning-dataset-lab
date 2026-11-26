@@ -5694,10 +5694,10 @@ def _run_bakeoff_judge_impl(
     length_stop_count = sum(1 for r in existing_row_objs if r.get("state") == "length_stop")
     aborted_count = sum(1 for r in existing_row_objs if r.get("state") == "aborted")
     parsed_count = sum(1 for r in existing_row_objs if r.get("state") == "parsed")
-    canary_unparseable_count = sum(1 for r in existing_canary_rows if r.get("state") == "unparseable")
-    canary_length_stop_count = sum(1 for r in existing_canary_rows if r.get("state") == "length_stop")
-    canary_aborted_count = sum(1 for r in existing_canary_rows if r.get("state") == "aborted")
-    canary_parsed_count = sum(1 for r in existing_canary_rows if r.get("state") == "parsed")
+    canary_counts_by_state: dict[str, int] = {
+        st: sum(1 for r in existing_canary_rows if r.get("state") == st)
+        for st in ("parsed", "unparseable", "length_stop", "aborted")
+    }
     verdict_disagreement_count = sum(
         1
         for r in existing_row_objs
@@ -5841,10 +5841,6 @@ def _run_bakeoff_judge_impl(
             nonlocal unparseable_count
             nonlocal length_stop_count
             nonlocal aborted_count
-            nonlocal canary_parsed_count
-            nonlocal canary_unparseable_count
-            nonlocal canary_length_stop_count
-            nonlocal canary_aborted_count
             nonlocal verdict_disagreement_count
             nonlocal probs_missing_count
             nonlocal failed_to_run_count
@@ -5995,14 +5991,7 @@ def _run_bakeoff_judge_impl(
 
             readout = adapter.parse_response(resp, pass_mode=pass_mode)
             if is_canary:
-                if readout.state == "length_stop":
-                    canary_length_stop_count += 1
-                elif readout.state == "aborted":
-                    canary_aborted_count += 1
-                elif readout.state == "unparseable":
-                    canary_unparseable_count += 1
-                else:
-                    canary_parsed_count += 1
+                canary_counts_by_state[readout.state] = canary_counts_by_state.get(readout.state, 0) + 1
                 will_halt_error_rate = False
             else:
                 if readout.state == "length_stop":
@@ -6347,7 +6336,7 @@ def _run_bakeoff_judge_impl(
             logprob_tolerance=canary_tol,
         )
 
-    if existing_row_objs and active_item_ids is None and not anchor_prefix_only and row_path.is_file():
+    if eff_repeats > 1 and existing_row_objs and active_item_ids is None and not anchor_prefix_only and row_path.is_file():
         unsorted_main_rows = [
             json.loads(ln)
             for ln in row_path.read_text(encoding="utf-8").splitlines()
@@ -6471,12 +6460,7 @@ def _run_bakeoff_judge_impl(
             qwen36_summary_extra["duplicate_canary_rows_sha256"] = (
                 hashlib.sha256(canary_row_bytes).hexdigest() if canary_row_path.is_file() else None
             )
-            qwen36_summary_extra["duplicate_canary_counts_by_state"] = {
-                "parsed": canary_parsed_count,
-                "unparseable": canary_unparseable_count,
-                "length_stop": canary_length_stop_count,
-                "aborted": canary_aborted_count,
-            }
+            qwen36_summary_extra["duplicate_canary_counts_by_state"] = dict(canary_counts_by_state)
         qwen36_summary_extra["call_seconds_quantiles"] = call_seconds_quantiles
         if eff_qwen36_arm in QWEN36_NON_THINKING_ARMS:
             empty_ids = getattr(transport, "_empty_closed_think_token_ids", None) if transport is not None else None
