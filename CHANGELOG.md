@@ -8,7 +8,7 @@ All notable changes to `reasoning-dataset-lab` are documented here. The format i
 
 ## [0.8.0] - 2026-11-25
 
-**The judge bake-off can run the Qwen3.6 judge on a rented RunPod GPU without compiling anything on the pod.** This release adds the `qwen3.6-35b-a3b` thinking judge, an offrig host path for RunPod, declared synthetic time-one windows, and a no-compile guard: the vLLM lock carries FlashInfer's prebuilt `sm120f` kernels, any JIT build attempt is refused with a named failure class, and a stop raised inside vLLM's EngineCore process reaches the launcher's outcome. The README status line no longer carries a version or a test count.
+**The judge bake-off can run the Qwen3.6 judge on a rented RunPod GPU without building FlashInfer kernels on the pod.** This release adds the `qwen3.6-35b-a3b` thinking judge, an offrig host path for RunPod, declared synthetic time-one windows, and a FlashInfer no-compile guard: the vLLM lock carries FlashInfer's prebuilt `sm120f` kernels; on the Qwen3.6 path a FlashInfer, ninja or nvcc build attempt is refused with a named failure class (Triton and torch.compile kernels still compile at first use); and a named no-compile stop raised inside vLLM's EngineCore reaches the launcher's outcome as its failure class. The README status line no longer carries a version or a test count.
 
 ### Cross-process EngineCore stop propagation, guaranteed launcher `failure_class`, and shim symlink refusal (`bakeoff_judge.py`, `vm_judges.py`, `launch_judges.sh`, `run_records.py`)
 
