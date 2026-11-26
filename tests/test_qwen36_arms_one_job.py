@@ -1002,18 +1002,56 @@ def test_vm_judges_inprocess_multi_arm_pipeline_and_edge_branches(
     with pytest.raises(RdlabError) as exc_empty:
         run_qwen36_arms_job(part_dir=items_path, output_dir=tmp_path / "o1", judge=QWEN36_ID, qwen36_arms="  ", pass_mode=CONTRA, fake_transport=True)
     assert exc_empty.value.code == bakeoff_judge.QWEN36_ARMS_INVALID
+    for bad_seq in ([], ["thinking", ""], 123):
+        with pytest.raises(RdlabError) as exc_seq:
+            normalize_qwen36_arms(bad_seq)  # type: ignore[arg-type]
+        assert exc_seq.value.code == bakeoff_judge.QWEN36_ARMS_INVALID
     with pytest.raises(RdlabError) as exc_dev:
         run_qwen36_arms_job(part_dir=items_path, output_dir=tmp_path / "o2", judge=QWEN36_ID, qwen36_arms="thinking", pass_mode=CONTRA, fake_transport=True, device="bad:dev")
     assert exc_dev.value.code == "BAKEOFF_JUDGE_DEVICE_INVALID"
     with pytest.raises(RdlabError) as exc_wrong_j:
         run_qwen36_arms_job(part_dir=items_path, output_dir=tmp_path / "o3", judge="mu-judge", qwen36_arms="thinking", pass_mode=CONTRA, fake_transport=True)
     assert exc_wrong_j.value.code == bakeoff_judge.QWEN36_ARMS_UNSUPPORTED_JUDGE
+    with pytest.raises(RdlabError) as exc_impl_j:
+        bakeoff_judge._run_bakeoff_judge_impl(
+            part_dir=items_path,
+            output_dir=tmp_path / "o_bad_j",
+            judge="mu-judge",
+            qwen36_arm="nothink-greedy",
+            fake_transport=True,
+        )
+    assert exc_impl_j.value.code == "QWEN36_ARM_UNSUPPORTED_JUDGE"
     with pytest.raises(RdlabError) as exc_pm:
         run_qwen36_arms_job(part_dir=items_path, output_dir=tmp_path / "o4", judge=QWEN36_ID, qwen36_arms="thinking", pass_mode="binary", fake_transport=True)
     assert exc_pm.value.code == "BAKEOFF_JUDGE_BINARY_UNSUPPORTED"
     with pytest.raises(RdlabError) as exc_syn:
         run_qwen36_arms_job(part_dir=items_path, output_dir=tmp_path / "o5", judge=QWEN36_ID, qwen36_arms="thinking", pass_mode=CONTRA, fake_transport=True, synthetic_items=True, window_mode="counted")
     assert exc_syn.value.code == "BAKEOFF_JUDGE_SYNTHETIC_MODE_FORBIDDEN"
+    with pytest.raises(RdlabError) as exc_rcpt:
+        run_qwen36_arms_job(
+            part_dir=items_path,
+            output_dir=tmp_path / "o_no_rcpt",
+            judge=QWEN36_ID,
+            qwen36_arms="thinking",
+            pass_mode=CONTRA,
+            fake_transport=False,
+            transport=None,
+            receipts_dir=None,
+            window_mode="stub",
+        )
+    assert exc_rcpt.value.code == "BAKEOFF_JUDGE_RECEIPTS_DIR_REQUIRED"
+    counts_no_mf = bakeoff_judge._expected_arm_row_counts(
+        part_dir=items_path,
+        limit_items=None,
+        schedule_seed=42,
+        pass_mode=CONTRA,
+        shard_spec="1/2",
+        shard_manifest_path=None,
+        arms=("thinking", "nothink-greedy"),
+        repeats_by_arm={"thinking": 1, "nothink-greedy": 1},
+        canary_calls_by_arm={"thinking": 0, "nothink-greedy": 2},
+    )
+    assert counts_no_mf["thinking"][0] > 0 and counts_no_mf["nothink-greedy"][1] >= 0
 
     # Sharded expected counts + canary + _is_qwen36_arm_complete corruption checks.
     manifest = bakeoff_judge.build_shard_manifest(items_path, num_shards=2, schedule_seed=42, pass_mode=CONTRA)
@@ -1051,12 +1089,47 @@ def test_vm_judges_inprocess_multi_arm_pipeline_and_edge_branches(
     )
     assert res_can["status"] == "ok"
     assert res_can["completed_arms"] == ["thinking", "nothink-greedy"]
-    # Verify _is_qwen36_arm_complete rejects tampered metadata/canary/row files before returning None.
+    # Verify _is_qwen36_arm_complete accepts valid canary/main state and rejects tampered metadata/canary/row files before returning None.
     g_done_p = out_sh / "arms" / "nothink-greedy" / "judge_done" / f"{QWEN36_ID}.json"
     orig_done = g_done_p.read_text(encoding="utf-8")
     g_done_obj = json.loads(orig_done)
     assert g_done_obj["duplicate_canary_calls"] == 2
-    for patch_field in ({"arm": "thinking"}, {"seed_variant": "other"}, {"repeats": 3}, {"row_count": 999}, {"duplicate_canary_calls": 99}):
+    assert (
+        bakeoff_judge._is_qwen36_arm_complete(
+            arm_dir=out_sh / "arms" / "nothink-greedy",
+            judge_id=QWEN36_ID,
+            pass_mode=CONTRA,
+            arm="nothink-greedy",
+            expected_main_rows=g_done_obj["row_count"],
+            expected_canary_rows=g_done_obj["duplicate_canary_calls"],
+            expected_repeats=1,
+            expected_seed_variant="none",
+        )
+        is not None
+    )
+    for corrupt_raw in ("{bad", "[]"):
+        g_done_p.write_text(corrupt_raw, encoding="utf-8")
+        assert (
+            bakeoff_judge._is_qwen36_arm_complete(
+                arm_dir=out_sh / "arms" / "nothink-greedy",
+                judge_id=QWEN36_ID,
+                pass_mode=CONTRA,
+                arm="nothink-greedy",
+                expected_main_rows=g_done_obj["row_count"],
+                expected_canary_rows=g_done_obj["duplicate_canary_calls"],
+                expected_repeats=1,
+                expected_seed_variant="none",
+            )
+            is None
+        )
+    for patch_field in (
+        {"arm": "thinking"},
+        {"seed_variant": "other"},
+        {"repeats": 3},
+        {"row_count": 999},
+        {"duplicate_canary_calls": 99},
+        {"duplicate_canary_failed_calls": 1},
+    ):
         bad = {**g_done_obj, **patch_field}
         g_done_p.write_text(json.dumps(bad), encoding="utf-8")
         assert (
@@ -1135,6 +1208,50 @@ def test_vm_judges_inprocess_multi_arm_pipeline_and_edge_branches(
     assert res_expired["stopped_between_arms"] is True
     assert res_expired["stop_reason"] == bakeoff_judge.WALL_STOP_BETWEEN_ARMS
     assert res_expired["not_started_arms"] == ["thinking", "nothink-greedy"]
+    monkeypatch.delenv(bakeoff_judge.QWEN36_ARMS_WALL_DEADLINE_EPOCH_ENV_VAR, raising=False)
+    monkeypatch.delenv(bakeoff_judge.QWEN36_CANARY_CALLS_ENV_VAR, raising=False)
+    monkeypatch.delenv(bakeoff_judge.DETERMINISM_MODE_ENV_VAR, raising=False)
+    monkeypatch.delenv("RDLAB_WINDOW_MODE", raising=False)
+    monkeypatch.setenv(bakeoff_judge.QWEN36_ARMS_WALL_DEADLINE_EPOCH_ENV_VAR, "not-a-float")
+    out_bool_stop = tmp_path / "out_bool_stop"
+    res_bool = run_qwen36_arms_job(
+        part_dir=items_path,
+        output_dir=out_bool_stop,
+        judge=QWEN36_ID,
+        qwen36_arms="thinking,nothink-greedy",
+        pass_mode=CONTRA,
+        fake_transport=True,
+        window_mode=None,
+        should_stop_between_arms=lambda idx, _a: idx == 1,
+        run_canary=False,
+    )
+    assert res_bool["completed_arms"] == ["thinking"]
+    assert res_bool["not_started_arms"] == ["nothink-greedy"]
+    assert res_bool["stop_reason"] == bakeoff_judge.WALL_STOP_BETWEEN_ARMS
+    run_qwen36_arms_job(
+        part_dir=items_path,
+        output_dir=out_bool_stop,
+        judge=QWEN36_ID,
+        qwen36_arms="nothink-card",
+        pass_mode=CONTRA,
+        fake_transport=True,
+        window_mode="stub",
+        run_canary=False,
+    )
+    res_mono_resumed_skip = run_qwen36_arms_job(
+        part_dir=items_path,
+        output_dir=out_bool_stop,
+        judge=QWEN36_ID,
+        qwen36_arms="thinking,nothink-greedy,nothink-card",
+        pass_mode=CONTRA,
+        fake_transport=True,
+        window_mode="stub",
+        wall_deadline_monotonic=0.0,
+        run_canary=False,
+    )
+    assert res_mono_resumed_skip["resumed_skipped_arms"] == ["thinking", "nothink-card"]
+    assert res_mono_resumed_skip["not_started_arms"] == ["nothink-greedy"]
+    assert res_mono_resumed_skip["stop_reason"] == bakeoff_judge.WALL_STOP_BETWEEN_ARMS
     monkeypatch.delenv(bakeoff_judge.QWEN36_ARMS_WALL_DEADLINE_EPOCH_ENV_VAR, raising=False)
 
     # Run vm_judges.run_judges_pipeline directly in-process in stub mode for multi-arm coverage.

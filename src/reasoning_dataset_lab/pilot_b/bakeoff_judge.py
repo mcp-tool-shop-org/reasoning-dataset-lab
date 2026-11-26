@@ -6682,10 +6682,6 @@ def _run_bakeoff_judge_impl(
     }
 
 
-def _count_nonempty_lines(path: Path) -> int:
-    return sum(1 for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip())
-
-
 def _expected_arm_row_counts(
     *,
     part_dir: Path,
