@@ -2488,3 +2488,97 @@ def test_single_arm_subblock_progress_elapsed_seconds_stays_per_pass(
     assert [ev["elapsed_seconds"] for ev in done_evs] == [10.0, 12.0]
 
 
+def test_per_judge_pass_mode_with_canary_seals_and_syncs_all_four_arms(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Under `--pass-mode per_judge`, `.canary.jsonl` does not mis-infer `binary` and all 4 arms seal cleanly."""
+    # Unit checks on _infer_arm_pass_mode under default_pass_mode="per_judge".
+    canary_arm = tmp_path / "unit_canary_arm"
+    (canary_arm / "rows").mkdir(parents=True, exist_ok=True)
+    (canary_arm / "rows" / f"{QWEN36_ID}.{CONTRA}.canary.jsonl").write_text("{}\n", encoding="utf-8")
+    (canary_arm / "rows" / f"{QWEN36_ID}.{CONTRA}.jsonl").write_text("{}\n", encoding="utf-8")
+    assert vm_judges._infer_arm_pass_mode(canary_arm, "per_judge") == CONTRA
+
+    done_only_arm = tmp_path / "unit_done_only_arm"
+    (done_only_arm / "judge_done").mkdir(parents=True, exist_ok=True)
+    (done_only_arm / "judge_done" / f"{QWEN36_ID}.json").write_text(
+        json.dumps({"judge_id": QWEN36_ID, "pass_mode": "three_way"}),
+        encoding="utf-8",
+    )
+    assert vm_judges._infer_arm_pass_mode(done_only_arm, "per_judge") == "three_way"
+
+    # End-to-end 4-arm vm_judges.main with --pass-mode per_judge + canary calls on nothink-greedy.
+    _clear_qwen36_env(monkeypatch)
+    items_path = _write_items_jsonl(tmp_path / "items.jsonl", _synth_items(count=4, prefix="pjc"))
+    env_hf = _setup_fake_vllm_with_dynamic_responder(tmp_path / "hf_pjc", monkeypatch)
+    receipts_dir, hf_home = env_hf["receipts_dir"], env_hf["hf_home"]
+
+    work_dir = tmp_path / "work_pjc"
+    fake_vm_py = work_dir / "venv-vllm" / "bin" / "python"
+    fake_vm_py.parent.mkdir(parents=True, exist_ok=True)
+    fake_vm_py.write_text(f"#!/bin/sh\nexec '{sys.executable}' \"$@\"\n", encoding="utf-8")
+    fake_vm_py.chmod(0o755)
+    (work_dir / "venv-vllm" / ".lock_sha256").write_text(vm_judges.EXPECTED_VLLM_LOCK_SHA256 + "\n", encoding="utf-8")
+
+    monkeypatch.setenv("RDLAB_ONLY_JUDGES", QWEN36_ID)
+    monkeypatch.setenv("RDLAB_PASS_MODE", "per_judge")
+    monkeypatch.setenv("RDLAB_JUDGE_PASS_MODES", f"{QWEN36_ID}:{CONTRA}")
+    monkeypatch.setenv("RDLAB_QWEN36_ARMS", "thinking,nothink-greedy,nothink-card,nothink-matched")
+    monkeypatch.setenv("RDLAB_QWEN36_REPEATS", "2")
+    monkeypatch.setenv("RDLAB_QWEN36_CANARY_CALLS", "4")
+    monkeypatch.setenv("RDLAB_LIMIT_ITEMS", "4")
+    monkeypatch.setenv("RDLAB_QWEN36_MAX_NEW_TOKENS", "2048")
+    monkeypatch.setenv("RDLAB_JUDGE_LOCK_SHA256", vm_judges.EXPECTED_JUDGE_LOCK_SHA256)
+    monkeypatch.setenv("RDLAB_D3_LOCK_SHA256", vm_judges.EXPECTED_D3_LOCK_SHA256)
+    monkeypatch.setenv("RDLAB_VLLM_LOCK_SHA256", vm_judges.EXPECTED_VLLM_LOCK_SHA256)
+
+    run_dir = tmp_path / "run_pjc"
+    rc = vm_judges.main(
+        [
+            "--step",
+            "run",
+            "--mode",
+            "stub",
+            "--repo-dir",
+            str(REPO_ROOT),
+            "--items-file",
+            str(items_path),
+            "--run-dir",
+            str(run_dir),
+            "--work-dir",
+            str(work_dir),
+            "--receipts-dir",
+            str(receipts_dir),
+            "--hf-home",
+            str(hf_home),
+            "--result-tar",
+            str(tmp_path / "pjc.tar.gz"),
+            "--status-file",
+            str(tmp_path / "status_pjc.json"),
+            "--loop",
+            "judge_outer",
+            "--pass-mode",
+            "per_judge",
+            "--dryrun",
+        ]
+    )
+    assert rc == 0
+    assert (run_dir / "arms" / "nothink-greedy" / "rows" / f"{QWEN36_ID}.{CONTRA}.canary.jsonl").is_file()
+
+    vm_judges.write_outputs_closed(run_dir)
+    for arm_name in ("thinking", "nothink-greedy", "nothink-card", "nothink-matched"):
+        arm_dir = run_dir / "arms" / arm_name
+        assert (arm_dir / "judge_done" / f"{QWEN36_ID}.json").is_file(), f"missing judge_done for {arm_name}"
+        assert not (arm_dir / "judge_done.superseded").exists(), f"unexpected superseded dir for {arm_name}"
+        assert not (arm_dir / ".unverified_judge_done").exists(), f"unexpected unverified marker for {arm_name}"
+        assert not (arm_dir / "outcome.draft.json").exists(), f"unexpected outcome.draft.json for {arm_name}"
+        assert (arm_dir / "outputs-closed.json").is_file(), f"missing outputs-closed.json for {arm_name}"
+        rec_doc = json.loads((arm_dir / "receipt.json").read_text(encoding="utf-8"))
+        vm_rec = json.loads((arm_dir / "vm_receipt.json").read_text(encoding="utf-8"))
+        assert rec_doc["status"] == "ok", f"bad receipt status for {arm_name}: {rec_doc}"
+        assert rec_doc["pass_mode"] == CONTRA, f"bad receipt pass_mode for {arm_name}: {rec_doc}"
+        assert vm_rec["pass_mode"] == CONTRA, f"bad vm_receipt pass_mode for {arm_name}: {vm_rec}"
+
+
+

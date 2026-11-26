@@ -5819,10 +5819,24 @@ def _infer_arm_pass_mode(arm_dir: Path, default_pass_mode: str = "three_way_cont
     rows_dir = arm_dir / ROWS_DIRNAME
     if rows_dir.is_dir():
         for rf in sorted(rows_dir.glob("*.jsonl")):
+            if rf.name.endswith(".canary.jsonl"):
+                continue
             for pm in PASS_MODES:
                 if pm != "binary" and rf.name.endswith(f".{pm}.jsonl"):
                     return pm
             return "binary"
+    for done_dirname in (JUDGE_DONE_DIRNAME, SUPERSEDED_JUDGE_DONE_DIRNAME):
+        done_dir = arm_dir / done_dirname
+        if done_dir.is_dir():
+            for df in sorted(done_dir.glob("*.json")):
+                try:
+                    ddoc = json.loads(df.read_text(encoding="utf-8"))
+                except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                    continue
+                if isinstance(ddoc, Mapping):
+                    dpm = str(ddoc.get("pass_mode") or "").strip()
+                    if dpm in PASS_MODES:
+                        return dpm
     return "three_way_contradicted"
 
 
@@ -17830,6 +17844,8 @@ def _sync_qwen36_per_arm_receipts(
     raw_arm_timing = arms_meta.get("arm_timing")
     arm_timing_map = dict(raw_arm_timing) if isinstance(raw_arm_timing, Mapping) else {}
     judges_map = doc.get("judges") if isinstance(doc.get("judges"), Mapping) else {}
+    job_pm = str(arms_meta.get("pass_mode") or "").strip()
+    arm_default_pm = job_pm if job_pm in PASS_MODES else default_pass_mode
     senv_src = run_dir / SESSION_ENV_FILENAME
 
     for pos, arm_name in enumerate(raw_arms):
@@ -17842,12 +17858,13 @@ def _sync_qwen36_per_arm_receipts(
                 arm_dir,
                 arm_name=arm_name,
                 completed_set=completed_set,
-                pass_mode=default_pass_mode,
+                pass_mode=arm_default_pm,
             )
             if arm_dir.is_dir()
             else None
         )
         if verified_done is not None:
+            eff_arm_pm = _infer_arm_pass_mode(arm_dir, arm_default_pm)
             if senv_src.is_file():
                 shutil.copyfile(senv_src, arm_dir / SESSION_ENV_FILENAME)
             arm_receipt_path = arm_dir / "receipt.json"
@@ -17861,6 +17878,8 @@ def _sync_qwen36_per_arm_receipts(
                     existing_arm_receipt = {}
 
             arm_vm_doc = dict(doc)
+            if arm_vm_doc.get("pass_mode") not in PASS_MODES:
+                arm_vm_doc["pass_mode"] = eff_arm_pm
             arm_vm_doc["arm"] = arm_name
             arm_vm_doc["arms"] = list(raw_arms)
             arm_vm_doc["arm_index"] = arm_idx
@@ -17880,11 +17899,12 @@ def _sync_qwen36_per_arm_receipts(
             tmp_vm.write_text(json.dumps(arm_vm_doc, indent=2) + "\n", encoding="utf-8", newline="\n")
             os.replace(tmp_vm, arm_dir / "vm_receipt.json")
 
+            existing_pm = str(existing_arm_receipt.get("pass_mode") or "").strip()
             merged_arm_receipt = {
                 **existing_arm_receipt,
                 "status": str(arm_vm_doc.get("status") or "ok"),
                 "judge_id": QWEN36_JUDGE_ID,
-                "pass_mode": existing_arm_receipt.get("pass_mode") or default_pass_mode,
+                "pass_mode": existing_pm if existing_pm in PASS_MODES else eff_arm_pm,
                 "arm": arm_name,
                 "arms": list(raw_arms),
                 "arm_index": arm_idx,
@@ -17919,7 +17939,7 @@ def _sync_qwen36_per_arm_receipts(
             if str(doc.get("status") or "") not in ("ok", "DRYRUN_OK")
             else "QWEN36_ARM_INCOMPLETE"
         )
-        eff_pm = _infer_arm_pass_mode(arm_dir, default_pass_mode)
+        eff_pm = _infer_arm_pass_mode(arm_dir, arm_default_pm)
         _write_arm_incomplete_markers(
             arm_dir,
             judge_id=QWEN36_JUDGE_ID,
