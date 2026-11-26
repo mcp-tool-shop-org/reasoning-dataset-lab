@@ -34,21 +34,21 @@
   "changes": {
     "fileCounts": {
       "added": 0,
-      "changed": 1,
+      "changed": 2,
       "moved": 0,
-      "parts": 1,
+      "parts": 2,
       "removed": 0
     },
     "items": [
       {
         "kind": "counts",
-        "sentence": "Nothing structural changed since 2026-11-22; 1 file changed content.",
+        "sentence": "Nothing structural changed since 2026-11-26; 2 files changed content.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "c13f084b2ba361a5d98e1571d7c047540bfffdb5",
-      "generatedAt": "2026-11-22T12:00:11.087Z"
+      "commit": "adf5843b542f9e5f69cc0bacdedcc9729e4808fa",
+      "generatedAt": "2026-11-26T10:04:14.405Z"
     },
     "unchanged": true
   },
@@ -101,7 +101,7 @@
     {
       "a": "scripts/colab/vm_judges.py",
       "b": "tests/test_colab_judge_launcher.py",
-      "either": 63,
+      "either": 72,
       "partLabels": [
         "scripts",
         "tests"
@@ -111,7 +111,7 @@
         "tests"
       ],
       "relation": "b-imports-a",
-      "shared": 40
+      "shared": 44
     },
     {
       "a": "src/reasoning_dataset_lab/pilot_b/rendering.py",
@@ -132,12 +132,12 @@
   "changesTogetherNote": [
     "1 file changed together with its own test, as expected.",
     "Confidence is low: fewer than 25 source files reach 10 revisions in the window.",
-    "Window: 180 days; a pair counts from 3 shared commits, since 14 source files reach 10 revisions; the floor rises to 10 when 25 do."
+    "Window: 180 days; a pair counts from 3 shared commits, since 15 source files reach 10 revisions; the floor rises to 10 when 25 do."
   ],
   "changesTogetherWithTests": 1,
-  "commit": "7abfc3eecde289b7e2c66ef6ac416d53ce5846fb",
+  "commit": "aa8b3c24d7d119f8d3c7be28ce78245a5a4513c2",
   "defaultBranch": "main",
-  "derived": "9 parts, mostly Python (100 files), shell (3), CSS (2), JavaScript (2), TypeScript (2) and Astro (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.",
+  "derived": "9 parts, mostly Python (109 files), shell (4), CSS (2), JavaScript (2), TypeScript (2) and Astro (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.",
   "doors": [
     {
       "checks": [],
@@ -154,12 +154,12 @@
         {
           "boundary": "scripts",
           "depth": 0,
-          "files": 7
+          "files": 9
         },
         {
           "boundary": "tests",
           "depth": 0,
-          "files": 63
+          "files": 70
         },
         {
           "boundary": "src",
@@ -294,14 +294,16 @@
       ]
     }
   ],
-  "generatedAt": "2026-11-22T22:10:08.734Z",
+  "generatedAt": "2026-11-26T10:14:01.563Z",
   "limits": [
     "8 import sites name a declared dependency that shares its name with a local module (role_set); they are read as the dependency, which is not in this repository.",
     "20 imports could not be resolved: `scripts/colab/vm_judges.py` imports a path built at run time; `scripts/colab/vm_judges.py` imports `device`, which is no module on its import path and no declared dependency, twice; `tests/test_bakeoff_judge_d3_transport.py` imports a path built at run time; and 16 more.",
-    "14 writes and 34 reads use paths built at run time and are not named here.",
+    "14 writes and 43 reads use paths built at run time and are not named here.",
     "1 write goes to places this repository does not track, so it is not listed as generated.",
-    "90 writes and 217 reads go to a path their caller passes, not to this repository.",
-    "11 reads go to the directory the command is run in, not to this repository.",
+    "98 writes and 237 reads go to a path their caller passes, not to this repository.",
+    "12 reads go to the directory the command is run in, not to this repository.",
+    "1 read goes to the directory the command is run in (memory.kmem.usage_in_bytes) or a path its caller passes, not to this repository.",
+    "1 read goes to the home directory (.config/, AppData/ and Library/) or a path its caller passes, not to this repository.",
     "Statistics confidence is low: fewer than 25 source files reach 10 revisions in the window."
   ],
   "mainDoor": ".github/workflows/ci.yml",
@@ -337,10 +339,10 @@
   "startReason": "This path follows rdlab (a command people run) from its entry, since ci runs only tests and scripts that import no code here.",
   "summary": "reasoning-dataset-lab plans a dataset as a pre-registered map, builds items whose answer keys are constructed and proved by code, asks a local model only for the wording, and records the provenance of every item.",
   "summaryFrom": "person",
-  "testFiles": 79,
+  "testFiles": 87,
   "testedBy": {
-    "scripts": 18,
-    "src": 55
+    "scripts": 24,
+    "src": 61
   },
   "testedCodeParts": 2,
   "unnamedWrites": 14,

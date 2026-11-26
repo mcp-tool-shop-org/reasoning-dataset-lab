@@ -488,6 +488,11 @@ def domain_stratified_triad_bootstrap_ci(
     }
 
 
+def _is_canary_row(row: Mapping[str, Any]) -> bool:
+    """Return True when a row is a duplicate-canary diagnostic row excluded from scoring."""
+    return row.get("canary") is True
+
+
 def fit_dev_threshold_youden(
     dev_rows: Sequence[Mapping[str, Any]],
     keys_by_id: Mapping[str, SealedKeyRecord],
@@ -500,6 +505,8 @@ def fit_dev_threshold_youden(
     _refuse_if_synthetic_item_ids(list(keys_by_id), source="fit_dev_threshold_youden")
     samples: list[tuple[float, int]] = []
     for row in dev_rows:
+        if _is_canary_row(row):
+            continue
         item_id = str(row["item_id"])
         rec = keys_by_id.get(item_id)
         if rec is None or rec.split != "dev":
@@ -575,6 +582,8 @@ def compute_ece_10_bins(
     """Compute 10-bin Expected Calibration Error (ECE) and reliability points over parsed binary rows."""
     pairs: list[tuple[float, int]] = []
     for r in rows:
+        if _is_canary_row(r):
+            continue
         if r.get("state") != "parsed" or r.get("confidence") is None:
             continue
         rec = keys_by_id.get(str(r["item_id"]))
@@ -2225,6 +2234,91 @@ def _outside_mass_report(
     return out
 
 
+def score_repeated_three_way_rows(
+    rows: Sequence[Mapping[str, Any]],
+    keys_by_id: Mapping[str, SealedKeyRecord | str],
+    *,
+    pass_mode: str | None = "three_way_contradicted",
+) -> dict[str, Any]:
+    """Score repeated 3-way rows by per-(item, order) mean correctness, order-mean product, and per-repeat joint rate.
+
+    Repeats are never voted and never stacked as separate rows; `canary: true` rows are excluded.
+    """
+    _refuse_if_synthetic_rows(rows, source="score_repeated_three_way_rows")
+    _refuse_if_synthetic_item_ids(list(keys_by_id), source="score_repeated_three_way_rows")
+    canary_rows_excluded = 0
+    grouped: dict[str, dict[str, dict[int, Mapping[str, Any]]]] = defaultdict(lambda: {"AB": {}, "BA": {}})
+    for r in rows:
+        if _is_canary_row(r):
+            canary_rows_excluded += 1
+            continue
+        iid = str(r.get("item_id") or "")
+        if iid not in keys_by_id:
+            continue
+        ord_mode = str(r.get("order") or "")
+        if ord_mode not in ("AB", "BA"):
+            continue
+        rep_raw = r.get("repeat_index", 0)
+        rep_idx = int(rep_raw) if rep_raw is not None else 0
+        if rep_idx in grouped[iid][ord_mode]:
+            raise refused_error(
+                "BAKEOFF_SCORE_DUPLICATE_REPEAT",
+                f"Duplicate repeat_index={rep_idx} for item '{iid}' order '{ord_mode}'.",
+                "Ensure each (item_id, order, repeat_index) appears at most once in non-canary rows.",
+            )
+        grouped[iid][ord_mode][rep_idx] = r
+
+    per_item_order_mean: dict[tuple[str, str], float] = {}
+    per_item: dict[str, dict[str, Any]] = {}
+    for iid in sorted(grouped):
+        ab_map = grouped[iid]["AB"]
+        ba_map = grouped[iid]["BA"]
+        if not ab_map or not ba_map or set(ab_map) != set(ba_map):
+            raise refused_error(
+                "BAKEOFF_SCORE_INCOMPLETE_REPEATS",
+                f"Incomplete repeat coverage for item '{iid}': AB={sorted(ab_map)}, BA={sorted(ba_map)}.",
+                "Score only items with matching repeat indices across AB and BA.",
+            )
+        rep_indices = sorted(ab_map)
+        k = len(rep_indices)
+        key_entry = keys_by_id[iid]
+        gold_key = key_entry.key if isinstance(key_entry, SealedKeyRecord) else str(key_entry)
+        corr_ab: dict[int, float] = {}
+        corr_ba: dict[int, float] = {}
+        for r_idx in rep_indices:
+            v_ab = _three_way_valid_verdict(ab_map[r_idx], pass_mode=pass_mode)
+            v_ba = _three_way_valid_verdict(ba_map[r_idx], pass_mode=pass_mode)
+            corr_ab[r_idx] = 1.0 if (v_ab is not None and v_ab == gold_key) else 0.0
+            corr_ba[r_idx] = 1.0 if (v_ba is not None and v_ba == gold_key) else 0.0
+        mean_ab = sum(corr_ab.values()) / k
+        mean_ba = sum(corr_ba.values()) / k
+        strict_product = mean_ab * mean_ba
+        joint_repeat_rate = sum(
+            1.0 for r_idx in rep_indices if corr_ab[r_idx] == 1.0 and corr_ba[r_idx] == 1.0
+        ) / k
+        per_item_order_mean[(iid, "AB")] = mean_ab
+        per_item_order_mean[(iid, "BA")] = mean_ba
+        per_item[iid] = {
+            "mean_ab": mean_ab,
+            "mean_ba": mean_ba,
+            "strict_score": strict_product,
+            "joint_repeat_rate": joint_repeat_rate,
+            "repeats_n": k,
+        }
+
+    items_n = len(per_item)
+    mean_strict = (sum(v["strict_score"] for v in per_item.values()) / items_n) if items_n else 0.0
+    mean_joint = (sum(v["joint_repeat_rate"] for v in per_item.values()) / items_n) if items_n else 0.0
+    return {
+        "per_item_order_mean": per_item_order_mean,
+        "per_item": per_item,
+        "items_n": items_n,
+        "mean_strict_score": round(mean_strict, 6),
+        "mean_joint_repeat_rate": round(mean_joint, 6),
+        "canary_rows_excluded": canary_rows_excluded,
+    }
+
+
 def _write_sealed_scored_rows(
     sealed_jsonl_path: Path,
     sealed_csv_path: Path,
@@ -2265,6 +2359,8 @@ def _write_sealed_scored_rows(
     ]
     if any("pass_mode" in r for r in rows):
         fieldnames += ["pass_mode", "three_way_label"]
+    if any("repeat_index" in r for r in rows):
+        fieldnames += ["repeat_index"]
     with sealed_csv_path.open("w", encoding="utf-8", newline="") as cf:
         writer = csv.DictWriter(cf, fieldnames=fieldnames)
         writer.writeheader()
@@ -2480,7 +2576,7 @@ def score_bakeoff_outputs(
     all_sealed_rows: list[dict[str, Any]] = []
 
     for rf in binary_row_files:
-        raw_rows = rows_by_file[rf]
+        raw_rows = [r for r in rows_by_file[rf] if not _is_canary_row(r)]
         if not raw_rows:
             raise _refuse_zero_scored(rf, judge_id=None, keys_n=len(keys_by_id))
         judge_id = str(raw_rows[0]["judge_id"])
@@ -2659,7 +2755,11 @@ def score_bakeoff_outputs(
     three_way_summaries: list[dict[str, Any]] = []
     three_way_dev_summaries: list[dict[str, Any]] = []
     for twf in three_way_row_files:
-        tw_rows = rows_by_file[twf]
+        tw_rows_raw = rows_by_file[twf]
+        if not tw_rows_raw:
+            raise _refuse_zero_scored(twf, judge_id=None, keys_n=len(keys_by_id))
+        canary_excluded_count = sum(1 for r in tw_rows_raw if _is_canary_row(r))
+        tw_rows = [r for r in tw_rows_raw if not _is_canary_row(r)]
         if not tw_rows:
             raise _refuse_zero_scored(twf, judge_id=None, keys_n=len(keys_by_id))
         j_id = str(tw_rows[0]["judge_id"])
@@ -2672,6 +2772,117 @@ def score_bakeoff_outputs(
                 f"Rows file '{twf.name}' names pass mode '{tw_mode}' but holds rows with pass_mode {row_modes}.",
                 "Score each 3-way pass from the rows file its judge child wrote; never rename a rows file to another arm.",
             )
+        has_repeats = len(tw_rows) > len({(str(r["item_id"]), str(r["order"])) for r in tw_rows}) or any(
+            int(r.get("repeat_index", 0) or 0) > 0 for r in tw_rows
+        )
+        if has_repeats:
+            dev_rep_rows: list[Mapping[str, Any]] = []
+            test_rep_rows: list[Mapping[str, Any]] = []
+            for r in tw_rows:
+                rec = keys_by_id.get(str(r["item_id"]))
+                if rec is None or rec.split not in ("dev", "test"):
+                    continue
+                valid_label = _three_way_valid_verdict(r, pass_mode=tw_mode)
+                label = r.get("raw_verdict")
+                all_sealed_rows.append(
+                    {
+                        "judge_id": j_id,
+                        "judge_label": r.get("judge_label", j_id),
+                        "item_id": rec.item_id,
+                        "order": str(r["order"]),
+                        "key": rec.key,
+                        "key_source": rec.key_source,
+                        "verdict": label,
+                        "correct": valid_label is not None and valid_label == rec.key,
+                        "confidence": r.get("confidence"),
+                        "seconds": r.get("seconds"),
+                        "vram_peak_mib": r.get("vram_peak_mib"),
+                        "prompt_sha256": r.get("prompt_sha256"),
+                        "model_digest": r.get("model_digest"),
+                        "split": rec.split,
+                        "class": rec.item_class,
+                        "closure": rec.closure,
+                        "value_set_id": rec.value_set_id,
+                        "triad_id": rec.triad_id,
+                        "threshold_rule": None,
+                        "done_reason": r.get("done_reason"),
+                        "pass_mode": tw_mode,
+                        "three_way_label": label,
+                        "repeat_index": int(r.get("repeat_index", 0) or 0),
+                    }
+                )
+                if rec.split == "dev":
+                    dev_rep_rows.append(r)
+                else:
+                    test_rep_rows.append(r)
+            if not dev_rep_rows and not test_rep_rows:
+                raise _refuse_zero_scored(twf, judge_id=j_id, keys_n=len(keys_by_id))
+
+            def _summarize_repeat_split(split_rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+                rep_scored = score_repeated_three_way_rows(split_rows, keys_by_id, pass_mode=tw_mode)
+                per_item_scores = rep_scored["per_item"]
+                per_class_vals: dict[str, list[dict[str, Any]]] = {c: [] for c in THREE_WAY_LABELS}
+                for iid_s, p_info in per_item_scores.items():
+                    cls_name = keys_by_id[iid_s].key
+                    if cls_name in per_class_vals:
+                        per_class_vals[cls_name].append(p_info)
+                return {
+                    "items_n": rep_scored["items_n"],
+                    "repeats_n": max((int(v["repeats_n"]) for v in per_item_scores.values()), default=0),
+                    "mean_strict_score": rep_scored["mean_strict_score"],
+                    "mean_joint_repeat_rate": rep_scored["mean_joint_repeat_rate"],
+                    "per_class_strict_mean": {
+                        c: {
+                            "n": len(vals),
+                            "mean_strict_score": (
+                                round(sum(v["strict_score"] for v in vals) / len(vals), 6) if vals else None
+                            ),
+                            "mean_joint_repeat_rate": (
+                                round(sum(v["joint_repeat_rate"] for v in vals) / len(vals), 6) if vals else None
+                            ),
+                        }
+                        for c, vals in per_class_vals.items()
+                    },
+                }
+
+            repeat_scoring_by_split = {
+                "test": _summarize_repeat_split(test_rep_rows),
+                "dev": _summarize_repeat_split(dev_rep_rows),
+                "pooled": _summarize_repeat_split([*dev_rep_rows, *test_rep_rows]),
+            }
+            arm_field_rep: dict[str, Any] = {} if tw_mode == "three_way" else {"pass_mode": tw_mode}
+            test_rep = repeat_scoring_by_split["test"]
+            dev_rep = repeat_scoring_by_split["dev"]
+            three_way_summaries.append(
+                {
+                    "judge_id": j_id,
+                    **arm_field_rep,
+                    "three_way_accuracy": {
+                        "point": test_rep["mean_strict_score"],
+                        "low": test_rep["mean_strict_score"],
+                        "high": test_rep["mean_strict_score"],
+                        "n": test_rep["items_n"],
+                    },
+                    "repeat_scoring_by_split": repeat_scoring_by_split,
+                    **({"canary_rows_excluded": canary_excluded_count} if canary_excluded_count else {}),
+                }
+            )
+            three_way_dev_summaries.append(
+                {
+                    "judge_id": j_id,
+                    **arm_field_rep,
+                    "three_way_accuracy": {
+                        "point": dev_rep["mean_strict_score"],
+                        "low": dev_rep["mean_strict_score"],
+                        "high": dev_rep["mean_strict_score"],
+                        "n": dev_rep["items_n"],
+                    },
+                    "repeat_scoring": dev_rep,
+                    **({"canary_rows_excluded": canary_excluded_count} if canary_excluded_count else {}),
+                }
+            )
+            continue
+
         by_item_ord: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
         for r in tw_rows:
             by_item_ord[str(r["item_id"])][str(r["order"])] = r
@@ -2726,6 +2937,8 @@ def score_bakeoff_outputs(
                 "dev": _two_question_report(tw_scored["dev"]),
                 "pooled": _two_question_report([*tw_scored["dev"], *tw_scored["test"]]),
             }
+        if canary_excluded_count:
+            arm_reports["canary_rows_excluded"] = canary_excluded_count
         three_way_summaries.append(
             {
                 "judge_id": j_id,
@@ -2742,6 +2955,7 @@ def score_bakeoff_outputs(
                 **arm_field,
                 "three_way_accuracy": wilson_interval(tw_corr_dev, tw_tot_dev),
                 "breakdown": tw_breakdown_by_split["dev"],
+                **({"canary_rows_excluded": canary_excluded_count} if canary_excluded_count else {}),
             }
         )
 

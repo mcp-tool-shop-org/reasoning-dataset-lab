@@ -1326,6 +1326,9 @@ try:
     vm_judges.validate_qwen36_seed_variant(
         judge_ids=judge_order_t,
     )
+    vm_judges.validate_qwen36_options(
+        judge_ids=judge_order_t,
+    )
     vm_judges.validate_stub_exercise_elephant_install(
         mode,
         os.environ.get("RDLAB_STUB_EXERCISE_ELEPHANT_INSTALL", None),
@@ -1713,6 +1716,15 @@ build_exec_env_args() {
   fi
   if [[ -n "${RDLAB_QWEN36_SEED_VARIANT+x}" ]] && [[ -n "${RDLAB_QWEN36_SEED_VARIANT}" ]]; then
     EXEC_ENV_ARGS+=(--env "RDLAB_QWEN36_SEED_VARIANT=$RDLAB_QWEN36_SEED_VARIANT")
+  fi
+  if [[ -n "${RDLAB_QWEN36_ARM+x}" ]] && [[ -n "${RDLAB_QWEN36_ARM}" ]]; then
+    EXEC_ENV_ARGS+=(--env "RDLAB_QWEN36_ARM=$RDLAB_QWEN36_ARM")
+  fi
+  if [[ -n "${RDLAB_QWEN36_REPEATS+x}" ]] && [[ -n "${RDLAB_QWEN36_REPEATS}" ]]; then
+    EXEC_ENV_ARGS+=(--env "RDLAB_QWEN36_REPEATS=$RDLAB_QWEN36_REPEATS")
+  fi
+  if [[ -n "${RDLAB_QWEN36_CANARY_CALLS+x}" ]] && [[ -n "${RDLAB_QWEN36_CANARY_CALLS}" ]]; then
+    EXEC_ENV_ARGS+=(--env "RDLAB_QWEN36_CANARY_CALLS=$RDLAB_QWEN36_CANARY_CALLS")
   fi
   if [[ -n "${RDLAB_VLLM_LOCK_SHA256+x}" ]] && [[ -n "${RDLAB_VLLM_LOCK_SHA256}" ]]; then
     EXEC_ENV_ARGS+=(--env "RDLAB_VLLM_LOCK_SHA256=$RDLAB_VLLM_LOCK_SHA256")

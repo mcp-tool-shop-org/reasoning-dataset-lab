@@ -2630,7 +2630,7 @@ def test_qwen36_unsharded_fresh_run_unchanged_against_cb2863aa(
         "1fd11fc08383bd62b9b98b146da25b5b1ff7b730f00745567dec0a3d5ed2d0d7",
         "c3692b55c33429e1c5eaa5fcdc5ea225c82f1b845908c27abb0a91894b895f1a",
     ]
-    expected_norm_row_shas = [
+    expected_norm_row_shas_adf5843 = [
         "e40852dafc53225ad967112a40011f64db8375ac9e5360dd7454b795f7eeb2c6",
         "36f1a2fc2ac252bfac35cfd6e82c97da2bfd8156f58828b0a57fd7033c35f125",
         "8fb9a59b4118391d6addf348cdbf748d065dd36f81990cf3c0b50452a40f3a01",
@@ -2639,9 +2639,11 @@ def test_qwen36_unsharded_fresh_run_unchanged_against_cb2863aa(
         "0c70607f52495e03c154d05a5590db9f9dcc5dc7d0e248a6d147214a9a506841",
     ]
     actual_cb2863aa_compat_shas: list[str] = []
-    actual_norm_shas: list[str] = []
+    actual_adf5843_compat_shas: list[str] = []
     actual_raw_shas: list[str] = []
     for r in rows:
+        assert r["arm"] == "thinking"
+        assert r["library_pins"]["arm"] == "thinking"
         body = {k: v for k, v in r.items() if k != "row_sha256"}
         body_canon = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
         raw_sha = hashlib.sha256(body_canon.encode("utf-8")).hexdigest()
@@ -2650,10 +2652,14 @@ def test_qwen36_unsharded_fresh_run_unchanged_against_cb2863aa(
         pins = dict(body["library_pins"])
         for env_key in ("python", "deterministic_algorithms", "sdpa_backend"):
             pins[env_key] = "<env>"
-        body["library_pins"] = pins
-        norm_canon = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-        actual_norm_shas.append(hashlib.sha256(norm_canon.encode("utf-8")).hexdigest())
-        compat_pins = dict(pins)
+        pins_adf5843 = dict(pins)
+        pins_adf5843.pop("arm", None)
+        body_adf5843 = dict(body)
+        body_adf5843.pop("arm", None)
+        body_adf5843["library_pins"] = pins_adf5843
+        adf5843_canon = json.dumps(body_adf5843, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        actual_adf5843_compat_shas.append(hashlib.sha256(adf5843_canon.encode("utf-8")).hexdigest())
+        compat_pins = dict(pins_adf5843)
         for added_key in (
             "max_num_seqs",
             "max_num_batched_tokens",
@@ -2662,17 +2668,18 @@ def test_qwen36_unsharded_fresh_run_unchanged_against_cb2863aa(
             "resolved_engine_config",
         ):
             compat_pins.pop(added_key, None)
-        body_compat = dict(body)
+        body_compat = dict(body_adf5843)
         body_compat["library_pins"] = compat_pins
         compat_canon = json.dumps(body_compat, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
         actual_cb2863aa_compat_shas.append(hashlib.sha256(compat_canon.encode("utf-8")).hexdigest())
     assert actual_cb2863aa_compat_shas == expected_norm_row_shas_cb2863aa
-    assert actual_norm_shas == expected_norm_row_shas
+    assert actual_adf5843_compat_shas == expected_norm_row_shas_adf5843
 
     rows_sha = hashlib.sha256(row_bytes).hexdigest()
     done_doc = json.loads(done_file.read_text(encoding="utf-8"))
     assert sorted(done_doc.keys()) == [
         "aborted_count",
+        "arm",
         "bytes",
         "call_seconds_quantiles",
         "calls_count",
@@ -2681,25 +2688,32 @@ def test_qwen36_unsharded_fresh_run_unchanged_against_cb2863aa(
         "device",
         "discarded_incomplete_item_ids",
         "dtype",
+        "duplicate_canary_calls",
+        "duplicate_canary_letter_diff_count",
         "elapsed_seconds",
         "fill_uninitialized_memory",
+        "generated_length_quantiles",
         "items_count",
         "judge_id",
         "length_stop_count",
         "load_wall_seconds",
         "load_wall_seconds_history",
+        "long_reply_count",
         "max_new_tokens",
         "parsed_count",
         "pass_mode",
         "probs_missing_count",
+        "repeats",
         "row_count",
         "row_sha256s",
         "rows_file",
+        "seed_derivation",
         "seed_variant",
         "session_fingerprint_sha256",
         "sha256",
         "shard_manifest_sha256",
         "shard_spec",
+        "text_before_letter_count",
         "thinking_length_quantiles",
         "total_seconds",
         "unparseable_count",
@@ -2707,6 +2721,11 @@ def test_qwen36_unsharded_fresh_run_unchanged_against_cb2863aa(
         "verified_recovery",
         "vram_peak_mib",
     ]
+    assert done_doc["arm"] == "thinking"
+    assert done_doc["repeats"] == 1
+    assert done_doc["seed_derivation"] == r"sha256_be31(item_id\x00order)"
+    assert done_doc["duplicate_canary_calls"] == 0
+    assert done_doc["duplicate_canary_letter_diff_count"] == 0
     assert done_doc["bytes"] == len(row_bytes)
     assert done_doc["sha256"] == rows_sha
     assert done_doc["row_sha256s"] == actual_raw_shas
@@ -2716,6 +2735,7 @@ def test_qwen36_unsharded_fresh_run_unchanged_against_cb2863aa(
     assert sorted(res.keys()) == [
         "aborted_count",
         "anchor_item_ids",
+        "arm",
         "attn_implementation",
         "call_seconds_quantiles",
         "calls_count",
@@ -2725,8 +2745,11 @@ def test_qwen36_unsharded_fresh_run_unchanged_against_cb2863aa(
         "device",
         "discarded_incomplete_item_ids",
         "dtype",
+        "duplicate_canary_calls",
+        "duplicate_canary_letter_diff_count",
         "elapsed_seconds",
         "fill_uninitialized_memory",
+        "generated_length_quantiles",
         "generations_path",
         "items_count",
         "judge_done_path",
@@ -2735,11 +2758,13 @@ def test_qwen36_unsharded_fresh_run_unchanged_against_cb2863aa(
         "length_stop_count",
         "load_wall_seconds",
         "load_wall_seconds_history",
+        "long_reply_count",
         "max_new_tokens",
         "model_digest",
         "parsed_count",
         "pass_mode",
         "probs_missing_count",
+        "repeats",
         "repo_id",
         "revision",
         "row_count",
@@ -2749,11 +2774,13 @@ def test_qwen36_unsharded_fresh_run_unchanged_against_cb2863aa(
         "schedule_seed",
         "schedule_sha256",
         "sdpa_backend",
+        "seed_derivation",
         "seed_variant",
         "shard_item_ids",
         "shard_manifest_sha256",
         "shard_spec",
         "status",
+        "text_before_letter_count",
         "thinking_length_quantiles",
         "total_seconds",
         "unparseable_count",
@@ -2761,6 +2788,9 @@ def test_qwen36_unsharded_fresh_run_unchanged_against_cb2863aa(
         "verified_recovery",
         "vram_peak_mib",
     ]
+    assert res["arm"] == "thinking"
+    assert res["repeats"] == 1
+    assert res["seed_derivation"] == r"sha256_be31(item_id\x00order)"
     assert res["rows_sha256"] == rows_sha
     assert res["row_sha256s"] == actual_raw_shas
     assert res["seed_variant"] == "none"
