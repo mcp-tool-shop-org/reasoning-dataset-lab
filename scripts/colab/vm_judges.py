@@ -3151,7 +3151,9 @@ def _check_logprob_mass_one_mode(
             "items_jsonl_sha256": verified_pilot_identity.get("items_jsonl_sha256"),
         }
     row_files = sorted(
-        p for p in rows_dir.glob("*.jsonl") if not rows_filename_is_three_way(p.name)
+        p
+        for p in rows_dir.glob("*.jsonl")
+        if not rows_filename_is_three_way(p.name) and not p.name.endswith(".canary.jsonl")
     )
     if not row_files:
         raise RefusalError(
@@ -3886,12 +3888,16 @@ JUDGE_CUDA_HOME_MISSING = "JUDGE_CUDA_HOME_MISSING"
 JUDGE_JIT_SHIM_SYMLINK_FAILED = "JUDGE_JIT_SHIM_SYMLINK_FAILED"
 DEFAULT_UNIX_CUDA_HOME = Path("/usr/local/cuda")
 JUDGE_JIT_BUILD_ENTERED_MARKER_LINE = "JUDGE_JIT_BUILD_ENTERED: runtime compilation forbidden on judge pod"
+QWEN36_NOTHINK_PROMPT_SUFFIX_MISMATCH = "QWEN36_NOTHINK_PROMPT_SUFFIX_MISMATCH"
+QWEN36_NOTHINK_THINK_TAG_GENERATED = "QWEN36_NOTHINK_THINK_TAG_GENERATED"
 QWEN36_NAMED_CHILD_STOP_CODES: tuple[str, ...] = (
     "JUDGE_JIT_BUILD_ENTERED",
     "JUDGE_PREBUILT_KERNELS_MISSING",
     "JUDGE_CUDA_HOME_MISSING",
     "JUDGE_GPU_COMPUTE_CAP_MISMATCH",
     JUDGE_JIT_SHIM_SYMLINK_FAILED,
+    QWEN36_NOTHINK_PROMPT_SUFFIX_MISMATCH,
+    QWEN36_NOTHINK_THINK_TAG_GENERATED,
 )
 
 
@@ -9230,6 +9236,9 @@ def _run_judges_pipeline_body(
     validate_qwen36_seed_variant(
         judge_ids=[jid for jid, _ in selected_specs],
     )
+    validate_qwen36_options(
+        judge_ids=[jid for jid, _ in selected_specs],
+    )
     stub_exercise_elephant = validate_stub_exercise_elephant_install(
         norm_mode,
         judge_ids=[jid for jid, _ in selected_specs],
@@ -10155,6 +10164,28 @@ def _run_judges_pipeline_body(
             per_judge_metrics[pass_key_j]["max_new_tokens"] = done_doc["max_new_tokens"]
         if "seed_variant" in done_doc:
             per_judge_metrics[pass_key_j]["seed_variant"] = done_doc["seed_variant"]
+        for extra_q36_key in (
+            "arm",
+            "repeats",
+            "seed_derivation",
+            "generated_length_quantiles",
+            "long_reply_count",
+            "text_before_letter_count",
+            "duplicate_canary_calls",
+            "duplicate_canary_failed_calls",
+            "duplicate_canary_letter_diff_count",
+            "duplicate_canary_row_count",
+            "duplicate_canary_rows_file",
+            "duplicate_canary_rows_sha256",
+            "duplicate_canary_counts_by_state",
+            "empty_closed_think_token_ids",
+            "think_tag_token_ids",
+            "prompt_suffix_checked_count",
+            "prompt_suffix_mismatch_count",
+            "generated_think_tag_count",
+        ):
+            if extra_q36_key in done_doc:
+                per_judge_metrics[pass_key_j][extra_q36_key] = done_doc[extra_q36_key]
         if done_doc.get("thinking_length_quantiles") is not None:
             per_judge_metrics[pass_key_j]["thinking_length_quantiles"] = done_doc["thinking_length_quantiles"]
         if done_doc.get("call_seconds_quantiles") is not None:
@@ -17424,6 +17455,11 @@ def main(argv: list[str] | None = None) -> int:
             judge_ids=judge_order,
         )
 
+        current_step = "validate_qwen36_options"
+        validate_qwen36_options(
+            judge_ids=judge_order,
+        )
+
         current_step = "validate_stub_exercise_elephant_install_plan"
         validate_stub_exercise_elephant_install(
             args.mode,
@@ -18807,6 +18843,17 @@ QWEN36_MAX_NEW_TOKENS_ENV_VAR = "RDLAB_QWEN36_MAX_NEW_TOKENS"
 QWEN36_SEED_VARIANT_ENV_VAR = "RDLAB_QWEN36_SEED_VARIANT"
 QWEN36_SEED_VARIANT_UNSET = "none"
 QWEN36_SEED_VARIANT_PATTERN = re.compile(r"\A[a-z0-9][a-z0-9_-]{0,31}\Z")
+QWEN36_ARM_ENV_VAR = "RDLAB_QWEN36_ARM"
+QWEN36_DEFAULT_ARM = "thinking"
+QWEN36_VALID_ARMS: tuple[str, ...] = (
+    "thinking",
+    "nothink-greedy",
+    "nothink-card",
+    "nothink-matched",
+)
+QWEN36_REPEATABLE_ARMS: tuple[str, ...] = ("nothink-card", "nothink-matched")
+QWEN36_REPEATS_ENV_VAR = "RDLAB_QWEN36_REPEATS"
+QWEN36_CANARY_CALLS_ENV_VAR = "RDLAB_QWEN36_CANARY_CALLS"
 # d3-mini's gate SHA is the reviewed bd0090dd. d3-flash's is its own pin: its eight remote-code files are byte-identical
 # to d3-mini's reviewed ones (R&D, 2026-11-15), and the d3 transport re-proves that from the receipts at every load.
 # d3's is its own pin too: seven files byte-identical to d3-mini's, and d3_runtime.py checked against its own reviewed
@@ -19469,6 +19516,93 @@ def validate_qwen36_seed_variant(
             f"{QWEN36_SEED_VARIANT_ENV_VAR}={raw!r} is only supported for {QWEN36_JUDGE_ID!r}, not {(unsupported or ['default bakeoff judges'])!r}.",
         )
     return raw
+
+
+def validate_qwen36_options(
+    *,
+    judge_ids: Sequence[str] | None = None,
+    env: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Validate `RDLAB_QWEN36_ARM`, `RDLAB_QWEN36_REPEATS`, and `RDLAB_QWEN36_CANARY_CALLS` before launch/run."""
+    source = os.environ if env is None else env
+    raw_arm = str(source.get(QWEN36_ARM_ENV_VAR, "") or "").strip()
+    if raw_arm and raw_arm not in QWEN36_VALID_ARMS:
+        raise RefusalError(
+            "QWEN36_ARM_INVALID",
+            f"{QWEN36_ARM_ENV_VAR} must be one of {list(QWEN36_VALID_ARMS)}, got {raw_arm!r}.",
+        )
+    arm = raw_arm or QWEN36_DEFAULT_ARM
+
+    raw_repeats = str(source.get(QWEN36_REPEATS_ENV_VAR, "") or "").strip()
+    if raw_repeats:
+        try:
+            repeats = int(raw_repeats)
+        except ValueError as exc:
+            raise RefusalError(
+                "QWEN36_REPEATS_INVALID",
+                f"{QWEN36_REPEATS_ENV_VAR} must be an integer in [1, 8], got {raw_repeats!r}.",
+            ) from exc
+        if repeats < 1 or repeats > 8:
+            raise RefusalError(
+                "QWEN36_REPEATS_INVALID",
+                f"{QWEN36_REPEATS_ENV_VAR} must be in [1, 8], got {repeats}.",
+            )
+    else:
+        repeats = 1
+    raw_canary = str(source.get(QWEN36_CANARY_CALLS_ENV_VAR, "") or "").strip()
+    if not raw_canary:
+        canary_calls = 0
+    else:
+        try:
+            canary_calls = int(raw_canary)
+        except ValueError as exc:
+            raise RefusalError(
+                "QWEN36_CANARY_CALLS_INVALID",
+                f"{QWEN36_CANARY_CALLS_ENV_VAR} must be an even integer in [0, 64], got {raw_canary!r}.",
+            ) from exc
+        if canary_calls < 0 or canary_calls > 64 or (canary_calls % 2) != 0:
+            raise RefusalError(
+                "QWEN36_CANARY_CALLS_INVALID",
+                f"{QWEN36_CANARY_CALLS_ENV_VAR} must be an even integer in [0, 64], got {canary_calls}.",
+            )
+
+    selected = (
+        judge_ids
+        if judge_ids is not None
+        else gate_selected_judge_ids(
+            raw_only_judges=source.get("RDLAB_ONLY_JUDGES"),
+            raw_plan=source.get(JUDGE_PASS_MODES_ENV_VAR),
+            from_env=False,
+        )
+    )
+    target_ids = [str(j) for j in selected]
+    unsupported = [jid for jid in target_ids if jid != QWEN36_JUDGE_ID]
+    if raw_arm and (not target_ids or unsupported):
+        raise RefusalError(
+            "QWEN36_ARM_UNSUPPORTED_JUDGE",
+            f"{QWEN36_ARM_ENV_VAR}={raw_arm!r} is only supported for {QWEN36_JUDGE_ID!r}, not {(unsupported or ['default bakeoff judges'])!r}.",
+        )
+    if raw_repeats and (not target_ids or unsupported):
+        raise RefusalError(
+            "QWEN36_REPEATS_UNSUPPORTED_JUDGE",
+            f"{QWEN36_REPEATS_ENV_VAR}={raw_repeats!r} is only supported for {QWEN36_JUDGE_ID!r}, not {(unsupported or ['default bakeoff judges'])!r}.",
+        )
+    if raw_canary and (not target_ids or unsupported):
+        raise RefusalError(
+            "QWEN36_CANARY_UNSUPPORTED_JUDGE",
+            f"{QWEN36_CANARY_CALLS_ENV_VAR}={raw_canary!r} is only supported for {QWEN36_JUDGE_ID!r}, not {(unsupported or ['default bakeoff judges'])!r}.",
+        )
+    if repeats > 1 and arm not in QWEN36_REPEATABLE_ARMS:
+        raise RefusalError(
+            "QWEN36_REPEATS_UNSUPPORTED_ARM",
+            f"{QWEN36_REPEATS_ENV_VAR}={repeats} (> 1) is only allowed for {list(QWEN36_REPEATABLE_ARMS)}, not arm {arm!r}.",
+        )
+    if canary_calls > 0 and arm != "nothink-greedy":
+        raise RefusalError(
+            "QWEN36_CANARY_UNSUPPORTED_ARM",
+            f"{QWEN36_CANARY_CALLS_ENV_VAR}={canary_calls} (> 0) is only supported on arm 'nothink-greedy', not {arm!r}.",
+        )
+    return {"arm": arm, "repeats": repeats, "canary_calls": canary_calls}
 
 
 def _judge_passes(

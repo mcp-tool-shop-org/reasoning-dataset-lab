@@ -301,3 +301,11 @@ def three_way_mode_of_rows_filename(name: str) -> str | None:
 def rows_filename_is_three_way(name: str) -> bool:
     """True for a 3-way pass's rows file name (`<judge>.<three-way mode>.jsonl`)."""
     return three_way_mode_of_rows_filename(name) is not None
+
+
+CANARY_ROWS_SUFFIX = ".canary.jsonl"
+
+
+def rows_filename_is_canary(name: str) -> bool:
+    """True for duplicate canary row files (`<judge_id>.<pass_mode>.canary.jsonl`)."""
+    return name.endswith(CANARY_ROWS_SUFFIX)

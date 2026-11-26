@@ -23,6 +23,7 @@ from reasoning_dataset_lab.pilot_b.three_way_wording import (
     PASS_MODE_CHOICES,
     judge_done_filename_for_pass,
     rows_filename_for_pass,
+    rows_filename_is_canary,
     three_way_mode_of_rows_filename,
 )
 
@@ -248,7 +249,11 @@ def read_outcome_unverified_passes(run_dir: Path) -> list[dict[str, str]]:
                 pmode = three_way_mode_of_rows_filename(rf.name) or "binary"
                 suffix = f".{pmode}.jsonl" if pmode != "binary" else ".jsonl"
                 jid = rf.name[: -len(suffix)]
-                if rf.is_symlink() or not rf.is_file() or not _is_safe_unverified_token(jid):
+                if rf.is_symlink() or not rf.is_file():
+                    raise ValueError(f"invalid rows entry {rf.name!r} in '{rows_dir}'")
+                if rows_filename_is_canary(rf.name):
+                    continue
+                if not _is_safe_unverified_token(jid):
                     raise ValueError(f"invalid rows entry {rf.name!r} in '{rows_dir}'")
                 done_file = judge_done_filename_for_pass(jid, pmode)
                 done_stem = done_file[: -len(".json")]
