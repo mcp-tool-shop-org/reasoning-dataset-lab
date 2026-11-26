@@ -10172,6 +10172,7 @@ def _run_judges_pipeline_body(
             "long_reply_count",
             "text_before_letter_count",
             "duplicate_canary_calls",
+            "duplicate_canary_failed_calls",
             "duplicate_canary_letter_diff_count",
             "duplicate_canary_row_count",
             "duplicate_canary_rows_file",

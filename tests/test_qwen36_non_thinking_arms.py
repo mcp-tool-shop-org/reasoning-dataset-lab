@@ -328,7 +328,10 @@ def _setup_fake_vllm_env(
             state["generate_calls"] += 1
             state["prompts"].extend(prompts)
             state["sampling_params"].append(sampling_params)
-            return [next(call_iter)]
+            nxt = next(call_iter)
+            if isinstance(nxt, BaseException):
+                raise nxt
+            return [nxt]
 
     class _FakeSP:
         def __init__(self, **kwargs: Any) -> None:
@@ -1973,3 +1976,201 @@ def test_duplicate_canary_sharded_pool_and_separate_file_and_generations_arm(
     ]
     assert {g["arm"] for g in gens_mu} == {"mu-judge"}
     assert all("qwen36_arm" not in g for g in gens_mu)
+
+
+def test_fix2_canary_exclusion_globs_and_failed_canary_count(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _clear_qwen36_env(monkeypatch)
+    items = _synth_items(4, prefix="eval-fix2")
+    items_path = _write_items_jsonl(tmp_path / "items.jsonl", items)
+    keys_path = tmp_path / "eval_keys.sealed.jsonl"
+    keys_path.write_text(
+        "\n".join(
+            json.dumps(
+                {
+                    "id": it.item_id,
+                    "triad_id": f"T-{idx // 3}",
+                    "key": ("supported", "unsupported", "cannot_tell")[idx % 3],
+                    "class": ("supported", "unsupported", "cannot_tell")[idx % 3],
+                    "key_source": "construction",
+                    "value_set_id": "vs1",
+                    "closure": "open",
+                    "split": "dev" if idx < 3 else "test",
+                },
+                sort_keys=True,
+            )
+            for idx, it in enumerate(sorted(items, key=lambda x: x.item_id))
+        )
+        + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    monkeypatch.setenv(bakeoff_judge.QWEN36_ARM_ENV_VAR, "nothink-greedy")
+    monkeypatch.setenv(bakeoff_judge.QWEN36_CANARY_CALLS_ENV_VAR, "4")
+    out_with_can = tmp_path / "out_with_can"
+    run_bakeoff_judge(
+        part_dir=items_path,
+        output_dir=out_with_can,
+        judge=QWEN36_ID,
+        pass_mode=CONTRA,
+        fake_transport=True,
+        schedule_seed=42,
+        shard_spec="1/1",
+        window_mode="stub",
+        run_canary=False,
+    )
+    canary_path = out_with_can / "rows" / f"{QWEN36_ID}.{CONTRA}.canary.jsonl"
+    assert canary_path.is_file()
+    (out_with_can / "outcome.draft.json").write_text(
+        json.dumps(
+            {
+                "outcome": "ok",
+                "judges_completed": [QWEN36_ID],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    from reasoning_dataset_lab.pilot_b.run_records import collect_run_unverified_passes
+
+    assert collect_run_unverified_passes(out_with_can) == []
+    closed_doc = close_bakeoff_outputs(out_with_can)
+    assert f"rows/{QWEN36_ID}.{CONTRA}.canary.jsonl" in closed_doc["files"]
+    scored = score_bakeoff_outputs(
+        judge_output_dir=out_with_can,
+        keys_path=keys_path,
+        public_out_path=tmp_path / "pub.json",
+        sealed_rows_out_path=tmp_path / "sealed.sealed.jsonl",
+    )
+    assert scored["status"] == "ok"
+
+    # Compare telemetry selection and golden anchor manifest with vs without .canary.jsonl.
+    out_without_can = tmp_path / "out_without_can"
+    shutil.copytree(out_with_can, out_without_can)
+    (out_without_can / "rows" / f"{QWEN36_ID}.{CONTRA}.canary.jsonl").unlink()
+
+    ids_with, tel_with = bakeoff_judge.select_lock_check_low_margin_anchors(
+        items, out_with_can, low_margin_count=2
+    )
+    ids_without, tel_without = bakeoff_judge.select_lock_check_low_margin_anchors(
+        items, out_without_can, low_margin_count=2
+    )
+    assert ids_with == ids_without
+    assert tel_with == tel_without
+
+    rows_ids_with, rows_tel_with = bakeoff_judge.select_lock_check_low_margin_anchors(
+        items, out_with_can / "rows", low_margin_count=2
+    )
+    rows_ids_without, rows_tel_without = bakeoff_judge.select_lock_check_low_margin_anchors(
+        items, out_without_can / "rows", low_margin_count=2
+    )
+    assert rows_ids_with == rows_ids_without
+    assert rows_tel_with == rows_tel_without
+
+    man_with = bakeoff_judge._build_golden_anchor_manifest_impl(
+        out_with_can,
+        items_or_path=items_path,
+        anchor_count=2,
+        stratified_anchor_count=1,
+        low_margin_anchor_count=1,
+    )
+    man_without = bakeoff_judge._build_golden_anchor_manifest_impl(
+        out_without_can,
+        items_or_path=items_path,
+        anchor_count=2,
+        stratified_anchor_count=1,
+        low_margin_anchor_count=1,
+    )
+    assert man_with["low_margin_telemetry_sha256"] == man_without["low_margin_telemetry_sha256"]
+    assert man_with["golden_anchor_manifest_sha256"] == man_without["golden_anchor_manifest_sha256"]
+    assert man_with["row_count"] == man_without["row_count"]
+
+    # Fake engine failing 1 of 4 canary calls records a failed_to_run canary row, excludes it from
+    # duplicate_canary_calls (3 instead of 4), and reports duplicate_canary_failed_calls == 1.
+    main_count = len(items) * 2
+    failing_responses: list[Any] = [
+        _req_out(_nothink_comp("A"), prompt_token_ids=[102, 41, 248068, 271, 248069, 271])
+        for _ in range(main_count + 2)
+    ]
+    failing_responses.append(RuntimeError("simulated canary failure"))
+    failing_responses.append(
+        _req_out(_nothink_comp("A"), prompt_token_ids=[102, 41, 248068, 271, 248069, 271])
+    )
+    env_fail = _setup_fake_vllm_env(tmp_path / "fail_env", monkeypatch, responses=failing_responses)
+    monkeypatch.setenv(bakeoff_judge.QWEN36_ARM_ENV_VAR, "nothink-greedy")
+    monkeypatch.setenv(bakeoff_judge.QWEN36_CANARY_CALLS_ENV_VAR, "4")
+    monkeypatch.setenv(bakeoff_judge.QWEN36_MAX_NEW_TOKENS_ENV_VAR, "512")
+
+    fail_dir = tmp_path / "out_canary_fail"
+    fail_transport = bakeoff_judge.VllmJudgeTransport(
+        receipts_dir=env_fail["receipts_dir"],
+        hf_home=env_fail["hf_home"],
+        device="cpu",
+        window_mode="time-one",
+    )
+    try:
+        res_fail = run_bakeoff_judge(
+            part_dir=items_path,
+            output_dir=fail_dir,
+            judge=QWEN36_ID,
+            pass_mode=CONTRA,
+            transport=fail_transport,
+            schedule_seed=42,
+            shard_spec="1/1",
+            window_mode="time-one",
+            run_canary=False,
+        )
+    finally:
+        fail_transport.close_build_guard()
+
+    assert res_fail["duplicate_canary_calls"] == 3
+    assert res_fail["duplicate_canary_row_count"] == 3
+    assert res_fail["duplicate_canary_failed_calls"] == 1
+    assert sum(res_fail["duplicate_canary_counts_by_state"].values()) == 3
+    done_fail = json.loads(
+        (fail_dir / "judge_done" / f"{QWEN36_ID}.json").read_text(encoding="utf-8")
+    )
+    assert done_fail["duplicate_canary_calls"] == 3
+    assert done_fail["duplicate_canary_row_count"] == 3
+    assert done_fail["duplicate_canary_failed_calls"] == 1
+    assert collect_run_unverified_passes(fail_dir) == []
+
+    # Resuming with a succeeding engine retries only the 1 unresolved failed canary call.
+    retry_env = _setup_fake_vllm_env(
+        tmp_path / "retry_env",
+        monkeypatch,
+        responses=[_req_out(_nothink_comp("A"), prompt_token_ids=[102, 41, 248068, 271, 248069, 271])],
+    )
+    monkeypatch.setenv(bakeoff_judge.QWEN36_ARM_ENV_VAR, "nothink-greedy")
+    monkeypatch.setenv(bakeoff_judge.QWEN36_CANARY_CALLS_ENV_VAR, "4")
+    monkeypatch.setenv(bakeoff_judge.QWEN36_MAX_NEW_TOKENS_ENV_VAR, "512")
+    retry_transport = bakeoff_judge.VllmJudgeTransport(
+        receipts_dir=retry_env["receipts_dir"],
+        hf_home=retry_env["hf_home"],
+        device="cpu",
+        window_mode="time-one",
+    )
+    try:
+        res_retry = run_bakeoff_judge(
+            part_dir=items_path,
+            output_dir=fail_dir,
+            judge=QWEN36_ID,
+            pass_mode=CONTRA,
+            transport=retry_transport,
+            schedule_seed=42,
+            shard_spec="1/1",
+            window_mode="time-one",
+            run_canary=False,
+        )
+    finally:
+        retry_transport.close_build_guard()
+
+    assert retry_env["generate_calls"] == 1
+    assert res_retry["duplicate_canary_calls"] == 4
+    assert res_retry["duplicate_canary_row_count"] == 4
+    assert res_retry["duplicate_canary_failed_calls"] == 0

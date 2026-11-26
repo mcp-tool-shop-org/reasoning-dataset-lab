@@ -67,7 +67,7 @@ subprocess (`<venv>/bin/python -m reasoning_dataset_lab.pilot_b.bakeoff_judge`) 
   `repetition_penalty=1.0`; `nothink-matched`: aliases `QWEN36_THINKING_SAMPLING`), repeats (`RDLAB_QWEN36_REPEATS`,
   `1..8`, default `1`; `> 1` allowed only for `nothink-card` and `nothink-matched`, refusing `QWEN36_REPEATS_INVALID`,
   `QWEN36_REPEATS_UNSUPPORTED_ARM`, `QWEN36_REPEATS_UNSUPPORTED_JUDGE`), optional duplicate canary calls
-  (`RDLAB_QWEN36_CANARY_CALLS`, even `0..64`, default `0`, `nothink-greedy` only, selected from the sorted item IDs of the entire part and filtered to the current shard so shards partition the exact `N/2` sorted IDs in both orders, written separately to `rows/<judge_id>.<pass_mode>.canary.jsonl` marked `canary: true` and excluded from all scores and from `row_count`/`calls_count`, refusing `QWEN36_CANARY_CALLS_INVALID`,
+  (`RDLAB_QWEN36_CANARY_CALLS`, even `0..64`, default `0`, `nothink-greedy` only, selected from the sorted item IDs of the entire part and filtered to the current shard so shards partition the exact `N/2` sorted IDs in both orders, written separately to `rows/<judge_id>.<pass_mode>.canary.jsonl` marked `canary: true`, skipped by outcome unverified-pass checks, lock-check telemetry globs, golden anchor manifest reads, and `final_canary_rows` `failed_to_run` filtering so `duplicate_canary_calls` counts completed calls only while `merge_shards` leaves `.canary.jsonl` in each shard directory and per-shard receipts hold their counts including `duplicate_canary_failed_calls`, excluded from all scores and from `row_count`/`calls_count`, refusing `QWEN36_CANARY_CALLS_INVALID`,
   `QWEN36_CANARY_UNSUPPORTED_ARM`, `QWEN36_CANARY_UNSUPPORTED_JUDGE`, `QWEN36_CANARY_CALLS_EXCEEDS_ITEMS`),
   deterministic per-call seed from `(item_id, order)` (or `(item_id, order, seed_variant)` for `thinking`;
   `(item_id, order, arm, repeat_index[, seed_variant])` for repeatable non-thinking arms; `None` for
@@ -92,8 +92,8 @@ subprocess (`<venv>/bin/python -m reasoning_dataset_lab.pilot_b.bakeoff_judge`) 
   (`duplicate_canary_row_count`, `duplicate_canary_rows_file`, `duplicate_canary_rows_sha256`,
   `duplicate_canary_counts_by_state`) alongside `unparseable_count`, `aborted_count`,
   `verdict_disagreement_count`, `probs_missing_count`, `generated_length_quantiles` (`p50`, `p95`, `p99`, `max`),
-  `long_reply_count` (`> 64` tokens), `text_before_letter_count`, `duplicate_canary_calls`, and
-  `duplicate_canary_letter_diff_count`; the `92,000` MiB VRAM
+  `long_reply_count` (`> 64` tokens), `text_before_letter_count`, `duplicate_canary_calls`,
+  `duplicate_canary_failed_calls`, and `duplicate_canary_letter_diff_count`; the `92,000` MiB VRAM
   halt, `QWEN36_PROMPT_TOKEN_CAP (4096)`, `12 GiB` `venv-vllm` size, and install/startup seconds are unmeasured
   estimates to be measured on a stub GPU window).
 

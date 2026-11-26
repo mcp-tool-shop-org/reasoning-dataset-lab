@@ -78,7 +78,7 @@ from reasoning_dataset_lab.pilot_b.low_margin_fields import (
 
 OrderMode = Literal["AB", "BA"]
 from reasoning_dataset_lab.pilot_b.run_records import OUTCOME_DRAFT_FILENAME, REVERIFY_HINT_TEMPLATE, SYNTHETIC_ITEM_ID_PREFIX, UNVERIFIED_JUDGE_DONE_FILENAME, collect_run_unverified_passes, find_synthetic_in_run_dir, format_unverified_or_incomplete_refusal  # noqa: E501
-from reasoning_dataset_lab.pilot_b.three_way_wording import NLI_PASS_MODES, PASS_MODE_CHOICES, THREE_WAY_PASS_MODES, TWO_QUESTION_PASS_MODES, PassMode, judge_done_filename_for_pass, judge_supports_pass_mode, rows_filename_is_three_way, three_way_wording  # noqa: E501
+from reasoning_dataset_lab.pilot_b.three_way_wording import CANARY_ROWS_SUFFIX, NLI_PASS_MODES, PASS_MODE_CHOICES, THREE_WAY_PASS_MODES, TWO_QUESTION_PASS_MODES, PassMode, judge_done_filename_for_pass, judge_supports_pass_mode, rows_filename_is_canary, rows_filename_is_three_way, three_way_wording  # noqa: E501
 DoneReason = Literal["stop", "length", "abort", "error"]
 RowState = Literal["parsed", "unparseable", "length_stop", "aborted"]
 
@@ -2409,13 +2409,13 @@ def select_lock_check_low_margin_anchors(
     elif target.is_dir():
         rows_sub = target / ROWS_DIRNAME
         if rows_sub.is_dir():
-            telemetry_files = sorted(p for p in rows_sub.glob("*.jsonl") if p.is_file())
+            telemetry_files = sorted(p for p in rows_sub.glob("*.jsonl") if p.is_file() and not rows_filename_is_canary(p.name))
         if not telemetry_files:
             gen_cand = target / GENERATIONS_FILENAME
             if gen_cand.is_file():
                 telemetry_files = [gen_cand]
         if not telemetry_files:
-            telemetry_files = sorted(p for p in target.glob("*.jsonl") if p.is_file())
+            telemetry_files = sorted(p for p in target.glob("*.jsonl") if p.is_file() and not rows_filename_is_canary(p.name))
     if not telemetry_files:
         raise refused_error(
             "SHARD_MANIFEST_CANARY_TELEMETRY_MISSING",
@@ -4749,14 +4749,6 @@ def verify_pinned_pilot_part_dir(part_dir: Path | str | None) -> dict[str, str]:
     return {"part_id": pid, "part_json_sha256": part_json_sha, "items_jsonl_sha256": items_sha}
 
 
-CANARY_ROWS_SUFFIX = ".canary.jsonl"
-
-
-def rows_filename_is_canary(name: str) -> bool:
-    """True for duplicate canary row files (`<judge_id>.<pass_mode>.canary.jsonl`)."""
-    return name.endswith(CANARY_ROWS_SUFFIX)
-
-
 def check_bakeoff_logprob_mass(
     judge_output_dir: Path,
     *,
@@ -5921,11 +5913,50 @@ def _run_bakeoff_judge_impl(
 
             try:
                 resp = transport.generate(spec, prompt, seed=schedule.seed)
-            except Exception:
+            except Exception as exc:
                 hb_stop.set()
                 if hb_thread is not None:
                     hb_thread.join(timeout=1.0)
                 failed_elapsed = max(0.0001, time.monotonic() - t0)
+                if is_canary and not isinstance(exc, RdlabError):
+                    _append_child_progress_line(
+                        eff_progress_file,
+                        {
+                            "kind": "call_done",
+                            "judge_id": spec.judge_id,
+                            "device": device,
+                            "index": progress_call_idx,
+                            "item_index": item_idx,
+                            "order": call_order,
+                            "seconds": round(failed_elapsed, 6),
+                            "prompt_tokens": prompt_tokens_count,
+                            "output_tokens": 0,
+                            "state": "failed_to_run",
+                        },
+                        lock=progress_lock,
+                    )
+                    failed_canary_base: dict[str, Any] = {
+                        "judge_id": spec.judge_id,
+                        "judge_label": spec.judge_label,
+                        "item_id": item.item_id,
+                        "order": call_order,
+                        "pass_number": call_pass_number,
+                        "slot_index": call_slot_index,
+                        "pass_mode": pass_mode,
+                        "model_revision": spec.revision,
+                        "prompt_sha256": prompt.prompt_sha256,
+                        "shard_spec": eff_shard_spec,
+                        "session_fingerprint_sha256": eff_session_fp,
+                        "canary": True,
+                        "run_status": "failed_to_run",
+                        "error": str(exc),
+                        "seconds": round(failed_elapsed, 6),
+                        **({"synthetic_items": True} if synthetic_items else {}),
+                    }
+                    with canary_row_path.open("a", encoding="utf-8", newline="\n") as crf:
+                        crf.write(_canonical_json_line(_build_sealed_row_with_sha256(failed_canary_base)) + "\n")
+                        crf.flush()
+                    return
                 if not is_canary:
                     total_seconds += failed_elapsed
                     failed_to_run_count += 1
@@ -6393,11 +6424,30 @@ def _run_bakeoff_judge_impl(
             r for r in final_row_objs if isinstance(r, dict) and not r.get("canary")
         ]
         canary_row_bytes = canary_row_path.read_bytes() if canary_row_path.is_file() else b""
-        final_canary_rows = [
+        all_canary_rows = [
             json.loads(ln)
             for ln in canary_row_bytes.decode("utf-8").splitlines()
             if ln.strip()
         ]
+        final_canary_rows = [
+            r
+            for r in all_canary_rows
+            if isinstance(r, dict) and r.get("run_status") != "failed_to_run"
+        ]
+        completed_canary_keys = {
+            (str(r.get("item_id")), str(r.get("order")))
+            for r in final_canary_rows
+            if r.get("item_id") and r.get("order")
+        }
+        duplicate_canary_failed_calls = len(
+            {
+                (str(r.get("item_id")), str(r.get("order")))
+                for r in all_canary_rows
+                if isinstance(r, dict)
+                and r.get("run_status") == "failed_to_run"
+                and (str(r.get("item_id")), str(r.get("order"))) not in completed_canary_keys
+            }
+        )
         generated_len_vals = [
             float(r["generated_token_count"])
             for r in final_main_rows
@@ -6454,6 +6504,7 @@ def _run_bakeoff_judge_impl(
         qwen36_summary_extra["duplicate_canary_letter_diff_count"] = duplicate_canary_letter_diff_count
         if eff_qwen36_canary_calls > 0 or canary_row_path.is_file():
             qwen36_summary_extra["duplicate_canary_row_count"] = len(final_canary_rows)
+            qwen36_summary_extra["duplicate_canary_failed_calls"] = duplicate_canary_failed_calls
             qwen36_summary_extra["duplicate_canary_rows_file"] = (
                 f"{ROWS_DIRNAME}/{canary_row_path.name}" if canary_row_path.is_file() else None
             )
@@ -6863,7 +6914,15 @@ def _build_golden_anchor_manifest_impl(
         rows_sub = base / ROWS_DIRNAME
         prefer_rows = anchor_item_ids is None and (items_or_path is not None or schedule is not None)
         source_dir = rows_sub if (prefer_rows or not (anchor_sub.is_dir() and list(anchor_sub.glob("*.jsonl")))) else anchor_sub
-        jsonl_files = [base] if base.is_file() else (sorted(source_dir.glob("*.jsonl")) if source_dir.is_dir() else [])
+        jsonl_files = (
+            [base]
+            if base.is_file()
+            else (
+                sorted(p for p in source_dir.glob("*.jsonl") if p.is_file() and not rows_filename_is_canary(p.name))
+                if source_dir.is_dir()
+                else []
+            )
+        )
         for rf in jsonl_files:
             rf_bytes = rf.read_bytes()
             telemetry_hasher.update(rf_bytes)
