@@ -79,8 +79,7 @@ Segnala una vulnerabilità in privato; consulta [SECURITY.md](SECURITY.md).
 
 ## Stato
 
-Versione 0.7.0. Si tratta di una versione alpha: le interfacce e le strutture dei dati possono cambiare senza preavviso. 1.890 test superati (5 saltati); il sistema di integrazione continua mantiene
-la copertura dei test al 90% o superiore.
+Si tratta di una versione alpha: le interfacce e le strutture dei dati possono cambiare senza preavviso. Il sistema di integrazione continua mantiene la copertura dei test al 90% o superiore.
 
 ## Licenza
 
