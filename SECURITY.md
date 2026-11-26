@@ -13,8 +13,8 @@ and ship a fix within 30 days.
 
 | Version | Supported |
 |---------|-----------|
-| 0.4.x   | Yes, as an alpha |
-| 0.3.x and earlier | No |
+| The latest 0.x release | Yes, as an alpha |
+| Earlier releases | No |
 
 ## Scope
 

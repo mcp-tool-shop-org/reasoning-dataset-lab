@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "pins": {
+    "81a15abb717c7e19:es": {
+      "lang": "es",
+      "source": "It is alpha: interfaces and data shapes can change without notice. CI holds coverage at 90% or more.",
+      "translation": "Es una versión alfa: las interfaces y las estructuras de datos pueden cambiar sin previo aviso. La CI mantiene la cobertura en el 90 % o más.",
+      "pinnedAt": "2026-11-26T00:01:20.270Z"
+    },
+    "81a15abb717c7e19:fr": {
+      "lang": "fr",
+      "source": "It is alpha: interfaces and data shapes can change without notice. CI holds coverage at 90% or more.",
+      "translation": "Il s’agit d’une version alpha : les interfaces et les formats de données peuvent changer sans préavis. L’intégration continue maintient une couverture de 90 % ou plus.",
+      "pinnedAt": "2026-11-26T00:01:20.271Z"
+    },
+    "81a15abb717c7e19:hi": {
+      "lang": "hi",
+      "source": "It is alpha: interfaces and data shapes can change without notice. CI holds coverage at 90% or more.",
+      "translation": "यह अल्फा संस्करण है: इंटरफेस और डेटा संरचनाएँ बिना किसी सूचना के बदल सकती हैं। सीआई कवरेज को 90% या उससे अधिक पर बनाए रखता है।",
+      "pinnedAt": "2026-11-26T00:01:20.272Z"
+    },
+    "81a15abb717c7e19:it": {
+      "lang": "it",
+      "source": "It is alpha: interfaces and data shapes can change without notice. CI holds coverage at 90% or more.",
+      "translation": "Si tratta di una versione alpha: le interfacce e le strutture dei dati possono cambiare senza preavviso. Il sistema di integrazione continua mantiene la copertura dei test al 90% o superiore.",
+      "pinnedAt": "2026-11-26T00:01:20.272Z"
+    },
+    "81a15abb717c7e19:ja": {
+      "lang": "ja",
+      "source": "It is alpha: interfaces and data shapes can change without notice. CI holds coverage at 90% or more.",
+      "translation": "これはアルファ版であり、インターフェースやデータ構造は予告なく変更される可能性があります。CIにより、90％以上のコードカバレッジが維持されています。",
+      "pinnedAt": "2026-11-26T00:01:20.273Z"
+    },
+    "81a15abb717c7e19:pt": {
+      "lang": "pt",
+      "source": "It is alpha: interfaces and data shapes can change without notice. CI holds coverage at 90% or more.",
+      "translation": "É uma versão alfa: as interfaces e os formatos de dados podem mudar sem aviso prévio. O CI mantém a cobertura em 90% ou mais.",
+      "pinnedAt": "2026-11-26T00:01:20.273Z"
+    },
+    "81a15abb717c7e19:zh": {
+      "lang": "zh",
+      "source": "It is alpha: interfaces and data shapes can change without notice. CI holds coverage at 90% or more.",
+      "translation": "这是 alpha 版本：接口和数据结构可能会在没有事先通知的情况下发生变化。持续集成 (CI) 确保代码覆盖率达到 90% 或更高。",
+      "pinnedAt": "2026-11-26T00:01:20.273Z"
+    }
+  }
+}
