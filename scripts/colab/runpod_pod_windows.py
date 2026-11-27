@@ -1207,6 +1207,11 @@ def run_pod_window(
                 "COUNTED_RUN_ID_FORBIDDEN",
                 f"Counted window id {window_id!r} cannot contain stub/test/local/fake",
             )
+        if not stub and vm_judges.is_stub_window_id(window_id):
+            raise PodWindowError(
+                "COUNTED_RUN_ID_FORBIDDEN",
+                f"Live window id {window_id!r} would be refused on the pod by vm_judges.is_stub_window_id",
+            )
         if not resolved_bundle.is_dir():
             raise PodWindowError("INPUT_BUNDLE_MISSING", f"Input bundle dir not found: {resolved_bundle}")
         bundle_manifest = _read_json_dict(resolved_bundle / BUNDLE_MANIFEST_FILENAME)
@@ -1354,6 +1359,8 @@ def run_pod_window(
     child_env.update(
         {
             "RDLAB_STEP": "run",
+            "RDLAB_SESSION_ID": window_id,
+            "RDLAB_RUN_ID": window_id,
             "RDLAB_MODE": "time-one",
             "RDLAB_VM_ROOT": resolved_work.as_posix(),
             "RDLAB_ONLY_JUDGES": bakeoff_judge.QWEN36_JUDGE_ID,

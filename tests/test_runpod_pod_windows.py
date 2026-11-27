@@ -2171,3 +2171,53 @@ def test_targeted_fix_7_replay_passthrough_mid_cal_death_reruns_tampered_row(tmp
     assert p3_proc.returncode == 2
     assert "RESUME_LIMIT_EXCEEDED" in p3_proc.stderr
     assert not (p3_stage / "_stub_offrig" / "offrig_calls.jsonl").exists()
+
+
+def test_live_window_env_carries_window_id_and_refuses_stub_ids(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Live (stub=False) windows pass their id to vm_judges and refuse ids the pod would refuse (2026-11-27 proof refusal)."""
+    synth_items = _write_synthetic_items(tmp_path / "synth.jsonl", count=4)
+    bundle = tmp_path / "bundles" / "synth"
+    runpod_pod_windows.prepare_input_bundle(items_file=synth_items, out_bundle_dir=bundle, synthetic_items=True)
+
+    rc_bad, out_bad = runpod_pod_windows.run_pod_window(
+        window_id="qwen36-synthetic-proof-01",
+        window_role="proof",
+        input_bundle_dir=bundle,
+        out_dir=tmp_path / "runs" / "bad",
+        repo_dir=REPO_ROOT,
+        work_dir=tmp_path / "work",
+        hf_home=tmp_path / "hf",
+        stub=False,
+    )
+    assert rc_bad != 0 and out_bad["failure_class"] == "COUNTED_RUN_ID_FORBIDDEN"
+
+    seen: list[dict[str, str]] = []
+
+    class _Stop(Exception):
+        pass
+
+    def _fake_run(cmd: Any, *a: Any, **kw: Any) -> Any:
+        seen.append(dict(kw.get("env") or {}))
+        raise _Stop()
+
+    monkeypatch.setattr(runpod_pod_windows, "capture_boot_nvidia_smi", lambda *a, **k: {"status": "ok"})
+    monkeypatch.setattr(runpod_pod_windows.subprocess, "run", _fake_run)
+    win = "qwen36-counted-proof-g4-01"
+    try:
+        runpod_pod_windows.run_pod_window(
+            window_id=win,
+            window_role="proof",
+            input_bundle_dir=bundle,
+            out_dir=tmp_path / "runs" / "live",
+            repo_dir=REPO_ROOT,
+            work_dir=tmp_path / "work2",
+            hf_home=tmp_path / "hf2",
+            stub=False,
+        )
+    except _Stop:
+        pass
+    assert seen, "vm_judges subprocess was never reached"
+    env = seen[0]
+    assert env.get("RDLAB_SESSION_ID") == win and env.get("RDLAB_RUN_ID") == win
+    assert "VM_DRYRUN" not in env
+    assert not vm_judges.is_stub_window_id(win)
