@@ -6,6 +6,11 @@ All notable changes to `reasoning-dataset-lab` are documented here. The format i
 
 ## Unreleased
 
+### Persistent single-pod RunPod multi-window runner and row-verified replay
+
+- **Persistent-pod multi-window runner (`scripts/colab/runpod_pod_windows.py`, `scripts/colab/README.md`):** added `prepare-input-bundle` (staging allow-listed `{id, material, claim}` items and verified frozen-part or synthetic metadata) and `run-window` (capturing `nvidia-smi` driver/CUDA versions at boot into `boot_nvidia_smi.txt`/`boot_nvidia_smi.json`, enforcing a sealed synthetic `proof` window before any `counted` window with immediate non-zero refusal on error, reusing shared `work_dir`/`HF_HOME` across sequential windows, sealing `outputs-closed.json`, and writing fetchable `window_summary.json` and `outcome.json` with `rows_reused`, `rows_run`, and `trigger`).
+- **Platform-death journal replay (`scripts/colab/runpod_pod_windows.py`, `src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py`, `scripts/colab/vm_judges.py`):** restricted replay strictly to platform/pod deaths (`pod_gone`, `ssh_lost`, `engine_oom`, `offrig_watchdog`) at most once per window (`resume_ledger.json`), verifying part SHA-256, `item_id`, `arm`, `seed`/`seed_variant`, `prompt_sha256`, complete parse state, and `row_sha256` on every surviving row rather than trusting `judge_done`, re-running any tampered or missing row, adding `RDLAB_QWEN36_VERIFIED_JOURNAL_REPLAY` to `bakeoff_judge._run_bakeoff_judge_impl` to preserve single-order verified rows without overlap regeneration, and allow-listing pod metadata files in `TAR_ALLOWED_EXACT_FILES`.
+
 ### Remove extra mid-run kill paths and error-rate halt
 
 - **Launcher and rate re-reads (`scripts/colab/launch_judges.sh`, `scripts/colab/rate_rereads.py`):** restricted running-window stops to local cap (`COST_CAP_REACHED`), wall (`RIG_DEADLINE_EXCEEDED`), and dead/hung jobs; made `ASSIGNMENTS_UNREADABLE`, mid-run `RATE_ABOVE_MAX`, `LIVE_USAGE_RATE_UNAVAILABLE`, and rate-floor checks observational log entries only (keeping `--max-rate` as a launch-time open refusal).

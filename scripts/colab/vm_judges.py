@@ -663,6 +663,10 @@ TAR_ALLOWED_EXACT_FILES: frozenset[str] = frozenset(
         P0A_REPORT_FILENAME,
         P0A_CHILDREN_FILENAME,
         WINDOW_MANIFEST_FILENAME,
+        "boot_nvidia_smi.json",
+        "boot_nvidia_smi.txt",
+        "window_plan.json",
+        "resume_ledger.json",
     }
 )
 TAR_ALLOWED_DIRS: frozenset[str] = frozenset(

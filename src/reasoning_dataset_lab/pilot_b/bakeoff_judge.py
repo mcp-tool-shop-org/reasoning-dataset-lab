@@ -4998,6 +4998,7 @@ def _run_bakeoff_judge_impl(
     qwen36_arm_index: int | None = None,
     qwen36_repeats_override: int | None = None,
     qwen36_canary_calls_override: int | None = None,
+    verified_journal_replay: bool = False,
     _cleanup_callbacks: list[Callable[[], None]] | None = None,
 ) -> dict[str, object]:
     """Run a single judge over `part_bakeoff_sealed/items.jsonl` and write unsealed rows and `generations.jsonl`."""
@@ -5133,6 +5134,10 @@ def _run_bakeoff_judge_impl(
     ).strip() or None
     eff_replacement_session = bool(replacement_session) or (
         os.environ.get("RDLAB_REPLACEMENT_SESSION", "").strip().lower() in ("1", "true", "yes", "on")
+    )
+    eff_verified_journal_replay = (spec.judge_id == QWEN36_JUDGE_ID) and (
+        bool(verified_journal_replay)
+        or os.environ.get(QWEN36_VERIFIED_JOURNAL_REPLAY_ENV_VAR, "").strip().lower() in ("1", "true", "yes", "on")
     )
     if active_item_ids is None:
         env_active_ids = os.environ.get("RDLAB_ACTIVE_ITEM_IDS", "").strip()
@@ -5645,13 +5650,13 @@ def _run_bakeoff_judge_impl(
             for (iid, rep_i), ords in orders_by_item_repeat.items()
             if ords != expected_orders
         )
-        if incomplete_item_repeats or len(existing_main_rows) != len(raw_existing_rows):
-            incomplete_pair_set = set(incomplete_item_repeats)
-            discarded_incomplete_item_ids = sorted({iid for iid, _ in incomplete_item_repeats})
+        discard_pairs = set() if eff_verified_journal_replay else set(incomplete_item_repeats)
+        if discard_pairs or len(existing_main_rows) != len(raw_existing_rows):
+            discarded_incomplete_item_ids = sorted({iid for iid, _ in discard_pairs})
             existing_row_objs = [
                 r
                 for r in existing_main_rows
-                if (str(r["item_id"]), int(r.get("repeat_index", 0) or 0)) not in incomplete_pair_set
+                if (str(r["item_id"]), int(r.get("repeat_index", 0) or 0)) not in discard_pairs
             ]
             with row_path.open("w", encoding="utf-8", newline="\n") as rewrite_fh:
                 for r in existing_row_objs:
@@ -5672,7 +5677,8 @@ def _run_bakeoff_judge_impl(
         is_cross_session_resume = eff_replacement_session or (
             bool(eff_session_fp) and bool(prev_fps) and (eff_session_fp not in prev_fps)
         )
-        if is_cross_session_resume and item_completion_order and resume_overlap_pairs > 0:
+        eff_resume_overlap_pairs = 0 if eff_verified_journal_replay else int(resume_overlap_pairs)
+        if is_cross_session_resume and item_completion_order and eff_resume_overlap_pairs > 0:
             overlap_iids = item_completion_order[-min(int(resume_overlap_pairs), len(item_completion_order)) :]
             existing_by_key = {
                 (str(r["item_id"]), str(r["order"]), int(r.get("repeat_index", 0) or 0)): r
@@ -6875,6 +6881,7 @@ def run_qwen36_arms_job(
     stop_marker_file: Path | None = None,
     should_stop_between_arms: Callable[[int, str], str | bool | None] | None = None,
     between_arm_margin_seconds: float | None = None,
+    verified_journal_replay: bool = False,
 ) -> dict[str, object]:
     """Run several Qwen3.6 arms sequentially in one job on one shared engine load."""
     arms = resolve_qwen36_arms(qwen36_arms)
@@ -7341,6 +7348,7 @@ def run_qwen36_arms_job(
                         qwen36_arm_index=arm_idx,
                         qwen36_repeats_override=repeats_by_arm[arm],
                         qwen36_canary_calls_override=canary_calls_by_arm[arm],
+                        verified_journal_replay=verified_journal_replay,
                         _cleanup_callbacks=None,
                     )
                 except (RdlabError, DeviceRefusalError, Exception) as exc:
@@ -7485,6 +7493,7 @@ def run_bakeoff_judge(
     stop_marker_file: Path | None = None,
     should_stop_between_arms: Callable[[int, str], str | bool | None] | None = None,
     between_arm_margin_seconds: float | None = None,
+    verified_journal_replay: bool = False,
 ) -> dict[str, object]:
     """Run a single judge over `part_bakeoff_sealed/items.jsonl` and write unsealed rows and `generations.jsonl`."""
     resolved_arms = resolve_qwen36_arms(qwen36_arms)
@@ -7530,6 +7539,7 @@ def run_bakeoff_judge(
             stop_marker_file=stop_marker_file,
             should_stop_between_arms=should_stop_between_arms,
             between_arm_margin_seconds=between_arm_margin_seconds,
+            verified_journal_replay=verified_journal_replay,
         )
     cleanup_callbacks: list[Callable[[], None]] = []
     try:
@@ -7569,6 +7579,7 @@ def run_bakeoff_judge(
             replacement_session=replacement_session,
             resume_overlap_pairs=resume_overlap_pairs,
             synthetic_items=synthetic_items,
+            verified_journal_replay=verified_journal_replay,
             _cleanup_callbacks=cleanup_callbacks,
         )
     finally:
@@ -10089,6 +10100,7 @@ QWEN36_DEFAULT_REPEATS = 1
 QWEN36_MIN_REPEATS = 1
 QWEN36_MAX_REPEATS = 8
 QWEN36_CANARY_CALLS_ENV_VAR = "RDLAB_QWEN36_CANARY_CALLS"
+QWEN36_VERIFIED_JOURNAL_REPLAY_ENV_VAR = "RDLAB_QWEN36_VERIFIED_JOURNAL_REPLAY"
 QWEN36_DEFAULT_CANARY_CALLS = 0
 QWEN36_MIN_CANARY_CALLS = 0
 QWEN36_MAX_CANARY_CALLS = 64
