@@ -1233,7 +1233,6 @@ def test_proof_checks_length_audit_and_text_before_letter_via_fake_engine(
         hf_home=env["hf_home"],
         device="cpu",
         window_mode="time-one",
-        error_rate_stop=0.90,
         shard_spec="1/1",
         run_canary=False,
     )
@@ -1257,6 +1256,90 @@ def test_proof_checks_length_audit_and_text_before_letter_via_fake_engine(
     assert is_qwen36_text_before_letter("Reasoning, B.", enable_thinking=False, done_reason="stop", pass_mode=CONTRA)
     assert not is_qwen36_text_before_letter("<think>x", enable_thinking=True, done_reason="stop", pass_mode=CONTRA)
     assert is_qwen36_text_before_letter("<think>x</think>\nReasoning A", enable_thinking=True, done_reason="stop", pass_mode=CONTRA)
+
+
+def test_nothink_all_text_before_letter_completes_and_scores_invalid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Non-thinking arm whose replies are all text-before-letter completes, logs, seals, and scores invalid."""
+    _clear_qwen36_env(monkeypatch)
+    items_raw = [
+        JudgeInputItem(
+            item_id=f"nt-item-{i:04d}",
+            material=f"1. Fact A{i}.\n2. Fact B{i}.",
+            claim=f"Claim {i} holds.",
+        )
+        for i in range(6)
+    ]
+    items_path = _write_items_jsonl(tmp_path / "items.jsonl", items_raw)
+    responses = [
+        _req_out(
+            _nothink_comp("B", prefix_ids=[41, 44], raw_text="Wait, let us check both sides. Answer: B"),
+            prompt_token_ids=[102, 41, 248068, 271, 248069, 271],
+        )
+        for _ in range(len(items_raw) * 2)
+    ]
+    env = _setup_fake_vllm_env(tmp_path, monkeypatch, responses=responses)
+    monkeypatch.setenv(bakeoff_judge.QWEN36_MAX_NEW_TOKENS_ENV_VAR, "512")
+    monkeypatch.setenv(bakeoff_judge.QWEN36_ARM_ENV_VAR, "nothink-greedy")
+    out_dir = tmp_path / "out_all_tbl"
+    prog_path = tmp_path / "prog_all_tbl.jsonl"
+    res = run_bakeoff_judge(
+        part_dir=items_path,
+        output_dir=out_dir,
+        judge=QWEN36_ID,
+        pass_mode=CONTRA,
+        fake_transport=False,
+        receipts_dir=env["receipts_dir"],
+        hf_home=env["hf_home"],
+        device="cpu",
+        window_mode="time-one",
+        shard_spec="1/1",
+        progress_file=prog_path,
+        run_canary=False,
+    )
+    assert res["calls_count"] == 12
+    assert res["parsed_count"] == 0
+    assert res["unparseable_count"] == 12
+    assert res["text_before_letter_count"] == 12
+    call_dones = [json.loads(ln) for ln in prog_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    call_dones = [e for e in call_dones if e.get("kind") == "call_done"]
+    assert len(call_dones) == 12 and all(e.get("state") == "unparseable" and e.get("text_before_letter") is True for e in call_dones)
+    close_bakeoff_outputs(out_dir)
+    keys_path = tmp_path / "eval_keys.sealed.jsonl"
+    keys_path.write_text(
+        "\n".join(
+            json.dumps(
+                {
+                    "id": r.item_id,
+                    "triad_id": f"T-{i // 3}",
+                    "key": ("supported", "unsupported", "cannot_tell")[i % 3],
+                    "class": ("supported", "unsupported", "cannot_tell")[i % 3],
+                    "key_source": "construction",
+                    "value_set_id": "vs1",
+                    "closure": "open",
+                    "split": "dev" if i < 3 else "test",
+                },
+                sort_keys=True,
+            )
+            for i, r in enumerate(sorted(items_raw, key=lambda x: x.item_id))
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    scored_rows_stem = tmp_path / "sealed_tbl.sealed.jsonl"
+    scored = score_bakeoff_outputs(
+        judge_output_dir=out_dir,
+        keys_path=keys_path,
+        public_out_path=tmp_path / "pub_tbl.json",
+        sealed_rows_out_path=scored_rows_stem,
+    )
+    assert scored["status"] == "ok"
+    tw = scored["three_way_pass"][0]
+    assert tw["three_way_accuracy"]["point"] == 0.0
+    assert tw["breakdown_by_split"]["pooled"]["invalid_calls"]["count"] == 12
+    sealed_lines = [json.loads(ln) for ln in tmp_path.joinpath("sealed_tbl.sealed.jsonl").read_text(encoding="utf-8").splitlines() if ln.strip()]
+    assert len(sealed_lines) == 12 and all(r["verdict"] is None and r["correct"] is False for r in sealed_lines)
 
 
 # --- 6. Duplicate canary selection, execution, diff count, and score exclusion -------------------------------

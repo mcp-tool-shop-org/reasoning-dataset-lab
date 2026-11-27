@@ -101,7 +101,8 @@ ALLOWED_UNTIL_STEPS: tuple[str, ...] = (
 )
 DEFAULT_GPU_GATE_TIMEOUT_SECONDS = 60.0
 DEFAULT_FIRST_LOAD_TIMEOUT_SECONDS = 1800.0
-DEFAULT_JUDGE_CHILD_TIMEOUT_SECONDS = 600.0
+DEFAULT_JUDGE_LIVENESS_MINUTES = 10
+DEFAULT_JUDGE_CHILD_TIMEOUT_SECONDS = float(DEFAULT_JUDGE_LIVENESS_MINUTES * 60)
 DEFAULT_DOWNLOAD_CHILD_TIMEOUT_SECONDS = 900.0
 SESSION_ENV_PROBE_TIMEOUT_ENV_VAR = "RDLAB_SESSION_ENV_PROBE_TIMEOUT_SECONDS"
 DEFAULT_COLAB_SESSION_ENV_PROBE_TIMEOUT_SECONDS = 30.0
@@ -1567,13 +1568,102 @@ def _kill_process_group_and_check_survivors(
     return surviving_pids, bool(surviving_pids)
 
 
+class _ChildLivenessTracker:
+    """Detect forward progress (events, row writes, or growing output tokens) for judge children."""
+
+    _PROGRESS_KINDS = frozenset(
+        {"child_start", "load_done", "call_start", "call_done", "child_end", "jit_build_jobs", "prebuilt_jit_cache"}
+    )
+
+    def __init__(self, progress_file: Path | None, run_dir: Path | None) -> None:
+        self._progress_file = progress_file
+        self._run_dir = run_dir
+        self._offsets: dict[Path, int] = {}
+        self._hb_tokens: dict[tuple[Path, Any], int] = {}
+        self._sizes: dict[Path, int] = {}
+
+    def _candidate_progress_files(self) -> list[Path]:
+        files: list[Path] = []
+        if self._progress_file is not None:
+            files.append(self._progress_file)
+        if self._run_dir is not None and (self._run_dir / "arms").is_dir():
+            files.extend(sorted((self._run_dir / "arms").glob("*/progress*.jsonl")))
+        return files
+
+    def _candidate_output_files(self) -> list[Path]:
+        if self._run_dir is None:
+            return []
+        out: list[Path] = [self._run_dir / "qwen36_arms_job.json"]
+        out.extend(sorted((self._run_dir / "rows").glob("*.jsonl")) if (self._run_dir / "rows").is_dir() else [])
+        if (self._run_dir / "arms").is_dir():
+            out.extend(sorted((self._run_dir / "arms").glob("*/rows/*.jsonl")))
+        return out
+
+    def poll(self) -> bool:
+        progressed = False
+        for pf in self._candidate_progress_files():
+            try:
+                size = pf.stat().st_size
+            except OSError:
+                continue
+            off = self._offsets.get(pf, 0)
+            if size <= off:
+                continue
+            try:
+                with pf.open("rb") as fh:
+                    fh.seek(off)
+                    chunk = fh.read()
+            except OSError:
+                continue
+            last_nl = chunk.rfind(b"\n")
+            if last_nl < 0:
+                continue
+            self._offsets[pf] = off + last_nl + 1
+            for raw_line in chunk[: last_nl + 1].decode("utf-8", errors="replace").splitlines():
+                if not raw_line.strip():
+                    continue
+                try:
+                    ev = json.loads(raw_line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(ev, Mapping):
+                    continue
+                kind = ev.get("kind")
+                if kind in self._PROGRESS_KINDS:
+                    progressed = True
+                elif kind == "heartbeat":
+                    toks = ev.get("output_tokens")
+                    key = (pf, ev.get("index"))
+                    if isinstance(toks, int) and not isinstance(toks, bool) and toks > self._hb_tokens.get(key, 0):
+                        self._hb_tokens[key] = toks
+                        progressed = True
+        for of in self._candidate_output_files():
+            try:
+                sz = of.stat().st_size
+            except OSError:
+                continue
+            prev = self._sizes.get(of)
+            if (prev is None and sz > 0) or (prev is not None and sz > prev):
+                progressed = True
+            self._sizes[of] = sz
+        return progressed
+
+
+def _run_dir_from_child_cmd(child_cmd: Sequence[str]) -> Path | None:
+    cmd = list(child_cmd)
+    for i, tok in enumerate(cmd[:-1]):
+        if tok == "--output-dir" and str(cmd[i + 1]).strip():
+            return Path(str(cmd[i + 1]))
+    return None
+
+
 def _run_child_with_group_timeout(
     child_cmd: Sequence[str],
     *,
     env: Mapping[str, str],
     timeout_seconds: float,
 ) -> dict[str, Any]:
-    """Run a child subprocess in a new session (`start_new_session=True`) with a process-group timeout and survivor check."""
+    """Run a child subprocess in a new session (`start_new_session=True`) bounded by liveness and wall timeouts."""
     cmd_list = [str(part) for part in child_cmd]
     out_chunks: list[bytes] = []
     err_chunks: list[bytes] = []
@@ -1612,18 +1702,35 @@ def _run_child_with_group_timeout(
     out_thread.start()
     err_thread.start()
 
+    prog_raw = str(env.get("RDLAB_JUDGE_CHILD_PROGRESS_FILE") or "").strip()
+    tracker = _ChildLivenessTracker(Path(prog_raw) if prog_raw else None, _run_dir_from_child_cmd(cmd_list)) if prog_raw else None
+    wall_limit_s: float | None = None
+    if tracker is not None and (_ACTIVE_RUN_WALL_DEADLINE_MONOTONIC is not None or os.environ.get("RDLAB_WALL_SECONDS", "").strip()):
+        wall_limit_s = max(0.05, resolve_remaining_wall_seconds() - resolve_child_wall_margin_seconds())
+
+    inactivity_limit_s = max(0.001, float(timeout_seconds))
+    sleep_step_s = min(0.25, max(0.005, inactivity_limit_s / 10.0))
+    last_liveness_mono = t0
     timed_out = False
     surviving_pids: list[int] = []
     any_member_survived = False
     try:
-        proc.wait(timeout=float(timeout_seconds))
-        rc = int(proc.returncode or 0)
-    except subprocess.TimeoutExpired:
-        timed_out = True
-        surviving_pids, any_member_survived = _kill_process_group_and_check_survivors(
-            proc, pgid
-        )
-        rc = 124
+        while True:
+            polled = proc.poll()
+            if polled is not None:
+                rc = int(polled)
+                break
+            now = time.monotonic()
+            if tracker is not None and tracker.poll():
+                last_liveness_mono = now
+            if (now - last_liveness_mono) >= inactivity_limit_s or (wall_limit_s is not None and (now - t0) >= wall_limit_s):
+                timed_out = True
+                surviving_pids, any_member_survived = _kill_process_group_and_check_survivors(
+                    proc, pgid
+                )
+                rc = 124
+                break
+            time.sleep(sleep_step_s)
     finally:
         for pipe_obj in (proc.stdout, proc.stderr):
             try:

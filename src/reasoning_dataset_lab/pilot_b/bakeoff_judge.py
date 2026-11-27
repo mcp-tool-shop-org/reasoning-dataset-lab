@@ -84,8 +84,6 @@ RowState = Literal["parsed", "unparseable", "length_stop", "aborted"]
 
 DEFAULT_SCHEDULE_SEED = 20261030
 DEFAULT_VRAM_HALT_MIB = 26_000
-DEFAULT_ERROR_RATE_STOP = 0.20
-DEFAULT_ERROR_RATE_MIN_CALLS = 10
 DEFAULT_TORCH_DTYPE = "bfloat16"
 CUBLAS_WORKSPACE_CONFIG_VALUE = ":4096:8"
 DEFAULT_CANARY_CONFIG_PATH = Path(__file__).resolve().parent / "canary_config.json"
@@ -4977,8 +4975,6 @@ def _run_bakeoff_judge_impl(
     vram_probe: Callable[[], int] | None = None,
     halt_pid: int | None = None,
     pid_killer: Callable[[int], None] = kill_judge_pid_tree,
-    error_rate_stop: float = DEFAULT_ERROR_RATE_STOP,
-    error_rate_min_calls: int = DEFAULT_ERROR_RATE_MIN_CALLS,
     force_length_stop_items: Sequence[str] = (),
     force_unparseable_items: Sequence[str] = (),
     canary_config_path: Path | None = None,
@@ -6064,7 +6060,6 @@ def _run_bakeoff_judge_impl(
             readout = adapter.parse_response(resp, pass_mode=pass_mode)
             if is_canary:
                 canary_counts_by_state[readout.state] = canary_counts_by_state.get(readout.state, 0) + 1
-                will_halt_error_rate = False
             else:
                 if readout.state == "length_stop":
                     length_stop_count += 1
@@ -6080,22 +6075,32 @@ def _run_bakeoff_judge_impl(
                         probs_missing_count += 1
 
                 calls_so_far += 1
-                bad_calls = unparseable_count + length_stop_count + aborted_count
-                will_halt_error_rate = calls_so_far >= error_rate_min_calls and (bad_calls / calls_so_far) > error_rate_stop
+            call_done_event: dict[str, Any] = {
+                "kind": "call_done",
+                "judge_id": spec.judge_id,
+                "device": device,
+                "index": progress_call_idx,
+                "item_index": item_idx,
+                "order": call_order,
+                "seconds": round(elapsed, 6),
+                "prompt_tokens": prompt_tokens_count,
+                "output_tokens": int(len(resp.tokens)),
+                "state": readout.state,
+            }
+            if (
+                not is_canary
+                and spec.judge_id == QWEN36_JUDGE_ID
+                and is_qwen36_text_before_letter(
+                    resp.raw_text,
+                    enable_thinking=(call_arm == QWEN36_THINKING_ARM),
+                    done_reason=readout.done_reason,
+                    pass_mode=pass_mode,
+                )
+            ):
+                call_done_event["text_before_letter"] = True
             _append_child_progress_line(
                 eff_progress_file,
-                {
-                    "kind": "call_done",
-                    "judge_id": spec.judge_id,
-                    "device": device,
-                    "index": progress_call_idx,
-                    "item_index": item_idx,
-                    "order": call_order,
-                    "seconds": round(elapsed, 6),
-                    "prompt_tokens": prompt_tokens_count,
-                    "output_tokens": int(len(resp.tokens)),
-                    "state": readout.state,
-                },
+                call_done_event,
                 lock=progress_lock,
             )
 
@@ -6248,28 +6253,16 @@ def _run_bakeoff_judge_impl(
                 base_row_obj["canary"] = True
             if synthetic_items:
                 base_row_obj["synthetic_items"] = True
-            if will_halt_error_rate:
-                base_row_obj["run_status"] = "failed_to_run"
-                base_row_obj["partial_counts"] = {
-                    "calls_count": calls_so_far,
-                    "parsed_count": parsed_count,
-                    "unparseable_count": unparseable_count,
-                    "length_stop_count": length_stop_count,
-                    "aborted_count": aborted_count,
-                }
             row_obj = _build_sealed_row_with_sha256(base_row_obj)
             if is_canary:
                 with canary_row_path.open("a", encoding="utf-8", newline="\n") as crf:
                     crf.write(_canonical_json_line(row_obj) + "\n")
                     crf.flush()
+                completed_qwen36_canary_keys.add((item.item_id, call_order))
             else:
                 rf.write(_canonical_json_line(row_obj) + "\n")
                 rf.flush()
-            if not will_halt_error_rate:
-                if is_canary:
-                    completed_qwen36_canary_keys.add((item.item_id, call_order))
-                else:
-                    completed_keys.add((item.item_id, call_order, call_repeat_idx))
+                completed_keys.add((item.item_id, call_order, call_repeat_idx))
 
             if (
                 not is_canary
@@ -6277,39 +6270,11 @@ def _run_bakeoff_judge_impl(
                 and shard_k == 1
                 and item.item_id in anchor_item_id_set
                 and (item.item_id, call_order, call_repeat_idx) not in completed_anchor_keys
-                and not will_halt_error_rate
             ):
                 with anchor_row_path.open("a", encoding="utf-8", newline="\n") as arf:
                     arf.write(_canonical_json_line(row_obj) + "\n")
                     arf.flush()
                 completed_anchor_keys.add((item.item_id, call_order, call_repeat_idx))
-
-            if will_halt_error_rate:
-                failed_wall_s = round(max(0.0, time.monotonic() - child_start_mono), 6)
-                _append_child_progress_line(
-                    eff_progress_file,
-                    {
-                        "kind": "child_end",
-                        "judge_id": spec.judge_id,
-                        "device": device,
-                        "counts_by_state": {
-                            "parsed": parsed_count,
-                            "unparseable": unparseable_count,
-                            "length_stop": length_stop_count,
-                            "aborted": aborted_count,
-                            "failed_to_run": failed_to_run_count,
-                        },
-                        "total_seconds": failed_wall_s,
-                        "elapsed_seconds": failed_wall_s,
-                    },
-                    lock=progress_lock,
-                )
-                raise refused_error(
-                    "BAKEOFF_JUDGE_ERROR_RATE_STOP",
-                    f"Stop rule triggered for '{spec.judge_id}': unparseable ({unparseable_count}) + length_stop "
-                    f"({length_stop_count}) + aborted ({aborted_count}) = {bad_calls}/{calls_so_far} ({bad_calls / calls_so_far:.1%}) > {error_rate_stop:.1%}.",
-                    "Inspect prompt formatting and max_new_tokens settings before continuing.",
-                )
 
         sched_len = len(schedule.entries)
         main_arm = eff_qwen36_arm if spec.judge_id == QWEN36_JUDGE_ID else None
@@ -6888,8 +6853,6 @@ def run_qwen36_arms_job(
     vram_probe: Callable[[], int] | None = None,
     halt_pid: int | None = None,
     pid_killer: Callable[[int], None] = kill_judge_pid_tree,
-    error_rate_stop: float = DEFAULT_ERROR_RATE_STOP,
-    error_rate_min_calls: int = DEFAULT_ERROR_RATE_MIN_CALLS,
     force_length_stop_items: Sequence[str] = (),
     force_unparseable_items: Sequence[str] = (),
     canary_config_path: Path | None = None,
@@ -7355,8 +7318,6 @@ def run_qwen36_arms_job(
                         vram_probe=vram_probe,
                         halt_pid=halt_pid,
                         pid_killer=pid_killer,
-                        error_rate_stop=error_rate_stop,
-                        error_rate_min_calls=error_rate_min_calls,
                         force_length_stop_items=force_length_stop_items,
                         force_unparseable_items=force_unparseable_items,
                         canary_config_path=canary_config_path,
@@ -7455,6 +7416,11 @@ def run_qwen36_arms_job(
                     "rows_sha256": arm_res.get("rows_sha256"),
                     "row_count": arm_res.get("row_count"),
                     "repeats": repeats_by_arm[arm],
+                    "parsed_count": arm_res.get("parsed_count", 0),
+                    "unparseable_count": arm_res.get("unparseable_count", 0),
+                    "length_stop_count": arm_res.get("length_stop_count", 0),
+                    "aborted_count": arm_res.get("aborted_count", 0),
+                    "text_before_letter_count": arm_res.get("text_before_letter_count", 0),
                     "duplicate_canary_calls": arm_res.get("duplicate_canary_calls", 0),
                     "duplicate_canary_failed_calls": arm_res.get("duplicate_canary_failed_calls", 0),
                     "elapsed_seconds": round(arm_measured_s, 6),
@@ -7496,8 +7462,6 @@ def run_bakeoff_judge(
     vram_probe: Callable[[], int] | None = None,
     halt_pid: int | None = None,
     pid_killer: Callable[[int], None] = kill_judge_pid_tree,
-    error_rate_stop: float = DEFAULT_ERROR_RATE_STOP,
-    error_rate_min_calls: int = DEFAULT_ERROR_RATE_MIN_CALLS,
     force_length_stop_items: Sequence[str] = (),
     force_unparseable_items: Sequence[str] = (),
     canary_config_path: Path | None = None,
@@ -7544,8 +7508,6 @@ def run_bakeoff_judge(
             vram_probe=vram_probe,
             halt_pid=halt_pid,
             pid_killer=pid_killer,
-            error_rate_stop=error_rate_stop,
-            error_rate_min_calls=error_rate_min_calls,
             force_length_stop_items=force_length_stop_items,
             force_unparseable_items=force_unparseable_items,
             canary_config_path=canary_config_path,
@@ -7589,8 +7551,6 @@ def run_bakeoff_judge(
             vram_probe=vram_probe,
             halt_pid=halt_pid,
             pid_killer=pid_killer,
-            error_rate_stop=error_rate_stop,
-            error_rate_min_calls=error_rate_min_calls,
             force_length_stop_items=force_length_stop_items,
             force_unparseable_items=force_unparseable_items,
             canary_config_path=canary_config_path,
