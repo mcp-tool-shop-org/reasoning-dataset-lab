@@ -31,7 +31,6 @@ import offrig_host  # noqa: E402
 import runpod_pod_windows  # noqa: E402
 
 DEFAULT_PROFILE = "rdlab-judge"
-DEFAULT_OFFRIG_PROJECT = Path("E:/AI/rnd-local/projects/judge-bakeoff/runpod-runs/offrig-project")
 EXPECTED_IMAGE = offrig_host.DEFAULT_RUNPOD_IMAGE_REF
 DEFAULT_MAX_PRICE_HR = float(offrig_host.DEFAULT_RUNPOD_MAX_PRICE_HR)
 DEFAULT_MAX_WORST_CASE_USD = 45.0
@@ -110,11 +109,31 @@ def _log(msg: str) -> None:
     sys.stdout.flush()
 
 
-def _resolve_offrig_project(raw_project: Path | str) -> Path:
+def _resolve_offrig_project(
+    raw_project: Path | str | None,
+    *,
+    repo_dir: Path,
+    stage_dir: Path | None,
+    stub: bool,
+) -> Path:
+    if raw_project is None:
+        if not stub:
+            raise SequenceError(
+                "OFFRIG_PROJECT_REQUIRED",
+                "--offrig-project is required in live mode (must point to the offrig budget project, not --repo-dir)",
+            )
+        return ((stage_dir or repo_dir) / "_stub_offrig" / "offrig_project").resolve()
     raw_str = str(raw_project)
     if os.name == "posix" and _WIN_DRIVE_RE.match(raw_str):
-        return Path(raw_str)
-    return Path(raw_str).resolve()
+        proj = Path(raw_str)
+    else:
+        proj = Path(raw_str).resolve()
+    if not stub and proj == repo_dir.resolve():
+        raise SequenceError(
+            "OFFRIG_PROJECT_SAME_AS_REPO",
+            "--offrig-project must point to the dedicated offrig budget project, not --repo-dir",
+        )
+    return proj
 
 
 def _tar_filter_repo(tarinfo: tarfile.TarInfo) -> tarfile.TarInfo | None:
@@ -757,8 +776,13 @@ def _verify_smoke_verified_receipt(
 def run_preflight_only(args: argparse.Namespace) -> int:
     """Run read-only preflight + budget headroom check ($0, no offrig_plan / offrig_launch)."""
     repo_dir = Path(args.repo_dir).resolve()
-    offrig_project = _resolve_offrig_project(args.offrig_project)
     stage_dir = Path(args.stage_dir).resolve() if args.stage_dir else None
+    offrig_project = _resolve_offrig_project(
+        args.offrig_project,
+        repo_dir=repo_dir,
+        stage_dir=stage_dir,
+        stub=bool(args.stub),
+    )
 
     _enforce_live_locked_overrides(args)
     host_env, _ = _prepare_host_env(
@@ -842,9 +866,14 @@ def run_preflight_only(args: argparse.Namespace) -> int:
 
 def run_smoke_sequence(args: argparse.Namespace) -> int:
     repo_dir = Path(args.repo_dir).resolve()
-    offrig_project = _resolve_offrig_project(args.offrig_project)
     stage_dir = Path(args.stage_dir).resolve()
     runs_local = Path(args.runs_local).resolve()
+    offrig_project = _resolve_offrig_project(
+        args.offrig_project,
+        repo_dir=repo_dir,
+        stage_dir=stage_dir,
+        stub=bool(args.stub),
+    )
     stage_dir.mkdir(parents=True, exist_ok=True)
     runs_local.mkdir(parents=True, exist_ok=True)
 
@@ -1274,9 +1303,14 @@ def _validate_and_select_replay_specs(
 
 def run_counted_sequence(args: argparse.Namespace) -> int:
     repo_dir = Path(args.repo_dir).resolve()
-    offrig_project = _resolve_offrig_project(args.offrig_project)
     stage_dir = Path(args.stage_dir).resolve()
     runs_local = Path(args.runs_local).resolve()
+    offrig_project = _resolve_offrig_project(
+        args.offrig_project,
+        repo_dir=repo_dir,
+        stage_dir=stage_dir,
+        stub=bool(args.stub),
+    )
     stage_dir.mkdir(parents=True, exist_ok=True)
     runs_local.mkdir(parents=True, exist_ok=True)
 
@@ -1705,7 +1739,7 @@ def run_counted_sequence(args: argparse.Namespace) -> int:
 
 def _add_common_sequence_args(p: argparse.ArgumentParser, *, require_stage_and_runs: bool) -> None:
     p.add_argument("--repo-dir", type=Path, required=True)
-    p.add_argument("--offrig-project", type=Path, default=DEFAULT_OFFRIG_PROJECT)
+    p.add_argument("--offrig-project", type=Path, default=None)
     p.add_argument("--stage-dir", type=Path, required=require_stage_and_runs, default=None)
     if require_stage_and_runs:
         p.add_argument("--runs-local", type=Path, required=True)

@@ -1716,6 +1716,11 @@ def test_targeted_fix_1_offrig_project_and_dot_offrig_tar_exclude(tmp_path: Path
     assert pre_doc["offrig_project"] == str(proj_dir.resolve())
     assert pre_doc["preflight"]["budget"]["project"] == proj_dir.name
     assert pre_doc["preflight"]["budget"]["effective_remaining_usd"] == 45.0
+
+    with pytest.raises(runpod_pod_sequence.SequenceError, match="OFFRIG_PROJECT_REQUIRED"):
+        runpod_pod_sequence._resolve_offrig_project(None, repo_dir=REPO_ROOT, stage_dir=None, stub=False)
+    with pytest.raises(runpod_pod_sequence.SequenceError, match="OFFRIG_PROJECT_SAME_AS_REPO"):
+        runpod_pod_sequence._resolve_offrig_project(REPO_ROOT, repo_dir=REPO_ROOT, stage_dir=None, stub=False)
     assert not (stage_dir / "_stub_offrig" / "offrig_calls.jsonl").exists()
 
 

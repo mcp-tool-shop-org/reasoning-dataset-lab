@@ -34,21 +34,21 @@
   "changes": {
     "fileCounts": {
       "added": 0,
-      "changed": 5,
+      "changed": 3,
       "moved": 0,
-      "parts": 3,
+      "parts": 2,
       "removed": 0
     },
     "items": [
       {
         "kind": "counts",
-        "sentence": "Nothing structural changed since 2026-11-27; 5 files changed content.",
+        "sentence": "Nothing structural changed since 2026-11-27; 3 files changed content.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "593476c00ee89ebd4d130d6e43900b41076f50d0",
-      "generatedAt": "2026-11-27T13:18:11.398Z"
+      "commit": "11c00fdae37895c9e5951a62685f2a8c42df6d03",
+      "generatedAt": "2026-11-27T14:40:21.718Z"
     },
     "unchanged": true
   },
@@ -135,7 +135,7 @@
     "Window: 180 days; a pair counts from 3 shared commits, since 16 source files reach 10 revisions; the floor rises to 10 when 25 do."
   ],
   "changesTogetherWithTests": 2,
-  "commit": "11c00fdae37895c9e5951a62685f2a8c42df6d03",
+  "commit": "82c77599bd2e57bbc3071534095de37a5f2413fe",
   "defaultBranch": "main",
   "derived": "9 parts, mostly Python (113 files), shell (4), CSS (2), JavaScript (2), TypeScript (2) and Astro (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.",
   "doors": [
@@ -294,7 +294,7 @@
       ]
     }
   ],
-  "generatedAt": "2026-11-27T14:40:21.718Z",
+  "generatedAt": "2026-11-27T15:29:29.442Z",
   "limits": [
     "8 import sites name a declared dependency that shares its name with a local module (role_set); they are read as the dependency, which is not in this repository.",
     "20 imports could not be resolved: `scripts/colab/vm_judges.py` imports a path built at run time; `scripts/colab/vm_judges.py` imports `device`, which is no module on its import path and no declared dependency, twice; `tests/test_bakeoff_judge_d3_transport.py` imports a path built at run time; and 16 more.",

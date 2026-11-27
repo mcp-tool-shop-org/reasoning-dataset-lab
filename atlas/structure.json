@@ -2393,139 +2393,134 @@
           ],
           "failurePaths": [
             {
-              "in": "_extract_tar_gz",
+              "in": "_resolve_offrig_project",
               "kind": "raise",
-              "line": 177
+              "line": 121
+            },
+            {
+              "in": "_resolve_offrig_project",
+              "kind": "raise",
+              "line": 132
             },
             {
               "in": "_extract_tar_gz",
               "kind": "raise",
-              "line": 182
+              "line": 196
+            },
+            {
+              "in": "_extract_tar_gz",
+              "kind": "raise",
+              "line": 201
             },
             {
               "in": "_prepare_host_env",
               "kind": "raise",
-              "line": 242
+              "line": 261
             },
             {
               "in": "_prepare_host_env",
               "kind": "raise",
-              "line": 251
+              "line": 270
             },
             {
               "in": "_prepare_host_env",
               "kind": "raise",
-              "line": 286
+              "line": 305
             },
             {
               "in": "_enforce_live_locked_overrides",
               "kind": "raise",
-              "line": 328
+              "line": 347
             },
             {
               "in": "_check_plan_within_budget_and_cap",
               "kind": "raise",
-              "line": 368
+              "line": 387
             },
             {
               "in": "_check_plan_within_budget_and_cap",
               "kind": "except",
-              "line": 371
+              "line": 390
             },
             {
               "in": "_check_plan_within_budget_and_cap",
               "kind": "raise",
-              "line": 372
+              "line": 391
             },
             {
               "in": "_check_plan_within_budget_and_cap",
               "kind": "raise",
-              "line": 374
+              "line": 393
             },
             {
               "in": "_check_plan_within_budget_and_cap",
               "kind": "raise",
-              "line": 380
+              "line": 399
             },
             {
               "in": "_close_mcp_client_quietly",
               "kind": "except",
-              "line": 407
+              "line": 426
             },
             {
               "in": "_exec_run_ok",
               "kind": "raise",
-              "line": 441
+              "line": 460
             },
             {
               "in": "_run_step_with_poll_fallback",
               "kind": "except",
-              "line": 530
+              "line": 549
             },
             {
               "in": "_run_step_with_poll_fallback",
               "kind": "raise",
-              "line": 532
+              "line": 551
             },
             {
               "in": "_run_step_with_poll_fallback",
               "kind": "except",
-              "line": 559
+              "line": 578
             },
             {
               "in": "_shutdown_and_record_status",
               "kind": "except",
-              "line": 631
+              "line": 650
             },
             {
               "in": "_shutdown_and_record_status",
               "kind": "except",
-              "line": 649
+              "line": 668
             },
             {
               "in": "install",
               "kind": "except",
-              "line": 677
+              "line": 696
             },
             {
               "in": "shield",
               "kind": "except",
-              "line": 684
+              "line": 703
             },
             {
               "in": "restore",
               "kind": "except",
-              "line": 691
+              "line": 710
             },
             {
               "in": "_verify_smoke_verified_receipt",
               "kind": "raise",
-              "line": 704
+              "line": 723
             },
             {
               "in": "_verify_smoke_verified_receipt",
               "kind": "raise",
-              "line": 711
+              "line": 730
             },
             {
               "in": "_verify_smoke_verified_receipt",
               "kind": "raise",
-              "line": 713
-            },
-            {
-              "in": "_verify_smoke_verified_receipt",
-              "kind": "raise",
-              "line": 715
-            },
-            {
-              "in": "_verify_smoke_verified_receipt",
-              "kind": "raise",
-              "line": 722
-            },
-            {
-              "in": "_verify_smoke_verified_receipt",
-              "kind": "raise",
-              "line": 728
+              "line": 732
             },
             {
               "in": "_verify_smoke_verified_receipt",
@@ -2535,12 +2530,12 @@
             {
               "in": "_verify_smoke_verified_receipt",
               "kind": "raise",
-              "line": 740
+              "line": 741
             },
             {
               "in": "_verify_smoke_verified_receipt",
               "kind": "raise",
-              "line": 746
+              "line": 747
             },
             {
               "in": "_verify_smoke_verified_receipt",
@@ -2548,119 +2543,124 @@
               "line": 753
             },
             {
-              "in": "run_preflight_only",
+              "in": "_verify_smoke_verified_receipt",
               "kind": "raise",
-              "line": 773
+              "line": 759
+            },
+            {
+              "in": "_verify_smoke_verified_receipt",
+              "kind": "raise",
+              "line": 765
+            },
+            {
+              "in": "_verify_smoke_verified_receipt",
+              "kind": "raise",
+              "line": 772
             },
             {
               "in": "run_preflight_only",
               "kind": "raise",
-              "line": 778
+              "line": 797
             },
             {
               "in": "run_preflight_only",
               "kind": "raise",
-              "line": 807
+              "line": 802
             },
             {
               "in": "run_preflight_only",
               "kind": "raise",
-              "line": 812
+              "line": 831
+            },
+            {
+              "in": "run_preflight_only",
+              "kind": "raise",
+              "line": 836
             },
             {
               "in": "run_smoke_sequence",
               "kind": "raise",
-              "line": 870
+              "line": 899
             },
             {
               "in": "run_smoke_sequence",
               "kind": "raise",
-              "line": 994
+              "line": 1023
             },
             {
               "in": "run_smoke_sequence",
               "kind": "except",
-              "line": 995
+              "line": 1024
             },
             {
               "in": "run_smoke_sequence",
               "kind": "except",
-              "line": 1011
+              "line": 1040
             },
             {
               "in": "run_smoke_sequence",
               "kind": "except",
-              "line": 1015
+              "line": 1044
             },
             {
               "in": "run_smoke_sequence",
               "kind": "raise",
-              "line": 1020
+              "line": 1049
             },
             {
               "in": "run_smoke_sequence",
               "kind": "raise",
-              "line": 1022
+              "line": 1051
             },
             {
               "in": "run_smoke_sequence",
               "kind": "raise",
-              "line": 1036
+              "line": 1065
             },
             {
               "in": "_stage_counted_bundles",
               "kind": "raise",
-              "line": 1117
+              "line": 1146
             },
             {
               "in": "_validate_and_select_replay_specs",
               "kind": "raise",
-              "line": 1217
+              "line": 1246
             },
             {
               "in": "_validate_and_select_replay_specs",
               "kind": "raise",
-              "line": 1223
+              "line": 1252
             },
             {
               "in": "_validate_and_select_replay_specs",
               "kind": "raise",
-              "line": 1230
+              "line": 1259
             },
             {
               "in": "_validate_and_select_replay_specs",
               "kind": "raise",
-              "line": 1236
+              "line": 1265
             },
             {
               "in": "_validate_and_select_replay_specs",
               "kind": "raise",
-              "line": 1243
+              "line": 1272
             },
             {
               "in": "_validate_and_select_replay_specs",
               "kind": "raise",
-              "line": 1250
+              "line": 1279
             },
             {
               "in": "_validate_and_select_replay_specs",
               "kind": "raise",
-              "line": 1257
+              "line": 1286
             },
             {
               "in": "_validate_and_select_replay_specs",
               "kind": "raise",
-              "line": 1267
-            },
-            {
-              "in": "run_counted_sequence",
-              "kind": "raise",
-              "line": 1301
-            },
-            {
-              "in": "run_counted_sequence",
-              "kind": "raise",
-              "line": 1306
+              "line": 1296
             },
             {
               "in": "run_counted_sequence",
@@ -2674,65 +2674,75 @@
             },
             {
               "in": "run_counted_sequence",
-              "kind": "except",
-              "line": 1546
-            },
-            {
-              "in": "run_counted_sequence",
-              "kind": "except",
-              "line": 1552
-            },
-            {
-              "in": "run_counted_sequence",
-              "kind": "except",
-              "line": 1567
-            },
-            {
-              "in": "run_counted_sequence",
-              "kind": "except",
-              "line": 1571
-            },
-            {
-              "in": "run_counted_sequence",
-              "kind": "except",
-              "line": 1628
-            },
-            {
-              "in": "run_counted_sequence",
-              "kind": "except",
-              "line": 1646
-            },
-            {
-              "in": "run_counted_sequence",
-              "kind": "except",
-              "line": 1666
-            },
-            {
-              "in": "run_counted_sequence",
-              "kind": "except",
-              "line": 1670
+              "kind": "raise",
+              "line": 1369
             },
             {
               "in": "run_counted_sequence",
               "kind": "raise",
-              "line": 1696
+              "line": 1374
+            },
+            {
+              "in": "run_counted_sequence",
+              "kind": "except",
+              "line": 1580
+            },
+            {
+              "in": "run_counted_sequence",
+              "kind": "except",
+              "line": 1586
+            },
+            {
+              "in": "run_counted_sequence",
+              "kind": "except",
+              "line": 1601
+            },
+            {
+              "in": "run_counted_sequence",
+              "kind": "except",
+              "line": 1605
+            },
+            {
+              "in": "run_counted_sequence",
+              "kind": "except",
+              "line": 1662
+            },
+            {
+              "in": "run_counted_sequence",
+              "kind": "except",
+              "line": 1680
+            },
+            {
+              "in": "run_counted_sequence",
+              "kind": "except",
+              "line": 1700
+            },
+            {
+              "in": "run_counted_sequence",
+              "kind": "except",
+              "line": 1704
             },
             {
               "in": "run_counted_sequence",
               "kind": "raise",
-              "line": 1698
+              "line": 1730
+            },
+            {
+              "in": "run_counted_sequence",
+              "kind": "raise",
+              "line": 1732
             },
             {
               "in": "main",
               "kind": "except",
-              "line": 1782
+              "line": 1816
             },
             {
               "kind": "raise",
-              "line": 1788
+              "line": 1822
             }
           ],
-          "hash": "ec5b8773355b177f9337e6d757e5eedc5c5469a09ed924136b2908b6df339e0e",
+          "hash": "96784a4d3888c3e23398a87fce968d480e52b731564db49e1ce33356742272f9",
           "importsFiles": [
             "scripts/colab/offrig_host.py",
             "scripts/colab/runpod_pod_windows.py"
@@ -24651,7 +24661,7 @@
           "exports": [
             "main"
           ],
-          "hash": "5489bbbcd2de94b20461e5e46e31373a5bc8aef19c020d88a1f968cc3fa34c70",
+          "hash": "d2a849173c2f312d10d19d09c147ff4e5db0da4dae6f41652bd6c311d0e20cc1",
           "importsFiles": [
             "scripts/colab/vm_judges.py"
           ],
@@ -27254,7 +27264,7 @@
             "test_unverifiable_journal_starts_fresh_on_resume",
             "test_validation_branches_nonstub_subprocess_and_cli_errors"
           ],
-          "hash": "691fd3dc9e7f943b73f7191b4ea251e2a63113e42b08385f35075b601d3c9326",
+          "hash": "4e7311f34daa9f79a680fa6af12e4fda69d22b938d42239bffeb57e56d89cb5a",
           "importOrder": [
             "scripts/colab/offrig_host.py",
             "scripts/colab/runpod_pod_windows.py",
@@ -28172,7 +28182,7 @@
   ],
   "engine": "1.26.0",
   "generatedFrom": {
-    "commit": "11c00fdae37895c9e5951a62685f2a8c42df6d03",
+    "commit": "82c77599bd2e57bbc3071534095de37a5f2413fe",
     "tracked": 230
   },
   "landings": [
