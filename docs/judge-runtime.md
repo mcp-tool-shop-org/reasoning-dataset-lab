@@ -54,8 +54,19 @@ subprocess (`<venv>/bin/python -m reasoning_dataset_lab.pilot_b.bakeoff_judge`) 
   explicit `max_model_len = QWEN36_PROMPT_TOKEN_CAP (4096, unmeasured estimate to be replaced by a measured value) + max_new_tokens`,
   `gpu_memory_utilization=0.90`, `enforce_eager=False`, `logprobs_mode="raw_logprobs"` extracting raw top-20 logprobs
   before temperature and penalties, `enable_thinking=True` by default (`RDLAB_QWEN36_ARM` selects `thinking`
-  [default], `nothink-greedy`, `nothink-card`, or `nothink-matched`; invalid values refuse `QWEN36_ARM_INVALID`,
-  non-Qwen3.6 judges refuse `QWEN36_ARM_UNSUPPORTED_JUDGE`, and resume mismatches refuse `QWEN36_RESUME_ARM_MISMATCH`;
+  [default], `nothink-greedy`, `nothink-card`, or `nothink-matched`; `RDLAB_QWEN36_ARMS` runs a comma-separated
+  arm list sequentially on one engine load with `thinking` required first when included
+  [`QWEN36_ARMS_THINKING_NOT_FIRST`], isolating outputs per arm under `arms/<arm>/`, writing
+  `qwen36_arms_job.json` atomically after every arm [and reconciling it plus completed-arm receipts if the child is killed mid-arm],
+  sealing `arms/<arm>/outputs-closed.json` only for completed arms with verified `judge_done` while writing
+  `.unverified_judge_done` and `outcome.draft.json` into failed or not-started arm dirs, attributing `llm_init_seconds`
+  only to the arm that loaded the engine with per-arm `elapsed_seconds` and verbatim resume timing preservation,
+  continuing across single-arm failures [`failed_arms`], stopping cleanly between arms
+  on cap/wall or when remaining wall budget is below `last_per_call_seconds * planned_calls + 30.0` (seeded across resumed runs from completed arms' elapsed time and recorded call counts; [`WALL_BUDGET_INSUFFICIENT_FOR_NEXT_ARM`, `not_started_arms`, `stopped_between_arms`, `stop_reason`]), keeping per-arm `receipt.json` arm metadata alongside filtered `judges` metrics, moving superseded `judge_done` files into `judge_done.superseded/` when marking incomplete arm directories, and skipping complete / resuming
+  partial arms per arm including `max_new_tokens` match on `--resume`; invalid values refuse `QWEN36_ARM_INVALID` / `QWEN36_ARMS_INVALID` /
+  `QWEN36_ARMS_DUPLICATE` / `QWEN36_ARMS_CONFLICT` / `QWEN36_ARMS_SUBBLOCK_UNSUPPORTED`, non-Qwen3.6 judges refuse
+  `QWEN36_ARM_UNSUPPORTED_JUDGE` / `QWEN36_ARMS_UNSUPPORTED_JUDGE`, and resume mismatches refuse
+  `QWEN36_RESUME_ARM_MISMATCH`;
   non-thinking arms pass `enable_thinking=False` to the same `apply_chat_template` call with byte-identical user
   text and verify empty-closed-think suffix token IDs per call [`QWEN36_NOTHINK_PROMPT_SUFFIX_MISMATCH`] and zero
   generated think-tag token IDs or split-token tag strings [`QWEN36_NOTHINK_THINK_TAG_GENERATED`]), prompt template byte-identity check refusing

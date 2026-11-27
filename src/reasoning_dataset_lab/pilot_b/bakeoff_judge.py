@@ -2685,6 +2685,7 @@ def build_shard_manifest(
     canary_telemetry_sha256: str | None = None,
     golden_anchor_manifest_file_sha256: str | None = None,
     golden_anchor_manifest_sha256: str | None = None,
+    qwen36_arm: str | None = None,
 ) -> dict[str, Any]:
     """Build a pre-registered shard manifest with deterministic stratified interleave over `schedule` and 50 anchors (25 stratified + 25 low-margin anchors)."""
     if num_shards < 1:
@@ -2797,7 +2798,11 @@ def build_shard_manifest(
         for jid, adapter in adapters.items():
             if not judge_supports_pass_mode(adapter.spec, pass_mode):
                 continue
-            prompt = adapter.assemble_prompt(it, order=entry.order, pass_mode=pass_mode)
+            prompt = (
+                adapter.assemble_prompt(it, order=entry.order, pass_mode=pass_mode, arm=qwen36_arm)
+                if qwen36_arm is not None and isinstance(adapter, Qwen36ChoiceAdapter)
+                else adapter.assemble_prompt(it, order=entry.order, pass_mode=pass_mode)
+            )
             call_key = f"{entry.item_id}:{entry.order}:{jid}"
             input_token_ids_sha256_by_call[call_key] = compute_prompt_input_token_ids_sha256(
                 jid, prompt.prompt_text
@@ -4992,6 +4997,11 @@ def _run_bakeoff_judge_impl(
     replacement_session: bool = False,
     resume_overlap_pairs: int = DEFAULT_RECOVERY_OVERLAP_ITEM_PAIRS,
     synthetic_items: bool = False,
+    qwen36_arm: str | None = None,
+    qwen36_arms: Sequence[str] | None = None,
+    qwen36_arm_index: int | None = None,
+    qwen36_repeats_override: int | None = None,
+    qwen36_canary_calls_override: int | None = None,
     _cleanup_callbacks: list[Callable[[], None]] | None = None,
 ) -> dict[str, object]:
     """Run a single judge over `part_bakeoff_sealed/items.jsonl` and write unsealed rows and `generations.jsonl`."""
@@ -5049,31 +5059,46 @@ def _run_bakeoff_judge_impl(
     eff_qwen36_seed_variant_recorded = (
         eff_qwen36_seed_variant if eff_qwen36_seed_variant is not None else QWEN36_SEED_VARIANT_UNSET
     )
-    eff_qwen36_arm = resolve_qwen36_arm()
-    if _is_qwen36_env_explicitly_set(QWEN36_ARM_ENV_VAR) and spec.judge_id != QWEN36_JUDGE_ID:
-        raise refused_error(
-            "QWEN36_ARM_UNSUPPORTED_JUDGE",
-            f"{QWEN36_ARM_ENV_VAR}={eff_qwen36_arm!r} is only supported for {QWEN36_JUDGE_ID!r}, not {spec.judge_id!r}.",
-            f"Unset {QWEN36_ARM_ENV_VAR} when running any judge other than {QWEN36_JUDGE_ID!r}.",
-        )
-    if _is_qwen36_env_explicitly_set(QWEN36_REPEATS_ENV_VAR) and spec.judge_id != QWEN36_JUDGE_ID:
-        raw_rep_val = os.environ.get(QWEN36_REPEATS_ENV_VAR, "")
-        resolve_qwen36_repeats(raw_rep_val, arm=QWEN36_NOTHINK_CARD_ARM)
-        raise refused_error(
-            "QWEN36_REPEATS_UNSUPPORTED_JUDGE",
-            f"{QWEN36_REPEATS_ENV_VAR}={raw_rep_val!r} is only supported for {QWEN36_JUDGE_ID!r}, not {spec.judge_id!r}.",
-            f"Unset {QWEN36_REPEATS_ENV_VAR} when running any judge other than {QWEN36_JUDGE_ID!r}.",
-        )
-    eff_qwen36_repeats = resolve_qwen36_repeats(arm=eff_qwen36_arm)
-    if _is_qwen36_env_explicitly_set(QWEN36_CANARY_CALLS_ENV_VAR) and spec.judge_id != QWEN36_JUDGE_ID:
-        raw_can_val = os.environ.get(QWEN36_CANARY_CALLS_ENV_VAR, "")
-        resolve_qwen36_canary_calls(raw_can_val, arm=QWEN36_NOTHINK_GREEDY_ARM)
-        raise refused_error(
-            "QWEN36_CANARY_UNSUPPORTED_JUDGE",
-            f"{QWEN36_CANARY_CALLS_ENV_VAR}={raw_can_val!r} is only supported for {QWEN36_JUDGE_ID!r}, not {spec.judge_id!r}.",
-            f"Unset {QWEN36_CANARY_CALLS_ENV_VAR} when running any judge other than {QWEN36_JUDGE_ID!r}.",
-        )
-    eff_qwen36_canary_calls = resolve_qwen36_canary_calls(arm=eff_qwen36_arm)
+    if qwen36_arm is not None:
+        if spec.judge_id != QWEN36_JUDGE_ID:
+            raise refused_error(
+                "QWEN36_ARM_UNSUPPORTED_JUDGE",
+                f"{QWEN36_ARM_ENV_VAR}={qwen36_arm!r} is only supported for {QWEN36_JUDGE_ID!r}, not {spec.judge_id!r}.",
+                f"Unset {QWEN36_ARM_ENV_VAR} when running any judge other than {QWEN36_JUDGE_ID!r}.",
+            )
+        eff_qwen36_arm = normalize_qwen36_arm(qwen36_arm)
+    else:
+        eff_qwen36_arm = resolve_qwen36_arm()
+        if _is_qwen36_env_explicitly_set(QWEN36_ARM_ENV_VAR) and spec.judge_id != QWEN36_JUDGE_ID:
+            raise refused_error(
+                "QWEN36_ARM_UNSUPPORTED_JUDGE",
+                f"{QWEN36_ARM_ENV_VAR}={eff_qwen36_arm!r} is only supported for {QWEN36_JUDGE_ID!r}, not {spec.judge_id!r}.",
+                f"Unset {QWEN36_ARM_ENV_VAR} when running any judge other than {QWEN36_JUDGE_ID!r}.",
+            )
+    if qwen36_repeats_override is not None:
+        eff_qwen36_repeats = resolve_qwen36_repeats(qwen36_repeats_override, arm=eff_qwen36_arm)
+    else:
+        if _is_qwen36_env_explicitly_set(QWEN36_REPEATS_ENV_VAR) and spec.judge_id != QWEN36_JUDGE_ID:
+            raw_rep_val = os.environ.get(QWEN36_REPEATS_ENV_VAR, "")
+            resolve_qwen36_repeats(raw_rep_val, arm=QWEN36_NOTHINK_CARD_ARM)
+            raise refused_error(
+                "QWEN36_REPEATS_UNSUPPORTED_JUDGE",
+                f"{QWEN36_REPEATS_ENV_VAR}={raw_rep_val!r} is only supported for {QWEN36_JUDGE_ID!r}, not {spec.judge_id!r}.",
+                f"Unset {QWEN36_REPEATS_ENV_VAR} when running any judge other than {QWEN36_JUDGE_ID!r}.",
+            )
+        eff_qwen36_repeats = resolve_qwen36_repeats(arm=eff_qwen36_arm)
+    if qwen36_canary_calls_override is not None:
+        eff_qwen36_canary_calls = resolve_qwen36_canary_calls(qwen36_canary_calls_override, arm=eff_qwen36_arm)
+    else:
+        if _is_qwen36_env_explicitly_set(QWEN36_CANARY_CALLS_ENV_VAR) and spec.judge_id != QWEN36_JUDGE_ID:
+            raw_can_val = os.environ.get(QWEN36_CANARY_CALLS_ENV_VAR, "")
+            resolve_qwen36_canary_calls(raw_can_val, arm=QWEN36_NOTHINK_GREEDY_ARM)
+            raise refused_error(
+                "QWEN36_CANARY_UNSUPPORTED_JUDGE",
+                f"{QWEN36_CANARY_CALLS_ENV_VAR}={raw_can_val!r} is only supported for {QWEN36_JUDGE_ID!r}, not {spec.judge_id!r}.",
+                f"Unset {QWEN36_CANARY_CALLS_ENV_VAR} when running any judge other than {QWEN36_JUDGE_ID!r}.",
+            )
+        eff_qwen36_canary_calls = resolve_qwen36_canary_calls(arm=eff_qwen36_arm)
     row_filename = f"{spec.judge_id}.jsonl" if pass_mode == "binary" else f"{spec.judge_id}.{pass_mode}.jsonl"
     canary_row_filename = f"{spec.judge_id}.{pass_mode}{CANARY_ROWS_SUFFIX}"
     if spec.judge_id == QWEN36_JUDGE_ID:
@@ -5240,9 +5265,24 @@ def _run_bakeoff_judge_impl(
     close_guard_fn = getattr(transport, "close_build_guard", None)
     if _cleanup_callbacks is not None and callable(close_guard_fn):
         _cleanup_callbacks.append(close_guard_fn)
+    engine_loaded_before_pass = (
+        (getattr(transport, "_llm", None) is not None)
+        or bool(getattr(transport, "_llm_init_attributed", False))
+    )
     if callable(ensure_loaded_fn):
         ensure_loaded_fn(spec)
-    load_wall_seconds = round(max(0.0, time.monotonic() - child_start_mono), 6)
+    ensure_arm_meta_fn = getattr(transport, "ensure_arm_metadata_loaded", None)
+    if spec.judge_id == QWEN36_JUDGE_ID and callable(ensure_arm_meta_fn):
+        ensure_arm_meta_fn(spec, eff_qwen36_arm)
+    attribute_llm_init = not engine_loaded_before_pass
+    if attribute_llm_init and transport is not None and (
+        getattr(transport, "_llm", None) is not None
+        or getattr(transport, "_llm_init_seconds", None) is not None
+    ):
+        setattr(transport, "_llm_init_attributed", True)
+    suffix_checked_start = int(getattr(transport, "_prompt_suffix_checked_count", 0) or 0) if transport is not None else 0
+    think_tag_gen_start = int(getattr(transport, "_generated_think_tag_count", 0) or 0) if transport is not None else 0
+    load_wall_seconds = 0.0 if engine_loaded_before_pass else round(max(0.0, time.monotonic() - child_start_mono), 6)
     load_done_payload: dict[str, Any] = {
         "kind": "load_done",
         "judge_id": spec.judge_id,
@@ -5273,8 +5313,8 @@ def _run_bakeoff_judge_impl(
         cg_peak = getattr(transport, "_cgroup_memory_peak_bytes", None)
         if cg_peak is not None:
             load_done_payload["cgroup_memory_peak_bytes"] = int(cg_peak)
-        llm_init_s = getattr(transport, "_llm_init_seconds", None)
-        jit_sum = getattr(transport, "_jit_build_summary", None) or {}
+        llm_init_s = getattr(transport, "_llm_init_seconds", None) if attribute_llm_init else None
+        jit_sum = (getattr(transport, "_jit_build_summary", None) or {}) if attribute_llm_init else {}
         jit_s = jit_sum.get("jit_build_seconds")
         jit_targets = jit_sum.get("jit_build_targets") or []
         if llm_init_s is not None:
@@ -5311,6 +5351,7 @@ def _run_bakeoff_judge_impl(
                 schedule,
                 num_shards=shard_n if shard_n is not None else 1,
                 pass_mode=pass_mode,
+                qwen36_arm=(eff_qwen36_arm if spec.judge_id == QWEN36_JUDGE_ID else None),
             )
             write_shard_manifest(built_manifest, target_manifest_path)
         manifest_doc, manifest_file_sha256 = verify_shard_manifest(
@@ -6513,6 +6554,9 @@ def _run_bakeoff_judge_impl(
             )
             qwen36_summary_extra["duplicate_canary_counts_by_state"] = dict(canary_counts_by_state)
         qwen36_summary_extra["call_seconds_quantiles"] = call_seconds_quantiles
+        if qwen36_arms is not None:
+            qwen36_summary_extra["arms"] = list(qwen36_arms)
+            qwen36_summary_extra["arm_index"] = int(qwen36_arm_index if qwen36_arm_index is not None else 0)
         if eff_qwen36_arm in QWEN36_NON_THINKING_ARMS:
             empty_ids = getattr(transport, "_empty_closed_think_token_ids", None) if transport is not None else None
             open_ids = getattr(transport, "_think_open_token_ids", None) if transport is not None else None
@@ -6525,19 +6569,21 @@ def _run_bakeoff_judge_impl(
                 if open_ids is not None and close_ids is not None
                 else None
             )
-            qwen36_summary_extra["prompt_suffix_checked_count"] = int(
-                getattr(transport, "_prompt_suffix_checked_count", 0) or 0
-            ) if transport is not None else 0
+            suffix_checked_end = (
+                int(getattr(transport, "_prompt_suffix_checked_count", 0) or 0) if transport is not None else 0
+            )
+            think_tag_gen_end = (
+                int(getattr(transport, "_generated_think_tag_count", 0) or 0) if transport is not None else 0
+            )
+            qwen36_summary_extra["prompt_suffix_checked_count"] = max(0, suffix_checked_end - suffix_checked_start)
             qwen36_summary_extra["prompt_suffix_mismatch_count"] = 0
-            qwen36_summary_extra["generated_think_tag_count"] = int(
-                getattr(transport, "_generated_think_tag_count", 0) or 0
-            ) if transport is not None else 0
+            qwen36_summary_extra["generated_think_tag_count"] = max(0, think_tag_gen_end - think_tag_gen_start)
         if transport is not None:
             cg_peak = getattr(transport, "_cgroup_memory_peak_bytes", None)
             if cg_peak is not None:
                 qwen36_summary_extra["cgroup_memory_peak_bytes"] = int(cg_peak)
-            llm_init_s = getattr(transport, "_llm_init_seconds", None)
-            jit_sum = getattr(transport, "_jit_build_summary", None) or {}
+            llm_init_s = getattr(transport, "_llm_init_seconds", None) if attribute_llm_init else None
+            jit_sum = (getattr(transport, "_jit_build_summary", None) or {}) if attribute_llm_init else {}
             jit_s = jit_sum.get("jit_build_seconds")
             jit_targets = jit_sum.get("jit_build_targets") or []
             if llm_init_s is not None:
@@ -6652,6 +6698,785 @@ def _run_bakeoff_judge_impl(
     }
 
 
+def _expected_arm_row_counts(
+    *,
+    part_dir: Path,
+    limit_items: int | None,
+    schedule_seed: int | None,
+    pass_mode: PassMode,
+    shard_spec: str | None,
+    shard_manifest_path: Path | None,
+    arms: Sequence[str],
+    repeats_by_arm: Mapping[str, int],
+    canary_calls_by_arm: Mapping[str, int],
+) -> dict[str, tuple[int, int]]:
+    items, items_sha256 = load_judge_items(part_dir, limit=limit_items)
+    all_ids = [it.item_id for it in items]
+    shard_item_ids = list(all_ids)
+    part_canary_pool = list(all_ids)
+    eff_shard_spec = (shard_spec if shard_spec is not None else os.environ.get("RDLAB_SHARD", "")).strip() or None
+    if eff_shard_spec is not None:
+        shard_k, shard_n = parse_shard_spec(eff_shard_spec)
+        eff_manifest_raw = (
+            str(shard_manifest_path)
+            if shard_manifest_path is not None
+            else os.environ.get("RDLAB_SHARD_MANIFEST", "").strip()
+        )
+        mf_doc: dict[str, Any] | None = None
+        if eff_manifest_raw and Path(eff_manifest_raw).is_file():
+            mf_doc = json.loads(Path(eff_manifest_raw).read_text(encoding="utf-8"))
+        elif shard_n > 1:
+            sched = build_schedule(items, seed=schedule_seed, items_sha256=items_sha256)
+            mf_doc = build_shard_manifest(
+                items,
+                sched,
+                num_shards=shard_n,
+                schedule_seed=DEFAULT_SCHEDULE_SEED if schedule_seed is None else int(schedule_seed),
+                pass_mode=pass_mode,
+                qwen36_arm=(arms[0] if arms else None),
+            )
+        if mf_doc is not None:
+            shard_item_ids = [str(x) for x in mf_doc["shards"][str(shard_k)]]
+            mf_pool = mf_doc.get("all_item_ids") or list((mf_doc.get("shard_by_item") or {}).keys())
+            if mf_pool:
+                part_canary_pool = [str(x) for x in mf_pool]
+    shard_id_set = set(shard_item_ids)
+    main_pairs = len(shard_item_ids) * 2
+    expected: dict[str, tuple[int, int]] = {}
+    for arm in arms:
+        main_rows = main_pairs * int(repeats_by_arm[arm])
+        can_n = int(canary_calls_by_arm[arm])
+        if can_n > 0:
+            selected_can = select_qwen36_duplicate_canary_calls(part_canary_pool, can_n)
+            if eff_shard_spec is not None:
+                selected_can = [(iid, ord_s) for iid, ord_s in selected_can if iid in shard_id_set]
+            can_rows = len(selected_can)
+        else:
+            can_rows = 0
+        expected[arm] = (main_rows, can_rows)
+    return expected
+
+
+def _is_qwen36_arm_complete(
+    *,
+    arm_dir: Path,
+    judge_id: str,
+    pass_mode: PassMode,
+    arm: str,
+    expected_main_rows: int,
+    expected_canary_rows: int,
+    expected_repeats: int,
+    expected_seed_variant: str,
+    expected_max_new_tokens: int | None = None,
+) -> dict[str, Any] | None:
+    done_path = arm_dir / JUDGE_DONE_DIRNAME / judge_done_filename_for_pass(judge_id, pass_mode)
+    row_filename = f"{judge_id}.jsonl" if pass_mode == "binary" else f"{judge_id}.{pass_mode}.jsonl"
+    row_path = arm_dir / ROWS_DIRNAME / row_filename
+    if not done_path.is_file() or not row_path.is_file():
+        return None
+    try:
+        done_doc = json.loads(done_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(done_doc, dict):
+        return None
+    if str(done_doc.get("arm") or "") != arm:
+        return None
+    if str(done_doc.get("seed_variant") or QWEN36_SEED_VARIANT_UNSET) != expected_seed_variant:
+        return None
+    if int(done_doc.get("repeats", 1) or 1) != int(expected_repeats):
+        return None
+    if expected_max_new_tokens is not None:
+        raw_mnt = done_doc.get("max_new_tokens")
+        if raw_mnt is None or int(raw_mnt) != int(expected_max_new_tokens):
+            return None
+    row_bytes = row_path.read_bytes()
+    actual_sha = hashlib.sha256(row_bytes).hexdigest()
+    actual_rows = sum(1 for ln in row_bytes.decode("utf-8").splitlines() if ln.strip())
+    if actual_rows != expected_main_rows:
+        return None
+    if int(done_doc.get("row_count", -1)) != expected_main_rows or str(done_doc.get("sha256") or "") != actual_sha:
+        return None
+    if expected_canary_rows > 0:
+        canary_path = arm_dir / ROWS_DIRNAME / f"{judge_id}.{pass_mode}{CANARY_ROWS_SUFFIX}"
+        if not canary_path.is_file():
+            return None
+        if int(done_doc.get("duplicate_canary_calls", -1)) != expected_canary_rows:
+            return None
+        if int(done_doc.get("duplicate_canary_failed_calls", 0) or 0) != 0:
+            return None
+        actual_can_sha = hashlib.sha256(canary_path.read_bytes()).hexdigest()
+        if str(done_doc.get("duplicate_canary_rows_sha256") or "") != actual_can_sha:
+            return None
+    return done_doc
+
+
+def _write_qwen36_arms_job_atomic(output_dir: Path, job_doc: Mapping[str, Any]) -> None:
+    """Atomically replace `qwen36_arms_job.json` via a temp file."""
+    target = output_dir / QWEN36_ARMS_JOB_FILENAME
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = output_dir / f".{QWEN36_ARMS_JOB_FILENAME}.tmp.{os.getpid()}"
+    tmp.write_text(json.dumps(dict(job_doc), indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
+    os.replace(tmp, target)
+
+
+def _write_qwen36_arm_incomplete_markers(
+    arm_dir: Path,
+    *,
+    judge_id: str,
+    pass_mode: PassMode,
+    arm: str,
+    status: str,
+    failure_class: str | None = None,
+) -> None:
+    """Write `.unverified_judge_done` and `outcome.draft.json` inside an incomplete/failed arm dir so scorers refuse it."""
+    arm_dir.mkdir(parents=True, exist_ok=True)
+    done_name = judge_done_filename_for_pass(judge_id, pass_mode)
+    (arm_dir / OUTPUTS_CLOSED_FILENAME).unlink(missing_ok=True)
+    src_done = arm_dir / JUDGE_DONE_DIRNAME / done_name
+    if src_done.is_file() or src_done.is_symlink():
+        superseded_dir = arm_dir / SUPERSEDED_JUDGE_DONE_DIRNAME
+        superseded_dir.mkdir(parents=True, exist_ok=True)
+        os.replace(src_done, superseded_dir / done_name)
+    (arm_dir / UNVERIFIED_JUDGE_DONE_FILENAME).write_text(
+        f"{judge_id}\t{pass_mode}\t{done_name}\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    pass_label = f"{judge_id}:{pass_mode}"
+    outcome_doc = {
+        "judges_completed": [],
+        "unverified_passes": [pass_label],
+        "excluded_incomplete_passes": [
+            {
+                "judge_id": judge_id,
+                "pass_mode": pass_mode,
+                "pass": pass_label,
+                "arm": arm,
+                "status": status,
+                "failure_class": failure_class,
+            }
+        ],
+    }
+    tmp_out = arm_dir / f".{OUTCOME_DRAFT_FILENAME}.tmp.{os.getpid()}"
+    tmp_out.write_text(json.dumps(outcome_doc, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
+    os.replace(tmp_out, arm_dir / OUTCOME_DRAFT_FILENAME)
+
+
+def _clear_qwen36_arm_incomplete_markers(arm_dir: Path) -> None:
+    (arm_dir / UNVERIFIED_JUDGE_DONE_FILENAME).unlink(missing_ok=True)
+    (arm_dir / OUTCOME_DRAFT_FILENAME).unlink(missing_ok=True)
+
+
+def run_qwen36_arms_job(
+    *,
+    part_dir: Path,
+    output_dir: Path,
+    judge: str,
+    qwen36_arms: str | Sequence[str],
+    schedule_seed: int | None = DEFAULT_SCHEDULE_SEED,
+    pass_mode: PassMode = "binary",
+    limit_items: int | None = None,
+    fake_transport: bool = False,
+    transport: JudgeTransport | None = None,
+    receipts_dir: Path | None = None,
+    hf_home: Path | None = None,
+    device: str = "cpu",
+    torch_dtype: str = DEFAULT_TORCH_DTYPE,
+    allow_remote_code_reviewed: str | None = None,
+    vram_halt_mib: int = DEFAULT_VRAM_HALT_MIB,
+    vram_probe: Callable[[], int] | None = None,
+    halt_pid: int | None = None,
+    pid_killer: Callable[[int], None] = kill_judge_pid_tree,
+    error_rate_stop: float = DEFAULT_ERROR_RATE_STOP,
+    error_rate_min_calls: int = DEFAULT_ERROR_RATE_MIN_CALLS,
+    force_length_stop_items: Sequence[str] = (),
+    force_unparseable_items: Sequence[str] = (),
+    canary_config_path: Path | None = None,
+    run_canary: bool = True,
+    repo_root: Path | None = None,
+    progress_file: Path | None = None,
+    heartbeat_interval_seconds: float | None = None,
+    shard_spec: str | None = None,
+    shard_manifest_path: Path | None = None,
+    shard_manifest_sha256: str | None = None,
+    golden_anchor_manifest_path: Path | None = None,
+    active_item_ids: Sequence[str] | None = None,
+    anchor_prefix_only: bool = False,
+    session_fingerprint_sha256: str | None = None,
+    window_mode: str | None = None,
+    replacement_session: bool = False,
+    resume_overlap_pairs: int = DEFAULT_RECOVERY_OVERLAP_ITEM_PAIRS,
+    synthetic_items: bool = False,
+    wall_deadline_monotonic: float | None = None,
+    stop_marker_file: Path | None = None,
+    should_stop_between_arms: Callable[[int, str], str | bool | None] | None = None,
+    between_arm_margin_seconds: float | None = None,
+) -> dict[str, object]:
+    """Run several Qwen3.6 arms sequentially in one job on one shared engine load."""
+    arms = resolve_qwen36_arms(qwen36_arms)
+    if arms is None:
+        raise refused_error(
+            QWEN36_ARMS_INVALID,
+            f"{QWEN36_ARMS_ENV_VAR} cannot be empty.",
+            f"Pass at least one arm from {', '.join(QWEN36_VALID_ARMS)}.",
+        )
+    try:
+        device = normalize_judge_device(device)
+    except DeviceRefusalError as exc:
+        raise RdlabError(
+            code="BAKEOFF_JUDGE_DEVICE_INVALID",
+            message=exc.message,
+            hint=exc.hint,
+            exit_code=exc.exit_code,
+        ) from exc
+    resolved_out = check_output_dir_outside_repo(output_dir, repo_root=repo_root)
+    spec = resolve_judge_spec(judge)
+    if spec.judge_id != QWEN36_JUDGE_ID:
+        raise refused_error(
+            QWEN36_ARMS_UNSUPPORTED_JUDGE,
+            f"{QWEN36_ARMS_ENV_VAR}={','.join(arms)!r} is only supported for {QWEN36_JUDGE_ID!r}, not {spec.judge_id!r}.",
+            f"Unset {QWEN36_ARMS_ENV_VAR} when running any judge other than {QWEN36_JUDGE_ID!r}.",
+        )
+    if not judge_supports_pass_mode(spec, pass_mode):
+        raise refused_error(
+            "BAKEOFF_JUDGE_BINARY_UNSUPPORTED" if pass_mode == "binary" else "BAKEOFF_JUDGE_THREE_WAY_UNSUPPORTED",
+            f"Judge '{spec.judge_id}' does not support pass_mode={pass_mode!r}.",
+            "Use pass_mode='three_way_contradicted' for qwen3.6-35b-a3b.",
+        )
+
+    eff_shard_spec = (shard_spec if shard_spec is not None else os.environ.get("RDLAB_SHARD", "")).strip() or None
+    eff_window_mode = (
+        window_mode
+        if window_mode is not None
+        else (os.environ.get(DETERMINISM_MODE_ENV_VAR, "") or os.environ.get("RDLAB_WINDOW_MODE", ""))
+    ).strip() or None
+    if eff_window_mode is None and fake_transport:
+        eff_window_mode = "stub"
+    if synthetic_items and (eff_window_mode is None or eff_window_mode.lower() not in ("time-one", "time_one", "dryrun", "dry-run")):
+        raise refused_error(
+            "BAKEOFF_JUDGE_SYNTHETIC_MODE_FORBIDDEN",
+            f"--synthetic-items is allowed only with time-one mode, got window_mode={eff_window_mode!r}.",
+            "Run synthetic timing only in --time-one.",
+        )
+    guard_no_test_hooks_in_counted_mode(
+        eff_window_mode,
+        shard_spec=eff_shard_spec,
+        fake_transport=bool(fake_transport or transport is not None),
+    )
+    is_real_qwen36 = is_real_mode(
+        eff_window_mode,
+        fake_transport=bool(fake_transport or isinstance(transport, DeterministicFakeJudgeTransport)),
+    )
+    eff_seed_variant = resolve_qwen36_seed_variant()
+    eff_seed_variant_recorded = eff_seed_variant if eff_seed_variant is not None else QWEN36_SEED_VARIANT_UNSET
+    eff_max_new_tokens = resolve_qwen36_max_new_tokens(require_explicit=is_real_qwen36)
+
+    repeatable_target = next((a for a in arms if a in QWEN36_REPEATABLE_ARMS), arms[0])
+    configured_repeats = resolve_qwen36_repeats(arm=repeatable_target)
+    repeats_by_arm = {
+        arm: (configured_repeats if arm in QWEN36_REPEATABLE_ARMS else QWEN36_DEFAULT_REPEATS)
+        for arm in arms
+    }
+    canary_target = QWEN36_NOTHINK_GREEDY_ARM if QWEN36_NOTHINK_GREEDY_ARM in arms else arms[0]
+    configured_canary_calls = resolve_qwen36_canary_calls(arm=canary_target)
+    canary_calls_by_arm = {
+        arm: (configured_canary_calls if arm == QWEN36_NOTHINK_GREEDY_ARM else QWEN36_DEFAULT_CANARY_CALLS)
+        for arm in arms
+    }
+
+    expected_counts = _expected_arm_row_counts(
+        part_dir=part_dir,
+        limit_items=limit_items,
+        schedule_seed=schedule_seed,
+        pass_mode=pass_mode,
+        shard_spec=eff_shard_spec,
+        shard_manifest_path=shard_manifest_path,
+        arms=arms,
+        repeats_by_arm=repeats_by_arm,
+        canary_calls_by_arm=canary_calls_by_arm,
+    )
+
+    planned_calls_by_arm = {
+        arm: int(expected_counts[arm][0]) + int(expected_counts[arm][1])
+        for arm in arms
+    }
+
+    arms_root = resolved_out / QWEN36_ARMS_DIRNAME
+    arms_root.mkdir(parents=True, exist_ok=True)
+    completed_arms: list[str] = []
+    resumed_skipped_arms: list[str] = []
+    failed_arms: dict[str, dict[str, Any]] = {}
+    not_started_arms: list[str] = []
+    per_arm: dict[str, dict[str, Any]] = {}
+    arm_results: dict[str, dict[str, Any]] = {}
+    resumed_set: set[str] = set()
+    last_completed_arm_seconds: float | None = None
+    last_per_call_seconds: float | None = None
+    last_estimated_next_arm_seconds: float | None = None
+
+    for arm_idx, arm in enumerate(arms):
+        arm_dir = arms_root / arm
+        exp_main, exp_can = expected_counts[arm]
+        existing_done = _is_qwen36_arm_complete(
+            arm_dir=arm_dir,
+            judge_id=spec.judge_id,
+            pass_mode=pass_mode,
+            arm=arm,
+            expected_main_rows=exp_main,
+            expected_canary_rows=exp_can,
+            expected_repeats=repeats_by_arm[arm],
+            expected_seed_variant=eff_seed_variant_recorded,
+            expected_max_new_tokens=eff_max_new_tokens,
+        )
+        if existing_done is not None:
+            _clear_qwen36_arm_incomplete_markers(arm_dir)
+            if existing_done.get("arms") != list(arms) or existing_done.get("arm_index") != arm_idx:
+                existing_done["arms"] = list(arms)
+                existing_done["arm_index"] = arm_idx
+                done_path = arm_dir / JUDGE_DONE_DIRNAME / judge_done_filename_for_pass(spec.judge_id, pass_mode)
+                done_path.write_text(json.dumps(existing_done, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
+            resumed_set.add(arm)
+            resumed_skipped_arms.append(arm)
+            completed_arms.append(arm)
+            arm_results[arm] = existing_done
+            raw_done_elapsed = existing_done.get("elapsed_seconds")
+            resumed_elapsed = (
+                float(raw_done_elapsed)
+                if isinstance(raw_done_elapsed, (int, float)) and not isinstance(raw_done_elapsed, bool)
+                else None
+            )
+            if resumed_elapsed is not None and resumed_elapsed >= 0.0:
+                last_completed_arm_seconds = resumed_elapsed
+                recorded_calls = int(existing_done.get("row_count", 0) or 0) + int(
+                    existing_done.get("duplicate_canary_row_count", 0) or 0
+                )
+                if recorded_calls <= 0:
+                    recorded_calls = planned_calls_by_arm[arm]
+                raw_done_init = existing_done.get("llm_init_seconds")
+                resumed_init_s = (
+                    float(raw_done_init)
+                    if isinstance(raw_done_init, (int, float)) and not isinstance(raw_done_init, bool)
+                    else 0.0
+                )
+                eff_resumed_call_wall = (
+                    max(0.0, resumed_elapsed - resumed_init_s)
+                    if resumed_elapsed > resumed_init_s
+                    else resumed_elapsed
+                )
+                if recorded_calls > 0:
+                    last_per_call_seconds = eff_resumed_call_wall / float(recorded_calls)
+            per_arm[arm] = {
+                "arm": arm,
+                "arm_index": arm_idx,
+                "arms": list(arms),
+                "status": "completed",
+                "resumed": True,
+                "output_dir": f"{QWEN36_ARMS_DIRNAME}/{arm}",
+                "rows_sha256": existing_done["sha256"],
+                "row_count": existing_done["row_count"],
+                "repeats": repeats_by_arm[arm],
+                "duplicate_canary_calls": existing_done.get("duplicate_canary_calls", 0),
+                "duplicate_canary_failed_calls": existing_done.get("duplicate_canary_failed_calls", 0),
+                **(
+                    {"elapsed_seconds": round(resumed_elapsed, 6)}
+                    if resumed_elapsed is not None
+                    else {}
+                ),
+            }
+
+    for arm in arms:
+        existing_arm_dir = arms_root / arm
+        if existing_arm_dir.is_dir() and arm not in resumed_set:
+            _write_qwen36_arm_incomplete_markers(
+                existing_arm_dir,
+                judge_id=spec.judge_id,
+                pass_mode=pass_mode,
+                arm=arm,
+                status="not_started",
+                failure_class="STALE_OR_INCOMPLETE_AT_JOB_START",
+            )
+
+    for arm_idx, arm in enumerate(arms):
+        if arm not in resumed_set:
+            not_started_arms.append(arm)
+            per_arm[arm] = {
+                "arm": arm,
+                "arm_index": arm_idx,
+                "arms": list(arms),
+                "status": "not_started",
+                "output_dir": f"{QWEN36_ARMS_DIRNAME}/{arm}",
+            }
+
+    effective_dtype = DEFAULT_TORCH_DTYPE if str(torch_dtype).strip().lower() == "auto" else str(torch_dtype)
+    raw_stop_env = os.environ.get(QWEN36_ARMS_STOP_FILE_ENV_VAR, "").strip()
+    eff_stop_file = stop_marker_file if stop_marker_file is not None else (Path(raw_stop_env) if raw_stop_env else None)
+    raw_deadline_epoch = os.environ.get(QWEN36_ARMS_WALL_DEADLINE_EPOCH_ENV_VAR, "").strip()
+    eff_wall_deadline_epoch: float | None = None
+    if raw_deadline_epoch:
+        try:
+            eff_wall_deadline_epoch = float(raw_deadline_epoch)
+        except ValueError:
+            eff_wall_deadline_epoch = None
+
+    stopped_between_arms = False
+    stop_reason: str | None = None
+    in_progress_arm: str | None = None
+    last_remaining_wall_seconds: float | None = None
+    eff_margin_seconds = max(
+        0.0,
+        float(
+            QWEN36_ARMS_BETWEEN_ARM_MARGIN_SECONDS
+            if between_arm_margin_seconds is None
+            else between_arm_margin_seconds
+        ),
+    )
+
+    def _remaining_wall_seconds() -> float | None:
+        cands: list[float] = []
+        if wall_deadline_monotonic is not None:
+            cands.append(float(wall_deadline_monotonic) - time.monotonic())
+        if eff_wall_deadline_epoch is not None:
+            cands.append(float(eff_wall_deadline_epoch) - time.time())
+        return min(cands) if cands else None
+
+    def _build_job_doc(*, finalized: bool) -> dict[str, Any]:
+        if finalized:
+            st = (
+                "ok"
+                if (len(completed_arms) == len(arms) and not failed_arms and not not_started_arms)
+                else ("failed" if (not completed_arms and failed_arms) else "partial")
+            )
+        else:
+            st = "running"
+        doc: dict[str, Any] = {
+            "status": st,
+            "judge_id": spec.judge_id,
+            "pass_mode": pass_mode,
+            "arms": list(arms),
+            "completed_arms": list(completed_arms),
+            "resumed_skipped_arms": list(resumed_skipped_arms),
+            "failed_arms": dict(failed_arms),
+            "not_started_arms": list(not_started_arms),
+            "in_progress_arm": in_progress_arm,
+            "stopped_between_arms": bool(stopped_between_arms),
+            "stop_reason": stop_reason,
+            "between_arm_margin_seconds": round(eff_margin_seconds, 3),
+            "last_completed_arm_seconds": (
+                round(last_completed_arm_seconds, 6)
+                if last_completed_arm_seconds is not None
+                else None
+            ),
+            "last_per_call_seconds": (
+                round(last_per_call_seconds, 6)
+                if last_per_call_seconds is not None
+                else None
+            ),
+            "estimated_next_arm_seconds": (
+                round(last_estimated_next_arm_seconds, 6)
+                if last_estimated_next_arm_seconds is not None
+                else None
+            ),
+            "remaining_wall_seconds": (
+                round(last_remaining_wall_seconds, 6)
+                if last_remaining_wall_seconds is not None
+                else None
+            ),
+            "per_arm": {k: dict(v) for k, v in per_arm.items()},
+        }
+        return doc
+
+    def _write_arm_receipt(arm_idx_r: int, arm_r: str, job_doc_snapshot: Mapping[str, Any]) -> None:
+        if arm_r not in arm_results:
+            return
+        arm_dir_r = arms_root / arm_r
+        receipt_doc = {
+            **arm_results[arm_r],
+            "judge_id": spec.judge_id,
+            "pass_mode": pass_mode,
+            "arm": arm_r,
+            "arms": list(arms),
+            "arm_index": arm_idx_r,
+            "qwen36_arms": dict(job_doc_snapshot),
+        }
+        receipt_doc.pop("rows_path", None)
+        receipt_doc.pop("judge_done_path", None)
+        receipt_doc.pop("generations_path", None)
+        (arm_dir_r / "receipt.json").write_text(
+            json.dumps(receipt_doc, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+
+    def _flush_job_doc(*, finalized: bool) -> dict[str, Any]:
+        snap = _build_job_doc(finalized=finalized)
+        _write_qwen36_arms_job_atomic(resolved_out, snap)
+        return snap
+
+    def _check_between_arm_stop(idx: int, name: str) -> str | None:
+        nonlocal last_remaining_wall_seconds, last_estimated_next_arm_seconds
+        if should_stop_between_arms is not None:
+            sig = should_stop_between_arms(idx, name)
+            if isinstance(sig, str) and sig.strip():
+                return sig.strip()
+            if sig:
+                return WALL_STOP_BETWEEN_ARMS
+        if eff_stop_file is not None and eff_stop_file.is_file():
+            raw_sig = eff_stop_file.read_text(encoding="utf-8", errors="replace").strip()
+            return raw_sig or CAP_STOP_BETWEEN_ARMS
+        rem_s = _remaining_wall_seconds()
+        if rem_s is not None:
+            last_remaining_wall_seconds = rem_s
+            if rem_s <= 0.0:
+                return WALL_STOP_BETWEEN_ARMS
+            if last_per_call_seconds is not None:
+                est_next_s = last_per_call_seconds * float(planned_calls_by_arm.get(name, 0))
+                last_estimated_next_arm_seconds = est_next_s
+                if rem_s < (est_next_s + eff_margin_seconds):
+                    return WALL_BUDGET_INSUFFICIENT_BETWEEN_ARMS
+            elif last_completed_arm_seconds is not None and rem_s < (last_completed_arm_seconds + eff_margin_seconds):
+                last_estimated_next_arm_seconds = last_completed_arm_seconds
+                return WALL_BUDGET_INSUFFICIENT_BETWEEN_ARMS
+        return None
+
+    _flush_job_doc(finalized=False)
+
+    shared_transport: JudgeTransport | None = transport
+    owns_transport = False
+    if len(resumed_set) < len(arms):
+        if shared_transport is None:
+            owns_transport = True
+            if fake_transport:
+                shared_transport = DeterministicFakeJudgeTransport(
+                    force_length_stop_items=force_length_stop_items,
+                    force_unparseable_items=force_unparseable_items,
+                    torch_dtype=effective_dtype,
+                )
+            else:
+                check_remote_code_gate(spec, allow_remote_code_reviewed=allow_remote_code_reviewed)
+                if receipts_dir is None:
+                    raise refused_error(
+                        "BAKEOFF_JUDGE_RECEIPTS_DIR_REQUIRED",
+                        f"Real-model loading for '{spec.judge_id}' ({spec.repo_id} @ {spec.revision[:8]}) requires "
+                        "--receipts-dir containing the pinned <owner>__<repo>.sha256.json receipt.",
+                        "Pass --receipts-dir <dir> (and --hf-home <dir> or set HF_HOME), or use --fake-transport for CPU validation.",
+                    )
+                if not device.startswith("cpu"):
+                    prepare_qwen36_no_compile_process_env(device=device)
+                shared_transport = real_transport_class_for(spec)(
+                    receipts_dir=receipts_dir,
+                    hf_home=hf_home,
+                    device=device,
+                    torch_dtype=effective_dtype,
+                    window_mode=eff_window_mode,
+                    shard_spec=eff_shard_spec,
+                )
+
+        try:
+            for arm_idx, arm in enumerate(arms):
+                if arm in resumed_set:
+                    continue
+                stop_hit = _check_between_arm_stop(arm_idx, arm)
+                if stop_hit is not None:
+                    stopped_between_arms = True
+                    stop_reason = stop_hit
+                    in_progress_arm = None
+                    not_started_arms = [
+                        arms[rem_idx]
+                        for rem_idx in range(arm_idx, len(arms))
+                        if arms[rem_idx] not in resumed_set
+                    ]
+                    for rem_idx in range(arm_idx, len(arms)):
+                        rem_arm = arms[rem_idx]
+                        if rem_arm in resumed_set:
+                            continue
+                        rem_dir = arms_root / rem_arm
+                        if rem_dir.is_dir():
+                            _write_qwen36_arm_incomplete_markers(
+                                rem_dir,
+                                judge_id=spec.judge_id,
+                                pass_mode=pass_mode,
+                                arm=rem_arm,
+                                status="not_started",
+                                failure_class=stop_hit,
+                            )
+                        per_arm[rem_arm] = {
+                            "arm": rem_arm,
+                            "arm_index": rem_idx,
+                            "arms": list(arms),
+                            "status": "not_started",
+                            "stop_reason": stop_hit,
+                            "output_dir": f"{QWEN36_ARMS_DIRNAME}/{rem_arm}",
+                        }
+                    _flush_job_doc(finalized=False)
+                    break
+                arm_dir = arms_root / arm
+                arm_dir.mkdir(parents=True, exist_ok=True)
+                _write_qwen36_arm_incomplete_markers(
+                    arm_dir,
+                    judge_id=spec.judge_id,
+                    pass_mode=pass_mode,
+                    arm=arm,
+                    status="in_progress",
+                )
+                in_progress_arm = arm
+                not_started_arms = [a for a in not_started_arms if a != arm]
+                per_arm[arm] = {
+                    "arm": arm,
+                    "arm_index": arm_idx,
+                    "arms": list(arms),
+                    "status": "in_progress",
+                    "output_dir": f"{QWEN36_ARMS_DIRNAME}/{arm}",
+                }
+                _flush_job_doc(finalized=False)
+                arm_progress_file = (
+                    progress_file.parent / f"{progress_file.stem}.{arm}{progress_file.suffix}"
+                    if progress_file is not None
+                    else None
+                )
+                done_path = arm_dir / JUDGE_DONE_DIRNAME / judge_done_filename_for_pass(spec.judge_id, pass_mode)
+                t_arm_start = time.monotonic()
+                try:
+                    arm_res = _run_bakeoff_judge_impl(
+                        part_dir=part_dir,
+                        output_dir=arm_dir,
+                        judge=judge,
+                        schedule_seed=schedule_seed,
+                        pass_mode=pass_mode,
+                        limit_items=limit_items,
+                        fake_transport=False,
+                        transport=shared_transport,
+                        receipts_dir=receipts_dir,
+                        hf_home=hf_home,
+                        device=device,
+                        torch_dtype=torch_dtype,
+                        allow_remote_code_reviewed=allow_remote_code_reviewed,
+                        vram_halt_mib=vram_halt_mib,
+                        vram_probe=vram_probe,
+                        halt_pid=halt_pid,
+                        pid_killer=pid_killer,
+                        error_rate_stop=error_rate_stop,
+                        error_rate_min_calls=error_rate_min_calls,
+                        force_length_stop_items=force_length_stop_items,
+                        force_unparseable_items=force_unparseable_items,
+                        canary_config_path=canary_config_path,
+                        run_canary=run_canary,
+                        repo_root=repo_root,
+                        progress_file=arm_progress_file,
+                        heartbeat_interval_seconds=heartbeat_interval_seconds,
+                        shard_spec=eff_shard_spec,
+                        shard_manifest_path=shard_manifest_path,
+                        shard_manifest_sha256=shard_manifest_sha256,
+                        golden_anchor_manifest_path=golden_anchor_manifest_path,
+                        active_item_ids=active_item_ids,
+                        anchor_prefix_only=anchor_prefix_only,
+                        session_fingerprint_sha256=session_fingerprint_sha256,
+                        window_mode=eff_window_mode,
+                        replacement_session=replacement_session,
+                        resume_overlap_pairs=resume_overlap_pairs,
+                        synthetic_items=synthetic_items,
+                        qwen36_arm=arm,
+                        qwen36_arms=arms,
+                        qwen36_arm_index=arm_idx,
+                        qwen36_repeats_override=repeats_by_arm[arm],
+                        qwen36_canary_calls_override=canary_calls_by_arm[arm],
+                        _cleanup_callbacks=None,
+                    )
+                except (RdlabError, DeviceRefusalError, Exception) as exc:
+                    failure_class = (
+                        str(exc.code)
+                        if isinstance(exc, (RdlabError, DeviceRefusalError))
+                        else JUDGE_ARM_RUNTIME_ERROR
+                    )
+                    _write_qwen36_arm_incomplete_markers(
+                        arm_dir,
+                        judge_id=spec.judge_id,
+                        pass_mode=pass_mode,
+                        arm=arm,
+                        status="failed",
+                        failure_class=failure_class,
+                    )
+                    in_progress_arm = None
+                    fail_rec = {
+                        "arm": arm,
+                        "arm_index": arm_idx,
+                        "arms": list(arms),
+                        "status": "failed",
+                        "failure_class": failure_class,
+                        "message": str(exc),
+                        "output_dir": f"{QWEN36_ARMS_DIRNAME}/{arm}",
+                    }
+                    failed_arms[arm] = dict(fail_rec)
+                    per_arm[arm] = fail_rec
+                    _flush_job_doc(finalized=False)
+                    continue
+                arm_wall_s = round(max(0.0, time.monotonic() - t_arm_start), 6)
+                raw_impl_elapsed = arm_res.get("elapsed_seconds")
+                arm_measured_s = (
+                    float(raw_impl_elapsed)
+                    if isinstance(raw_impl_elapsed, (int, float)) and not isinstance(raw_impl_elapsed, bool)
+                    else arm_wall_s
+                )
+                arm_duration_s = max(arm_wall_s, arm_measured_s)
+                last_completed_arm_seconds = arm_duration_s
+                completed_calls = int(arm_res.get("row_count", 0) or 0) + int(
+                    arm_res.get("duplicate_canary_row_count", 0) or 0
+                )
+                if completed_calls <= 0:
+                    completed_calls = planned_calls_by_arm[arm]
+                raw_impl_init = arm_res.get("llm_init_seconds")
+                one_time_init_s = (
+                    float(raw_impl_init)
+                    if (
+                        not arm_res.get("engine_loaded_before_pass")
+                        and isinstance(raw_impl_init, (int, float))
+                        and not isinstance(raw_impl_init, bool)
+                    )
+                    else 0.0
+                )
+                eff_call_wall = (
+                    max(0.0, arm_duration_s - one_time_init_s)
+                    if arm_duration_s > one_time_init_s
+                    else arm_duration_s
+                )
+                if completed_calls > 0:
+                    last_per_call_seconds = eff_call_wall / float(completed_calls)
+                _clear_qwen36_arm_incomplete_markers(arm_dir)
+                in_progress_arm = None
+                completed_arms.append(arm)
+                arm_results[arm] = dict(arm_res)
+                per_arm[arm] = {
+                    "arm": arm,
+                    "arm_index": arm_idx,
+                    "arms": list(arms),
+                    "status": "completed",
+                    "resumed": False,
+                    "output_dir": f"{QWEN36_ARMS_DIRNAME}/{arm}",
+                    "rows_sha256": arm_res.get("rows_sha256"),
+                    "row_count": arm_res.get("row_count"),
+                    "repeats": repeats_by_arm[arm],
+                    "duplicate_canary_calls": arm_res.get("duplicate_canary_calls", 0),
+                    "duplicate_canary_failed_calls": arm_res.get("duplicate_canary_failed_calls", 0),
+                    "elapsed_seconds": round(arm_measured_s, 6),
+                }
+                snap_mid = _flush_job_doc(finalized=False)
+                _write_arm_receipt(arm_idx, arm, snap_mid)
+        finally:
+            if owns_transport and shared_transport is not None:
+                close_fn = getattr(shared_transport, "close_build_guard", None)
+                if callable(close_fn):
+                    close_fn()
+
+    in_progress_arm = None
+    job_doc = _flush_job_doc(finalized=True)
+    for arm_idx, arm in enumerate(arms):
+        _write_arm_receipt(arm_idx, arm, job_doc)
+    return {
+        **job_doc,
+        "arm_results": arm_results,
+    }
+
+
 def run_bakeoff_judge(
     *,
     part_dir: Path,
@@ -6691,8 +7516,59 @@ def run_bakeoff_judge(
     replacement_session: bool = False,
     resume_overlap_pairs: int = DEFAULT_RECOVERY_OVERLAP_ITEM_PAIRS,
     synthetic_items: bool = False,
+    qwen36_arms: str | Sequence[str] | None = None,
+    wall_deadline_monotonic: float | None = None,
+    stop_marker_file: Path | None = None,
+    should_stop_between_arms: Callable[[int, str], str | bool | None] | None = None,
+    between_arm_margin_seconds: float | None = None,
 ) -> dict[str, object]:
     """Run a single judge over `part_bakeoff_sealed/items.jsonl` and write unsealed rows and `generations.jsonl`."""
+    resolved_arms = resolve_qwen36_arms(qwen36_arms)
+    if resolved_arms is not None:
+        return run_qwen36_arms_job(
+            part_dir=part_dir,
+            output_dir=output_dir,
+            judge=judge,
+            qwen36_arms=resolved_arms,
+            schedule_seed=schedule_seed,
+            pass_mode=pass_mode,
+            limit_items=limit_items,
+            fake_transport=fake_transport,
+            transport=transport,
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+            device=device,
+            torch_dtype=torch_dtype,
+            allow_remote_code_reviewed=allow_remote_code_reviewed,
+            vram_halt_mib=vram_halt_mib,
+            vram_probe=vram_probe,
+            halt_pid=halt_pid,
+            pid_killer=pid_killer,
+            error_rate_stop=error_rate_stop,
+            error_rate_min_calls=error_rate_min_calls,
+            force_length_stop_items=force_length_stop_items,
+            force_unparseable_items=force_unparseable_items,
+            canary_config_path=canary_config_path,
+            run_canary=run_canary,
+            repo_root=repo_root,
+            progress_file=progress_file,
+            heartbeat_interval_seconds=heartbeat_interval_seconds,
+            shard_spec=shard_spec,
+            shard_manifest_path=shard_manifest_path,
+            shard_manifest_sha256=shard_manifest_sha256,
+            golden_anchor_manifest_path=golden_anchor_manifest_path,
+            active_item_ids=active_item_ids,
+            anchor_prefix_only=anchor_prefix_only,
+            session_fingerprint_sha256=session_fingerprint_sha256,
+            window_mode=window_mode,
+            replacement_session=replacement_session,
+            resume_overlap_pairs=resume_overlap_pairs,
+            synthetic_items=synthetic_items,
+            wall_deadline_monotonic=wall_deadline_monotonic,
+            stop_marker_file=stop_marker_file,
+            should_stop_between_arms=should_stop_between_arms,
+            between_arm_margin_seconds=between_arm_margin_seconds,
+        )
     cleanup_callbacks: list[Callable[[], None]] = []
     try:
         return _run_bakeoff_judge_impl(
@@ -9211,6 +10087,23 @@ QWEN36_LOGPROBS_BASIS = (
 # to be measured on a stub GPU window, along with venv size and install/startup seconds).
 QWEN36_VRAM_HALT_MIB = 92_000
 QWEN36_ARM_ENV_VAR = "RDLAB_QWEN36_ARM"
+QWEN36_ARMS_ENV_VAR = "RDLAB_QWEN36_ARMS"
+QWEN36_ARMS_DIRNAME = "arms"
+JUDGE_DONE_DIRNAME = "judge_done"
+SUPERSEDED_JUDGE_DONE_DIRNAME = "judge_done.superseded"
+QWEN36_ARMS_JOB_FILENAME = "qwen36_arms_job.json"
+QWEN36_ARMS_WALL_DEADLINE_EPOCH_ENV_VAR = "RDLAB_QWEN36_ARMS_WALL_DEADLINE_EPOCH"
+QWEN36_ARMS_STOP_FILE_ENV_VAR = "RDLAB_QWEN36_ARMS_STOP_FILE"
+QWEN36_ARMS_CONFLICT = "QWEN36_ARMS_CONFLICT"
+QWEN36_ARMS_INVALID = "QWEN36_ARMS_INVALID"
+QWEN36_ARMS_DUPLICATE = "QWEN36_ARMS_DUPLICATE"
+QWEN36_ARMS_UNSUPPORTED_JUDGE = "QWEN36_ARMS_UNSUPPORTED_JUDGE"
+QWEN36_ARMS_THINKING_NOT_FIRST = "QWEN36_ARMS_THINKING_NOT_FIRST"
+WALL_STOP_BETWEEN_ARMS = "WALL_STOP_BETWEEN_ARMS"
+WALL_BUDGET_INSUFFICIENT_BETWEEN_ARMS = "WALL_BUDGET_INSUFFICIENT_FOR_NEXT_ARM"
+QWEN36_ARMS_BETWEEN_ARM_MARGIN_SECONDS = 30.0
+CAP_STOP_BETWEEN_ARMS = "CAP_STOP_BETWEEN_ARMS"
+JUDGE_ARM_RUNTIME_ERROR = "JUDGE_ARM_RUNTIME_ERROR"
 QWEN36_THINKING_ARM = "thinking"
 QWEN36_NOTHINK_GREEDY_ARM = "nothink-greedy"
 QWEN36_NOTHINK_CARD_ARM = "nothink-card"
@@ -10049,6 +10942,7 @@ class ElephantDecisionTransport:
         self.shard_spec = shard_spec
         self._snapshot_dir: Path | None = None
         self._verified_digest: str | None = None
+        self._verified_spec_id: str | None = None
         self._install: dict[str, Any] | None = None
         self._engine: Any = None
 
@@ -10270,6 +11164,86 @@ def resolve_qwen36_arm(
         return normalize_qwen36_arm(raw_value)
     source = os.environ if env is None else env
     return normalize_qwen36_arm(source.get(QWEN36_ARM_ENV_VAR))
+
+
+def normalize_qwen36_arms(raw_value: str | Sequence[str] | None) -> tuple[str, ...] | None:
+    """Validate `RDLAB_QWEN36_ARMS`: known arms, no duplicates, and `thinking` first if present."""
+    if raw_value is None:
+        return None
+    if isinstance(raw_value, str):
+        stripped = raw_value.strip()
+        if not stripped:
+            return None
+        tokens = [tok.strip() for tok in stripped.split(",")]
+        if any(not tok for tok in tokens):
+            raise refused_error(
+                QWEN36_ARMS_INVALID,
+                f"{QWEN36_ARMS_ENV_VAR} must be a comma-separated list of {list(QWEN36_VALID_ARMS)} with no empty entries, got {raw_value!r}.",
+                f"Set {QWEN36_ARMS_ENV_VAR} to comma-separated arm names from {', '.join(QWEN36_VALID_ARMS)}.",
+            )
+    elif isinstance(raw_value, Sequence) and not isinstance(raw_value, (bytes, bytearray)):
+        tokens = [str(tok).strip() for tok in raw_value]
+        if not tokens or any(not tok for tok in tokens):
+            raise refused_error(
+                QWEN36_ARMS_INVALID,
+                f"{QWEN36_ARMS_ENV_VAR} must contain at least one valid arm from {list(QWEN36_VALID_ARMS)}, got {raw_value!r}.",
+                f"Pass arm names from {', '.join(QWEN36_VALID_ARMS)}.",
+            )
+    else:
+        raise refused_error(
+            QWEN36_ARMS_INVALID,
+            f"{QWEN36_ARMS_ENV_VAR} must be a comma-separated string or sequence of arm names, got {raw_value!r}.",
+            f"Pass arm names from {', '.join(QWEN36_VALID_ARMS)}.",
+        )
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for tok in tokens:
+        if tok not in QWEN36_VALID_ARMS:
+            raise refused_error(
+                QWEN36_ARMS_INVALID,
+                f"{QWEN36_ARMS_ENV_VAR} contains invalid arm {tok!r}; valid arms are {list(QWEN36_VALID_ARMS)}.",
+                f"Set {QWEN36_ARMS_ENV_VAR} using only {', '.join(QWEN36_VALID_ARMS)}.",
+            )
+        if tok in seen:
+            raise refused_error(
+                QWEN36_ARMS_DUPLICATE,
+                f"{QWEN36_ARMS_ENV_VAR} contains duplicate arm {tok!r}.",
+                f"List each arm at most once in {QWEN36_ARMS_ENV_VAR}.",
+            )
+        seen.add(tok)
+        ordered.append(tok)
+    if QWEN36_THINKING_ARM in ordered and ordered[0] != QWEN36_THINKING_ARM:
+        raise refused_error(
+            QWEN36_ARMS_THINKING_NOT_FIRST,
+            f"{QWEN36_ARMS_ENV_VAR} includes {QWEN36_THINKING_ARM!r}, which must come first; got {ordered!r}.",
+            f"Move {QWEN36_THINKING_ARM!r} to the front of {QWEN36_ARMS_ENV_VAR}.",
+        )
+    return tuple(ordered)
+
+
+def resolve_qwen36_arms(
+    raw_value: str | Sequence[str] | None = None,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> tuple[str, ...] | None:
+    """Resolve `RDLAB_QWEN36_ARMS`, refusing if combined with `RDLAB_QWEN36_ARM`."""
+    source = os.environ if env is None else env
+    raw_single = str(source.get(QWEN36_ARM_ENV_VAR, "") or "").strip()
+    eff_raw = raw_value if raw_value is not None else source.get(QWEN36_ARMS_ENV_VAR)
+    has_arms = (
+        bool(str(eff_raw).strip())
+        if isinstance(eff_raw, str)
+        else (eff_raw is not None)
+    )
+    if has_arms and raw_single:
+        raise refused_error(
+            QWEN36_ARMS_CONFLICT,
+            f"Cannot set both {QWEN36_ARMS_ENV_VAR} ({eff_raw!r}) and {QWEN36_ARM_ENV_VAR} ({raw_single!r}).",
+            f"Unset {QWEN36_ARM_ENV_VAR} when using {QWEN36_ARMS_ENV_VAR}.",
+        )
+    if not has_arms:
+        return None
+    return normalize_qwen36_arms(eff_raw)
 
 
 def resolve_qwen36_repeats(
@@ -10720,6 +11694,24 @@ class Qwen36ChoiceAdapter(BaseJudgeAdapter):
 
     def __init__(self, spec: JudgeSpec | None = None) -> None:
         super().__init__(spec if spec is not None else JUDGE_SPECS[QWEN36_JUDGE_ID])
+
+    def assemble_prompt(
+        self,
+        item: JudgeInputItem,
+        *,
+        order: OrderMode,
+        pass_mode: PassMode = "binary",
+        arm: str | None = None,
+        repeat_index: int = 0,
+    ) -> AssembledPrompt:
+        """Assemble a Qwen3.6 prompt, forwarding explicit `arm` and `repeat_index` when provided."""
+        return self.assemble_qwen36_prompt(
+            item,
+            order=order,
+            pass_mode=pass_mode,
+            arm=arm,
+            repeat_index=repeat_index,
+        )
 
     def assemble_qwen36_prompt(
         self,
@@ -12456,6 +13448,7 @@ class VllmJudgeTransport:
         self.shard_spec = shard_spec
         self._snapshot_dir: Path | None = None
         self._verified_digest: str | None = None
+        self._verified_spec_id: str | None = None
         self._tokenizer: Any = None
         self._llm: Any = None
         self._max_model_len: int | None = None
@@ -12567,13 +13560,26 @@ class VllmJudgeTransport:
 
     def verify_ready(self, spec: JudgeSpec, *, allow_remote_code_reviewed: str | None = None) -> str:
         check_remote_code_gate(spec, allow_remote_code_reviewed=allow_remote_code_reviewed)
+        if (
+            self._snapshot_dir is not None
+            and self._verified_digest is not None
+            and self._verified_spec_id == spec.judge_id
+        ):
+            return self._verified_digest
         ensure_offline_env(set_if_unset=False)
         snapshot_dir, digest = verify_snapshot_against_receipt(
             spec, receipts_dir=self.receipts_dir, hf_home=self.hf_home
         )
         self._snapshot_dir = snapshot_dir
         self._verified_digest = digest
+        self._verified_spec_id = spec.judge_id
         return digest
+
+    def ensure_arm_metadata_loaded(self, spec: JudgeSpec, arm: str) -> None:
+        """Ensure tokenizer and non-thinking token IDs are populated for `arm` on a shared engine load."""
+        if arm in QWEN36_NON_THINKING_ARMS:
+            self._ensure_tokenizer_loaded(spec)
+            self._ensure_nothink_token_ids_loaded()
 
     def _ensure_tokenizer_loaded(self, spec: JudgeSpec) -> None:
         if self._tokenizer is not None:
@@ -12670,7 +13676,12 @@ class VllmJudgeTransport:
         max_model_len = QWEN36_PROMPT_TOKEN_CAP + max_new_tokens
         max_num_batched_tokens = compute_qwen36_max_num_batched_tokens(max_model_len)
         self._ensure_tokenizer_loaded(spec)
-        if resolve_qwen36_arm() in QWEN36_NON_THINKING_ARMS or resolve_qwen36_canary_calls() > 0:
+        configured_arms = resolve_qwen36_arms()
+        if (
+            configured_arms is not None
+            or resolve_qwen36_arm() in QWEN36_NON_THINKING_ARMS
+            or resolve_qwen36_canary_calls(arm=QWEN36_NOTHINK_GREEDY_ARM) > 0
+        ):
             self._ensure_nothink_token_ids_loaded()
         if not self.device.lower().startswith("cpu"):
             self._compute_cap_info = prepare_qwen36_no_compile_process_env(device=self.device)

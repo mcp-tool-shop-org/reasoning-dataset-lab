@@ -1,0 +1,11 @@
+Copied verbatim from the pinned upstream snapshot for `tests/test_qwen36_arms_one_job.py`; not imported by `rdlab`.
+
+- `chat_template.jinja`, `tokenizer_config.json`, `LICENSE`:
+  `Qwen/Qwen3.6-35B-A3B` at revision `345d467b117d1fd5eda9b879a5988de9ae5f47a7`;
+  their exact byte lengths and SHA-256 digests are pinned in `scripts/colab/receipts/Qwen__Qwen3.6-35B-A3B.sha256.json`.
+
+Licensing
+---------
+`Qwen/Qwen3.6-35B-A3B` declares the Apache License, Version 2.0 (`LICENSE` in this directory,
+copied verbatim from the same snapshot).
+Modification: none. All three files are byte-identical to the upstream snapshot and its receipt.
