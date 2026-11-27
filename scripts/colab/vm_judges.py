@@ -6342,6 +6342,8 @@ def is_allowed_tar_member(rel_posix_path: str) -> bool:
         return False
     if cleaned in TAR_ALLOWED_DIRS or cleaned in TAR_ALLOWED_EXACT_FILES:
         return True
+    if len(parts) == 1 and parts[0].startswith("refusal-") and parts[0].endswith(".json"):
+        return True
     if len(parts) == 2 and parts[0] == ROWS_DIRNAME and parts[1].endswith(".jsonl"):
         return True
     if len(parts) == 2 and parts[0] == ANCHOR_ROWS_DIRNAME and parts[1].endswith(".jsonl"):

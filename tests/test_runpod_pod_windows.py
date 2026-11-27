@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
+import shutil
+import subprocess
 import sys
 from typing import Any
 
@@ -17,6 +20,7 @@ if str(SCRIPTS_COLAB_DIR) not in sys.path:
 if str(REPO_ROOT / "src") not in sys.path:
     sys.path.insert(0, str(REPO_ROOT / "src"))
 
+import offrig_host  # noqa: E402
 import runpod_pod_windows  # noqa: E402
 import vm_judges  # noqa: E402
 from reasoning_dataset_lab.pilot_b import bakeoff_judge  # noqa: E402
@@ -160,8 +164,9 @@ def test_counted_window_refuses_without_sealed_proof_and_succeeds_after_proof(tm
     )
     assert rc_missing == 2
     assert out_missing["failure_class"] == "PROOF_WINDOW_NOT_SEALED"
-    assert (counted_out / "outcome.json").is_file()
-    assert (counted_out / "window_summary.json").is_file()
+    assert len(list(counted_out.glob("refusal-*.json"))) == 1
+    assert not (counted_out / "outcome.json").exists()
+    assert not (counted_out / "window_summary.json").exists()
 
     # Run proof window on stub with host nvidia-smi removed from PATH (matches CPU-only CI runners).
     monkeypatch_path = ":".join(p for p in ("/usr/bin", "/bin") if Path(p).exists()) or "/usr/bin:/bin"
@@ -769,6 +774,8 @@ def test_journal_row_tamper_matrix_and_filter_jsonl(tmp_path: Path) -> None:
     assert not _check({**base_row, "raw_generation": None})
     assert not _check({**base_row, "output_token_ids_sha256": "short"})
     assert not _check({**base_row, "state": "bogus"})
+    assert not _check({**base_row, "state": "aborted", "verdict_parse_status": "aborted", "done_reason": "abort"})
+    assert not _check({**base_row, "done_reason": "abort"})
     assert not _check({**base_row, "verdict_parse_status": "unparseable"})
     assert not _check({**base_row, "done_reason": "other"})
     assert not _check({**base_row, "raw_verdict": "invalid"})
@@ -901,7 +908,7 @@ def test_validation_branches_nonstub_subprocess_and_cli_errors(tmp_path: Path, m
     monkeypatch.setattr(
         runpod_pod_windows,
         "verify_proof_window_sealed",
-        lambda p: {"proof_out_dir": str(p)},
+        lambda p, **_kw: {"proof_out_dir": str(p)},
     )
 
     class _GateFail:
@@ -978,4 +985,353 @@ def test_validation_branches_nonstub_subprocess_and_cli_errors(tmp_path: Path, m
     ok_mm, info_mm = runpod_pod_windows.verify_sealed_manifest_dir(seal_test_dir)
     assert not ok_mm and "sha_or_size_mismatch:a.txt" in info_mm["mismatches"]
 
+
+def test_fix1_proof_gate_non_destructive_refusal_and_aborted_replay(tmp_path: Path) -> None:
+    synth_items = _write_synthetic_items(tmp_path / "synth.jsonl", count=4)
+    proof_bundle = tmp_path / "bundles" / "proof"
+    runpod_pod_windows.prepare_input_bundle(items_file=synth_items, out_bundle_dir=proof_bundle, synthetic_items=True)
+    work_dir = tmp_path / "work"
+    hf_home = tmp_path / "hf"
+    proof_out = tmp_path / "runs" / "proof-01"
+    rc_p, out_p = runpod_pod_windows.run_pod_window(
+        window_id="proof-01",
+        window_role="proof",
+        input_bundle_dir=proof_bundle,
+        out_dir=proof_out,
+        repo_dir=REPO_ROOT,
+        work_dir=work_dir,
+        hf_home=hf_home,
+        arms="thinking,nothink-greedy,nothink-card,nothink-matched",
+        repeats=2,
+        canary_calls=4,
+        max_new_tokens=32768,
+        wall_seconds=3900,
+        stub=True,
+    )
+    assert rc_p == 0, out_p
+
+    # M1: stub=True proof is rejected when allow_stub_proof=False (live counted gate default),
+    # and receipt DRYRUN_OK, model_revision mismatch, and max_new_tokens mismatch are all rejected.
+    with pytest.raises(runpod_pod_windows.PodWindowError, match="stub proof plan"):
+        runpod_pod_windows.verify_proof_window_sealed(proof_out)
+
+    # Create a separate sealed proof dir with stub=False on disk (simulating cross-pod fetched proof)
+    live_like_proof = tmp_path / "runs" / "proof-cross-pod-01"
+    shutil.copytree(proof_out, live_like_proof)
+    plan_p = live_like_proof / "window_plan.json"
+    plan_doc = json.loads(plan_p.read_text(encoding="utf-8"))
+    plan_doc["stub"] = False
+    plan_p.write_text(json.dumps(plan_doc, indent=2) + "\n", encoding="utf-8")
+    checked = runpod_pod_windows.verify_proof_window_sealed(live_like_proof)
+    assert checked["proof_window_id"] == "proof-01"
+
+    with pytest.raises(runpod_pod_windows.PodWindowError, match="model_revision"):
+        runpod_pod_windows.verify_proof_window_sealed(live_like_proof, expected_model_revision="wrong-rev")
+    with pytest.raises(runpod_pod_windows.PodWindowError, match="max_new_tokens"):
+        runpod_pod_windows.verify_proof_window_sealed(live_like_proof, expected_max_new_tokens=4096)
+
+    rec_p = live_like_proof / "vm_receipt.json"
+    rec_doc = json.loads(rec_p.read_text(encoding="utf-8"))
+    rec_doc["status"] = "DRYRUN_OK"
+    rec_p.write_text(json.dumps(rec_doc, indent=2) + "\n", encoding="utf-8")
+    with pytest.raises(runpod_pod_windows.PodWindowError, match="status must be 'ok'"):
+        runpod_pod_windows.verify_proof_window_sealed(live_like_proof)
+
+    # Non-stub counted window against a stub proof refuses BEFORE boot capture or modifying out_dir
+    part_dir, projected = _make_frozen_part_and_projection(tmp_path / "part_live", triads=2)
+    real_bundle = tmp_path / "bundles" / "real"
+    runpod_pod_windows.prepare_input_bundle(items_file=projected, part_dir=part_dir, out_bundle_dir=real_bundle)
+    refused_live_out = tmp_path / "runs" / "cal-main-01"
+    rc_live_stub_proof, doc_live_stub_proof = runpod_pod_windows.run_pod_window(
+        window_id="cal-main-01",
+        window_role="counted",
+        input_bundle_dir=real_bundle,
+        out_dir=refused_live_out,
+        proof_out_dir=proof_out,
+        repo_dir=REPO_ROOT,
+        work_dir=work_dir,
+        hf_home=hf_home,
+        arms="thinking,nothink-greedy,nothink-card,nothink-matched",
+        wall_seconds=23400,
+        stub=False,
+    )
+    assert rc_live_stub_proof == 2 and doc_live_stub_proof["failure_class"] == "PROOF_WINDOW_NOT_SEALED"
+    assert not (refused_live_out / "boot_nvidia_smi.json").exists()
+
+    # M2 + M3: Seed a sealed counted dir, inject an 'aborted' row + verify refusal preserves outcome.json untouched
+    win_dir = tmp_path / "runs" / "counted-m2-m3-01"
+    rc_ok, _ = runpod_pod_windows.run_pod_window(
+        window_id="counted-m2-m3-01",
+        window_role="counted",
+        input_bundle_dir=proof_bundle,
+        out_dir=win_dir,
+        proof_out_dir=proof_out,
+        repo_dir=REPO_ROOT,
+        work_dir=work_dir,
+        hf_home=hf_home,
+        arms="thinking,nothink-greedy,nothink-card,nothink-matched",
+        repeats=2,
+        canary_calls=4,
+        max_new_tokens=32768,
+        limit_items=4,
+        wall_seconds=23400,
+        stub=True,
+    )
+    assert rc_ok == 0
+    orig_outcome_bytes = (win_dir / "outcome.json").read_bytes()
+    orig_summary_bytes = (win_dir / "window_summary.json").read_bytes()
+    orig_closed_bytes = (win_dir / "outputs-closed.json").read_bytes()
+    assert json.loads(orig_outcome_bytes.decode("utf-8"))["status"] == "ok"
+
+    # M2: Refusal (OUT_DIR_NOT_FRESH) on sealed out-dir MUST write refusal-<utc>.json and keep status=ok untouched!
+    rc_ref, out_ref = runpod_pod_windows.run_pod_window(
+        window_id="counted-m2-m3-01",
+        window_role="counted",
+        input_bundle_dir=proof_bundle,
+        out_dir=win_dir,
+        proof_out_dir=proof_out,
+        repo_dir=REPO_ROOT,
+        work_dir=work_dir,
+        hf_home=hf_home,
+        arms="thinking,nothink-greedy,nothink-card,nothink-matched",
+        repeats=2,
+        canary_calls=4,
+        max_new_tokens=32768,
+        limit_items=4,
+        wall_seconds=23400,
+        stub=True,
+    )
+    assert rc_ref == 2 and out_ref["failure_class"] == "OUT_DIR_NOT_FRESH"
+    assert (win_dir / "outcome.json").read_bytes() == orig_outcome_bytes
+    assert (win_dir / "window_summary.json").read_bytes() == orig_summary_bytes
+    assert (win_dir / "outputs-closed.json").read_bytes() == orig_closed_bytes
+    refusal_files = list(win_dir.glob("refusal-*.json"))
+    assert len(refusal_files) == 1 and json.loads(refusal_files[0].read_text(encoding="utf-8"))["status"] == "refused"
+
+    # M3: Rewrite row 0 in thinking to state="aborted", done_reason="abort" with valid row_sha256; replay MUST drop and re-run it
+    think_rows_p = win_dir / "arms" / "thinking" / "rows" / "qwen3.6-35b-a3b.three_way_contradicted.jsonl"
+    think_rows = [json.loads(ln) for ln in think_rows_p.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    aborted_row = dict(think_rows[0])
+    aborted_row["state"] = "aborted"
+    aborted_row["verdict_parse_status"] = "aborted"
+    aborted_row["done_reason"] = "abort"
+    aborted_row.pop("raw_verdict", None)
+    aborted_row["verdict"] = None
+    aborted_row["argmax_verdict"] = None
+    aborted_row["row_sha256"] = bakeoff_judge.compute_row_body_sha256(aborted_row)
+    think_rows[0] = aborted_row
+    think_rows_p.write_text("\n".join(json.dumps(r, sort_keys=True) for r in think_rows) + "\n", encoding="utf-8")
+
+    rc_ab_rep, out_ab_rep = runpod_pod_windows.run_pod_window(
+        window_id="counted-m2-m3-01",
+        window_role="counted",
+        input_bundle_dir=proof_bundle,
+        out_dir=win_dir,
+        proof_out_dir=proof_out,
+        repo_dir=REPO_ROOT,
+        work_dir=work_dir,
+        hf_home=hf_home,
+        arms="thinking,nothink-greedy,nothink-card,nothink-matched",
+        repeats=2,
+        canary_calls=4,
+        max_new_tokens=32768,
+        limit_items=4,
+        wall_seconds=23400,
+        stub=True,
+        resume_after_platform_death=True,
+        resume_trigger="ssh_lost",
+    )
+    assert rc_ab_rep == 0, out_ab_rep
+    assert out_ab_rep["rows_dropped_invalid"] == 1
+    assert out_ab_rep["rows_reused"] == 51
+    assert out_ab_rep["rows_run"] == 1
+    reloaded = [json.loads(ln) for ln in think_rows_p.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    assert all(r["state"] != "aborted" for r in reloaded)
+
+
+def test_offrig_140_version_self_stop_and_detached_sequence_stub(tmp_path: Path) -> None:
+    # 1. Version check (1.4.0 passes, 1.3.0 refuses) & CLI check-bin --min-version
+    fake_v140 = tmp_path / "fake-mcp-140"
+    fake_v140.write_text(f"#!/usr/bin/env bash\nexec {sys.executable} {REPO_ROOT / 'tests/fixtures/fake_offrig_mcp.py'} \"$@\"\n", encoding="utf-8")
+    fake_v140.chmod(0o755)
+    v_ok = offrig_host.check_offrig_mcp_version(fake_v140, min_version="1.4.0")
+    assert v_ok["version"] == "1.4.0"
+
+    fake_v130 = tmp_path / "fake-mcp-130"
+    fake_v130.write_text("#!/usr/bin/env bash\necho 'offrig-mcp 1.3.0'\n", encoding="utf-8")
+    fake_v130.chmod(0o755)
+    with pytest.raises(offrig_host.OffrigHostError, match="OFFRIG_VERSION_TOO_OLD"):
+        offrig_host.check_offrig_mcp_version(fake_v130, min_version="1.4.0")
+
+    # 2. verify_self_stop_armed: valid deadline+120, UNAVAILABLE, and mismatched fire_at
+    ss_ok = offrig_host.verify_self_stop_armed(
+        "offrig self-stop: armed fire_at=1795880120\n",
+        plan_deadline_str="2026-11-28 15:33 UTC",
+        pod_deadline_iso="2026-11-28T15:33:20Z",
+    )
+    assert ss_ok["armed"] is True and ss_ok["fire_at"] == 1795880120
+    with pytest.raises(offrig_host.OffrigHostError, match="OFFRIG_SELF_STOP_NOT_ARMED"):
+        offrig_host.verify_self_stop_armed("offrig self-stop: UNAVAILABLE (runpodctl)", plan_deadline_str="2026-11-28 15:33 UTC")
+    with pytest.raises(offrig_host.OffrigHostError, match="OFFRIG_SELF_STOP_FIRE_AT_MISMATCH"):
+        offrig_host.verify_self_stop_armed("offrig self-stop: armed fire_at=1795880999", pod_deadline_iso="2026-11-28T15:33:20Z")
+
+    # 3. Single-script Step 0 `smoke` via detached offrig_exec start|status + EXIT-trap teardown (--stub)
+    synth_items = _write_synthetic_items(tmp_path / "synth_seq.jsonl", count=4)
+    seq_script = REPO_ROOT / "scripts" / "colab" / "runpod_pod_sequence.sh"
+    seq_env = dict(os.environ)
+    seq_env["RDLAB_PYTHON"] = sys.executable
+    smoke_stage = tmp_path / "smoke_stage"
+    smoke_runs = tmp_path / "smoke_runs"
+    smoke_proc = subprocess.run(
+        [
+            "bash",
+            str(seq_script),
+            "smoke",
+            "--repo-dir",
+            str(REPO_ROOT),
+            "--stage-dir",
+            str(smoke_stage),
+            "--runs-local",
+            str(smoke_runs),
+            "--poll-interval",
+            "0.1",
+            "--sleep-seconds",
+            "0.2",
+            "--min-elapsed-seconds",
+            "0.05",
+            "--stub",
+        ],
+        env=seq_env,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert smoke_proc.returncode == 0, smoke_proc.stdout + "\n" + smoke_proc.stderr
+    assert (smoke_runs / "smoke-01" / "smoke_result.json").is_file()
+    assert (smoke_runs / "self-stop.status").is_file()
+    assert (smoke_runs / "offrig_shutdown.json").is_file()
+    assert (smoke_runs / "offrig_status.json").is_file()
+
+    # Check fake_offrig call log: smoke used offrig_exec start + status (not exec run >120s) + shutdown + status
+    smoke_calls = [
+        json.loads(ln)
+        for ln in (smoke_stage / "_stub_offrig" / "offrig_calls.jsonl").read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    assert any(c["tool"] == "offrig_exec" and c["arguments"].get("action") == "start" and c["arguments"].get("name") == "smoke-01" for c in smoke_calls)
+    assert any(c["tool"] == "offrig_exec" and c["arguments"].get("action") == "status" and c["arguments"].get("name") == "smoke-01" for c in smoke_calls)
+    assert [c["tool"] for c in smoke_calls[-2:]] == ["offrig_shutdown", "offrig_status"]
+
+    # Negative smoke: elapsed <= min-elapsed-seconds fails closed
+    rc_short = runpod_pod_windows.main(
+        [
+            "verify-smoke",
+            "--smoke-file",
+            str(smoke_runs / "smoke-01" / "smoke_result.json"),
+            "--self-stop-file",
+            str(smoke_runs / "self-stop.status"),
+            "--plan-deadline",
+            json.loads((smoke_runs / "offrig_launch.json").read_text(encoding="utf-8"))["deadline"],
+            "--shutdown-json",
+            str(smoke_runs / "offrig_shutdown.json"),
+            "--status-json",
+            str(smoke_runs / "offrig_status.json"),
+            "--plan-id",
+            str(json.loads((smoke_runs / "offrig_plan.json").read_text(encoding="utf-8"))["plan_id"]),
+            "--min-elapsed-seconds",
+            "120",
+        ]
+    )
+    assert rc_short == 2
+
+    # 4. Mid-run failure still triggers EXIT-trap shutdown + status
+    fail_stage = tmp_path / "fail_stage"
+    fail_runs = tmp_path / "fail_runs"
+    (fail_stage / "_stub_offrig").mkdir(parents=True, exist_ok=True)
+    fail_cfg = fail_stage / "_stub_offrig" / "fake_cfg.json"
+    fail_cfg.write_text(
+        json.dumps(
+            {
+                "vm_root_dir": str(fail_stage / "_stub_offrig" / "vm_root"),
+                "pod_vm_root": "/workspace",
+                "gpu": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+                "self_stop_unavailable": True,
+                "launch_include_pod_id": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    fail_env = dict(seq_env)
+    fail_env["RDLAB_FAKE_OFFRIG_CONFIG"] = str(fail_cfg)
+    fail_proc = subprocess.run(
+        [
+            "bash",
+            str(seq_script),
+            "smoke",
+            "--repo-dir",
+            str(REPO_ROOT),
+            "--stage-dir",
+            str(fail_stage),
+            "--runs-local",
+            str(fail_runs),
+            "--poll-interval",
+            "0.1",
+            "--sleep-seconds",
+            "0.1",
+            "--stub",
+        ],
+        env=fail_env,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert fail_proc.returncode != 0
+    assert (fail_runs / "offrig_shutdown.json").is_file()
+    assert (fail_runs / "offrig_status.json").is_file()
+
+    # 5. Full 4-window counted sequence through runpod_pod_sequence.sh --stub (all detached + per-window get + EXIT trap)
+    cnt_stage = tmp_path / "counted_stage"
+    cnt_runs = tmp_path / "counted_runs"
+    cnt_proc = subprocess.run(
+        [
+            "bash",
+            str(seq_script),
+            "counted",
+            "--repo-dir",
+            str(REPO_ROOT),
+            "--stage-dir",
+            str(cnt_stage),
+            "--runs-local",
+            str(cnt_runs),
+            "--proof-items-file",
+            str(synth_items),
+            "--poll-interval",
+            "0.1",
+            "--stub",
+            "--stub-limit-items",
+            "4",
+            "--stub-repeats",
+            "2",
+            "--stub-canary-calls",
+            "4",
+        ],
+        env=seq_env,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+    assert cnt_proc.returncode == 0, cnt_proc.stdout + "\n" + cnt_proc.stderr
+    for wid in ("qwen36-counted-proof-g4-01", "qwen36-counted-cal-01", "qwen36-counted-cal-nf-01", "qwen36-counted-hold-01"):
+        od = json.loads((cnt_runs / wid / "outcome.json").read_text(encoding="utf-8"))
+        assert od["status"] == "ok" and od["seal_ok"] is True
+    hold_plan = json.loads((cnt_runs / "qwen36-counted-hold-01" / "window_plan.json").read_text(encoding="utf-8"))
+    assert hold_plan["wall_seconds"] == 20100
+    assert (cnt_runs / "offrig_shutdown.json").is_file()
+    assert (cnt_runs / "offrig_status.json").is_file()
 

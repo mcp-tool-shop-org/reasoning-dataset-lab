@@ -79,6 +79,86 @@ def _parse_env_command(command: str) -> tuple[dict[str, str], str, list[str]]:
     return env_map, script, args
 
 
+def _rewrite_pod_command_for_local(command: str, pod_vm_root: str, local_vm_root: Path) -> str:
+    norm_pod = pod_vm_root.rstrip("/") or "/workspace/job"
+    local_posix = local_vm_root.resolve().as_posix().rstrip("/")
+    rewritten = command.replace(norm_pod + "/", local_posix + "/")
+    rewritten = rewritten.replace(norm_pod, local_posix)
+    if norm_pod != "/workspace":
+        rewritten = rewritten.replace("/workspace/", local_posix + "/")
+    return rewritten
+
+
+def _spawn_detached_local_job(
+    *,
+    job_name: str,
+    command: str,
+    pod_vm_root: str,
+    local_vm_root: Path,
+    state: dict[str, Any],
+) -> dict[str, Any]:
+    jobs_dir = local_vm_root / "_jobs"
+    jobs_dir.mkdir(parents=True, exist_ok=True)
+    log_file = jobs_dir / f"{job_name}.log"
+    rc_file = jobs_dir / f"{job_name}.rc"
+    log_file.unlink(missing_ok=True)
+    rc_file.unlink(missing_ok=True)
+
+    mapped_cmd = _rewrite_pod_command_for_local(command, pod_vm_root, local_vm_root)
+    env_map, script, script_args = _parse_env_command(mapped_cmd)
+    run_env = os.environ.copy()
+    run_env.update(env_map)
+    if state.get("deadline_iso"):
+        run_env.setdefault("OFFRIG_DEADLINE", str(state["deadline_iso"]))
+    ss_local = _map_pod_path("/workspace/offrig/self-stop.status", pod_vm_root, local_vm_root)
+    run_env.setdefault("RDLAB_SELF_STOP_STATUS_FILE", str(ss_local))
+
+    wrapper = (
+        "import os, subprocess, sys\n"
+        "from pathlib import Path\n"
+        "log_p = Path(sys.argv[1])\n"
+        "rc_p = Path(sys.argv[2])\n"
+        "cmd = sys.argv[3:]\n"
+        "with log_p.open('wb') as fh:\n"
+        "    p = subprocess.run(cmd, stdout=fh, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, check=False)\n"
+        "tmp = rc_p.with_suffix('.rc.tmp')\n"
+        "tmp.write_text(str(p.returncode) + '\\n', encoding='utf-8')\n"
+        "os.replace(tmp, rc_p)\n"
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-c", wrapper, str(log_file), str(rc_file), sys.executable, script, *script_args],
+        env=run_env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    return {
+        "state": "running",
+        "code": None,
+        "pid": proc.pid,
+        "log_file": str(log_file),
+        "rc_file": str(rc_file),
+        "log_tail": f"{job_name} started detached pid={proc.pid}\n",
+    }
+
+
+def _poll_detached_local_job(rec: dict[str, Any]) -> dict[str, Any]:
+    log_file = Path(str(rec["log_file"]))
+    rc_file = Path(str(rec["rc_file"]))
+    log_tail = ""
+    if log_file.is_file():
+        lines = log_file.read_text(encoding="utf-8", errors="replace").splitlines()
+        log_tail = "\n".join(lines[-400:]) + ("\n" if lines else "")
+    if rc_file.is_file():
+        try:
+            code = int(rc_file.read_text(encoding="utf-8").strip())
+        except ValueError:
+            code = 2
+        return {**rec, "state": "exited", "code": code, "log_tail": log_tail}
+    return {**rec, "state": "running", "code": None, "log_tail": log_tail}
+
+
 def _synthesize_vm_run(
     *,
     env_map: dict[str, str],
@@ -266,7 +346,12 @@ def _handle_tool_call(
                 except ValueError:
                     pass
             deadline_dt = now_dt + datetime.timedelta(hours=max_hours)
+            deadline_epoch = int(round(deadline_dt.timestamp()))
             state["deadline"] = deadline_dt.strftime("%Y-%m-%d %H:%M UTC")
+            state["deadline_unix"] = deadline_epoch
+            state["deadline_iso"] = datetime.datetime.fromtimestamp(
+                deadline_epoch, datetime.timezone.utc
+            ).strftime("%Y-%m-%dT%H:%M:%SZ")
         state["plan"] = dict(arguments)
         state["plan_state"] = "planned"
         _save_json(state_path, state)
@@ -319,6 +404,15 @@ def _handle_tool_call(
             }
         state["plan_state"] = "committed"
         state["launched"] = True
+        dl_unix = int(state.get("deadline_unix") or round(time.time() + 3600))
+        ss_dst = _map_pod_path("/workspace/offrig/self-stop.status", pod_vm_root, local_vm_root)
+        if cfg.get("self_stop_unavailable"):
+            ss_line = "offrig self-stop: UNAVAILABLE (runpodctl)"
+        else:
+            ss_line = f"offrig self-stop: armed fire_at={dl_unix + 120}"
+        ss_dst.parent.mkdir(parents=True, exist_ok=True)
+        ss_dst.write_text(ss_line + "\n", encoding="utf-8", newline="\n")
+        state["self_stop"] = ss_line
         _save_json(state_path, state)
         done_marker = str(cfg.get("launch_completed_marker") or "").strip()
         if done_marker:
@@ -387,6 +481,7 @@ def _handle_tool_call(
         return False, {
             "job_id": job_id,
             "state": "done",
+            "self_stop": state.get("self_stop"),
             "progress": done_prog,
             "rented": done_rented,
         }
@@ -420,6 +515,8 @@ def _handle_tool_call(
         action = str(arguments.get("action") or "")
         if action == "run":
             cmd = str(arguments.get("command") or "")
+            if cfg.get("enforce_exec_run_120s") and int(arguments.get("timeout_secs") or 30) > 120:
+                return True, {"error": f"offrig exec run clamps timeout_secs to RUN_MAX_SECS=120, got {arguments.get('timeout_secs')}"}
             if "nvidia-smi" in cmd:
                 if fail_tool == "offrig_exec:nvidia-smi":
                     return True, {"error": "injected failure for nvidia-smi"}
@@ -428,6 +525,23 @@ def _handle_tool_call(
                     "exit_code": int(cfg.get("nvidia_smi_exit_code", 0)),
                     "stdout": str(cfg.get("nvidia_smi_stdout", default_smi)),
                     "stderr": str(cfg.get("nvidia_smi_stderr", "")),
+                    "timed_out": False,
+                }
+            if cfg.get("real_detached_subprocess"):
+                local_cmd = _rewrite_pod_command_for_local(cmd, pod_vm_root, local_vm_root)
+                local_vm_root.mkdir(parents=True, exist_ok=True)
+                proc = subprocess.run(
+                    ["bash", "-lc", local_cmd],
+                    stdin=subprocess.DEVNULL,
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                    check=False,
+                )
+                return False, {
+                    "exit_code": proc.returncode,
+                    "stdout": proc.stdout or "",
+                    "stderr": proc.stderr or "",
                     "timed_out": False,
                 }
             if cmd.startswith("mkdir -p "):
@@ -464,6 +578,14 @@ def _handle_tool_call(
                     "log_tail": "run working...\n",
                     "deferred_command": command,
                 }
+            elif cfg.get("real_detached_subprocess"):
+                jobs[job_name] = _spawn_detached_local_job(
+                    job_name=job_name,
+                    command=command,
+                    pod_vm_root=pod_vm_root,
+                    local_vm_root=local_vm_root,
+                    state=state,
+                )
             else:
                 env_map, _script, _args = _parse_env_command(command)
                 rc, tail = _synthesize_vm_run(
@@ -501,6 +623,10 @@ def _handle_tool_call(
                         _save_json(state_path, state)
             jobs = state.setdefault("jobs", {})
             rec = jobs.get(job_name) or {"state": "exited", "code": 2, "log_tail": "unknown job"}
+            if cfg.get("real_detached_subprocess") and rec.get("rc_file"):
+                rec = _poll_detached_local_job(rec)
+                jobs[job_name] = rec
+                _save_json(state_path, state)
             if (
                 job_name == "run"
                 and rec.get("deferred_command")
@@ -616,8 +742,14 @@ def _handle_tool_call(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Fake offrig-mcp server")
-    parser.add_argument("--project", required=True)
+    parser.add_argument("--version", action="store_true")
+    parser.add_argument("--project", default="")
     args, _unknown = parser.parse_known_args()
+    if args.version:
+        print(os.environ.get("RDLAB_FAKE_OFFRIG_VERSION") or "offrig-mcp 1.4.0 (fake)")
+        return 0
+    if not args.project:
+        parser.error("--project is required")
 
     cfg_path = Path(os.environ["RDLAB_FAKE_OFFRIG_CONFIG"])
     log_path = Path(os.environ["RDLAB_FAKE_OFFRIG_LOG"])

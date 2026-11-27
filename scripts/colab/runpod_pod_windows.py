@@ -23,6 +23,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 from typing import Any, Mapping, Sequence
@@ -35,6 +36,7 @@ SRC_DIR = DEFAULT_REPO_DIR / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
+import offrig_host  # noqa: E402
 import vm_judges  # noqa: E402
 from reasoning_dataset_lab.pilot_b import bakeoff_judge, schema_check  # noqa: E402
 
@@ -112,6 +114,30 @@ def _atomic_write_bytes(path: Path, data: bytes) -> None:
     except Exception:
         tmp_path.unlink(missing_ok=True)
         raise
+
+
+def _pack_out_dir_tarball(out_dir: Path) -> Path:
+    """Atomically pack `<out_dir>` into `<out_dir>.tar.gz` for `offrig_get` fetch."""
+    resolved = Path(out_dir)
+    tar_path = resolved.parent / f"{resolved.name}.tar.gz"
+    tar_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{tar_path.name}.", suffix=".tmp", dir=str(tar_path.parent))
+    os.close(fd)
+    tmp_path = Path(tmp_name)
+    try:
+        with tarfile.open(tmp_path, "w:gz") as tf:
+            for item in sorted(resolved.rglob("*")):
+                if item.name.startswith(".") and item.name.endswith(".tmp"):
+                    continue
+                if item.is_symlink():
+                    continue
+                rel = item.relative_to(resolved)
+                tf.add(item, arcname=f"{resolved.name}/{rel.as_posix()}", recursive=False)
+        os.replace(tmp_path, tar_path)
+    except Exception:
+        tmp_path.unlink(missing_ok=True)
+        raise
+    return tar_path
 
 
 def _sha256_file(path: Path) -> str:
@@ -348,8 +374,14 @@ def _arm_output_dir(out_dir: Path, arm: str, *, multi_arm: bool) -> Path:
     return (out_dir / bakeoff_judge.QWEN36_ARMS_DIRNAME / arm) if multi_arm else out_dir
 
 
-def verify_proof_window_sealed(proof_out_dir: Path) -> dict[str, Any]:
-    """Fail-closed check that the synthetic proof window on this pod completed and sealed all four arms."""
+def verify_proof_window_sealed(
+    proof_out_dir: Path,
+    *,
+    expected_model_revision: str = bakeoff_judge.QWEN36_REVISION,
+    expected_max_new_tokens: int = 32768,
+    allow_stub_proof: bool = False,
+) -> dict[str, Any]:
+    """Fail-closed check that a proof window completed, is non-stub when live, and matches pins."""
     proof_dir = Path(proof_out_dir)
     if not proof_dir.is_dir():
         raise PodWindowError("PROOF_WINDOW_NOT_SEALED", f"Proof out-dir does not exist: {proof_dir}")
@@ -358,10 +390,22 @@ def verify_proof_window_sealed(proof_out_dir: Path) -> dict[str, Any]:
     receipt = _read_json_dict(proof_dir / "vm_receipt.json")
     if plan is None or plan.get("window_role") != WINDOW_ROLE_PROOF or plan.get("synthetic_items") is not True:
         raise PodWindowError("PROOF_WINDOW_NOT_SEALED", f"Missing or non-proof window_plan.json in {proof_dir}")
+    if not allow_stub_proof and plan.get("stub") is not False:
+        raise PodWindowError("PROOF_WINDOW_NOT_SEALED", f"Counted window cannot use stub proof plan in {proof_dir}")
+    if plan.get("model_revision") != expected_model_revision:
+        raise PodWindowError(
+            "PROOF_WINDOW_NOT_SEALED",
+            f"Proof model_revision {plan.get('model_revision')!r} != {expected_model_revision!r}",
+        )
+    if plan.get("max_new_tokens") != int(expected_max_new_tokens):
+        raise PodWindowError(
+            "PROOF_WINDOW_NOT_SEALED",
+            f"Proof max_new_tokens {plan.get('max_new_tokens')!r} != {int(expected_max_new_tokens)!r}",
+        )
     if outcome is None or outcome.get("status") != "ok" or outcome.get("seal_ok") is not True:
         raise PodWindowError("PROOF_WINDOW_NOT_SEALED", f"Proof window outcome.json is missing or not sealed ok in {proof_dir}")
-    if receipt is None or str(receipt.get("status") or "") not in ("ok", "DRYRUN_OK"):
-        raise PodWindowError("PROOF_WINDOW_NOT_SEALED", f"Proof window vm_receipt.json is not ok in {proof_dir}")
+    if receipt is None or str(receipt.get("status") or "") != "ok":
+        raise PodWindowError("PROOF_WINDOW_NOT_SEALED", f"Proof window vm_receipt.json status must be 'ok' in {proof_dir}")
 
     root_ok, root_info = verify_sealed_manifest_dir(proof_dir)
     if not root_ok:
@@ -397,6 +441,8 @@ def verify_proof_window_sealed(proof_out_dir: Path) -> dict[str, Any]:
     return {
         "proof_out_dir": str(proof_dir),
         "proof_window_id": plan.get("window_id"),
+        "proof_model_revision": plan.get("model_revision"),
+        "proof_max_new_tokens": plan.get("max_new_tokens"),
         "proof_outputs_closed_sha256": root_info.get("outputs_closed_sha256"),
     }
 
@@ -650,11 +696,11 @@ def _is_valid_journal_row(
     if not isinstance(out_tok_sha, str) or not _HEX64_RE.match(out_tok_sha):
         return False, None
     state = row.get("state")
-    if state not in ("parsed", "unparseable", "length_stop", "aborted"):
+    if state not in ("parsed", "unparseable", "length_stop"):
         return False, None
     if row.get("verdict_parse_status") != state:
         return False, None
-    if row.get("done_reason") not in ("stop", "length", "abort"):
+    if row.get("done_reason") not in ("stop", "length"):
         return False, None
     if state == "parsed":
         if row.get("raw_verdict") not in ("supported", "unsupported", "cannot_tell"):
@@ -1105,31 +1151,47 @@ def run_pod_window(
     arm_list: list[str] = []
     multi_arm = False
 
+    def _write_refusal_record(err: PodWindowError) -> dict[str, Any]:
+        stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        refusal_name = f"refusal-{stamp}.json"
+        refusal_path = resolved_out / refusal_name
+        suffix_n = 1
+        while refusal_path.exists():
+            refusal_name = f"refusal-{stamp}-{suffix_n}.json"
+            refusal_path = resolved_out / refusal_name
+            suffix_n += 1
+        refusal_doc: dict[str, Any] = {
+            "schema_version": "1.0",
+            "id": window_id,
+            "window_role": window_role,
+            "stub": bool(stub),
+            "status": "stopped_second_platform_death" if err.failure_class == "RESUME_LIMIT_EXCEEDED" else "refused",
+            "failure_class": err.failure_class,
+            "detail": scrub_log_output(err.detail),
+            "seal_ok": False,
+            "outputs_closed_sha256": None,
+            "rows_reused": int(rows_reused),
+            "rows_run": int(rows_run),
+            "rows_dropped_invalid": int(rows_dropped_invalid),
+            "trigger": eff_trigger or resume_trigger,
+            "resume_count": int(resume_count),
+            "journal_started_fresh": bool(journal_started_fresh),
+            "boot_nvidia_smi": dict(boot_smi) if boot_smi is not None else None,
+            "proof_check": dict(proof_check) if proof_check is not None else None,
+            "elapsed_seconds": round(float(time.monotonic() - t0), 3),
+            "written_at": _utc_now_iso(),
+            "refusal_file": refusal_name,
+        }
+        _atomic_write_json(refusal_path, refusal_doc)
+        return refusal_doc
+
     def _finish_failure(err: PodWindowError) -> tuple[int, dict[str, Any]]:
         if resolved_out.exists() or resume_after_platform_death or resolved_out.parent.exists():
             resolved_out.mkdir(parents=True, exist_ok=True)
-            outcome, _ = _write_outcome_and_summary(
-                out_dir=resolved_out,
-                window_id=window_id,
-                window_role=window_role,
-                stub=stub,
-                status="stopped_second_platform_death" if err.failure_class == "RESUME_LIMIT_EXCEEDED" else "refused",
-                failure_class=err.failure_class,
-                detail=err.detail,
-                seal_ok=False,
-                outputs_closed_sha256=None,
-                rows_reused=rows_reused,
-                rows_run=rows_run,
-                rows_dropped_invalid=rows_dropped_invalid,
-                trigger=eff_trigger or resume_trigger,
-                resume_count=resume_count,
-                journal_started_fresh=journal_started_fresh,
-                per_arm={},
-                boot_smi=boot_smi,
-                proof_check=proof_check,
-                elapsed_seconds=time.monotonic() - t0,
-            )
-            return err.exit_code, outcome
+            refusal_doc = _write_refusal_record(err)
+            if not (resolved_out / OUTCOME_FILENAME).exists():
+                _pack_out_dir_tarball(resolved_out)
+            return err.exit_code, refusal_doc
         return err.exit_code, {
             "id": window_id,
             "status": "refused",
@@ -1182,12 +1244,17 @@ def run_pod_window(
                 raise PodWindowError("OUT_DIR_NOT_FRESH", f"Target out-dir exists and is non-empty: {resolved_out}")
             resolved_out.mkdir(parents=True, exist_ok=True)
 
-        boot_smi = capture_boot_nvidia_smi(resolved_out, stub=stub)
-
         if window_role == WINDOW_ROLE_COUNTED:
             if proof_out_dir is None:
                 raise PodWindowError("PROOF_WINDOW_NOT_SEALED", "--proof-out-dir is required for counted windows")
-            proof_check = verify_proof_window_sealed(proof_out_dir)
+            proof_check = verify_proof_window_sealed(
+                proof_out_dir,
+                expected_model_revision=bakeoff_judge.QWEN36_REVISION,
+                expected_max_new_tokens=int(max_new_tokens),
+                allow_stub_proof=stub,
+            )
+
+        boot_smi = capture_boot_nvidia_smi(resolved_out, stub=stub)
 
         arm_list, multi_arm = _resolve_arms_and_mode(arms, arm)
         current_plan, loaded_items = _build_window_plan(
@@ -1511,7 +1578,172 @@ def run_pod_window(
         proof_check=proof_check,
         elapsed_seconds=time.monotonic() - t0,
     )
-    return (0 if final_status == "ok" else 2), {**outcome, "summary_path": str(resolved_out / WINDOW_SUMMARY_FILENAME)}
+    tar_path = _pack_out_dir_tarball(resolved_out)
+    return (0 if final_status == "ok" else 2), {
+        **outcome,
+        "summary_path": str(resolved_out / WINDOW_SUMMARY_FILENAME),
+        "tar_path": str(tar_path),
+    }
+
+
+def run_smoke_step(
+    *,
+    out_dir: Path,
+    sleep_seconds: float = 300.0,
+    stub: bool = False,
+    self_stop_status_file: Path | None = None,
+) -> tuple[int, dict[str, Any]]:
+    """Run the detached pod-side Step 0 smoke job (>120 s live) and record `self-stop.status` + `boot_nvidia_smi`."""
+    req_sleep = float(sleep_seconds)
+    if req_sleep < 0.0:
+        raise PodWindowError("SMOKE_SLEEP_INVALID", f"--sleep-seconds must be >= 0, got {sleep_seconds}")
+    resolved_out = Path(out_dir)
+    if resolved_out.exists() and any(resolved_out.iterdir()):
+        raise PodWindowError("OUT_DIR_NOT_FRESH", f"Smoke out-dir exists and is non-empty: {resolved_out}")
+    resolved_out.mkdir(parents=True, exist_ok=True)
+    started_at = _utc_now_iso()
+    t0 = time.monotonic()
+    boot_smi = capture_boot_nvidia_smi(resolved_out, stub=stub)
+    if req_sleep > 0.0:
+        time.sleep(req_sleep)
+    ss_path = self_stop_status_file or Path(
+        os.environ.get("RDLAB_SELF_STOP_STATUS_FILE") or offrig_host.OFFRIG_SELF_STOP_STATUS_POD_PATH
+    )
+    ss_text = ss_path.read_text(encoding="utf-8", errors="replace").strip() if ss_path.is_file() else ""
+    elapsed = time.monotonic() - t0
+    finished_at = _utc_now_iso()
+    result_doc: dict[str, Any] = {
+        "schema_version": "1.0",
+        "status": "ok",
+        "stub": bool(stub),
+        "sleep_seconds_requested": round(req_sleep, 3),
+        "elapsed_seconds": round(elapsed, 3),
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "offrig_deadline_env": (os.environ.get("OFFRIG_DEADLINE") or "").strip() or None,
+        "self_stop_status": ss_text or None,
+        "boot_nvidia_smi": boot_smi,
+    }
+    _atomic_write_json(resolved_out / "smoke_result.json", result_doc)
+    tar_path = _pack_out_dir_tarball(resolved_out)
+    return 0, {**result_doc, "tar_path": str(tar_path)}
+
+
+def _verify_plan_teardown_impl(
+    *,
+    shutdown_json: Path,
+    status_json: Path,
+    plan_id: int,
+    expected_pod_id: str | None = None,
+    expected_pod_name: str | None = None,
+) -> dict[str, Any]:
+    """Fail-closed check that `offrig` closed `plan_id` and RunPod lists zero active pods for it."""
+    shut_doc = _read_json_dict(Path(shutdown_json))
+    stat_doc = _read_json_dict(Path(status_json))
+    if shut_doc is None:
+        raise PodWindowError("TEARDOWN_UNVERIFIED", f"Missing or unreadable shutdown JSON: {shutdown_json}")
+    if stat_doc is None:
+        raise PodWindowError("TEARDOWN_UNVERIFIED", f"Missing or unreadable status JSON: {status_json}")
+    cls = shut_doc.get("classification")
+    cls_map = dict(cls) if isinstance(cls, Mapping) else offrig_host.classify_shutdown_reply(
+        shut_doc, expected_pod_id=expected_pod_id
+    )
+    shut_status = str(cls_map.get("status") or "")
+    exp_pid = str(expected_pod_id or cls_map.get("reported_pod_id") or "").strip() or None
+    exp_pname = str(expected_pod_name or "").strip() or None
+
+    rp, err_reason = offrig_host._validate_usable_status_pods(stat_doc, require_open_plans=True)
+    if rp is None:
+        raise PodWindowError("TEARDOWN_UNVERIFIED", f"Unusable offrig status output: {err_reason}")
+    for pl in stat_doc.get("open_plans") or []:
+        if isinstance(pl, Mapping) and str(pl.get("plan_id") or "").strip() == str(int(plan_id)):
+            raise PodWindowError("TEARDOWN_UNVERIFIED", f"Plan {plan_id} is still listed in open_plans")
+    offrig_pods = rp.get("offrig_pods") or []
+    if offrig_pods:
+        raise PodWindowError("TEARDOWN_UNVERIFIED", f"Active offrig_pods remain after shutdown: {offrig_pods!r}")
+    if exp_pid or exp_pname:
+        matched = offrig_host._find_our_listed_pod(
+            rp,
+            open_plans=stat_doc.get("open_plans"),
+            plan_str=str(int(plan_id)),
+            expected_pod_id=exp_pid,
+            expected_pod_name=exp_pname,
+        )
+        if matched is not None:
+            raise PodWindowError("TEARDOWN_UNVERIFIED", f"Pod still listed after shutdown: {matched!r}")
+    if shut_status == "already_closed":
+        resolved = offrig_host.resolve_already_closed_shutdown(
+            stat_doc, plan_id=plan_id, expected_pod_id=exp_pid, expected_pod_name=exp_pname
+        )
+        if not resolved.get("pod_shutdown"):
+            raise PodWindowError("TEARDOWN_UNVERIFIED", str(resolved.get("detail") or "already_closed unconfirmed"))
+    elif shut_status != "confirmed" and cls_map.get("pod_shutdown") is not True:
+        if shut_status == "no_pod_rented":
+            res_np = offrig_host.resolve_no_pod_rented_shutdown(
+                stat_doc, plan_id=plan_id, expected_pod_id=exp_pid, expected_pod_name=exp_pname
+            )
+            if res_np.get("may_bill"):
+                raise PodWindowError("TEARDOWN_UNVERIFIED", str(res_np.get("detail") or "no_pod_rented contradicted"))
+        else:
+            raise PodWindowError("TEARDOWN_UNVERIFIED", str(cls_map.get("detail") or f"Unexpected shutdown status {shut_status!r}"))
+    return {
+        "teardown_ok": True,
+        "plan_id": int(plan_id),
+        "shutdown_status": shut_status,
+        "offrig_pods_count": len(offrig_pods),
+    }
+
+
+def verify_smoke_artifacts(
+    *,
+    smoke_file: Path,
+    self_stop_file: Path,
+    plan_deadline: str,
+    shutdown_json: Path,
+    status_json: Path,
+    plan_id: int,
+    expected_pod_id: str | None = None,
+    expected_pod_name: str | None = None,
+    min_elapsed_seconds: float = 120.0,
+) -> dict[str, Any]:
+    """Verify all Step 0 Item 7 + Item 9 smoke pass conditions from fetched rig artifacts."""
+    smoke_p = Path(smoke_file)
+    smoke_doc = _read_json_dict(smoke_p)
+    if smoke_doc is None or smoke_doc.get("status") != "ok":
+        raise PodWindowError("SMOKE_RESULT_MISSING_OR_FAILED", f"Smoke result missing or non-ok on rig: {smoke_p}")
+    elapsed = float(smoke_doc.get("elapsed_seconds") or 0.0)
+    if elapsed <= float(min_elapsed_seconds):
+        raise PodWindowError(
+            "SMOKE_DURATION_TOO_SHORT",
+            f"Smoke elapsed_seconds={elapsed:.3f} must exceed {float(min_elapsed_seconds):.1f}s (120s exec-run clamp)",
+        )
+    ss_p = Path(self_stop_file)
+    if not ss_p.is_file():
+        raise PodWindowError("SMOKE_SELF_STOP_MISSING", f"Fetched self-stop.status missing: {ss_p}")
+    ss_raw = ss_p.read_text(encoding="utf-8", errors="replace")
+    try:
+        ss_check = offrig_host.verify_self_stop_armed(
+            ss_raw,
+            plan_deadline_str=plan_deadline,
+            pod_deadline_iso=smoke_doc.get("offrig_deadline_env"),
+        )
+    except offrig_host.OffrigHostError as exc:
+        raise PodWindowError(exc.code, exc.detail) from exc
+    teardown = _verify_plan_teardown_impl(
+        shutdown_json=shutdown_json,
+        status_json=status_json,
+        plan_id=plan_id,
+        expected_pod_id=expected_pod_id,
+        expected_pod_name=expected_pod_name,
+    )
+    return {
+        "smoke_ok": True,
+        "smoke_file": str(smoke_p),
+        "elapsed_seconds": elapsed,
+        "min_elapsed_seconds": float(min_elapsed_seconds),
+        "self_stop": ss_check,
+        "teardown": teardown,
+    }
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -1547,6 +1779,29 @@ def _build_parser() -> argparse.ArgumentParser:
     run_p.add_argument("--stub", action="store_true")
     run_p.add_argument("--resume-after-platform-death", action="store_true")
     run_p.add_argument("--resume-trigger", default=None)
+
+    smoke_p = sub.add_parser("run-smoke", help="Run detached pod Step 0 smoke (>120s live) for offrig path proof")
+    smoke_p.add_argument("--out-dir", type=Path, required=True)
+    smoke_p.add_argument("--sleep-seconds", type=float, default=300.0)
+    smoke_p.add_argument("--stub", action="store_true")
+
+    vsmoke_p = sub.add_parser("verify-smoke", help="Verify fetched Step 0 smoke artifacts, self-stop timer, and teardown")
+    vsmoke_p.add_argument("--smoke-file", type=Path, required=True)
+    vsmoke_p.add_argument("--self-stop-file", type=Path, required=True)
+    vsmoke_p.add_argument("--plan-deadline", required=True)
+    vsmoke_p.add_argument("--shutdown-json", type=Path, required=True)
+    vsmoke_p.add_argument("--status-json", type=Path, required=True)
+    vsmoke_p.add_argument("--plan-id", type=int, required=True)
+    vsmoke_p.add_argument("--expected-pod-id", default="")
+    vsmoke_p.add_argument("--expected-pod-name", default="")
+    vsmoke_p.add_argument("--min-elapsed-seconds", type=float, default=120.0)
+
+    vtd_p = sub.add_parser("verify-teardown", help="Verify offrig shutdown closed the plan and zero pods remain")
+    vtd_p.add_argument("--shutdown-json", type=Path, required=True)
+    vtd_p.add_argument("--status-json", type=Path, required=True)
+    vtd_p.add_argument("--plan-id", type=int, required=True)
+    vtd_p.add_argument("--expected-pod-id", default="")
+    vtd_p.add_argument("--expected-pod-name", default="")
     return parser
 
 
@@ -1566,6 +1821,53 @@ def main(argv: Sequence[str] | None = None) -> int:
         except (PodWindowError, vm_judges.RefusalError) as exc:
             sys.stderr.write(scrub_log_output(str(exc)) + "\n")
             return 2
+
+    if args.subcommand == "run-smoke":
+        try:
+            rc_s, doc_s = run_smoke_step(
+                out_dir=args.out_dir,
+                sleep_seconds=args.sleep_seconds,
+                stub=bool(args.stub),
+            )
+            sys.stdout.write(json.dumps(doc_s, sort_keys=True) + "\n")
+            return rc_s
+        except PodWindowError as exc:
+            sys.stderr.write(scrub_log_output(str(exc)) + "\n")
+            return exc.exit_code
+
+    if args.subcommand == "verify-smoke":
+        try:
+            doc_vs = verify_smoke_artifacts(
+                smoke_file=args.smoke_file,
+                self_stop_file=args.self_stop_file,
+                plan_deadline=args.plan_deadline,
+                shutdown_json=args.shutdown_json,
+                status_json=args.status_json,
+                plan_id=args.plan_id,
+                expected_pod_id=args.expected_pod_id or None,
+                expected_pod_name=args.expected_pod_name or None,
+                min_elapsed_seconds=args.min_elapsed_seconds,
+            )
+            sys.stdout.write(json.dumps(doc_vs, sort_keys=True) + "\n")
+            return 0
+        except PodWindowError as exc:
+            sys.stderr.write(scrub_log_output(str(exc)) + "\n")
+            return exc.exit_code
+
+    if args.subcommand == "verify-teardown":
+        try:
+            doc_td = _verify_plan_teardown_impl(
+                shutdown_json=args.shutdown_json,
+                status_json=args.status_json,
+                plan_id=args.plan_id,
+                expected_pod_id=args.expected_pod_id or None,
+                expected_pod_name=args.expected_pod_name or None,
+            )
+            sys.stdout.write(json.dumps(doc_td, sort_keys=True) + "\n")
+            return 0
+        except PodWindowError as exc:
+            sys.stderr.write(scrub_log_output(str(exc)) + "\n")
+            return exc.exit_code
 
     rc, outcome = run_pod_window(
         window_id=args.window_id,
