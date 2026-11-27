@@ -43,37 +43,9 @@ installed source on 2026-11-06; the line numbers are in that version.
 
 ## The rate in this repo
 
-- **At open.** The window rate is the post-open account rate minus the pre-open one. It is accepted only when two
-  reads 5 s apart agree within 0.01, show the same assignment count (at least 1), and clear `GPU_RATE_FLOOR`
-  (1.00/hr on a GPU card; the T4 measured 1.07/hr). A read with no count or a count of 0 means "not registered yet"
-  and only uses up the open-poll budget; when the budget runs out the window refuses `LIVE_USAGE_RATE_UNAVAILABLE`.
-  A stable window rate above `--max-rate` refuses `RATE_ABOVE_MAX`. The cap runtime is priced on max(`--max-rate`,
-  the window rate), and the cost clock starts at open. Every usage call runs under `timeout -k`.
-- **Mid-run re-reads** (`scripts/colab/rate_rereads.py`, driven by the cost-cap monitor in `launch_judges.sh`).
-  While the run cell runs, the launcher re-reads `colab usage` every `RDLAB_RATE_REREAD_SECONDS` (1 to 60, default
-  30) and parses the rate and the count.
-  - Our rate is the account rate minus a neighbour baseline. The baseline starts as the pre-open rate.
-  - When the count changes, nothing is judged until two consecutive reads at the new count agree within 0.01. Then
-    the baseline becomes the account rate minus the highest stable rate of ours seen (so our apparent rate can only
-    come out higher).
-  - Only a read at the settled count can raise our rate, and only once two such reads in a row agree. A stable rise
-    reprices the remaining runtime at max(`--max-rate`, the highest stable rate seen): it can shorten, never
-    lengthen. A stable rate above `--max-rate` ends the window `RATE_ABOVE_MAX`, stopped and fetched as on a cost-cap
-    stop.
-  - Each read runs as a tracked background PID; if the run ends while one is in flight, the monitor's trap and the
-    launcher's teardown kill its tree by PID.
-  - Once the window is open, a read with no count, a count of 0 or no rate is recorded, and so is a stable own rate
-    below the card's floor (never accepted). Three in a row end the window
-    `ASSIGNMENTS_UNREADABLE`.
-  - Every re-read (account rate, count, our rate, baseline, decision, remaining runtime) is written to
-    `rate_rereads.jsonl` and to `rate_rereads` in `outcome.draft.json`. The usage text itself is not stored there.
-- **Known limits**, accepted and not chased:
-  - a neighbour that opens in the same read as our own rate rises folds that rise into the baseline (pricing at
-    max(`--max-rate`, highest stable rate seen) still bounds the cost);
-  - a CLI outage of three or more reads ends the window early (`ASSIGNMENTS_UNREADABLE`);
-  - a count that leads the neighbour's rate by two or more reads settles on the old rate and can trip falsely.
-  - not a limit any more: a neighbour closing with the rate two reads ahead of the count. The stable 0.00 it
-    produced is now below the floor, and the re-baseline uses the highest stable rate.
-- **The fake** answers `usage` in the real line format. `FAKE_COLAB_USAGE_SEQUENCE` (`rate:count,...`, `-` for a
-  missing line) models the rate and count per call, before, at and after open and during the run; the recorded T4
-  open is the fixture `t4_open_0001` (`FAKE_COLAB_USAGE_FIXTURE`).
+- **At open.** The window rate is post-open minus pre-open account rate, accepted from two reads 5 s apart agreeing
+  within 0.01 with assignment count >= 1 (`RATE_BELOW_FLOOR` and `LIVE_USAGE_RATE_UNAVAILABLE` are logged only).
+  A rate above `--max-rate` refuses `RATE_ABOVE_MAX` at open. Cap runtime is priced locally on own rate vs `--max-rate`.
+- **Mid-run re-reads** (`scripts/colab/rate_rereads.py`, driven by `launch_judges.sh`): observational logging only
+  (logged to `cli`, `rate_rereads.jsonl`, and `outcome.draft.json`, never tripping or shortening a running window).
+- **The fake** answers `usage` in the real line format via `FAKE_COLAB_USAGE_SEQUENCE` and `FAKE_COLAB_USAGE_FIXTURE`.

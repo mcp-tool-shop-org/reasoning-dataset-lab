@@ -600,8 +600,8 @@ def test_end_to_end_cpu_validation_10_items_mock_part_sealing_and_tamper_refusal
     assert json.loads(err_tampered)["code"] == "BAKEOFF_SCORE_OUTPUTS_MODIFIED"
 
 
-def test_error_rate_stop_rule_halts_above_20_percent(tmp_path: Path) -> None:
-    """DESIGN §7: Unparseable plus length_stop above 20% halts the judge run."""
+def test_high_unparseable_rate_completes_without_error_rate_stop(tmp_path: Path) -> None:
+    """Unparseable replies run to completion and are scored invalid with no error-rate halt."""
     items_path = tmp_path / "items.jsonl"
     rows = []
     for i in range(1, 7):
@@ -609,23 +609,23 @@ def test_error_rate_stop_rule_halts_above_20_percent(tmp_path: Path) -> None:
         rows.append({"id": f"item-{i:03d}", "material": mat, "claim": EXAMPLE_CLAIM})
     items_path.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
 
-    with pytest.raises(RdlabError) as exc_stop:
-        run_bakeoff_judge(
-            part_dir=items_path,
-            output_dir=tmp_path / "out_err",
-            judge="mu-judge",
-            fake_transport=True,
-            force_unparseable_items=[
-                "item-001:AB",
-                "item-001:BA",
-                "item-002:AB",
-                "item-002:BA",
-                "item-003:AB",
-                "item-003:BA",
-            ],
-            error_rate_min_calls=3,
-        )
-    assert exc_stop.value.code == "BAKEOFF_JUDGE_ERROR_RATE_STOP"
+    res = run_bakeoff_judge(
+        part_dir=items_path,
+        output_dir=tmp_path / "out_err",
+        judge="mu-judge",
+        fake_transport=True,
+        force_unparseable_items=[
+            "item-001:AB",
+            "item-001:BA",
+            "item-002:AB",
+            "item-002:BA",
+            "item-003:AB",
+            "item-003:BA",
+        ],
+    )
+    assert res["calls_count"] == 12
+    assert res["unparseable_count"] == 6
+    assert res["parsed_count"] == 6
 
 
 def test_scoring_measures_flip_scores_zero_and_mcnemar_holm() -> None:

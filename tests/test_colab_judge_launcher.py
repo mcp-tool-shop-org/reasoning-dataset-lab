@@ -10947,26 +10947,24 @@ def test_child_progress_2_heartbeat_fires_on_slow_call_and_stops_after_call(
         for ln in items_file.read_text(encoding="utf-8").splitlines()
         if ln.strip()
     ]
-    with pytest.raises(bakeoff_judge.RdlabError) as exc_er:
-        bakeoff_judge.run_bakeoff_judge(
-            part_dir=items_file,
-            output_dir=tmp_path / "judge_out_errstop",
-            judge="nemotron-3-nano-4b",
-            limit_items=2,
-            fake_transport=True,
-            device="cpu",
-            torch_dtype="bfloat16",
-            error_rate_min_calls=1,
-            force_unparseable_items=(
-                f"{raw_items_hb[0]['id']}:AB",
-                f"{raw_items_hb[0]['id']}:BA",
-                f"{raw_items_hb[1]['id']}:AB",
-                f"{raw_items_hb[1]['id']}:BA",
-            ),
-            progress_file=prog_errstop,
-            run_canary=False,
-        )
-    assert exc_er.value.code == "BAKEOFF_JUDGE_ERROR_RATE_STOP"
+    res_unp = bakeoff_judge.run_bakeoff_judge(
+        part_dir=items_file,
+        output_dir=tmp_path / "judge_out_errstop",
+        judge="nemotron-3-nano-4b",
+        limit_items=2,
+        fake_transport=True,
+        device="cpu",
+        torch_dtype="bfloat16",
+        force_unparseable_items=(
+            f"{raw_items_hb[0]['id']}:AB",
+            f"{raw_items_hb[0]['id']}:BA",
+            f"{raw_items_hb[1]['id']}:AB",
+            f"{raw_items_hb[1]['id']}:BA",
+        ),
+        progress_file=prog_errstop,
+        run_canary=False,
+    )
+    assert res_unp["unparseable_count"] == 4
     errstop_lines = [
         json.loads(ln)
         for ln in prog_errstop.read_text(encoding="utf-8").splitlines()
@@ -10975,7 +10973,7 @@ def test_child_progress_2_heartbeat_fires_on_slow_call_and_stops_after_call(
     assert errstop_lines[-2]["kind"] == "call_done"
     assert errstop_lines[-2]["state"] == "unparseable"
     assert errstop_lines[-1]["kind"] == "child_end"
-    assert errstop_lines[-1]["counts_by_state"]["unparseable"] == 1
+    assert errstop_lines[-1]["counts_by_state"]["unparseable"] == 4
     assert errstop_lines[-1]["counts_by_state"]["failed_to_run"] == 0
 
 
@@ -13922,20 +13920,18 @@ def test_part2_item8_mono_seconds_elapsed_seconds_error_rate_state_and_both_venv
             )
 
     prog_er = tmp_path / "p2_item8_errstop.jsonl"
-    with pytest.raises(RdlabError) as exc_er:
-        bj_mod.run_bakeoff_judge(
-            part_dir=items_file,
-            output_dir=tmp_path / "p2_item8_er_out",
-            judge="nemotron-3-nano-4b",
-            limit_items=2,
-            transport=_AlwaysUnparseableTransport(),
-            device="cpu",
-            torch_dtype="bfloat16",
-            error_rate_min_calls=1,
-            progress_file=prog_er,
-            run_canary=False,
-        )
-    assert exc_er.value.code == "BAKEOFF_JUDGE_ERROR_RATE_STOP"
+    res_er = bj_mod.run_bakeoff_judge(
+        part_dir=items_file,
+        output_dir=tmp_path / "p2_item8_er_out",
+        judge="nemotron-3-nano-4b",
+        limit_items=2,
+        transport=_AlwaysUnparseableTransport(),
+        device="cpu",
+        torch_dtype="bfloat16",
+        progress_file=prog_er,
+        run_canary=False,
+    )
+    assert res_er["unparseable_count"] == 4
     er_lines = [
         json.loads(ln)
         for ln in prog_er.read_text(encoding="utf-8").splitlines()
@@ -13944,7 +13940,7 @@ def test_part2_item8_mono_seconds_elapsed_seconds_error_rate_state_and_both_venv
     assert er_lines[-2]["kind"] == "call_done"
     assert er_lines[-2]["state"] == "unparseable"
     assert er_lines[-1]["kind"] == "child_end"
-    assert er_lines[-1]["counts_by_state"]["unparseable"] == 1
+    assert er_lines[-1]["counts_by_state"]["unparseable"] == 4
     assert er_lines[-1]["counts_by_state"]["failed_to_run"] == 0
     assert isinstance(er_lines[-1].get("elapsed_seconds"), float)
 

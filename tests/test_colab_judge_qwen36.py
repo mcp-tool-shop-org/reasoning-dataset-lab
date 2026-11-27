@@ -1357,7 +1357,6 @@ def test_vllm_transport_edge_branches_and_abort_not_parsed(
         hf_home=env2["hf_home"],
         device="cpu",
         window_mode="time-one",
-        error_rate_min_calls=10,
         run_canary=False,
     )
     assert res["aborted_count"] == 1
@@ -1618,7 +1617,6 @@ def test_child_end_counts_by_state_includes_aborted_and_sums_to_calls(
         hf_home=env["hf_home"],
         device="cpu",
         window_mode="time-one",
-        error_rate_min_calls=10,
         progress_file=prog_path,
         run_canary=False,
     )

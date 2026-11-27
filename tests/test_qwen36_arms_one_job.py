@@ -2581,4 +2581,57 @@ def test_per_judge_pass_mode_with_canary_seals_and_syncs_all_four_arms(
         assert vm_rec["pass_mode"] == CONTRA, f"bad vm_receipt pass_mode for {arm_name}: {vm_rec}"
 
 
+def test_dead_engine_liveness_stops_while_live_engine_continues(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Dead engine with no liveness for N stops with JUDGE_CHILD_TIMEOUT; live child continues past N."""
+    import time
+
+    prog_live = tmp_path / "live_prog.jsonl"
+    live_script = tmp_path / "live_child.py"
+    live_script.write_text(
+        "import json, pathlib, sys, time\n"
+        "p = pathlib.Path(sys.argv[1])\n"
+        "p.parent.mkdir(parents=True, exist_ok=True)\n"
+        "for i in range(4):\n"
+        "    time.sleep(0.12)\n"
+        "    with p.open('a', encoding='utf-8') as f:\n"
+        "        f.write(json.dumps({'kind': 'call_done', 'index': i}) + '\\n')\n",
+        encoding="utf-8",
+    )
+    res_live = vm_judges._run_child_with_group_timeout(
+        [sys.executable, str(live_script), str(prog_live)],
+        env={**os.environ, "RDLAB_JUDGE_CHILD_PROGRESS_FILE": str(prog_live)},
+        timeout_seconds=0.30,
+    )
+    assert res_live["returncode"] == 0 and res_live["timed_out"] is False
+    assert res_live["elapsed_seconds"] > 0.35
+
+    prog_dead = tmp_path / "dead_prog.jsonl"
+    dead_script = tmp_path / "dead_child.py"
+    dead_script.write_text(
+        "import json, pathlib, sys, time\n"
+        "p = pathlib.Path(sys.argv[1])\n"
+        "p.parent.mkdir(parents=True, exist_ok=True)\n"
+        "with p.open('a', encoding='utf-8') as f:\n"
+        "    f.write(json.dumps({'kind': 'call_start', 'index': 0}) + '\\n')\n"
+        "for _ in range(40):\n"
+        "    time.sleep(0.05)\n"
+        "    with p.open('a', encoding='utf-8') as f:\n"
+        "        f.write(json.dumps({'kind': 'heartbeat', 'index': 0, 'output_tokens': 1}) + '\\n')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("RDLAB_WALL_SECONDS", raising=False)
+    monkeypatch.setattr(vm_judges, "_ACTIVE_RUN_WALL_DEADLINE_MONOTONIC", None)
+    t0 = time.monotonic()
+    res_dead = vm_judges._run_child_with_group_timeout(
+        [sys.executable, str(dead_script), str(prog_dead)],
+        env={**os.environ, "RDLAB_JUDGE_CHILD_PROGRESS_FILE": str(prog_dead)},
+        timeout_seconds=0.30,
+    )
+    assert res_dead["timed_out"] is True and res_dead["returncode"] == 124
+    assert res_dead["any_member_survived"] is False
+    assert (time.monotonic() - t0) < 2.0
+
+
 

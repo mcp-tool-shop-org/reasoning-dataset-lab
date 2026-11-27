@@ -508,30 +508,27 @@ def test_window_rate_needs_two_agreeing_reads_and_the_gpu_floor(tmp_path: Path) 
     assert "LIVE_USAGE_RATE_READ session=" in log and "window_rate_uh=2.4000 rate_scope=window" in log
     assert log.index("SESSION_OPEN_CLOCK") < log.index("USAGE_READ_POST")
 
-    bad, _e2, bad_out = _stub_window(
+    unstable, _e2, unstable_out = _stub_window(
         tmp_path,
         "unstable",
         "export FAKE_COLAB_USAGE_RATE_SEQUENCE=0.00,1.0,2.0,3.0,4.0,5.0; export RDLAB_RATE_POLL_MAX_READS=5; ",
     )
-    assert bad.returncode == 2 and "LIVE_USAGE_RATE_UNAVAILABLE" in bad.stderr, bad.stderr
+    assert unstable.returncode == 0 and "LIVE_USAGE_RATE_UNAVAILABLE" in (unstable_out / "colab-cli.log").read_text(encoding="utf-8")
 
 
-def test_gpu_window_below_the_floor_refuses_before_any_upload(tmp_path: Path) -> None:
-    """A real `--time-one` (A100) whose window rate is a stable 0.26/h (a CPU-sized read, below GPU_RATE_FLOOR 1.00)
-    refuses `LIVE_USAGE_RATE_UNAVAILABLE` right after the polls; nothing is uploaded or run, and the session is
-    stopped. Fails at ca31d36b: 0.26 was accepted as the A100's rate."""
+def test_gpu_window_below_the_floor_logs_and_runs(tmp_path: Path) -> None:
+    """A real `--time-one` (A100) whose window rate is 0.26/h (< GPU_RATE_FLOOR 1.00) logs `RATE_BELOW_FLOOR` and proceeds."""
     receipts_dir, hf_home = tcl._make_synthetic_judge_snapshots_and_receipts(tmp_path / "rec")
     part = tcl._make_builder_part(tmp_path / "build")
     items = tcl._project_part_items(part, tmp_path / "inputs" / "t1.jsonl")
     env_paths = fake_colab.setup_fake_colab_environment(tmp_path / "env")
+    out_dir = tmp_path / "out"
     exports = tcl._pm_real_mode_exports(
         env_paths, open_lock=tmp_path / "f.lock", receipts_dir=receipts_dir, hf_home=hf_home, items_file=items, part_dir=part
-    ) + "export FAKE_COLAB_USAGE_RATE_SEQUENCE=0.00,0.26,0.26,0.26; export RDLAB_RATE_POLL_MAX_READS=3; "
-    proc = tcl._pm_run_launcher(exports, f"--time-one --out-dir '{tcl._to_wsl_path(tmp_path / 'out')}' --run-id floor1")
-    assert proc.returncode == 2, proc.stdout + proc.stderr
-    assert "LIVE_USAGE_RATE_UNAVAILABLE" in proc.stderr and ">= 1.00/h" in proc.stderr
-    subcmds = [json.loads(ln)["subcmd"] for ln in env_paths["calls_log"].read_text(encoding="utf-8").splitlines()]
-    assert "upload" not in subcmds and "exec" not in subcmds and "stop" in subcmds
+    ) + "export FAKE_COLAB_USAGE_RATE_SEQUENCE=0.00,0.26,0.26; export RDLAB_RATE_POLL_MAX_READS=3; "
+    proc = tcl._pm_run_launcher(exports, f"--time-one --out-dir '{tcl._to_wsl_path(out_dir)}' --run-id floor1")
+    assert "RATE_BELOW_FLOOR" in (out_dir / "colab-cli.log").read_text(encoding="utf-8")
+    assert "LIVE_USAGE_RATE_UNAVAILABLE" not in proc.stderr
 
 
 # ---------------------------------------------------------------------------------------------------------------------

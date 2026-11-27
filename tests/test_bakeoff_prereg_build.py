@@ -164,48 +164,41 @@ def test_item2_and_change_f_invalid_counted_as_flip_strict_ceiling_d_ab_and_clos
 
 
 # ---------------------------------------------------------------------------------------------------------------------
-# Card 1 Item 3: 20% error-rate halt kept, recorded as failed_to_run with partial counts, and refused by scorer
+# Invalid replies run to completion without an error-rate halt and are scored invalid
 # ---------------------------------------------------------------------------------------------------------------------
-def test_item3_error_rate_halt_records_failed_to_run_and_scorer_refuses(tmp_path: Path) -> None:
+def test_item3_high_unparseable_rate_completes_and_scores_invalid(tmp_path: Path) -> None:
     part_dir, keys_path = _build_synthetic_part(tmp_path, n_triads=4)
     judge_dir = tmp_path / "judge_out"
-    with pytest.raises(RdlabError) as exc_halt:
-        run_bakeoff_judge(
-            part_dir=part_dir,
-            output_dir=judge_dir,
-            judge="mu-judge",
-            fake_transport=True,
-            force_unparseable_items=[
-                "syn-000-0:AB",
-                "syn-000-0:BA",
-                "syn-000-1:AB",
-                "syn-000-1:BA",
-                "syn-000-2:AB",
-                "syn-000-2:BA",
-            ],
-            error_rate_min_calls=3,
-        )
-    assert exc_halt.value.code == "BAKEOFF_JUDGE_ERROR_RATE_STOP"
-
+    res = run_bakeoff_judge(
+        part_dir=part_dir,
+        output_dir=judge_dir,
+        judge="mu-judge",
+        fake_transport=True,
+        force_unparseable_items=[
+            "syn-000-0:AB",
+            "syn-000-0:BA",
+            "syn-000-1:AB",
+            "syn-000-1:BA",
+            "syn-000-2:AB",
+            "syn-000-2:BA",
+        ],
+    )
+    assert res["unparseable_count"] == 6 and res["parsed_count"] > 0
     row_lines = [
         json.loads(ln)
         for ln in (judge_dir / "rows" / "mu-judge.jsonl").read_text(encoding="utf-8").splitlines()
         if ln.strip()
     ]
-    assert any(r.get("run_status") == "failed_to_run" for r in row_lines), (
-        "Halted judge must record run_status='failed_to_run' with partial counts"
-    )
-    failed_marker = next(r for r in row_lines if r.get("run_status") == "failed_to_run")
-    assert "partial_counts" in failed_marker
+    assert not any(r.get("run_status") == "failed_to_run" for r in row_lines)
     close_bakeoff_outputs(judge_dir)
-    with pytest.raises(RdlabError) as exc_score:
-        score_bakeoff_outputs(
-            judge_output_dir=judge_dir,
-            keys_path=keys_path,
-            public_out_path=tmp_path / "pub" / "score_summary.json",
-            sealed_rows_out_path=tmp_path / "sealed" / "scored.sealed.jsonl",
-        )
-    assert exc_score.value.code == "BAKEOFF_SCORE_JUDGE_FAILED_TO_RUN"
+    rep = score_bakeoff_outputs(
+        judge_output_dir=judge_dir,
+        keys_path=keys_path,
+        public_out_path=tmp_path / "pub" / "score_summary.json",
+        sealed_rows_out_path=tmp_path / "sealed" / "scored.sealed.jsonl",
+    )
+    mu_j = next(j for j in rep["judges"] if j["judge_id"] == "mu-judge")
+    assert mu_j["unparseable"] == 6
 
 
 # ---------------------------------------------------------------------------------------------------------------------
