@@ -859,9 +859,12 @@ def _prepare_stub_support_env(work_dir: Path, *, repo_dir: Path, receipts_dir: P
     stub_bin = stub_root / "bin"
     stub_receipts = stub_root / "receipts"
     stub_hf = stub_root / "hf_home"
+    stub_vm_content = stub_root / "vm_content"
+    stub_uv_pinned = stub_root / "uv_pinned"
     stub_bin.mkdir(parents=True, exist_ok=True)
     stub_receipts.mkdir(parents=True, exist_ok=True)
     stub_hf.mkdir(parents=True, exist_ok=True)
+    stub_vm_content.mkdir(parents=True, exist_ok=True)
 
     py_exe = str(Path(sys.executable)).replace("\\", "/")
     stub_py_root = stub_root / "py315"
@@ -905,13 +908,16 @@ def _prepare_stub_support_env(work_dir: Path, *, repo_dir: Path, receipts_dir: P
         owner, repo = spec.repo_id.split("/", 1)
         snap_dir = stub_hf / "hub" / f"models--{owner}--{repo}" / "snapshots" / spec.revision
         snap_dir.mkdir(parents=True, exist_ok=True)
-        stub_files = {
+        stub_files: dict[str, bytes] = {
             "config.json": json.dumps({"model_type": jid, "revision": spec.revision}).encode("utf-8"),
             "model.safetensors": f"stub-weights-{jid}-{spec.revision}".encode("utf-8"),
         }
+        for rc_file in spec.remote_code_files:
+            stub_files[rc_file] = f"# remote code stub {rc_file}\n".encode("utf-8")
         files_mf: dict[str, dict[str, Any]] = {}
         for rel, content in sorted(stub_files.items()):
             fp = snap_dir / rel
+            fp.parent.mkdir(parents=True, exist_ok=True)
             fp.write_bytes(content)
             files_mf[rel] = {"sha256": hashlib.sha256(content).hexdigest(), "bytes": len(content)}
         _atomic_write_json(
@@ -922,6 +928,8 @@ def _prepare_stub_support_env(work_dir: Path, *, repo_dir: Path, receipts_dir: P
     return stub_receipts, stub_hf, {
         "PATH": f"{stub_bin.as_posix()}{os.pathsep}{os.environ.get('PATH', '')}",
         "VM_DRYRUN": "1",
+        "RDLAB_VM_CONTENT_DIR": stub_vm_content.as_posix(),
+        "FAKE_COLAB_PINNED_UV_DIR": stub_uv_pinned.as_posix(),
     }
 
 
@@ -1244,8 +1252,16 @@ def run_pod_window(
         )
 
     eff_judge_to = int(judge_timeout_seconds) if judge_timeout_seconds is not None else max(60, int(wall_seconds) - 300)
-    child_env = {k: v for k, v in os.environ.items() if not _STRIPPED_ENV_VAR_RE.match(k)}
-    child_env.update(env_extra)
+    child_env = {
+        k: v
+        for k, v in os.environ.items()
+        if not _STRIPPED_ENV_VAR_RE.match(k)
+        and not k.startswith("RDLAB_")
+        and not k.startswith("FAKE_COLAB_")
+        and k != "VM_DRYRUN"
+        and not k.startswith("UV_PYTHON")
+        and k not in ("UV_SYSTEM_PYTHON", "UV_OVERRIDE")
+    }
     repo_src_str = str(resolved_repo / "src")
     existing_pypath = child_env.get("PYTHONPATH", "")
     child_env["PYTHONPATH"] = f"{repo_src_str}{os.pathsep}{existing_pypath}" if existing_pypath else repo_src_str
@@ -1253,8 +1269,6 @@ def run_pod_window(
         {
             "RDLAB_STEP": "run",
             "RDLAB_MODE": "time-one",
-            "RDLAB_HOST": "runpod",
-            "RDLAB_CARD_TYPE": RUNPOD_CARD_TYPE,
             "RDLAB_VM_ROOT": resolved_work.as_posix(),
             "RDLAB_ONLY_JUDGES": bakeoff_judge.QWEN36_JUDGE_ID,
             "RDLAB_PASS_MODE": "per_judge",
@@ -1331,6 +1345,10 @@ def run_pod_window(
             "RDLAB_RESUME": "1" if resume_after_platform_death else "0",
         }
     )
+    if not stub:
+        child_env["RDLAB_HOST"] = "runpod"
+        child_env["RDLAB_CARD_TYPE"] = RUNPOD_CARD_TYPE
+    child_env.update(env_extra)
     vm_script = resolved_repo / "scripts" / "colab" / "vm_judges.py"
     if not stub:
         gate_env = dict(child_env)
@@ -1423,7 +1441,12 @@ def run_pod_window(
             or (vm_receipt or {}).get("failure_class")
             or f"VM_EXIT_{proc.returncode}"
         )
-        detail = str((vm_status or {}).get("reason") or (vm_receipt or {}).get("reason") or "vm_judges failed")
+        detail = str(
+            (vm_status or {}).get("reason")
+            or (vm_receipt or {}).get("reason")
+            or (proc.stderr or proc.stdout or "vm_judges failed").strip()[-500:]
+            or "vm_judges failed"
+        )
 
     per_arm, total_rows_after = _collect_per_arm_summary(resolved_out, arms=arm_list, multi_arm=multi_arm)
     if vm_ok and not all(entry["completed"] and entry["seal_ok"] for entry in per_arm.values()):

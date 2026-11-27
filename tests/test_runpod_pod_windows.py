@@ -180,8 +180,8 @@ def test_counted_window_refuses_without_sealed_proof_and_succeeds_after_proof(tm
         wall_seconds=3900,
         stub=True,
     )
-    assert rc_proof == 0
-    assert out_proof["status"] == "ok"
+    assert rc_proof == 0, out_proof
+    assert out_proof["status"] == "ok", out_proof
     assert out_proof["seal_ok"] is True
     assert (proof_out / "boot_nvidia_smi.json").is_file()
     assert (proof_out / "boot_nvidia_smi.txt").is_file()
@@ -283,7 +283,7 @@ def test_journal_replay_verifies_rows_reruns_tampered_row_and_caps_at_once(tmp_p
     work_dir = tmp_path / "work"
     hf_home = tmp_path / "hf"
     proof_out = tmp_path / "runs" / "proof-01"
-    rc_p, _ = runpod_pod_windows.run_pod_window(
+    rc_p, out_p = runpod_pod_windows.run_pod_window(
         window_id="proof-01",
         window_role="proof",
         input_bundle_dir=bundle,
@@ -298,7 +298,7 @@ def test_journal_replay_verifies_rows_reruns_tampered_row_and_caps_at_once(tmp_p
         wall_seconds=3900,
         stub=True,
     )
-    assert rc_p == 0
+    assert rc_p == 0, out_p
 
     # Run a fresh counted 4-arm window cleanly first so we can simulate mid-window death + tampering on a copy/same dir.
     win_dir = tmp_path / "runs" / "counted-replay-01"
@@ -504,7 +504,7 @@ def test_unverifiable_journal_starts_fresh_on_resume(tmp_path: Path) -> None:
         resume_after_platform_death=True,
         resume_trigger="ssh_lost",
     )
-    assert rc_fresh == 0
+    assert rc_fresh == 0, out_fresh
     assert out_fresh["rows_reused"] == 0
     assert out_fresh["rows_run"] == 8
     summary = json.loads((nf_dir / "window_summary.json").read_text(encoding="utf-8"))
@@ -590,23 +590,21 @@ def test_frozen_part_counted_stub_and_refusal_paths(tmp_path: Path, monkeypatch:
     work_dir = tmp_path / "work"
     hf_home = tmp_path / "hf"
     proof_out = tmp_path / "runs" / "proof-01"
-    assert (
-        runpod_pod_windows.run_pod_window(
-            window_id="proof-01",
-            window_role="proof",
-            input_bundle_dir=proof_bundle,
-            out_dir=proof_out,
-            repo_dir=REPO_ROOT,
-            work_dir=work_dir,
-            hf_home=hf_home,
-            arms="thinking,nothink-greedy,nothink-card,nothink-matched",
-            repeats=2,
-            canary_calls=4,
-            wall_seconds=3900,
-            stub=True,
-        )[0]
-        == 0
+    rc_p2, out_p2 = runpod_pod_windows.run_pod_window(
+        window_id="proof-01",
+        window_role="proof",
+        input_bundle_dir=proof_bundle,
+        out_dir=proof_out,
+        repo_dir=REPO_ROOT,
+        work_dir=work_dir,
+        hf_home=hf_home,
+        arms="thinking,nothink-greedy,nothink-card,nothink-matched",
+        repeats=2,
+        canary_calls=4,
+        wall_seconds=3900,
+        stub=True,
     )
+    assert rc_p2 == 0, out_p2
 
     counted_out = tmp_path / "runs" / "counted-frozen-01"
     rc_frozen, out_frozen = runpod_pod_windows.run_pod_window(
@@ -939,6 +937,8 @@ def test_validation_branches_nonstub_subprocess_and_cli_errors(tmp_path: Path, m
             self.stderr = "err"
 
     def _fake_subproc_vm_fail(cmd: list[str], *, env: dict[str, str], **_kw: Any) -> _FakeSubprocRes:
+        assert env["RDLAB_HOST"] == "runpod"
+        assert env["RDLAB_CARD_TYPE"] == runpod_pod_windows.RUNPOD_CARD_TYPE
         if env.get("RDLAB_STEP") == "gate":
             Path(env["RDLAB_GATE_STATUS_FILE"]).write_text(json.dumps({"status": "ok"}), encoding="utf-8")
             return _FakeSubprocRes(0)
