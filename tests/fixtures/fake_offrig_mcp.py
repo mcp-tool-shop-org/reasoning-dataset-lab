@@ -660,6 +660,8 @@ def _handle_tool_call(
 
         if action == "start":
             job_name = str(arguments.get("name") or "")
+            if state.get("pod_dead"):
+                return True, {"error": f"pod_gone: simulated mid-window pod death before {job_name}"}
             start_delay = float(cfg.get("exec_start_delay_seconds") or 0.0)
             if start_delay > 0.0:
                 time.sleep(start_delay)
@@ -710,6 +712,16 @@ def _handle_tool_call(
 
         if action == "status":
             job_name = str(arguments.get("name") or "")
+            crash_exec_map = cfg.get("crash_on_exec_status_poll")
+            if isinstance(crash_exec_map, dict) and job_name in crash_exec_map:
+                rem_crash_map = state.setdefault("exec_status_crash_remaining", {})
+                if job_name not in rem_crash_map:
+                    rem_crash_map[job_name] = int(crash_exec_map[job_name])
+                rem_c = int(rem_crash_map[job_name] or 0)
+                if rem_c > 0:
+                    rem_crash_map[job_name] = rem_c - 1
+                    _save_json(state_path, state)
+                    os._exit(1)
             poll_key = f"status_polls_{job_name}"
             poll_n = int(state.get(poll_key) or 0) + 1
             state[poll_key] = poll_n
@@ -744,6 +756,45 @@ def _handle_tool_call(
             rec = jobs.get(job_name) or {"state": "exited", "code": 2, "log_tail": "unknown job"}
             if cfg.get("real_detached_subprocess") and rec.get("rc_file"):
                 rec = _poll_detached_local_job(rec)
+                if (
+                    rec.get("state") == "exited"
+                    and str(cfg.get("simulate_mid_window_death") or "") == job_name
+                    and not state.get(f"mid_death_done_{job_name}")
+                ):
+                    state[f"mid_death_done_{job_name}"] = True
+                    state["pod_dead"] = True
+                    pod_out = _map_pod_path(f"/workspace/job/runs/{job_name}", pod_vm_root, local_vm_root)
+                    if not pod_out.is_dir():
+                        pod_out = _map_pod_path(f"/workspace/runs/{job_name}", pod_vm_root, local_vm_root)
+                    if pod_out.is_dir():
+                        shutil.rmtree(pod_out / "arms" / "nothink-card", ignore_errors=True)
+                        shutil.rmtree(pod_out / "arms" / "nothink-matched", ignore_errors=True)
+                        shutil.rmtree(pod_out / "arms" / "nothink-greedy" / "judge_done", ignore_errors=True)
+                        greedy_rows_dir = pod_out / "arms" / "nothink-greedy" / "rows"
+                        for can_p in greedy_rows_dir.glob("*.canary.jsonl"):
+                            can_p.unlink(missing_ok=True)
+                        for row_p in greedy_rows_dir.glob("*.jsonl"):
+                            if row_p.name.endswith(".canary.jsonl"):
+                                continue
+                            kept = [ln for ln in row_p.read_text(encoding="utf-8").splitlines() if ln.strip()][:3]
+                            row_p.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
+                        for drop_name in (
+                            "outcome.json",
+                            "window_summary.json",
+                            "outputs-closed.json",
+                            "status.json",
+                            "vm_receipt.json",
+                            "result.tar.gz",
+                            "boot_gatekeeper.json",
+                            "time_one_summary.json",
+                            "receipt.json",
+                        ):
+                            (pod_out / drop_name).unlink(missing_ok=True)
+                    rec = {
+                        "state": "exited",
+                        "code": 137,
+                        "log_tail": f"{job_name}: simulated mid-window pod death (SIGKILL)\n",
+                    }
                 jobs[job_name] = rec
                 _save_json(state_path, state)
             if (
@@ -862,14 +913,15 @@ def _handle_tool_call(
     return True, {"error": f"unknown tool {tool_name!r}"}
 
 
-def _handle_budget_cli(argv: list[str]) -> int:
+def _handle_budget_cli(argv: list[str], *, project_override: str = "") -> int:
     b_parser = argparse.ArgumentParser(description="Fake offrig CLI budget output")
     b_sub = b_parser.add_subparsers(dest="cmd", required=True)
     p_b = b_sub.add_parser("budget")
     p_b.add_argument("--show", action="store_true")
     p_b.add_argument("--json", action="store_true")
-    p_b.add_argument("--project", default=".")
+    p_b.add_argument("--project", default="")
     b_args, _ = b_parser.parse_known_args(argv)
+    eff_project = str(b_args.project or project_override or "").strip()
     cfg_raw = os.environ.get("RDLAB_FAKE_OFFRIG_CONFIG")
     state_raw = os.environ.get("RDLAB_FAKE_OFFRIG_STATE")
     cfg = _load_json(Path(cfg_raw), {}) if cfg_raw else {}
@@ -881,7 +933,7 @@ def _handle_budget_cli(argv: list[str]) -> int:
     remaining = round(max(0.0, cap - spent), 2)
     doc = {
         "version": 1,
-        "project": Path(b_args.project).name or "offrig-project",
+        "project": Path(eff_project).name if eff_project else "offrig-project",
         "providers": {
             "runpod": {
                 "cap": cap,
@@ -913,7 +965,7 @@ def main() -> int:
     parser.add_argument("--project", default="")
     args, unknown = parser.parse_known_args()
     if args.budget_cli:
-        return _handle_budget_cli(unknown)
+        return _handle_budget_cli(unknown, project_override=args.project)
     if args.version:
         print(os.environ.get("RDLAB_FAKE_OFFRIG_VERSION") or "offrig-mcp 1.4.0 (fake)")
         return 0

@@ -233,7 +233,7 @@
           "path": ".python-version"
         },
         {
-          "hash": "b8965b8e7d124e4da3672a96add61167fa59246ba27bb0f81c0da917d07065db",
+          "hash": "370879271d03825d7218d0ca46cbcac125173f7d8c02c02b3e2121faca89eda5",
           "path": "CHANGELOG.md"
         },
         {
@@ -337,7 +337,7 @@
           "sequences": []
         },
         {
-          "hash": "1c6e0727b049724bbce19130b9962a9e1bbd72ab2a605a0c0e515c276624d55b",
+          "hash": "846bac356c9b7d84e6e21b512ae73d430b434c0af44a568f3dd1b0b39a1046ab",
           "path": "scripts/colab/README.md"
         },
         {
@@ -2388,250 +2388,351 @@
           "exports": [
             "main",
             "run_counted_sequence",
+            "run_preflight_only",
             "run_smoke_sequence"
           ],
           "failurePaths": [
             {
               "in": "_extract_tar_gz",
               "kind": "raise",
-              "line": 158
+              "line": 177
             },
             {
               "in": "_extract_tar_gz",
               "kind": "raise",
-              "line": 163
+              "line": 182
             },
             {
               "in": "_prepare_host_env",
               "kind": "raise",
-              "line": 258
+              "line": 242
+            },
+            {
+              "in": "_prepare_host_env",
+              "kind": "raise",
+              "line": 251
+            },
+            {
+              "in": "_prepare_host_env",
+              "kind": "raise",
+              "line": 286
+            },
+            {
+              "in": "_enforce_live_locked_overrides",
+              "kind": "raise",
+              "line": 328
             },
             {
               "in": "_check_plan_within_budget_and_cap",
               "kind": "raise",
-              "line": 309
+              "line": 368
             },
             {
               "in": "_check_plan_within_budget_and_cap",
               "kind": "except",
-              "line": 312
+              "line": 371
             },
             {
               "in": "_check_plan_within_budget_and_cap",
               "kind": "raise",
-              "line": 313
+              "line": 372
             },
             {
               "in": "_check_plan_within_budget_and_cap",
               "kind": "raise",
-              "line": 315
+              "line": 374
             },
             {
               "in": "_check_plan_within_budget_and_cap",
               "kind": "raise",
-              "line": 321
+              "line": 380
+            },
+            {
+              "in": "_close_mcp_client_quietly",
+              "kind": "except",
+              "line": 407
             },
             {
               "in": "_exec_run_ok",
               "kind": "raise",
-              "line": 348
+              "line": 441
             },
             {
               "in": "_run_step_with_poll_fallback",
               "kind": "except",
-              "line": 432
+              "line": 530
             },
             {
               "in": "_run_step_with_poll_fallback",
               "kind": "raise",
-              "line": 434
+              "line": 532
+            },
+            {
+              "in": "_run_step_with_poll_fallback",
+              "kind": "except",
+              "line": 559
             },
             {
               "in": "_shutdown_and_record_status",
               "kind": "except",
-              "line": 521
+              "line": 631
             },
             {
               "in": "_shutdown_and_record_status",
               "kind": "except",
-              "line": 528
-            },
-            {
-              "in": "_shutdown_and_record_status",
-              "kind": "except",
-              "line": 535
+              "line": 649
             },
             {
               "in": "install",
               "kind": "except",
-              "line": 557
+              "line": 677
             },
             {
               "in": "shield",
               "kind": "except",
-              "line": 564
+              "line": 684
             },
             {
               "in": "restore",
               "kind": "except",
-              "line": 571
+              "line": 691
             },
             {
               "in": "_verify_smoke_verified_receipt",
               "kind": "raise",
-              "line": 583
+              "line": 704
             },
             {
               "in": "_verify_smoke_verified_receipt",
               "kind": "raise",
-              "line": 590
+              "line": 711
             },
             {
               "in": "_verify_smoke_verified_receipt",
               "kind": "raise",
-              "line": 592
+              "line": 713
             },
             {
               "in": "_verify_smoke_verified_receipt",
               "kind": "raise",
-              "line": 596
+              "line": 715
             },
             {
               "in": "_verify_smoke_verified_receipt",
               "kind": "raise",
-              "line": 602
+              "line": 722
             },
             {
               "in": "_verify_smoke_verified_receipt",
               "kind": "raise",
-              "line": 608
+              "line": 728
             },
             {
               "in": "_verify_smoke_verified_receipt",
               "kind": "raise",
-              "line": 614
+              "line": 734
             },
             {
               "in": "_verify_smoke_verified_receipt",
               "kind": "raise",
-              "line": 620
+              "line": 740
             },
             {
               "in": "_verify_smoke_verified_receipt",
               "kind": "raise",
-              "line": 627
+              "line": 746
+            },
+            {
+              "in": "_verify_smoke_verified_receipt",
+              "kind": "raise",
+              "line": 753
+            },
+            {
+              "in": "run_preflight_only",
+              "kind": "raise",
+              "line": 773
+            },
+            {
+              "in": "run_preflight_only",
+              "kind": "raise",
+              "line": 778
+            },
+            {
+              "in": "run_preflight_only",
+              "kind": "raise",
+              "line": 807
+            },
+            {
+              "in": "run_preflight_only",
+              "kind": "raise",
+              "line": 812
             },
             {
               "in": "run_smoke_sequence",
               "kind": "raise",
-              "line": 656
+              "line": 870
             },
             {
               "in": "run_smoke_sequence",
               "kind": "raise",
-              "line": 782
+              "line": 994
             },
             {
               "in": "run_smoke_sequence",
               "kind": "except",
-              "line": 783
+              "line": 995
             },
             {
               "in": "run_smoke_sequence",
               "kind": "except",
-              "line": 798
+              "line": 1011
             },
             {
               "in": "run_smoke_sequence",
               "kind": "except",
-              "line": 803
+              "line": 1015
             },
             {
               "in": "run_smoke_sequence",
               "kind": "raise",
-              "line": 808
+              "line": 1020
             },
             {
               "in": "run_smoke_sequence",
               "kind": "raise",
-              "line": 810
+              "line": 1022
+            },
+            {
+              "in": "run_smoke_sequence",
+              "kind": "raise",
+              "line": 1036
             },
             {
               "in": "_stage_counted_bundles",
               "kind": "raise",
-              "line": 904
+              "line": 1117
+            },
+            {
+              "in": "_validate_and_select_replay_specs",
+              "kind": "raise",
+              "line": 1217
+            },
+            {
+              "in": "_validate_and_select_replay_specs",
+              "kind": "raise",
+              "line": 1223
+            },
+            {
+              "in": "_validate_and_select_replay_specs",
+              "kind": "raise",
+              "line": 1230
+            },
+            {
+              "in": "_validate_and_select_replay_specs",
+              "kind": "raise",
+              "line": 1236
+            },
+            {
+              "in": "_validate_and_select_replay_specs",
+              "kind": "raise",
+              "line": 1243
+            },
+            {
+              "in": "_validate_and_select_replay_specs",
+              "kind": "raise",
+              "line": 1250
+            },
+            {
+              "in": "_validate_and_select_replay_specs",
+              "kind": "raise",
+              "line": 1257
+            },
+            {
+              "in": "_validate_and_select_replay_specs",
+              "kind": "raise",
+              "line": 1267
             },
             {
               "in": "run_counted_sequence",
               "kind": "raise",
-              "line": 1009
+              "line": 1301
             },
             {
               "in": "run_counted_sequence",
               "kind": "raise",
-              "line": 1014
+              "line": 1306
             },
             {
               "in": "run_counted_sequence",
               "kind": "raise",
-              "line": 1043
+              "line": 1335
             },
             {
               "in": "run_counted_sequence",
               "kind": "raise",
-              "line": 1048
+              "line": 1340
             },
             {
               "in": "run_counted_sequence",
               "kind": "except",
-              "line": 1214
+              "line": 1546
             },
             {
               "in": "run_counted_sequence",
               "kind": "except",
-              "line": 1227
+              "line": 1552
             },
             {
               "in": "run_counted_sequence",
               "kind": "except",
-              "line": 1281
+              "line": 1567
             },
             {
               "in": "run_counted_sequence",
               "kind": "except",
-              "line": 1295
+              "line": 1571
             },
             {
               "in": "run_counted_sequence",
               "kind": "except",
-              "line": 1314
+              "line": 1628
             },
             {
               "in": "run_counted_sequence",
               "kind": "except",
-              "line": 1319
+              "line": 1646
+            },
+            {
+              "in": "run_counted_sequence",
+              "kind": "except",
+              "line": 1666
+            },
+            {
+              "in": "run_counted_sequence",
+              "kind": "except",
+              "line": 1670
             },
             {
               "in": "run_counted_sequence",
               "kind": "raise",
-              "line": 1344
+              "line": 1696
             },
             {
               "in": "run_counted_sequence",
               "kind": "raise",
-              "line": 1346
+              "line": 1698
             },
             {
               "in": "main",
               "kind": "except",
-              "line": 1410
+              "line": 1782
             },
             {
               "kind": "raise",
-              "line": 1416
+              "line": 1788
             }
           ],
-          "hash": "27c62fa53a743ae9bf70bb96a2bffbb2d820e4a946a9e2c5e72e685819adc32e",
+          "hash": "ec5b8773355b177f9337e6d757e5eedc5c5469a09ed924136b2908b6df339e0e",
           "importsFiles": [
             "scripts/colab/offrig_host.py",
             "scripts/colab/runpod_pod_windows.py"
@@ -6647,11 +6748,11 @@
       "origin": "authored",
       "outsidePlaces": [
         {
-          "reads": 142,
+          "reads": 141,
           "where": [
             "caller"
           ],
-          "writes": 100
+          "writes": 101
         },
         {
           "reads": 1,
@@ -6686,8 +6787,8 @@
           "writes": 0
         }
       ],
-      "outsideReads": 155,
-      "outsideWrites": 100,
+      "outsideReads": 154,
+      "outsideWrites": 101,
       "role": "code",
       "testRunners": [
         "pytest"
@@ -24550,7 +24651,7 @@
           "exports": [
             "main"
           ],
-          "hash": "5e6569a491c6152e991ee7b88821cb36c99079b834ff373a894d8ceb15691ffb",
+          "hash": "5489bbbcd2de94b20461e5e46e31373a5bc8aef19c020d88a1f968cc3fa34c70",
           "importsFiles": [
             "scripts/colab/vm_judges.py"
           ],
@@ -27143,10 +27244,17 @@
             "test_journal_row_tamper_matrix_and_filter_jsonl",
             "test_offrig_140_version_self_stop_and_detached_sequence_stub",
             "test_prepare_input_bundle_synthetic_and_frozen_part",
+            "test_targeted_fix_1_offrig_project_and_dot_offrig_tar_exclude",
+            "test_targeted_fix_2_dead_mcp_client_mid_window_still_tears_down_with_fresh_retry",
+            "test_targeted_fix_3_live_proof_bundle_always_synthetic",
+            "test_targeted_fix_4_live_mode_refuses_stub_env_and_stub_smoke_receipt",
+            "test_targeted_fix_5_live_mode_locks_non_wall_overrides",
+            "test_targeted_fix_6_poll_fallback_timeout_stops_pod_job_before_next_window",
+            "test_targeted_fix_7_replay_passthrough_mid_cal_death_reruns_tampered_row",
             "test_unverifiable_journal_starts_fresh_on_resume",
             "test_validation_branches_nonstub_subprocess_and_cli_errors"
           ],
-          "hash": "97252cd17b3a0bc431db047698ab84178381bac3f2223b8715c9528d80750cc8",
+          "hash": "691fd3dc9e7f943b73f7191b4ea251e2a63113e42b08385f35075b601d3c9326",
           "importOrder": [
             "scripts/colab/offrig_host.py",
             "scripts/colab/runpod_pod_windows.py",
@@ -28064,7 +28172,7 @@
   ],
   "engine": "1.26.0",
   "generatedFrom": {
-    "commit": "593476c00ee89ebd4d130d6e43900b41076f50d0",
+    "commit": "11c00fdae37895c9e5951a62685f2a8c42df6d03",
     "tracked": 230
   },
   "landings": [

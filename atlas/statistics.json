@@ -99,7 +99,7 @@
       "confidence": "full",
       "highWater": null,
       "name": "scripts",
-      "qualifyingSourceCommits": 78,
+      "qualifyingSourceCommits": 79,
       "rebaseline": null
     },
     {
@@ -149,12 +149,12 @@
         "importsAndCoChanges": [],
         "importsOnly": []
       },
-      "cohesion": 0.094936,
+      "cohesion": 0.084269,
       "cohesionDropped": false,
       "confidence": "full",
       "highWater": null,
       "name": "tests",
-      "qualifyingSourceCommits": 140,
+      "qualifyingSourceCommits": 141,
       "rebaseline": null
     }
   ],
@@ -202,8 +202,8 @@
         "path": ".python-version"
       },
       {
-        "commits": 86,
-        "lines": 754,
+        "commits": 87,
+        "lines": 756,
         "path": "CHANGELOG.md"
       },
       {
@@ -267,8 +267,8 @@
         "path": "SHIP_GATE.md"
       },
       {
-        "commits": 69,
-        "lines": 1195,
+        "commits": 70,
+        "lines": 1207,
         "path": "atlas/README.md"
       },
       {
@@ -277,18 +277,18 @@
         "path": "atlas/boundaries.yaml"
       },
       {
-        "commits": 69,
-        "lines": 3776,
+        "commits": 70,
+        "lines": 3817,
         "path": "atlas/page.json"
       },
       {
-        "commits": 69,
-        "lines": 11112,
+        "commits": 70,
+        "lines": 11162,
         "path": "atlas/statistics.json"
       },
       {
-        "commits": 69,
-        "lines": 162898,
+        "commits": 70,
+        "lines": 163491,
         "path": "atlas/structure.json"
       },
       {
@@ -447,8 +447,8 @@
         "path": "scripts/check-audit-allowlist.mjs"
       },
       {
-        "commits": 38,
-        "lines": 390,
+        "commits": 39,
+        "lines": 407,
         "path": "scripts/colab/README.md"
       },
       {
@@ -512,8 +512,8 @@
         "path": "scripts/colab/merge_shards.py"
       },
       {
-        "commits": 3,
-        "lines": 3127,
+        "commits": 4,
+        "lines": 3263,
         "path": "scripts/colab/offrig_host.py"
       },
       {
@@ -583,7 +583,12 @@
       },
       {
         "commits": 1,
-        "lines": 530,
+        "lines": 1433,
+        "path": "scripts/colab/runpod_pod_sequence.py"
+      },
+      {
+        "commits": 2,
+        "lines": 1060,
         "path": "scripts/colab/runpod_pod_sequence.sh"
       },
       {
@@ -927,8 +932,8 @@
         "path": "tests/fixtures/fake_colab.py"
       },
       {
-        "commits": 3,
-        "lines": 869,
+        "commits": 4,
+        "lines": 1080,
         "path": "tests/fixtures/fake_offrig_mcp.py"
       },
       {
@@ -1302,8 +1307,8 @@
         "path": "tests/test_runpod_judge_host.py"
       },
       {
-        "commits": 4,
-        "lines": 1419,
+        "commits": 5,
+        "lines": 1745,
         "path": "tests/test_runpod_pod_windows.py"
       },
       {
@@ -1342,9 +1347,9 @@
     "level": "low",
     "reason": "fewer than 25 source files reach 10 revisions in the window"
   },
-  "generatedAt": "2026-11-27T13:18:11.398Z",
+  "generatedAt": "2026-11-27T14:40:21.718Z",
   "generatedFrom": {
-    "commit": "593476c00ee89ebd4d130d6e43900b41076f50d0"
+    "commit": "11c00fdae37895c9e5951a62685f2a8c42df6d03"
   },
   "pairs": [
     {
@@ -1602,43 +1607,43 @@
     {
       "a": "atlas/README.md",
       "b": "atlas/page.json",
-      "either": 65,
-      "shared": 65,
+      "either": 66,
+      "shared": 66,
       "strength": 1
     },
     {
       "a": "atlas/README.md",
       "b": "atlas/statistics.json",
-      "either": 65,
-      "shared": 65,
+      "either": 66,
+      "shared": 66,
       "strength": 1
     },
     {
       "a": "atlas/README.md",
       "b": "atlas/structure.json",
-      "either": 65,
-      "shared": 65,
+      "either": 66,
+      "shared": 66,
       "strength": 1
     },
     {
       "a": "atlas/page.json",
       "b": "atlas/statistics.json",
-      "either": 65,
-      "shared": 65,
+      "either": 66,
+      "shared": 66,
       "strength": 1
     },
     {
       "a": "atlas/page.json",
       "b": "atlas/structure.json",
-      "either": 65,
-      "shared": 65,
+      "either": 66,
+      "shared": 66,
       "strength": 1
     },
     {
       "a": "atlas/statistics.json",
       "b": "atlas/structure.json",
-      "either": 65,
-      "shared": 65,
+      "either": 66,
+      "shared": 66,
       "strength": 1
     },
     {
@@ -1696,6 +1701,13 @@
       "either": 70,
       "shared": 43,
       "strength": 0.614286
+    },
+    {
+      "a": "scripts/colab/runpod_pod_windows.py",
+      "b": "tests/test_runpod_pod_windows.py",
+      "either": 6,
+      "shared": 4,
+      "strength": 0.666667
     },
     {
       "a": "scripts/colab/vm_judges.py",
@@ -1792,16 +1804,16 @@
     "floor": "fallen",
     "floorHeld": false,
     "floorTrigger": "revision-depth",
-    "headDate": "2026-11-27T06:37:14-05:00",
+    "headDate": "2026-11-27T08:48:58-05:00",
     "inScopeFiles": 235,
     "pinnedStart": null,
     "priorFloor": "fallen",
-    "qualifyingCommits": 159,
+    "qualifyingCommits": 160,
     "qualifyingMinimum": 30,
     "revisions": 5,
     "shared": 10,
     "sharedFloorUsed": 3,
-    "since": "2026-05-31T11:37:14.000Z",
+    "since": "2026-05-31T13:48:58.000Z",
     "sourceExtensions": [
       ".js",
       ".mjs",

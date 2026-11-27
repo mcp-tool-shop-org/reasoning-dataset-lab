@@ -1641,3 +1641,518 @@ def test_offrig_140_version_self_stop_and_detached_sequence_stub(tmp_path: Path)
     assert [w["window_id"] for w in pfail_sum["windows"]] == ["qwen36-counted-proof-g4-01"]
     assert pfail_sum["teardown"]["teardown_ok"] is True
 
+
+
+def _make_stub_smoke_verified(tmp_path: Path, *, stub_flag: bool = True) -> Path:
+    import datetime
+
+    import runpod_pod_sequence
+
+    today_utc = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+    sv_path = tmp_path / f"smoke_verified_{'stub' if stub_flag else 'live'}.json"
+    sv_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "rdlab_runpod_smoke_verified_v1",
+                "verified_at_utc": f"{today_utc}T00:01:00Z",
+                "verified_utc_date": today_utc,
+                "smoke_ok": True,
+                "stub": bool(stub_flag),
+                "profile": runpod_pod_sequence.DEFAULT_PROFILE,
+                "image_ref": runpod_pod_sequence.EXPECTED_IMAGE,
+                "expected_image_ref": runpod_pod_sequence.EXPECTED_IMAGE,
+                "elapsed_seconds": 131.0,
+                "self_stop": {"armed": True, "fire_at": 1795880120},
+                "teardown": {"teardown_ok": True, "offrig_pods_count": 0},
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    return sv_path
+
+
+def test_targeted_fix_1_offrig_project_and_dot_offrig_tar_exclude(tmp_path: Path) -> None:
+    import tarfile
+
+    import runpod_pod_sequence
+
+    assert ".offrig" in runpod_pod_sequence._RDLAB_TAR_EXCLUDES
+    fake_repo = tmp_path / "repo"
+    (fake_repo / "scripts").mkdir(parents=True)
+    (fake_repo / "scripts" / "ok.py").write_text("print(1)\n", encoding="utf-8")
+    (fake_repo / ".offrig").mkdir()
+    (fake_repo / ".offrig" / "offrig.db").write_text("secret-db", encoding="utf-8")
+    out_tar = tmp_path / "rdlab.tar.gz"
+    runpod_pod_sequence._pack_dir_tar_gz(fake_repo, out_tar, exclude_top_and_parts=runpod_pod_sequence._RDLAB_TAR_EXCLUDES)
+    with tarfile.open(out_tar, "r:gz") as tf:
+        names = tf.getnames()
+    assert "scripts/ok.py" in names
+    assert all(".offrig" not in n for n in names)
+
+    proj_dir = tmp_path / "custom_offrig_project"
+    stage_dir = tmp_path / "pre_stage"
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(REPO_ROOT / "scripts" / "colab" / "runpod_pod_sequence.py"),
+            "preflight",
+            "--repo-dir",
+            str(REPO_ROOT),
+            "--offrig-project",
+            str(proj_dir),
+            "--stage-dir",
+            str(stage_dir),
+            "--stub",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    pre_doc = json.loads(proc.stdout)
+    assert pre_doc["offrig_project"] == str(proj_dir.resolve())
+    assert pre_doc["preflight"]["budget"]["project"] == proj_dir.name
+    assert pre_doc["preflight"]["budget"]["effective_remaining_usd"] == 45.0
+    assert not (stage_dir / "_stub_offrig" / "offrig_calls.jsonl").exists()
+
+
+def test_targeted_fix_2_dead_mcp_client_mid_window_still_tears_down_with_fresh_retry(tmp_path: Path) -> None:
+    sv = _make_stub_smoke_verified(tmp_path, stub_flag=True)
+    synth_items = _write_synthetic_items(tmp_path / "synth_t2.jsonl", count=2)
+    stage_dir = tmp_path / "t2_stage"
+    runs_local = tmp_path / "t2_runs"
+    (stage_dir / "_stub_offrig").mkdir(parents=True, exist_ok=True)
+    fake_cfg = stage_dir / "_stub_offrig" / "fake_cfg.json"
+    fake_cfg.write_text(
+        json.dumps(
+            {
+                "vm_root_dir": str(stage_dir / "_stub_offrig" / "vm_root"),
+                "pod_vm_root": "/workspace",
+                "gpu": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+                "launch_include_pod_id": True,
+                "real_detached_subprocess": True,
+                "crash_on_exec_status_poll": {"qwen36-counted-proof-g4-01": 1},
+                "fail_shutdown_attempts": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    env = dict(os.environ)
+    env["RDLAB_FAKE_OFFRIG_CONFIG"] = str(fake_cfg)
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(REPO_ROOT / "scripts" / "colab" / "runpod_pod_sequence.py"),
+            "counted",
+            "--repo-dir",
+            str(REPO_ROOT),
+            "--offrig-project",
+            str(tmp_path / "proj_t2"),
+            "--stage-dir",
+            str(stage_dir),
+            "--runs-local",
+            str(runs_local),
+            "--smoke-verified",
+            str(sv),
+            "--proof-items-file",
+            str(synth_items),
+            "--poll-interval",
+            "0.1",
+            "--stub",
+            "--stub-limit-items",
+            "2",
+            "--stub-repeats",
+            "1",
+            "--stub-canary-calls",
+            "0",
+        ],
+        env=env,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stdout + "\n" + proc.stderr
+    assert "EXIT_STATUS_POLLS_EXHAUSTED=75" in proc.stdout
+    seq_sum = json.loads((runs_local / "sequence_summary.json").read_text(encoding="utf-8"))
+    assert seq_sum["windows"][0]["poll_recovered"] is True
+    assert seq_sum["teardown"]["teardown_ok"] is True
+    assert seq_sum["teardown"]["offrig_pods_count"] == 0
+    assert seq_sum["budget_after"]["effective_remaining_usd"] == 44.58
+    shut_doc = json.loads((runs_local / "offrig_shutdown.json").read_text(encoding="utf-8"))
+    assert shut_doc["attempts"] == 2
+    state_doc = json.loads((stage_dir / "_stub_offrig" / "offrig_state.json").read_text(encoding="utf-8"))
+    assert state_doc["shutdown_attempts"] == 2
+
+
+def test_targeted_fix_3_live_proof_bundle_always_synthetic(tmp_path: Path) -> None:
+    import argparse
+
+    import runpod_pod_sequence
+
+    proof_items = _write_synthetic_items(tmp_path / "proof.jsonl", count=2)
+    cal_part, cal_items = _make_frozen_part_and_projection(tmp_path / "cal_part_build", triads=2)
+    ns = argparse.Namespace(
+        stub=False,
+        proof_items_file=str(proof_items),
+        cal_items_file=str(cal_items),
+        cal_part_dir=str(cal_part),
+        hold_items_file=str(cal_items),
+        hold_part_dir=str(cal_part),
+    )
+    stage_dir = tmp_path / "stage_fix3"
+    bundles_tar = runpod_pod_sequence._stage_counted_bundles(ns, stage_dir=stage_dir)
+    assert bundles_tar.is_file()
+    proof_manifest = json.loads((stage_dir / "bundles" / "proof" / "bundle_manifest.json").read_text(encoding="utf-8"))
+    cal_manifest = json.loads((stage_dir / "bundles" / "cal" / "bundle_manifest.json").read_text(encoding="utf-8"))
+    assert proof_manifest["synthetic_items"] is True
+    assert cal_manifest["synthetic_items"] is False
+
+
+def test_targeted_fix_4_live_mode_refuses_stub_env_and_stub_smoke_receipt(tmp_path: Path) -> None:
+    import runpod_pod_sequence
+
+    with pytest.raises(runpod_pod_sequence.SequenceError, match="LIVE_STUB_ENV_FORBIDDEN"):
+        runpod_pod_sequence._prepare_host_env(
+            repo_dir=REPO_ROOT,
+            stage_dir=tmp_path,
+            profile=runpod_pod_sequence.DEFAULT_PROFILE,
+            expected_image=runpod_pod_sequence.EXPECTED_IMAGE,
+            stub=False,
+            base_environ={"RDLAB_FAKE_OFFRIG_CONFIG": "/tmp/x.json"},
+        )
+    with pytest.raises(runpod_pod_sequence.SequenceError, match="LIVE_STUB_ENV_FORBIDDEN"):
+        runpod_pod_sequence._prepare_host_env(
+            repo_dir=REPO_ROOT,
+            stage_dir=tmp_path,
+            profile=runpod_pod_sequence.DEFAULT_PROFILE,
+            expected_image=runpod_pod_sequence.EXPECTED_IMAGE,
+            stub=False,
+            base_environ={"RDLAB_OFFRIG_MCP_BIN": "/tmp/mcp"},
+        )
+
+    stub_sv = _make_stub_smoke_verified(tmp_path, stub_flag=True)
+    with pytest.raises(runpod_pod_sequence.SequenceError, match="SMOKE_VERIFICATION_STUB_FORBIDDEN"):
+        runpod_pod_sequence._verify_smoke_verified_receipt(
+            stub_sv,
+            profile=runpod_pod_sequence.DEFAULT_PROFILE,
+            expected_image=runpod_pod_sequence.EXPECTED_IMAGE,
+            stub=False,
+            host_env={},
+        )
+    live_sv = _make_stub_smoke_verified(tmp_path, stub_flag=False)
+    ok_doc = runpod_pod_sequence._verify_smoke_verified_receipt(
+        live_sv,
+        profile=runpod_pod_sequence.DEFAULT_PROFILE,
+        expected_image=runpod_pod_sequence.EXPECTED_IMAGE,
+        stub=False,
+        host_env={},
+    )
+    assert ok_doc["stub"] is False
+
+
+def test_targeted_fix_5_live_mode_locks_non_wall_overrides() -> None:
+    import runpod_pod_sequence
+
+    parser = runpod_pod_sequence._build_parser()
+    base_args = [
+        "counted",
+        "--repo-dir",
+        str(REPO_ROOT),
+        "--stage-dir",
+        "/tmp/st",
+        "--runs-local",
+        "/tmp/rl",
+    ]
+    runpod_pod_sequence._enforce_live_locked_overrides(
+        parser.parse_args([*base_args, "--hold-wall-seconds", "19000", "--cal-wall-seconds", "21000"])
+    )
+    for bad_flag, bad_val in (
+        ("--max-new-tokens", "4096"),
+        ("--launch-wait-minutes", "20"),
+        ("--image-pull-setup-seconds", "900"),
+        ("--fetch-allowance-seconds", "600"),
+        ("--max-price-hr", "2.69"),
+        ("--max-worst-case-usd", "44.0"),
+    ):
+        ns = parser.parse_args([*base_args, bad_flag, bad_val])
+        with pytest.raises(runpod_pod_sequence.SequenceError, match="LIVE_OVERRIDE_FORBIDDEN"):
+            runpod_pod_sequence._enforce_live_locked_overrides(ns)
+
+
+def test_targeted_fix_6_poll_fallback_timeout_stops_pod_job_before_next_window(tmp_path: Path) -> None:
+    sv = _make_stub_smoke_verified(tmp_path, stub_flag=True)
+    synth_items = _write_synthetic_items(tmp_path / "synth_t6.jsonl", count=2)
+    stage_dir = tmp_path / "t6_stage"
+    runs_local = tmp_path / "t6_runs"
+    (stage_dir / "_stub_offrig").mkdir(parents=True, exist_ok=True)
+    clock_file = tmp_path / "fake_clock.txt"
+    clock_file.write_text("1795800000\n", encoding="utf-8")
+    fake_cfg = stage_dir / "_stub_offrig" / "fake_cfg.json"
+    fake_cfg.write_text(
+        json.dumps(
+            {
+                "vm_root_dir": str(stage_dir / "_stub_offrig" / "vm_root"),
+                "pod_vm_root": "/workspace",
+                "gpu": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+                "launch_include_pod_id": True,
+                "real_detached_subprocess": True,
+                "hang_steps": ["qwen36-counted-cal-01"],
+                "fail_exec_status_polls": {"qwen36-counted-cal-01": 5},
+                "advance_clock_on_step": {"qwen36-counted-cal-01": 60000},
+            }
+        ),
+        encoding="utf-8",
+    )
+    env = dict(os.environ)
+    env["RDLAB_FAKE_OFFRIG_CONFIG"] = str(fake_cfg)
+    env["RDLAB_FAKE_CLOCK_FILE"] = str(clock_file)
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(REPO_ROOT / "scripts" / "colab" / "runpod_pod_sequence.py"),
+            "counted",
+            "--repo-dir",
+            str(REPO_ROOT),
+            "--offrig-project",
+            str(tmp_path / "proj_t6"),
+            "--stage-dir",
+            str(stage_dir),
+            "--runs-local",
+            str(runs_local),
+            "--smoke-verified",
+            str(sv),
+            "--proof-items-file",
+            str(synth_items),
+            "--poll-interval",
+            "0.05",
+            "--stub",
+            "--stub-limit-items",
+            "2",
+            "--stub-repeats",
+            "1",
+            "--stub-canary-calls",
+            "0",
+        ],
+        env=env,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+    assert proc.returncode == 2, proc.stdout + "\n" + proc.stderr
+    calls = [
+        json.loads(ln)
+        for ln in (stage_dir / "_stub_offrig" / "offrig_calls.jsonl").read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    cal_stop_idx = next(
+        i
+        for i, c in enumerate(calls)
+        if c["tool"] == "offrig_exec"
+        and c["arguments"].get("action") == "stop"
+        and c["arguments"].get("name") == "qwen36-counted-cal-01"
+    )
+    nf_start_idx = next(
+        i
+        for i, c in enumerate(calls)
+        if c["tool"] == "offrig_exec"
+        and c["arguments"].get("action") == "start"
+        and c["arguments"].get("name") == "qwen36-counted-cal-nf-01"
+    )
+    assert cal_stop_idx < nf_start_idx
+    seq_sum = json.loads((runs_local / "sequence_summary.json").read_text(encoding="utf-8"))
+    by_wid = {w["window_id"]: w for w in seq_sum["windows"]}
+    assert by_wid["qwen36-counted-cal-01"]["exec_rc"] == 124
+    assert by_wid["qwen36-counted-cal-nf-01"]["ok"] is True
+    assert seq_sum["teardown"]["teardown_ok"] is True
+
+
+def test_targeted_fix_7_replay_passthrough_mid_cal_death_reruns_tampered_row(tmp_path: Path) -> None:
+    sv = _make_stub_smoke_verified(tmp_path, stub_flag=True)
+    synth_items = _write_synthetic_items(tmp_path / "synth_t7.jsonl", count=4)
+    seq_py = str(REPO_ROOT / "scripts" / "colab" / "runpod_pod_sequence.py")
+    proj_dir = tmp_path / "proj_t7"
+
+    # Pod 1 dies mid-CAL after sealing proof and writing partial cal-01 rows
+    p1_stage = tmp_path / "p1_stage"
+    p1_runs = tmp_path / "p1_runs"
+    (p1_stage / "_stub_offrig").mkdir(parents=True, exist_ok=True)
+    p1_cfg = p1_stage / "_stub_offrig" / "fake_cfg.json"
+    p1_cfg.write_text(
+        json.dumps(
+            {
+                "vm_root_dir": str(p1_stage / "_stub_offrig" / "vm_root"),
+                "pod_vm_root": "/workspace",
+                "gpu": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+                "launch_include_pod_id": True,
+                "real_detached_subprocess": True,
+                "simulate_mid_window_death": "qwen36-counted-cal-01",
+            }
+        ),
+        encoding="utf-8",
+    )
+    p1_env = dict(os.environ)
+    p1_env["RDLAB_FAKE_OFFRIG_CONFIG"] = str(p1_cfg)
+    p1_proc = subprocess.run(
+        [
+            sys.executable,
+            seq_py,
+            "counted",
+            "--repo-dir",
+            str(REPO_ROOT),
+            "--offrig-project",
+            str(proj_dir),
+            "--stage-dir",
+            str(p1_stage),
+            "--runs-local",
+            str(p1_runs),
+            "--smoke-verified",
+            str(sv),
+            "--proof-items-file",
+            str(synth_items),
+            "--poll-interval",
+            "0.1",
+            "--stub",
+            "--stub-limit-items",
+            "4",
+            "--stub-repeats",
+            "1",
+            "--stub-canary-calls",
+            "2",
+        ],
+        env=p1_env,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+    assert p1_proc.returncode == 2, p1_proc.stdout + "\n" + p1_proc.stderr
+    p1_sum = json.loads((p1_runs / "sequence_summary.json").read_text(encoding="utf-8"))
+    assert p1_sum["teardown"]["teardown_ok"] is True
+
+    prior_proof_dir = p1_runs / "qwen36-counted-proof-g4-01"
+    prior_cal_dir = p1_runs / "qwen36-counted-cal-01"
+    rows_fname = vm_judges.rows_filename_for_pass(bakeoff_judge.QWEN36_JUDGE_ID, runpod_pod_windows.QWEN36_PASS_MODE)
+    t_rows_file = prior_cal_dir / "arms" / "thinking" / "rows" / rows_fname
+    g_rows_file = prior_cal_dir / "arms" / "nothink-greedy" / "rows" / rows_fname
+    t_lines = [ln for ln in t_rows_file.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    g_lines = [ln for ln in g_rows_file.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    assert len(t_lines) >= 2 and len(g_lines) == 3
+
+    # Tamper prompt_sha256 on thinking row 0 (must be dropped and re-run)
+    row0 = json.loads(t_lines[0])
+    row0["prompt_sha256"] = "0" * 64
+    row0["row_sha256"] = runpod_pod_windows.vm_judges.compute_row_body_sha256(row0) if hasattr(runpod_pod_windows.vm_judges, "compute_row_body_sha256") else bakeoff_judge.compute_row_body_sha256(row0)
+    t_lines[0] = json.dumps(row0, sort_keys=True)
+    t_rows_file.write_text("\n".join(t_lines) + "\n", encoding="utf-8")
+
+    # Pod 2 resumes from qwen36-counted-cal-01 and completes cal-01, cal-nf-01, hold-01
+    p2_stage = tmp_path / "p2_stage"
+    p2_runs = tmp_path / "p2_runs"
+    p2_proc = subprocess.run(
+        [
+            sys.executable,
+            seq_py,
+            "counted",
+            "--repo-dir",
+            str(REPO_ROOT),
+            "--offrig-project",
+            str(proj_dir),
+            "--stage-dir",
+            str(p2_stage),
+            "--runs-local",
+            str(p2_runs),
+            "--smoke-verified",
+            str(sv),
+            "--proof-items-file",
+            str(synth_items),
+            "--prior-proof-dir",
+            str(prior_proof_dir),
+            "--prior-partial-dir",
+            str(prior_cal_dir),
+            "--resume-window",
+            "qwen36-counted-cal-01",
+            "--resume-trigger",
+            "pod_gone",
+            "--poll-interval",
+            "0.1",
+            "--stub",
+            "--stub-limit-items",
+            "4",
+            "--stub-repeats",
+            "1",
+            "--stub-canary-calls",
+            "2",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+    assert p2_proc.returncode == 0, p2_proc.stdout + "\n" + p2_proc.stderr
+    p2_sum = json.loads((p2_runs / "sequence_summary.json").read_text(encoding="utf-8"))
+    assert [w["window_id"] for w in p2_sum["windows"]] == [
+        "qwen36-counted-cal-01",
+        "qwen36-counted-cal-nf-01",
+        "qwen36-counted-hold-01",
+    ]
+    assert p2_sum["windows"][0]["resumed"] is True
+    assert p2_sum["windows"][0]["resume_trigger"] == "pod_gone"
+    assert all(w["ok"] and w["seal_ok"] for w in p2_sum["windows"])
+    assert p2_sum["teardown"]["teardown_ok"] is True
+
+    cal_outcome = json.loads((p2_runs / "qwen36-counted-cal-01" / "outcome.json").read_text(encoding="utf-8"))
+    assert cal_outcome["status"] == "ok" and cal_outcome["seal_ok"] is True
+    assert cal_outcome["resume_count"] == 1
+    assert cal_outcome["trigger"] == "pod_gone"
+    assert cal_outcome["rows_dropped_invalid"] == 1
+    assert cal_outcome["rows_reused"] == (len(t_lines) - 1) + 3
+    assert cal_outcome["rows_run"] > 0
+
+    # A second resume on the already-resumed out-dir refuses at $0 before offrig_plan
+    p3_stage = tmp_path / "p3_stage"
+    p3_runs = tmp_path / "p3_runs"
+    p3_proc = subprocess.run(
+        [
+            sys.executable,
+            seq_py,
+            "counted",
+            "--repo-dir",
+            str(REPO_ROOT),
+            "--offrig-project",
+            str(proj_dir),
+            "--stage-dir",
+            str(p3_stage),
+            "--runs-local",
+            str(p3_runs),
+            "--smoke-verified",
+            str(sv),
+            "--proof-items-file",
+            str(synth_items),
+            "--prior-proof-dir",
+            str(prior_proof_dir),
+            "--prior-partial-dir",
+            str(p2_runs / "qwen36-counted-cal-01"),
+            "--resume-window",
+            "qwen36-counted-cal-01",
+            "--resume-trigger",
+            "pod_gone",
+            "--stub",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert p3_proc.returncode == 2
+    assert "RESUME_LIMIT_EXCEEDED" in p3_proc.stderr
+    assert not (p3_stage / "_stub_offrig" / "offrig_calls.jsonl").exists()
