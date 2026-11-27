@@ -33,58 +33,37 @@
   ],
   "changes": {
     "fileCounts": {
-      "added": 3,
-      "changed": 19,
+      "added": 0,
+      "changed": 2,
       "moved": 0,
-      "parts": 5,
+      "parts": 2,
       "removed": 0
     },
     "items": [
       {
         "kind": "landing",
-        "sentence": "scripts/colab/boot_gatekeeper_goldens.json is now written by scripts/colab/promote_goldens.py.",
+        "sentence": "tests/fixtures/fake_offrig_mcp.py is now read by tests/test_runpod_judge_host.py.",
         "subjects": [
-          "scripts/colab/boot_gatekeeper_goldens.json",
-          "scripts/colab/promote_goldens.py"
+          "tests/fixtures/fake_offrig_mcp.py",
+          "tests/test_runpod_judge_host.py"
         ]
-      },
-      {
-        "kind": "landing",
-        "sentence": ".gitignore is now also read by tests/test_colab_judge_launcher.py.",
-        "subjects": [
-          ".gitignore",
-          "tests/test_colab_judge_launcher.py"
-        ]
-      },
-      {
-        "kind": "landing",
-        "sentence": "scripts/colab/boot_gatekeeper_goldens.json is now also read by scripts/colab/vm_judges.py.",
-        "subjects": [
-          "scripts/colab/boot_gatekeeper_goldens.json",
-          "scripts/colab/vm_judges.py"
-        ]
-      },
-      {
-        "kind": "landing",
-        "sentence": "And 3 more new writers and readers of places.",
-        "subjects": []
       },
       {
         "kind": "origin",
-        "sentence": "scripts was authored and is now mixed.",
+        "sentence": "scripts was mixed and is now authored.",
         "subjects": [
           "scripts"
         ]
       },
       {
         "kind": "counts",
-        "sentence": "3 files added and 19 changed content, across 5 parts.",
+        "sentence": "2 files changed content, across 2 parts.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "d98f5eeefd8a9773545d0b99a64409320a50c451",
-      "generatedAt": "2026-11-26T16:31:10.017Z"
+      "commit": "b859794244547eb25614c565413d82ee82568147",
+      "generatedAt": "2026-11-27T11:01:12.207Z"
     },
     "unchanged": false
   },
@@ -137,7 +116,7 @@
     {
       "a": "scripts/colab/vm_judges.py",
       "b": "tests/test_colab_judge_launcher.py",
-      "either": 75,
+      "either": 76,
       "partLabels": [
         "scripts",
         "tests"
@@ -171,9 +150,9 @@
     "Window: 180 days; a pair counts from 3 shared commits, since 16 source files reach 10 revisions; the floor rises to 10 when 25 do."
   ],
   "changesTogetherWithTests": 1,
-  "commit": "b859794244547eb25614c565413d82ee82568147",
+  "commit": "ac9e6b79224f6029ae8badf8d7bec49a2ac9a564",
   "defaultBranch": "main",
-  "derived": "9 parts, mostly Python (112 files). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. People run rdlab.",
+  "derived": "9 parts, mostly Python (112 files), shell (5), CSS (2), JavaScript (2), TypeScript (2) and Astro (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.",
   "doors": [
     {
       "checks": [],
@@ -190,7 +169,7 @@
         {
           "boundary": "scripts",
           "depth": 0,
-          "files": 2
+          "files": 10
         },
         {
           "boundary": "tests",
@@ -200,7 +179,7 @@
         {
           "boundary": "src",
           "depth": 1,
-          "files": 28
+          "files": 30
         }
       ],
       "runs": [
@@ -209,13 +188,16 @@
       ],
       "runsCount": 2,
       "runsMore": 0,
-      "sends": [],
+      "sends": [
+        "uploads coverage to Codecov"
+      ],
       "stages": [],
       "triggers": [
         "on a pull request",
         "on a push to main touching 13 paths",
         "or by hand"
-      ]
+      ],
+      "untracked": "site/audit-report.json, which is not tracked"
     },
     {
       "checks": [],
@@ -230,7 +212,7 @@
         {
           "boundary": "site",
           "depth": 0,
-          "files": 3
+          "files": 5
         }
       ],
       "runs": [
@@ -270,7 +252,8 @@
       "runsCount": 0,
       "runsMore": 0,
       "sends": [
-        "publishes to PyPI"
+        "publishes to PyPI",
+        "uploads dist/*.tar.gz and dist/*.whl to the release"
       ],
       "stages": [],
       "triggers": [
@@ -293,7 +276,7 @@
         {
           "boundary": "src",
           "depth": 0,
-          "files": 25
+          "files": 26
         }
       ],
       "runs": [
@@ -316,14 +299,8 @@
       "to": "src"
     }
   ],
+  "engine": "1.26.0",
   "generated": [
-    {
-      "block": true,
-      "place": "scripts/colab/boot_gatekeeper_goldens.json",
-      "writers": [
-        "scripts/colab/promote_goldens.py"
-      ]
-    },
     {
       "block": true,
       "place": "src/reasoning_dataset_lab/pilot_b/canary_config.json",
@@ -332,13 +309,16 @@
       ]
     }
   ],
-  "generatedAt": "2026-11-27T11:01:12.207Z",
+  "generatedAt": "2026-11-27T11:36:49.973Z",
   "limits": [
     "8 import sites name a declared dependency that shares its name with a local module (role_set); they are read as the dependency, which is not in this repository.",
-    "114 import sites could not be resolved.",
-    "83 writes and 197 reads use paths built at run time and are not named here.",
+    "20 imports could not be resolved: `scripts/colab/vm_judges.py` imports a path built at run time; `scripts/colab/vm_judges.py` imports `device`, which is no module on its import path and no declared dependency, twice; `tests/test_bakeoff_judge_d3_transport.py` imports a path built at run time; and 16 more.",
+    "14 writes and 43 reads use paths built at run time and are not named here.",
     "1 write goes to places this repository does not track, so it is not listed as generated.",
-    "12 writes and 21 reads go to the directory the command is run in, the home directory, a temporary directory or a path its caller passes, not to this repository.",
+    "134 writes and 273 reads go to a path their caller passes, not to this repository.",
+    "12 reads go to the directory the command is run in, not to this repository.",
+    "1 read goes to the directory the command is run in (memory.kmem.usage_in_bytes) or a path its caller passes, not to this repository.",
+    "1 read goes to the home directory (.config/, AppData/ and Library/) or a path its caller passes, not to this repository.",
     "Statistics confidence is low: fewer than 25 source files reach 10 revisions in the window."
   ],
   "mainDoor": ".github/workflows/ci.yml",
@@ -376,14 +356,15 @@
   "summaryFrom": "person",
   "testFiles": 93,
   "testedBy": {
-    "scripts": 5,
-    "src": 61
+    "scripts": 26,
+    "src": 63
   },
-  "unnamedWrites": 83,
+  "testedCodeParts": 2,
+  "unnamedWrites": 14,
   "unread": [],
   "unreadFiles": 0,
   "unreadNote": [],
   "untested": [],
   "untestedNote": [],
-  "written": 2
+  "written": 1
 }

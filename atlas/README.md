@@ -1,21 +1,18 @@
 # reasoning-dataset-lab: how it works
 
-Mapped at 2026-11-27 from commit b859794.
+Mapped at 2026-11-27 from commit ac9e6b7 by Atlas 1.26.0.
 
 ## What this is
 
 reasoning-dataset-lab plans a dataset as a pre-registered map, builds items whose answer keys are constructed and proved by code, asks a local model only for the wording, and records the provenance of every item. (written by a person)
 
-9 parts, mostly Python (112 files). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. People run rdlab.
+9 parts, mostly Python (112 files), shell (5), CSS (2), JavaScript (2), TypeScript (2) and Astro (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.
 
-## What changed since 2026-11-26 (d98f5ee)
+## What changed since 2026-11-27 (b859794)
 
-- scripts/colab/boot_gatekeeper_goldens.json is now written by scripts/colab/promote_goldens.py.
-- .gitignore is now also read by tests/test_colab_judge_launcher.py.
-- scripts/colab/boot_gatekeeper_goldens.json is now also read by scripts/colab/vm_judges.py.
-- And 3 more new writers and readers of places.
-- scripts was authored and is now mixed.
-- 3 files added and 19 changed content, across 5 parts.
+- tests/fixtures/fake_offrig_mcp.py is now read by tests/test_runpod_judge_host.py.
+- scripts was mixed and is now authored.
+- 2 files changed content, across 2 parts.
 
 ## What comes in
 
@@ -27,8 +24,10 @@ reasoning-dataset-lab plans a dataset as a pre-registered map, builds items whos
 ## What happens through ci
 
 1. The workflow runs scripts/check-audit-allowlist.mjs in scripts and tests/ in tests.
-2. That reaches src (28 files).
+2. That reaches src (30 files).
 3. It writes to src/reasoning_dataset_lab/pilot_b/canary_config.json.
+4. It also writes to site/audit-report.json, which is not tracked.
+5. It uploads coverage to Codecov.
 
 ## Who reads the results
 
@@ -38,7 +37,7 @@ reasoning-dataset-lab plans a dataset as a pre-registered map, builds items whos
 
 **Deploy site to GitHub Pages** runs site/astro.config.mjs and site/src/, and deploys the site.
 
-**Release** checks src/reasoning_dataset_lab/ and publishes to PyPI.
+**Release** checks src/reasoning_dataset_lab/, publishes to PyPI, and uploads dist/*.tar.gz and dist/*.whl to the release.
 
 **rdlab** (a command people run) runs src/reasoning_dataset_lab/cli.py and writes to src/reasoning_dataset_lab/pilot_b/canary_config.json.
 
@@ -52,7 +51,7 @@ reasoning-dataset-lab plans a dataset as a pre-registered map, builds items whos
 - **src/reasoning_dataset_lab/pilot_b/value_certification.py** and **tests/test_pilot_b_value_certification.py** changed together in 8 of 8 commits, and the tests part imports the src part.
 - **src/reasoning_dataset_lab/pilot_b/models_and_build.py** and **tests/test_pilot_b_ollama_adapters.py** changed together in 10 of 12 commits, and the tests part imports the src part.
 - **src/reasoning_dataset_lab/pilot_b/fact_tables.py** and **tests/test_pilot_b_variety.py** changed together in 5 of 7 commits, and the tests part imports the src part.
-- **scripts/colab/vm_judges.py** and **tests/test_colab_judge_launcher.py** changed together in 45 of 75 commits, and the tests part imports the scripts part.
+- **scripts/colab/vm_judges.py** and **tests/test_colab_judge_launcher.py** changed together in 45 of 76 commits, and the tests part imports the scripts part.
 - **src/reasoning_dataset_lab/pilot_b/rendering.py** and **tests/test_pilot_b_part_b.py** changed together in 5 of 9 commits, and the tests part imports the src part.
 
 1 file changed together with its own test, as expected.
@@ -75,12 +74,11 @@ No two parts export a helper that looks alike.
 
 ## Generated, never hand-edited
 
-- **scripts/colab/boot_gatekeeper_goldens.json** has a block written by scripts/colab/promote_goldens.py.
 - **src/reasoning_dataset_lab/pilot_b/canary_config.json** has a block written by src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py.
 
 ## Hand-authored
 
-People write .github/, certification/, docs/, examples/, the repository root and site/; 83 writes with paths built at run time may land here.
+People write .github/, certification/, docs/, examples/, the repository root and site/; 14 writes with paths built at run time may land here.
 
 ## Where to start
 
@@ -91,10 +89,13 @@ Read those in order to follow one run of rdlab end to end. This path follows rdl
 ## What this map cannot see
 
 - 8 import sites name a declared dependency that shares its name with a local module (role_set); they are read as the dependency, which is not in this repository.
-- 114 import sites could not be resolved.
-- 83 writes and 197 reads use paths built at run time and are not named here.
+- 20 imports could not be resolved: `scripts/colab/vm_judges.py` imports a path built at run time; `scripts/colab/vm_judges.py` imports `device`, which is no module on its import path and no declared dependency, twice; `tests/test_bakeoff_judge_d3_transport.py` imports a path built at run time; and 16 more.
+- 14 writes and 43 reads use paths built at run time and are not named here.
 - 1 write goes to places this repository does not track, so it is not listed as generated.
-- 12 writes and 21 reads go to the directory the command is run in, the home directory, a temporary directory or a path its caller passes, not to this repository.
+- 134 writes and 273 reads go to a path their caller passes, not to this repository.
+- 12 reads go to the directory the command is run in, not to this repository.
+- 1 read goes to the directory the command is run in (memory.kmem.usage_in_bytes) or a path its caller passes, not to this repository.
+- 1 read goes to the home directory (.config/, AppData/ and Library/) or a path its caller passes, not to this repository.
 - Statistics confidence is low: fewer than 25 source files reach 10 revisions in the window.
 
 Regenerate with `npx --yes @dogfood-lab/atlas map`.
