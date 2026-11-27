@@ -63,6 +63,7 @@ OFFRIG_SELF_STOP_MARGIN_SECONDS = 120
 OFFRIG_SELF_STOP_STATUS_POD_PATH = "/workspace/offrig/self-stop.status"
 OFFRIG_SELF_STOP_PREFIX = "offrig self-stop: "
 DEFAULT_MIN_OFFRIG_VERSION = "1.4.0"
+EXIT_STATUS_POLLS_EXHAUSTED = 75
 
 _DEFAULT_FIVE_JUDGE_IDS: tuple[str, ...] = (
     "d3-mini",
@@ -1351,7 +1352,7 @@ def resolve_offrig_mcp_bin(environ: Mapping[str, str] | None = None) -> str:
             f"RDLAB_OFFRIG_MCP_BIN points to missing or non-executable binary: {override!r}",
         )
     path_val = env.get("PATH")
-    for name in ("offrig-mcp", "offrig-mcp.exe"):
+    for name in ("offrig-mcp", "offrig-mcp.exe", "offrig-mcp.cmd"):
         found = shutil.which(name, path=path_val)
         if found:
             return found
@@ -1359,6 +1360,126 @@ def resolve_offrig_mcp_bin(environ: Mapping[str, str] | None = None) -> str:
         "OFFRIG_NOT_FOUND",
         "offrig-mcp binary not found in PATH or RDLAB_OFFRIG_MCP_BIN",
     )
+
+
+def resolve_offrig_cli_bin(environ: Mapping[str, str] | None = None) -> str:
+    """Resolve the `offrig` CLI binary path, raising `OFFRIG_NOT_FOUND` if missing."""
+    env = os.environ if environ is None else environ
+    override = str(env.get("RDLAB_OFFRIG_BIN") or "").strip()
+    if override:
+        cand = Path(override)
+        if cand.is_file() and (os.name == "nt" or os.access(cand, os.X_OK)):
+            return str(cand)
+        raise OffrigHostError(
+            "OFFRIG_NOT_FOUND",
+            f"RDLAB_OFFRIG_BIN points to missing or non-executable binary: {override!r}",
+        )
+    path_val = env.get("PATH")
+    for name in ("offrig", "offrig.exe", "offrig.cmd"):
+        found = shutil.which(name, path=path_val)
+        if found:
+            return found
+    mcp_override = str(env.get("RDLAB_OFFRIG_MCP_BIN") or "").strip()
+    if mcp_override:
+        mcp_parent = Path(mcp_override).parent
+        for name in ("offrig", "offrig.exe", "offrig.cmd"):
+            sib = mcp_parent / name
+            if sib.is_file() and (os.name == "nt" or os.access(sib, os.X_OK)):
+                return str(sib)
+    raise OffrigHostError(
+        "OFFRIG_NOT_FOUND",
+        "offrig CLI binary not found in PATH or RDLAB_OFFRIG_BIN",
+    )
+
+
+def read_offrig_project_budget(
+    project_dir: str | Path,
+    *,
+    min_remaining_usd: float | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Read `offrig budget --show --json` and enforce remaining RunPod budget >= `min_remaining_usd`."""
+    env = os.environ if environ is None else environ
+    offrig_bin = resolve_offrig_cli_bin(env)
+    cmd = [offrig_bin, "budget", "--show", "--json", "--project", str(project_dir)]
+    try:
+        proc = subprocess.run(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            env=dict(env),
+            timeout=15.0,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise OffrigHostError(
+            "OFFRIG_BUDGET_UNREADABLE",
+            f"failed running offrig budget for {project_dir}: {exc}",
+        ) from exc
+    if proc.returncode != 0:
+        err_msg = (proc.stderr or proc.stdout or f"rc={proc.returncode}").strip()
+        raise OffrigHostError(
+            "OFFRIG_BUDGET_UNREADABLE",
+            f"offrig budget exited rc={proc.returncode}: {err_msg}",
+        )
+    try:
+        doc = json.loads((proc.stdout or "").strip())
+    except json.JSONDecodeError as exc:
+        raise OffrigHostError(
+            "OFFRIG_BUDGET_UNREADABLE",
+            f"offrig budget emitted invalid JSON: {exc}",
+        ) from exc
+    if not isinstance(doc, Mapping):
+        raise OffrigHostError("OFFRIG_BUDGET_UNREADABLE", "offrig budget JSON must be an object")
+    providers = doc.get("providers")
+    rp = providers.get("runpod") if isinstance(providers, Mapping) else None
+    if not isinstance(rp, Mapping) or str(rp.get("cap_source") or "") == "not set":
+        raise OffrigHostError(
+            "OFFRIG_BUDGET_UNREADABLE",
+            f"RunPod project budget cap is not set in {project_dir}",
+        )
+    try:
+        rp_remaining = float(rp.get("remaining"))  # type: ignore[arg-type]
+        rp_cap = float(rp.get("cap"))  # type: ignore[arg-type]
+        rp_spent = float(rp.get("spent"))  # type: ignore[arg-type]
+        rp_committed = float(rp.get("committed") or 0.0)
+    except (TypeError, ValueError) as exc:
+        raise OffrigHostError("OFFRIG_BUDGET_UNREADABLE", f"non-numeric RunPod budget fields: {exc}") from exc
+    if not (math.isfinite(rp_remaining) and math.isfinite(rp_cap) and math.isfinite(rp_spent)):
+        raise OffrigHostError("OFFRIG_BUDGET_UNREADABLE", "non-finite RunPod budget values")
+
+    overall = doc.get("overall")
+    overall_ceiling = isinstance(overall, Mapping) and overall.get("ceiling") is True
+    effective_remaining = rp_remaining
+    if overall_ceiling and isinstance(overall, Mapping):
+        try:
+            ov_remaining = float(overall.get("remaining"))  # type: ignore[arg-type]
+        except (TypeError, ValueError) as exc:
+            raise OffrigHostError("OFFRIG_BUDGET_UNREADABLE", f"non-numeric overall budget remaining: {exc}") from exc
+        if math.isfinite(ov_remaining):
+            effective_remaining = min(effective_remaining, ov_remaining)
+
+    info: dict[str, Any] = {
+        "offrig_bin": offrig_bin,
+        "project": doc.get("project"),
+        "cap_usd": round(rp_cap, 2),
+        "cap_source": rp.get("cap_source"),
+        "spent_usd": round(rp_spent, 2),
+        "committed_usd": round(rp_committed, 2),
+        "runpod_remaining_usd": round(rp_remaining, 2),
+        "overall_ceiling": bool(overall_ceiling),
+        "effective_remaining_usd": round(effective_remaining, 2),
+        "account_balance_usd": rp.get("balance"),
+    }
+    if min_remaining_usd is not None:
+        need = float(min_remaining_usd)
+        if effective_remaining + 1e-9 < need:
+            raise OffrigHostError(
+                "RUNPOD_BUDGET_INSUFFICIENT",
+                f"remaining RunPod project budget (${effective_remaining:.2f}) is below required worst-case (${need:.2f})",
+            )
+    return info
 
 
 def _parse_semver_tuple(raw: str) -> tuple[int, int, int] | None:
@@ -2311,6 +2432,10 @@ def _build_cli_parser() -> argparse.ArgumentParser:
     p_mwc = sub.add_parser("check-max-worst-case")
     p_mwc.add_argument("--max-worst-case-usd", required=True)
 
+    p_cbud = sub.add_parser("check-budget")
+    p_cbud.add_argument("--project", required=True)
+    p_cbud.add_argument("--min-remaining-usd", type=float, default=None)
+
     p_floor = sub.add_parser("compute-run-floor")
     p_floor.add_argument("--receipts-dir", default="")
     p_floor.add_argument("--only-judges", default="")
@@ -2528,6 +2653,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.subcommand == "check-max-worst-case":
             val = validate_max_worst_case_usd(args.max_worst_case_usd)
             print(json.dumps({"max_worst_case_usd": val, "ok": True}, sort_keys=True))
+            return 0
+        if args.subcommand == "check-budget":
+            res = read_offrig_project_budget(
+                args.project,
+                min_remaining_usd=args.min_remaining_usd,
+            )
+            print(json.dumps(res, sort_keys=True))
             return 0
         if args.subcommand == "compute-run-floor":
             res = compute_useful_run_floor_seconds(
@@ -2783,6 +2915,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     except OffrigHostError as exc:
         if exc.status_polls_exhausted:
             sys.stderr.write(f"OFFRIG_EXEC_STATUS_POLLS_EXHAUSTED: {exc.code}: {exc.detail}\n")
+            if args.subcommand == "exec-vm-step":
+                return EXIT_STATUS_POLLS_EXHAUSTED
         else:
             sys.stderr.write(f"{exc.code}: {exc.detail}\n")
         return 2

@@ -233,7 +233,7 @@
           "path": ".python-version"
         },
         {
-          "hash": "2a3c2dd9291228f40a28d9b61a3925d8999fe8078812f5806fc0ac759550f4fa",
+          "hash": "b8965b8e7d124e4da3672a96add61167fa59246ba27bb0f81c0da917d07065db",
           "path": "CHANGELOG.md"
         },
         {
@@ -337,7 +337,7 @@
           "sequences": []
         },
         {
-          "hash": "7af2ec799643ef979f2d1c1a641e2d68899894eb66a8f8767b6ee9bd2768c45c",
+          "hash": "1c6e0727b049724bbce19130b9962a9e1bbd72ab2a605a0c0e515c276624d55b",
           "path": "scripts/colab/README.md"
         },
         {
@@ -1382,8 +1382,10 @@
             "plan_pod",
             "poll_vm_step_until_cutoff",
             "read_offrig_profile_image",
+            "read_offrig_project_budget",
             "resolve_already_closed_shutdown",
             "resolve_no_pod_rented_shutdown",
+            "resolve_offrig_cli_bin",
             "resolve_offrig_config_path",
             "resolve_offrig_mcp_bin",
             "split_image_ref",
@@ -1400,579 +1402,654 @@
             {
               "in": "_validate_positive_usd",
               "kind": "raise",
-              "line": 146
+              "line": 147
             },
             {
               "in": "_validate_positive_usd",
               "kind": "raise",
-              "line": 153
+              "line": 154
             },
             {
               "in": "_validate_positive_usd",
               "kind": "except",
-              "line": 159
-            },
-            {
-              "in": "_validate_positive_usd",
-              "kind": "raise",
               "line": 160
             },
             {
               "in": "_validate_positive_usd",
               "kind": "raise",
-              "line": 165
+              "line": 161
+            },
+            {
+              "in": "_validate_positive_usd",
+              "kind": "raise",
+              "line": 166
             },
             {
               "in": "_parse_decimal_usd",
               "kind": "except",
-              "line": 200
+              "line": 201
             },
             {
               "in": "check_rented_cost_per_hr",
               "kind": "raise",
-              "line": 221
+              "line": 222
             },
             {
               "in": "check_rented_cost_per_hr",
               "kind": "raise",
-              "line": 227
+              "line": 228
             },
             {
               "in": "compute_watchdog_max_hours",
               "kind": "raise",
-              "line": 249
+              "line": 250
             },
             {
               "in": "compute_watchdog_max_hours",
               "kind": "raise",
-              "line": 259
+              "line": 260
             },
             {
               "in": "parse_offrig_deadline_utc",
               "kind": "raise",
-              "line": 277
+              "line": 278
             },
             {
               "in": "parse_offrig_deadline_utc",
               "kind": "except",
-              "line": 284
+              "line": 285
             },
             {
               "in": "parse_offrig_deadline_utc",
               "kind": "except",
-              "line": 289
-            },
-            {
-              "in": "parse_offrig_deadline_utc",
-              "kind": "raise",
               "line": 290
+            },
+            {
+              "in": "parse_offrig_deadline_utc",
+              "kind": "raise",
+              "line": 291
             },
             {
               "in": "compute_remaining_run_budget_seconds",
               "kind": "raise",
-              "line": 311
+              "line": 312
             },
             {
               "in": "compute_remaining_fetch_budget_seconds",
               "kind": "except",
-              "line": 349
+              "line": 350
             },
             {
               "in": "_read_receipt_weight_bytes",
               "kind": "except",
-              "line": 366
+              "line": 367
             },
             {
               "in": "compute_useful_run_floor_seconds",
               "kind": "raise",
-              "line": 395
+              "line": 396
             },
             {
               "in": "compute_useful_run_floor_seconds",
               "kind": "raise",
-              "line": 400
+              "line": 401
             },
             {
               "in": "compute_useful_run_floor_seconds",
               "kind": "except",
-              "line": 444
-            },
-            {
-              "in": "compute_useful_run_floor_seconds",
-              "kind": "raise",
               "line": 445
             },
             {
               "in": "compute_useful_run_floor_seconds",
               "kind": "raise",
-              "line": 450
+              "line": 446
+            },
+            {
+              "in": "compute_useful_run_floor_seconds",
+              "kind": "raise",
+              "line": 451
             },
             {
               "in": "_validate_usable_status_pods",
               "kind": "except",
-              "line": 720
+              "line": 721
             },
             {
               "in": "extract_status_pods",
               "kind": "except",
-              "line": 855
+              "line": 856
             },
             {
               "in": "_resolve_no_pod_reread_delay_seconds",
               "kind": "except",
-              "line": 1018
+              "line": 1019
             },
             {
               "in": "_read_once",
               "kind": "except",
-              "line": 1081
+              "line": 1082
             },
             {
               "in": "read_offrig_profile_image",
               "kind": "raise",
-              "line": 1143
+              "line": 1144
             },
             {
               "in": "read_offrig_profile_image",
               "kind": "except",
-              "line": 1149
-            },
-            {
-              "in": "read_offrig_profile_image",
-              "kind": "raise",
               "line": 1150
             },
             {
               "in": "read_offrig_profile_image",
               "kind": "raise",
-              "line": 1168
+              "line": 1151
             },
             {
               "in": "read_offrig_profile_image",
               "kind": "raise",
-              "line": 1174
+              "line": 1169
+            },
+            {
+              "in": "read_offrig_profile_image",
+              "kind": "raise",
+              "line": 1175
             },
             {
               "in": "verify_offrig_profile_image",
               "kind": "raise",
-              "line": 1191
+              "line": 1192
             },
             {
               "in": "verify_offrig_profile_image",
               "kind": "raise",
-              "line": 1199
+              "line": 1200
             },
             {
               "in": "_is_windows_binary",
               "kind": "except",
-              "line": 1220
+              "line": 1221
             },
             {
               "in": "check_offrig_binary_path_visibility",
               "kind": "raise",
-              "line": 1231
+              "line": 1232
             },
             {
               "in": "check_offrig_binary_path_visibility",
               "kind": "raise",
-              "line": 1235
+              "line": 1236
             },
             {
               "in": "check_offrig_binary_path_visibility",
               "kind": "raise",
-              "line": 1241
+              "line": 1242
             },
             {
               "in": "parse_nvidia_smi_gpu_csv",
               "kind": "raise",
-              "line": 1265
+              "line": 1266
             },
             {
               "in": "parse_nvidia_smi_gpu_csv",
               "kind": "raise",
-              "line": 1271
+              "line": 1272
             },
             {
               "in": "parse_nvidia_smi_gpu_csv",
               "kind": "except",
-              "line": 1278
-            },
-            {
-              "in": "parse_nvidia_smi_gpu_csv",
-              "kind": "raise",
               "line": 1279
             },
             {
               "in": "parse_nvidia_smi_gpu_csv",
               "kind": "raise",
-              "line": 1284
+              "line": 1280
+            },
+            {
+              "in": "parse_nvidia_smi_gpu_csv",
+              "kind": "raise",
+              "line": 1285
             },
             {
               "in": "verify_runpod_gpu_gate",
               "kind": "raise",
-              "line": 1304
+              "line": 1305
             },
             {
               "in": "verify_runpod_gpu_gate",
               "kind": "raise",
-              "line": 1312
+              "line": 1313
             },
             {
               "in": "verify_runpod_gpu_gate",
               "kind": "raise",
-              "line": 1317
+              "line": 1318
             },
             {
               "in": "verify_runpod_gpu_gate",
               "kind": "raise",
-              "line": 1322
+              "line": 1323
             },
             {
               "in": "verify_runpod_gpu_gate",
               "kind": "raise",
-              "line": 1327
+              "line": 1328
             },
             {
               "in": "resolve_offrig_mcp_bin",
               "kind": "raise",
-              "line": 1349
+              "line": 1350
             },
             {
               "in": "resolve_offrig_mcp_bin",
               "kind": "raise",
-              "line": 1358
+              "line": 1359
             },
             {
-              "in": "check_offrig_mcp_version",
+              "in": "resolve_offrig_cli_bin",
               "kind": "raise",
-              "line": 1379
+              "line": 1373
             },
             {
-              "in": "check_offrig_mcp_version",
-              "kind": "except",
+              "in": "resolve_offrig_cli_bin",
+              "kind": "raise",
               "line": 1389
             },
             {
-              "in": "check_offrig_mcp_version",
-              "kind": "raise",
-              "line": 1390
+              "in": "read_offrig_project_budget",
+              "kind": "except",
+              "line": 1415
             },
             {
-              "in": "check_offrig_mcp_version",
+              "in": "read_offrig_project_budget",
               "kind": "raise",
-              "line": 1397
+              "line": 1416
             },
             {
-              "in": "check_offrig_mcp_version",
+              "in": "read_offrig_project_budget",
               "kind": "raise",
-              "line": 1402
+              "line": 1422
             },
             {
-              "in": "verify_self_stop_armed",
-              "kind": "raise",
-              "line": 1431
+              "in": "read_offrig_project_budget",
+              "kind": "except",
+              "line": 1428
             },
             {
-              "in": "verify_self_stop_armed",
+              "in": "read_offrig_project_budget",
               "kind": "raise",
-              "line": 1437
+              "line": 1429
             },
             {
-              "in": "verify_self_stop_armed",
+              "in": "read_offrig_project_budget",
               "kind": "raise",
+              "line": 1434
+            },
+            {
+              "in": "read_offrig_project_budget",
+              "kind": "raise",
+              "line": 1438
+            },
+            {
+              "in": "read_offrig_project_budget",
+              "kind": "except",
               "line": 1447
             },
             {
-              "in": "verify_self_stop_armed",
+              "in": "read_offrig_project_budget",
               "kind": "raise",
-              "line": 1456
+              "line": 1448
+            },
+            {
+              "in": "read_offrig_project_budget",
+              "kind": "raise",
+              "line": 1450
+            },
+            {
+              "in": "read_offrig_project_budget",
+              "kind": "except",
+              "line": 1458
+            },
+            {
+              "in": "read_offrig_project_budget",
+              "kind": "raise",
+              "line": 1459
+            },
+            {
+              "in": "read_offrig_project_budget",
+              "kind": "raise",
+              "line": 1478
+            },
+            {
+              "in": "check_offrig_mcp_version",
+              "kind": "raise",
+              "line": 1500
+            },
+            {
+              "in": "check_offrig_mcp_version",
+              "kind": "except",
+              "line": 1510
+            },
+            {
+              "in": "check_offrig_mcp_version",
+              "kind": "raise",
+              "line": 1511
+            },
+            {
+              "in": "check_offrig_mcp_version",
+              "kind": "raise",
+              "line": 1518
+            },
+            {
+              "in": "check_offrig_mcp_version",
+              "kind": "raise",
+              "line": 1523
             },
             {
               "in": "verify_self_stop_armed",
               "kind": "raise",
-              "line": 1468
+              "line": 1552
             },
             {
               "in": "verify_self_stop_armed",
               "kind": "raise",
-              "line": 1473
+              "line": 1558
+            },
+            {
+              "in": "verify_self_stop_armed",
+              "kind": "raise",
+              "line": 1568
+            },
+            {
+              "in": "verify_self_stop_armed",
+              "kind": "raise",
+              "line": 1577
+            },
+            {
+              "in": "verify_self_stop_armed",
+              "kind": "raise",
+              "line": 1589
+            },
+            {
+              "in": "verify_self_stop_armed",
+              "kind": "raise",
+              "line": 1594
             },
             {
               "in": "_extract_tool_payload",
               "kind": "except",
-              "line": 1506
+              "line": 1627
             },
             {
               "in": "_extract_tool_payload",
               "kind": "raise",
-              "line": 1517
+              "line": 1638
             },
             {
               "in": "_read_stderr_loop",
               "kind": "except",
-              "line": 1565
+              "line": 1686
             },
             {
               "in": "start",
               "kind": "except",
-              "line": 1582
+              "line": 1703
             },
             {
               "in": "start",
               "kind": "raise",
-              "line": 1583
+              "line": 1704
             },
             {
               "in": "start",
               "kind": "except",
-              "line": 1612
+              "line": 1733
             },
             {
               "in": "start",
               "kind": "raise",
-              "line": 1614
+              "line": 1735
             },
             {
               "in": "close",
               "kind": "except",
-              "line": 1626
+              "line": 1747
             },
             {
               "in": "close",
               "kind": "except",
-              "line": 1632
+              "line": 1753
             },
             {
               "in": "close",
               "kind": "except",
-              "line": 1637
+              "line": 1758
             },
             {
               "in": "_send",
               "kind": "raise",
-              "line": 1643
+              "line": 1764
             },
             {
               "in": "_send",
               "kind": "except",
-              "line": 1647
+              "line": 1768
             },
             {
               "in": "_send",
               "kind": "raise",
-              "line": 1648
+              "line": 1769
             },
             {
               "in": "_request",
               "kind": "raise",
-              "line": 1673
-            },
-            {
-              "in": "_request",
-              "kind": "except",
-              "line": 1679
-            },
-            {
-              "in": "_request",
-              "kind": "raise",
-              "line": 1681
-            },
-            {
-              "in": "_request",
-              "kind": "raise",
-              "line": 1688
+              "line": 1794
             },
             {
               "in": "_request",
               "kind": "except",
-              "line": 1697
+              "line": 1800
             },
             {
               "in": "_request",
               "kind": "raise",
-              "line": 1698
+              "line": 1802
             },
             {
               "in": "_request",
               "kind": "raise",
-              "line": 1706
+              "line": 1809
+            },
+            {
+              "in": "_request",
+              "kind": "except",
+              "line": 1818
             },
             {
               "in": "_request",
               "kind": "raise",
-              "line": 1712
+              "line": 1819
             },
             {
-              "in": "format_env_shell_command",
-              "kind": "raise",
-              "line": 1743
-            },
-            {
-              "in": "format_env_shell_command",
-              "kind": "raise",
-              "line": 1749
-            },
-            {
-              "in": "verify_plan_gpu_list",
-              "kind": "raise",
-              "line": 1772
-            },
-            {
-              "in": "verify_plan_gpu_list",
-              "kind": "raise",
-              "line": 1779
-            },
-            {
-              "in": "verify_plan_gpu_list",
-              "kind": "raise",
-              "line": 1784
-            },
-            {
-              "in": "plan_pod",
+              "in": "_request",
               "kind": "raise",
               "line": 1827
             },
             {
+              "in": "_request",
+              "kind": "raise",
+              "line": 1833
+            },
+            {
+              "in": "format_env_shell_command",
+              "kind": "raise",
+              "line": 1864
+            },
+            {
+              "in": "format_env_shell_command",
+              "kind": "raise",
+              "line": 1870
+            },
+            {
+              "in": "verify_plan_gpu_list",
+              "kind": "raise",
+              "line": 1893
+            },
+            {
+              "in": "verify_plan_gpu_list",
+              "kind": "raise",
+              "line": 1900
+            },
+            {
+              "in": "verify_plan_gpu_list",
+              "kind": "raise",
+              "line": 1905
+            },
+            {
+              "in": "plan_pod",
+              "kind": "raise",
+              "line": 1948
+            },
+            {
               "in": "_check_launch_stop",
               "kind": "raise",
-              "line": 1842
+              "line": 1963
             },
             {
               "in": "launch_and_wait",
               "kind": "except",
-              "line": 1870
+              "line": 1991
             },
             {
               "in": "launch_and_wait",
               "kind": "raise",
-              "line": 1878
+              "line": 1999
             },
             {
               "in": "launch_and_wait",
               "kind": "raise",
-              "line": 1926
+              "line": 2047
             },
             {
               "in": "launch_and_wait",
               "kind": "raise",
-              "line": 1950
+              "line": 2071
             },
             {
               "in": "launch_and_wait",
               "kind": "raise",
-              "line": 1955
+              "line": 2076
             },
             {
               "in": "verify_pod_gpu",
               "kind": "raise",
-              "line": 1986
+              "line": 2107
             },
             {
               "in": "_stop_and_save_timed_out_vm_step",
               "kind": "except",
-              "line": 2007
+              "line": 2128
             },
             {
               "in": "_stop_and_save_timed_out_vm_step",
               "kind": "except",
-              "line": 2022
+              "line": 2143
             },
             {
               "in": "exec_vm_step",
               "kind": "except",
-              "line": 2058
+              "line": 2179
             },
             {
               "in": "exec_vm_step",
               "kind": "raise",
-              "line": 2061
+              "line": 2182
             },
             {
               "in": "exec_vm_step",
               "kind": "except",
-              "line": 2090
+              "line": 2211
             },
             {
               "in": "exec_vm_step",
               "kind": "raise",
-              "line": 2099
+              "line": 2220
             },
             {
               "in": "_current_epoch_seconds",
               "kind": "except",
-              "line": 2144
+              "line": 2265
             },
             {
               "in": "poll_vm_step_until_cutoff",
               "kind": "except",
-              "line": 2175
+              "line": 2296
             },
             {
               "in": "poll_vm_step_until_cutoff",
               "kind": "except",
-              "line": 2213
+              "line": 2334
             },
             {
               "in": "poll_vm_step_until_cutoff",
               "kind": "except",
-              "line": 2217
+              "line": 2338
             },
             {
               "in": "poll_vm_step_until_cutoff",
               "kind": "except",
-              "line": 2239
+              "line": 2360
             },
             {
               "in": "poll_vm_step_until_cutoff",
               "kind": "except",
-              "line": 2242
+              "line": 2363
             },
             {
               "in": "poll_vm_step_until_cutoff",
               "kind": "except",
-              "line": 2270
+              "line": 2391
             },
             {
               "in": "poll_vm_step_until_cutoff",
               "kind": "except",
-              "line": 2284
+              "line": 2405
             },
             {
               "in": "main",
               "kind": "raise",
-              "line": 2495
+              "line": 2620
             },
             {
               "in": "main",
               "kind": "except",
-              "line": 2575
+              "line": 2707
             },
             {
               "in": "main",
               "kind": "except",
-              "line": 2588
+              "line": 2720
             },
             {
               "in": "main",
               "kind": "except",
-              "line": 2771
+              "line": 2903
             },
             {
               "in": "main",
               "kind": "raise",
-              "line": 2779
+              "line": 2911
             },
             {
               "in": "main",
               "kind": "except",
-              "line": 2783
+              "line": 2915
             },
             {
               "kind": "raise",
-              "line": 2793
+              "line": 2927
             }
           ],
-          "hash": "39ad1c3eb1d95dfe493e89227e90dc9cbb73ffd2fcd921a82a143a510b29988b",
+          "hash": "4d259e7c15b3da5e1453f1a5e59043db086f3f6f840f962f4dc3b8c671b56e5b",
           "path": "scripts/colab/offrig_host.py"
         },
         {
@@ -2308,8 +2385,258 @@
           "path": "scripts/colab/runpod_image_rung.sh"
         },
         {
-          "hash": "3f032008c46354e35bfe5575145c8f32ad575040beb1f705fb00ea4e40e5ef02",
-          "path": "scripts/colab/runpod_pod_sequence.sh"
+          "exports": [
+            "main",
+            "run_counted_sequence",
+            "run_smoke_sequence"
+          ],
+          "failurePaths": [
+            {
+              "in": "_extract_tar_gz",
+              "kind": "raise",
+              "line": 158
+            },
+            {
+              "in": "_extract_tar_gz",
+              "kind": "raise",
+              "line": 163
+            },
+            {
+              "in": "_prepare_host_env",
+              "kind": "raise",
+              "line": 258
+            },
+            {
+              "in": "_check_plan_within_budget_and_cap",
+              "kind": "raise",
+              "line": 309
+            },
+            {
+              "in": "_check_plan_within_budget_and_cap",
+              "kind": "except",
+              "line": 312
+            },
+            {
+              "in": "_check_plan_within_budget_and_cap",
+              "kind": "raise",
+              "line": 313
+            },
+            {
+              "in": "_check_plan_within_budget_and_cap",
+              "kind": "raise",
+              "line": 315
+            },
+            {
+              "in": "_check_plan_within_budget_and_cap",
+              "kind": "raise",
+              "line": 321
+            },
+            {
+              "in": "_exec_run_ok",
+              "kind": "raise",
+              "line": 348
+            },
+            {
+              "in": "_run_step_with_poll_fallback",
+              "kind": "except",
+              "line": 432
+            },
+            {
+              "in": "_run_step_with_poll_fallback",
+              "kind": "raise",
+              "line": 434
+            },
+            {
+              "in": "_shutdown_and_record_status",
+              "kind": "except",
+              "line": 521
+            },
+            {
+              "in": "_shutdown_and_record_status",
+              "kind": "except",
+              "line": 528
+            },
+            {
+              "in": "_shutdown_and_record_status",
+              "kind": "except",
+              "line": 535
+            },
+            {
+              "in": "install",
+              "kind": "except",
+              "line": 557
+            },
+            {
+              "in": "shield",
+              "kind": "except",
+              "line": 564
+            },
+            {
+              "in": "restore",
+              "kind": "except",
+              "line": 571
+            },
+            {
+              "in": "_verify_smoke_verified_receipt",
+              "kind": "raise",
+              "line": 583
+            },
+            {
+              "in": "_verify_smoke_verified_receipt",
+              "kind": "raise",
+              "line": 590
+            },
+            {
+              "in": "_verify_smoke_verified_receipt",
+              "kind": "raise",
+              "line": 592
+            },
+            {
+              "in": "_verify_smoke_verified_receipt",
+              "kind": "raise",
+              "line": 596
+            },
+            {
+              "in": "_verify_smoke_verified_receipt",
+              "kind": "raise",
+              "line": 602
+            },
+            {
+              "in": "_verify_smoke_verified_receipt",
+              "kind": "raise",
+              "line": 608
+            },
+            {
+              "in": "_verify_smoke_verified_receipt",
+              "kind": "raise",
+              "line": 614
+            },
+            {
+              "in": "_verify_smoke_verified_receipt",
+              "kind": "raise",
+              "line": 620
+            },
+            {
+              "in": "_verify_smoke_verified_receipt",
+              "kind": "raise",
+              "line": 627
+            },
+            {
+              "in": "run_smoke_sequence",
+              "kind": "raise",
+              "line": 656
+            },
+            {
+              "in": "run_smoke_sequence",
+              "kind": "raise",
+              "line": 782
+            },
+            {
+              "in": "run_smoke_sequence",
+              "kind": "except",
+              "line": 783
+            },
+            {
+              "in": "run_smoke_sequence",
+              "kind": "except",
+              "line": 798
+            },
+            {
+              "in": "run_smoke_sequence",
+              "kind": "except",
+              "line": 803
+            },
+            {
+              "in": "run_smoke_sequence",
+              "kind": "raise",
+              "line": 808
+            },
+            {
+              "in": "run_smoke_sequence",
+              "kind": "raise",
+              "line": 810
+            },
+            {
+              "in": "_stage_counted_bundles",
+              "kind": "raise",
+              "line": 904
+            },
+            {
+              "in": "run_counted_sequence",
+              "kind": "raise",
+              "line": 1009
+            },
+            {
+              "in": "run_counted_sequence",
+              "kind": "raise",
+              "line": 1014
+            },
+            {
+              "in": "run_counted_sequence",
+              "kind": "raise",
+              "line": 1043
+            },
+            {
+              "in": "run_counted_sequence",
+              "kind": "raise",
+              "line": 1048
+            },
+            {
+              "in": "run_counted_sequence",
+              "kind": "except",
+              "line": 1214
+            },
+            {
+              "in": "run_counted_sequence",
+              "kind": "except",
+              "line": 1227
+            },
+            {
+              "in": "run_counted_sequence",
+              "kind": "except",
+              "line": 1281
+            },
+            {
+              "in": "run_counted_sequence",
+              "kind": "except",
+              "line": 1295
+            },
+            {
+              "in": "run_counted_sequence",
+              "kind": "except",
+              "line": 1314
+            },
+            {
+              "in": "run_counted_sequence",
+              "kind": "except",
+              "line": 1319
+            },
+            {
+              "in": "run_counted_sequence",
+              "kind": "raise",
+              "line": 1344
+            },
+            {
+              "in": "run_counted_sequence",
+              "kind": "raise",
+              "line": 1346
+            },
+            {
+              "in": "main",
+              "kind": "except",
+              "line": 1410
+            },
+            {
+              "kind": "raise",
+              "line": 1416
+            }
+          ],
+          "hash": "27c62fa53a743ae9bf70bb96a2bffbb2d820e4a946a9e2c5e72e685819adc32e",
+          "importsFiles": [
+            "scripts/colab/offrig_host.py",
+            "scripts/colab/runpod_pod_windows.py"
+          ],
+          "path": "scripts/colab/runpod_pod_sequence.py"
         },
         {
           "exports": [
@@ -6320,11 +6647,11 @@
       "origin": "authored",
       "outsidePlaces": [
         {
-          "reads": 138,
+          "reads": 142,
           "where": [
             "caller"
           ],
-          "writes": 93
+          "writes": 100
         },
         {
           "reads": 1,
@@ -6359,8 +6686,8 @@
           "writes": 0
         }
       ],
-      "outsideReads": 151,
-      "outsideWrites": 93,
+      "outsideReads": 155,
+      "outsideWrites": 100,
       "role": "code",
       "testRunners": [
         "pytest"
@@ -24223,7 +24550,7 @@
           "exports": [
             "main"
           ],
-          "hash": "e9b0b46769d756096f44c5b17459c54b17b69fcedf5be0543f1be2d4eafe7228",
+          "hash": "5e6569a491c6152e991ee7b88821cb36c99079b834ff373a894d8ceb15691ffb",
           "importsFiles": [
             "scripts/colab/vm_judges.py"
           ],
@@ -26819,9 +27146,19 @@
             "test_unverifiable_journal_starts_fresh_on_resume",
             "test_validation_branches_nonstub_subprocess_and_cli_errors"
           ],
-          "hash": "81d020da92216eec22b0d33fb9667e0a44f7e673ba18c7d438d6bf8f4926e2fe",
+          "hash": "97252cd17b3a0bc431db047698ab84178381bac3f2223b8715c9528d80750cc8",
+          "importOrder": [
+            "scripts/colab/offrig_host.py",
+            "scripts/colab/runpod_pod_windows.py",
+            "scripts/colab/vm_judges.py",
+            "src/reasoning_dataset_lab/pilot_b/__init__.py",
+            "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py",
+            "src/reasoning_dataset_lab/pilot_b/bakeoff_part.py",
+            "scripts/colab/runpod_pod_sequence.py"
+          ],
           "importsFiles": [
             "scripts/colab/offrig_host.py",
+            "scripts/colab/runpod_pod_sequence.py",
             "scripts/colab/runpod_pod_windows.py",
             "scripts/colab/vm_judges.py",
             "src/reasoning_dataset_lab/pilot_b/__init__.py",
@@ -27185,7 +27522,7 @@
         {
           "boundary": "scripts",
           "depth": 0,
-          "files": 10
+          "files": 11
         },
         {
           "boundary": "tests",
@@ -27727,7 +28064,7 @@
   ],
   "engine": "1.26.0",
   "generatedFrom": {
-    "commit": "ac9e6b79224f6029ae8badf8d7bec49a2ac9a564",
+    "commit": "593476c00ee89ebd4d130d6e43900b41076f50d0",
     "tracked": 230
   },
   "landings": [

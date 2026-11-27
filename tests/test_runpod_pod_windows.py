@@ -1175,16 +1175,30 @@ def test_offrig_140_version_self_stop_and_detached_sequence_stub(tmp_path: Path)
     with pytest.raises(offrig_host.OffrigHostError, match="OFFRIG_SELF_STOP_FIRE_AT_MISMATCH"):
         offrig_host.verify_self_stop_armed("offrig self-stop: armed fire_at=1795880999", pod_deadline_iso="2026-11-28T15:33:20Z")
 
-    # 3. Single-script Step 0 `smoke` via detached offrig_exec start|status + EXIT-trap teardown (--stub)
+    # 3. Single Python driver Step 0 `smoke` via detached offrig_exec start|status + try/finally teardown (--stub)
+    import runpod_pod_sequence
+
     synth_items = _write_synthetic_items(tmp_path / "synth_seq.jsonl", count=4)
-    seq_script = REPO_ROOT / "scripts" / "colab" / "runpod_pod_sequence.sh"
+    seq_script = REPO_ROOT / "scripts" / "colab" / "runpod_pod_sequence.py"
     seq_env = dict(os.environ)
-    seq_env["RDLAB_PYTHON"] = sys.executable
+    seq_env["OFFRIG_CONFIG_DIR"] = "/stale/user/offrig/dir"
+
+    live_env, live_stub_dir = runpod_pod_sequence._prepare_host_env(
+        repo_dir=REPO_ROOT,
+        stage_dir=tmp_path / "live_env_check",
+        profile="rdlab-judge",
+        expected_image=offrig_host.DEFAULT_RUNPOD_IMAGE_REF,
+        stub=False,
+        base_environ=seq_env,
+    )
+    assert "OFFRIG_CONFIG_DIR" not in live_env
+    assert live_stub_dir is None
+
     smoke_stage = tmp_path / "smoke_stage"
     smoke_runs = tmp_path / "smoke_runs"
     smoke_proc = subprocess.run(
         [
-            "bash",
+            sys.executable,
             str(seq_script),
             "smoke",
             "--repo-dir",
@@ -1213,6 +1227,13 @@ def test_offrig_140_version_self_stop_and_detached_sequence_stub(tmp_path: Path)
     assert (smoke_runs / "self-stop.status").is_file()
     assert (smoke_runs / "offrig_shutdown.json").is_file()
     assert (smoke_runs / "offrig_status.json").is_file()
+    smoke_verified_file = smoke_runs / "smoke_verified.json"
+    assert smoke_verified_file.is_file()
+    smoke_verified_doc = json.loads(smoke_verified_file.read_text(encoding="utf-8"))
+    assert smoke_verified_doc["smoke_ok"] is True
+    assert smoke_verified_doc["self_stop"]["armed"] is True
+    assert smoke_verified_doc["teardown"]["teardown_ok"] is True
+    assert smoke_verified_doc["teardown"]["offrig_pods_count"] == 0
 
     # Check fake_offrig call log: smoke used offrig_exec start + status (not exec run >120s) + shutdown + status
     smoke_calls = [
@@ -1246,7 +1267,7 @@ def test_offrig_140_version_self_stop_and_detached_sequence_stub(tmp_path: Path)
     )
     assert rc_short == 2
 
-    # 4. Mid-run failure still triggers EXIT-trap shutdown + status
+    # 4. Mid-run failure still triggers try/finally shutdown + status
     fail_stage = tmp_path / "fail_stage"
     fail_runs = tmp_path / "fail_runs"
     (fail_stage / "_stub_offrig").mkdir(parents=True, exist_ok=True)
@@ -1259,6 +1280,7 @@ def test_offrig_140_version_self_stop_and_detached_sequence_stub(tmp_path: Path)
                 "gpu": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
                 "self_stop_unavailable": True,
                 "launch_include_pod_id": True,
+                "real_detached_subprocess": True,
             }
         ),
         encoding="utf-8",
@@ -1267,7 +1289,7 @@ def test_offrig_140_version_self_stop_and_detached_sequence_stub(tmp_path: Path)
     fail_env["RDLAB_FAKE_OFFRIG_CONFIG"] = str(fail_cfg)
     fail_proc = subprocess.run(
         [
-            "bash",
+            sys.executable,
             str(seq_script),
             "smoke",
             "--repo-dir",
@@ -1293,12 +1315,175 @@ def test_offrig_140_version_self_stop_and_detached_sequence_stub(tmp_path: Path)
     assert (fail_runs / "offrig_shutdown.json").is_file()
     assert (fail_runs / "offrig_status.json").is_file()
 
-    # 5. Full 4-window counted sequence through runpod_pod_sequence.sh --stub (all detached + per-window get + EXIT trap)
+    # 4b. M7 & M5 $0 gates: missing/short/stale --smoke-verified and insufficient budget fail BEFORE offrig_plan
+    no_smoke_stage = tmp_path / "no_smoke_stage"
+    no_smoke_runs = tmp_path / "no_smoke_runs"
+    no_smoke_proc = subprocess.run(
+        [
+            sys.executable,
+            str(seq_script),
+            "counted",
+            "--repo-dir",
+            str(REPO_ROOT),
+            "--stage-dir",
+            str(no_smoke_stage),
+            "--runs-local",
+            str(no_smoke_runs),
+            "--proof-items-file",
+            str(synth_items),
+            "--stub",
+        ],
+        env=seq_env,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert no_smoke_proc.returncode == 2
+    assert "SMOKE_VERIFICATION_REQUIRED" in no_smoke_proc.stderr
+    assert not (no_smoke_stage / "_stub_offrig" / "offrig_calls.jsonl").exists()
+
+    short_sv_proc = subprocess.run(
+        [
+            sys.executable,
+            str(seq_script),
+            "counted",
+            "--repo-dir",
+            str(REPO_ROOT),
+            "--stage-dir",
+            str(no_smoke_stage),
+            "--runs-local",
+            str(no_smoke_runs),
+            "--smoke-verified",
+            str(smoke_verified_file),
+            "--proof-items-file",
+            str(synth_items),
+            "--stub",
+        ],
+        env=seq_env,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert short_sv_proc.returncode == 2
+    assert "SMOKE_VERIFICATION_TOO_SHORT" in short_sv_proc.stderr
+
+    # Valid >120s smoke_verified receipt for counted tests
+    valid_sv = tmp_path / "valid_smoke_verified.json"
+    valid_sv_doc = dict(smoke_verified_doc)
+    valid_sv_doc["elapsed_seconds"] = 125.0
+    valid_sv.write_text(json.dumps(valid_sv_doc, sort_keys=True), encoding="utf-8")
+
+    # Insufficient budget cap triggers RUNPOD_BUDGET_INSUFFICIENT at $0
+    low_b_stage = tmp_path / "low_budget_stage"
+    low_b_runs = tmp_path / "low_budget_runs"
+    (low_b_stage / "_stub_offrig").mkdir(parents=True, exist_ok=True)
+    low_b_cfg = low_b_stage / "_stub_offrig" / "fake_cfg.json"
+    low_b_cfg.write_text(
+        json.dumps(
+            {
+                "vm_root_dir": str(low_b_stage / "_stub_offrig" / "vm_root"),
+                "pod_vm_root": "/workspace",
+                "gpu": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+                "launch_include_pod_id": True,
+                "budget_cap_usd": 20.0,
+                "budget_prior_spent_usd": 0.0,
+                "real_detached_subprocess": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    low_b_env = dict(seq_env)
+    low_b_env["RDLAB_FAKE_OFFRIG_CONFIG"] = str(low_b_cfg)
+    low_b_proc = subprocess.run(
+        [
+            sys.executable,
+            str(seq_script),
+            "counted",
+            "--repo-dir",
+            str(REPO_ROOT),
+            "--stage-dir",
+            str(low_b_stage),
+            "--runs-local",
+            str(low_b_runs),
+            "--smoke-verified",
+            str(valid_sv),
+            "--proof-items-file",
+            str(synth_items),
+            "--stub",
+        ],
+        env=low_b_env,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert low_b_proc.returncode == 2
+    assert "RUNPOD_BUDGET_INSUFFICIENT" in low_b_proc.stderr
+    assert not (low_b_stage / "_stub_offrig" / "offrig_calls.jsonl").exists()
+
+    # Check offrig_host check-budget CLI subcommand (rc 0 when >= 44.18, rc 2 when remaining is $20.00)
+    ok_b_env, _ = runpod_pod_sequence._prepare_host_env(
+        repo_dir=REPO_ROOT,
+        stage_dir=smoke_stage,
+        profile="rdlab-judge",
+        expected_image=offrig_host.DEFAULT_RUNPOD_IMAGE_REF,
+        stub=True,
+        base_environ=seq_env,
+    )
+    ok_b_cli = subprocess.run(
+        [sys.executable, str(REPO_ROOT / "scripts" / "colab" / "offrig_host.py"), "check-budget", "--project", str(REPO_ROOT), "--min-remaining-usd", "44.18"],
+        env=ok_b_env,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert ok_b_cli.returncode == 0, ok_b_cli.stderr
+    low_b_cli_env, _ = runpod_pod_sequence._prepare_host_env(
+        repo_dir=REPO_ROOT,
+        stage_dir=low_b_stage,
+        profile="rdlab-judge",
+        expected_image=offrig_host.DEFAULT_RUNPOD_IMAGE_REF,
+        stub=True,
+        base_environ=low_b_env,
+    )
+    low_b_cli = subprocess.run(
+        [sys.executable, str(REPO_ROOT / "scripts" / "colab" / "offrig_host.py"), "check-budget", "--project", str(REPO_ROOT), "--min-remaining-usd", "44.18"],
+        env=low_b_cli_env,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert low_b_cli.returncode == 2 and "RUNPOD_BUDGET_INSUFFICIENT" in low_b_cli.stderr
+
+    # Check M5 default watchdog arithmetic: 52,500s wall + 1800s launch + 300s setup + 1800s fetch + 600s margin = 57,000s (15.8334h, $44.18)
+    m5_plan = offrig_host.compute_local_plan_worst_case(
+        wall_seconds=52500,
+        max_price_hr=2.79,
+        launch_wait_minutes=30,
+        image_pull_setup_seconds=300,
+        fetch_allowance_seconds=1800,
+        shutdown_reserve_seconds=600,
+        max_worst_case_usd=45.0,
+    )
+    assert m5_plan["max_hours"] == 15.8334
+    assert m5_plan["worst_case_usd"] == 44.18
+    assert m5_plan["within_max_worst_case"] is True
+
+    # 5. Full 4-window counted sequence through runpod_pod_sequence.py --stub --smoke-verified
     cnt_stage = tmp_path / "counted_stage"
     cnt_runs = tmp_path / "counted_runs"
     cnt_proc = subprocess.run(
         [
-            "bash",
+            sys.executable,
             str(seq_script),
             "counted",
             "--repo-dir",
@@ -1307,6 +1492,8 @@ def test_offrig_140_version_self_stop_and_detached_sequence_stub(tmp_path: Path)
             str(cnt_stage),
             "--runs-local",
             str(cnt_runs),
+            "--smoke-verified",
+            str(valid_sv),
             "--proof-items-file",
             str(synth_items),
             "--poll-interval",
@@ -1330,8 +1517,127 @@ def test_offrig_140_version_self_stop_and_detached_sequence_stub(tmp_path: Path)
     for wid in ("qwen36-counted-proof-g4-01", "qwen36-counted-cal-01", "qwen36-counted-cal-nf-01", "qwen36-counted-hold-01"):
         od = json.loads((cnt_runs / wid / "outcome.json").read_text(encoding="utf-8"))
         assert od["status"] == "ok" and od["seal_ok"] is True
-    hold_plan = json.loads((cnt_runs / "qwen36-counted-hold-01" / "window_plan.json").read_text(encoding="utf-8"))
-    assert hold_plan["wall_seconds"] == 20100
+    assert json.loads((cnt_runs / "qwen36-counted-proof-g4-01" / "window_plan.json").read_text(encoding="utf-8"))["wall_seconds"] == 3900
+    assert json.loads((cnt_runs / "qwen36-counted-cal-01" / "window_plan.json").read_text(encoding="utf-8"))["wall_seconds"] == 22200
+    assert json.loads((cnt_runs / "qwen36-counted-cal-nf-01" / "window_plan.json").read_text(encoding="utf-8"))["wall_seconds"] == 6000
+    assert json.loads((cnt_runs / "qwen36-counted-hold-01" / "window_plan.json").read_text(encoding="utf-8"))["wall_seconds"] == 20400
+    seq_sum = json.loads((cnt_runs / "sequence_summary.json").read_text(encoding="utf-8"))
+    assert len(seq_sum["windows"]) == 4 and all(w["ok"] for w in seq_sum["windows"])
+    assert seq_sum["teardown"]["teardown_ok"] is True
     assert (cnt_runs / "offrig_shutdown.json").is_file()
     assert (cnt_runs / "offrig_status.json").is_file()
+
+    # 6. H3 + H4: proof recovers from exhausted status polls via poll_vm_step_until_cutoff; non-ok cal-01 is fetched and cal-nf-01 + hold-01 still run
+    h34_stage = tmp_path / "h34_stage"
+    h34_runs = tmp_path / "h34_runs"
+    (h34_stage / "_stub_offrig").mkdir(parents=True, exist_ok=True)
+    h34_cfg = h34_stage / "_stub_offrig" / "fake_cfg.json"
+    h34_cfg.write_text(
+        json.dumps(
+            {
+                "vm_root_dir": str(h34_stage / "_stub_offrig" / "vm_root"),
+                "pod_vm_root": "/workspace",
+                "gpu": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+                "launch_include_pod_id": True,
+                "fail_exec_status_polls": {"qwen36-counted-proof-g4-01": 5},
+                "append_job_args": {"qwen36-counted-cal-01": ["--max-new-tokens", "0"]},
+                "real_detached_subprocess": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    h34_env = dict(seq_env)
+    h34_env["RDLAB_FAKE_OFFRIG_CONFIG"] = str(h34_cfg)
+    h34_proc = subprocess.run(
+        [
+            sys.executable,
+            str(seq_script),
+            "counted",
+            "--repo-dir",
+            str(REPO_ROOT),
+            "--stage-dir",
+            str(h34_stage),
+            "--runs-local",
+            str(h34_runs),
+            "--smoke-verified",
+            str(valid_sv),
+            "--proof-items-file",
+            str(synth_items),
+            "--poll-interval",
+            "0.1",
+            "--stub",
+            "--stub-limit-items",
+            "2",
+        ],
+        env=h34_env,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+    assert h34_proc.returncode == 2, h34_proc.stdout + "\n" + h34_proc.stderr
+    assert "EXIT_STATUS_POLLS_EXHAUSTED=75" in h34_proc.stdout
+    h34_sum = json.loads((h34_runs / "sequence_summary.json").read_text(encoding="utf-8"))
+    by_wid = {w["window_id"]: w for w in h34_sum["windows"]}
+    assert by_wid["qwen36-counted-proof-g4-01"]["ok"] is True
+    assert by_wid["qwen36-counted-proof-g4-01"]["poll_recovered"] is True
+    assert by_wid["qwen36-counted-cal-01"]["ok"] is False
+    assert by_wid["qwen36-counted-cal-01"]["fetched_ok"] is True
+    assert by_wid["qwen36-counted-cal-nf-01"]["ok"] is True and by_wid["qwen36-counted-cal-nf-01"]["seal_ok"] is True
+    assert by_wid["qwen36-counted-hold-01"]["ok"] is True and by_wid["qwen36-counted-hold-01"]["seal_ok"] is True
+    assert h34_sum["teardown"]["teardown_ok"] is True
+
+    # 7. Proof failure stops sequence cleanly before cal-01
+    pfail_stage = tmp_path / "pfail_stage"
+    pfail_runs = tmp_path / "pfail_runs"
+    (pfail_stage / "_stub_offrig").mkdir(parents=True, exist_ok=True)
+    pfail_cfg = pfail_stage / "_stub_offrig" / "fake_cfg.json"
+    pfail_cfg.write_text(
+        json.dumps(
+            {
+                "vm_root_dir": str(pfail_stage / "_stub_offrig" / "vm_root"),
+                "pod_vm_root": "/workspace",
+                "gpu": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+                "launch_include_pod_id": True,
+                "append_job_args": {"qwen36-counted-proof-g4-01": ["--max-new-tokens", "0"]},
+                "real_detached_subprocess": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    pfail_env = dict(seq_env)
+    pfail_env["RDLAB_FAKE_OFFRIG_CONFIG"] = str(pfail_cfg)
+    pfail_proc = subprocess.run(
+        [
+            sys.executable,
+            str(seq_script),
+            "counted",
+            "--repo-dir",
+            str(REPO_ROOT),
+            "--stage-dir",
+            str(pfail_stage),
+            "--runs-local",
+            str(pfail_runs),
+            "--smoke-verified",
+            str(valid_sv),
+            "--proof-items-file",
+            str(synth_items),
+            "--poll-interval",
+            "0.1",
+            "--stub",
+            "--stub-limit-items",
+            "2",
+        ],
+        env=pfail_env,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert pfail_proc.returncode == 2
+    pfail_sum = json.loads((pfail_runs / "sequence_summary.json").read_text(encoding="utf-8"))
+    assert [w["window_id"] for w in pfail_sum["windows"]] == ["qwen36-counted-proof-g4-01"]
+    assert pfail_sum["teardown"]["teardown_ok"] is True
 

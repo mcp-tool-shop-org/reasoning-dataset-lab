@@ -1,18 +1,16 @@
 # reasoning-dataset-lab: how it works
 
-Mapped at 2026-11-27 from commit ac9e6b7 by Atlas 1.26.0.
+Mapped at 2026-11-27 from commit 593476c by Atlas 1.26.0.
 
 ## What this is
 
 reasoning-dataset-lab plans a dataset as a pre-registered map, builds items whose answer keys are constructed and proved by code, asks a local model only for the wording, and records the provenance of every item. (written by a person)
 
-9 parts, mostly Python (112 files), shell (5), CSS (2), JavaScript (2), TypeScript (2) and Astro (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.
+9 parts, mostly Python (113 files), shell (4), CSS (2), JavaScript (2), TypeScript (2) and Astro (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.
 
-## What changed since 2026-11-27 (b859794)
+## What changed since 2026-11-27 (ac9e6b7)
 
-- tests/fixtures/fake_offrig_mcp.py is now read by tests/test_runpod_judge_host.py.
-- scripts was mixed and is now authored.
-- 2 files changed content, across 2 parts.
+Nothing structural changed since 2026-11-27; 1 file added, 1 removed and 5 changed content.
 
 ## What comes in
 
@@ -92,7 +90,7 @@ Read those in order to follow one run of rdlab end to end. This path follows rdl
 - 20 imports could not be resolved: `scripts/colab/vm_judges.py` imports a path built at run time; `scripts/colab/vm_judges.py` imports `device`, which is no module on its import path and no declared dependency, twice; `tests/test_bakeoff_judge_d3_transport.py` imports a path built at run time; and 16 more.
 - 14 writes and 43 reads use paths built at run time and are not named here.
 - 1 write goes to places this repository does not track, so it is not listed as generated.
-- 134 writes and 273 reads go to a path their caller passes, not to this repository.
+- 141 writes and 277 reads go to a path their caller passes, not to this repository.
 - 12 reads go to the directory the command is run in, not to this repository.
 - 1 read goes to the directory the command is run in (memory.kmem.usage_in_bytes) or a path its caller passes, not to this repository.
 - 1 read goes to the home directory (.config/, AppData/ and Library/) or a path its caller passes, not to this repository.

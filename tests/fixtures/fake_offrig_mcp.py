@@ -7,6 +7,7 @@ import argparse
 import datetime
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -89,12 +90,76 @@ def _rewrite_pod_command_for_local(command: str, pod_vm_root: str, local_vm_root
     return rewritten
 
 
+def _to_wsl_path(raw: str) -> str:
+    txt = str(raw).replace("\\", "/")
+    return re.sub(r"([A-Za-z]):/", lambda m: f"/mnt/{m.group(1).lower()}/", txt)
+
+
+def _handle_real_run_command(cmd: str, pod_vm_root: str, local_vm_root: Path) -> tuple[int, str, str] | None:
+    """Handle pod mkdir/unpack/pack commands in pure Python so Windows Git Bash / PowerShell stay shell-free."""
+    stripped_cmd = cmd.strip()
+    m_pack = re.fullmatch(
+        r"if\s+\[\s+-d\s+(.+?)\s+\];\s+then\s+tar\s+-C\s+(.+?)\s+-czf\s+(.+?)\s+(.+?);\s+else\s+exit\s+3;\s+fi",
+        stripped_cmd,
+    )
+    if m_pack:
+        check_dir = _map_pod_path(shlex.split(m_pack.group(1))[0], pod_vm_root, local_vm_root)
+        if not check_dir.is_dir():
+            return (3, "", f"missing directory {check_dir}")
+        parent_dir = _map_pod_path(shlex.split(m_pack.group(2))[0], pod_vm_root, local_vm_root)
+        tar_dst = _map_pod_path(shlex.split(m_pack.group(3))[0], pod_vm_root, local_vm_root)
+        item_name = shlex.split(m_pack.group(4))[0]
+        src_item = parent_dir / item_name
+        if not src_item.exists():
+            return (3, "", f"missing tar source {src_item}")
+        tar_dst.parent.mkdir(parents=True, exist_ok=True)
+        with tarfile.open(tar_dst, "w:gz") as tf:
+            tf.add(src_item, arcname=item_name)
+        return (0, "", "")
+
+    parts = [p.strip() for p in stripped_cmd.split("&&") if p.strip()]
+    if not parts:
+        return None
+    handled_any = False
+    for part in parts:
+        toks = shlex.split(part)
+        if not toks:
+            continue
+        if toks[:2] == ["mkdir", "-p"]:
+            for raw_dir in toks[2:]:
+                d = _map_pod_path(raw_dir, pod_vm_root, local_vm_root)
+                d.mkdir(parents=True, exist_ok=True)
+            handled_any = True
+            continue
+        if len(toks) == 5 and toks[0] == "tar" and toks[1] in ("-xzf", "-xf") and toks[3] == "-C":
+            tar_src = _map_pod_path(toks[2], pod_vm_root, local_vm_root)
+            dest_dir = _map_pod_path(toks[4], pod_vm_root, local_vm_root)
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            with tarfile.open(tar_src, "r:gz") as tf:
+                tf.extractall(dest_dir, filter="data")
+            handled_any = True
+            continue
+        if len(toks) == 6 and toks[0] == "tar" and toks[1] == "-C" and toks[3] == "-czf":
+            parent_dir = _map_pod_path(toks[2], pod_vm_root, local_vm_root)
+            tar_dst = _map_pod_path(toks[4], pod_vm_root, local_vm_root)
+            src_item = parent_dir / toks[5]
+            tar_dst.parent.mkdir(parents=True, exist_ok=True)
+            with tarfile.open(tar_dst, "w:gz") as tf:
+                tf.add(src_item, arcname=toks[5])
+            handled_any = True
+            continue
+        return None
+    return (0, "", "") if handled_any else None
+
+
 def _spawn_detached_local_job(
     *,
     job_name: str,
     command: str,
     pod_vm_root: str,
     local_vm_root: Path,
+    repo_root: Path,
+    cfg: dict[str, Any],
     state: dict[str, Any],
 ) -> dict[str, Any]:
     jobs_dir = local_vm_root / "_jobs"
@@ -106,6 +171,9 @@ def _spawn_detached_local_job(
 
     mapped_cmd = _rewrite_pod_command_for_local(command, pod_vm_root, local_vm_root)
     env_map, script, script_args = _parse_env_command(mapped_cmd)
+    extra_args = (cfg.get("append_job_args") or {}).get(job_name)
+    if isinstance(extra_args, list):
+        script_args = [*script_args, *(str(x) for x in extra_args)]
     run_env = os.environ.copy()
     run_env.update(env_map)
     if state.get("deadline_iso"):
@@ -113,26 +181,56 @@ def _spawn_detached_local_job(
     ss_local = _map_pod_path("/workspace/offrig/self-stop.status", pod_vm_root, local_vm_root)
     run_env.setdefault("RDLAB_SELF_STOP_STATUS_FILE", str(ss_local))
 
-    wrapper = (
-        "import os, subprocess, sys\n"
-        "from pathlib import Path\n"
-        "log_p = Path(sys.argv[1])\n"
-        "rc_p = Path(sys.argv[2])\n"
-        "cmd = sys.argv[3:]\n"
-        "with log_p.open('wb') as fh:\n"
-        "    p = subprocess.run(cmd, stdout=fh, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, check=False)\n"
-        "tmp = rc_p.with_suffix('.rc.tmp')\n"
-        "tmp.write_text(str(p.returncode) + '\\n', encoding='utf-8')\n"
-        "os.replace(tmp, rc_p)\n"
-    )
-    proc = subprocess.Popen(
-        [sys.executable, "-c", wrapper, str(log_file), str(rc_file), sys.executable, script, *script_args],
-        env=run_env,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
+    if os.name == "nt" and "run-window" in script_args:
+        # Simulate Linux RunPod pod container from a Windows host via WSL for `vm_judges.py` run-window.
+        wsl_script = _to_wsl_path(script)
+        wsl_args = [_to_wsl_path(a) if (":/" in a or ":\\" in a) else a for a in script_args]
+        wsl_log = _to_wsl_path(str(log_file))
+        wsl_rc = _to_wsl_path(str(rc_file))
+        wsl_ss = _to_wsl_path(str(ss_local))
+        wsl_repo = _to_wsl_path(str(repo_root))
+        exports = [
+            f"export {k}={shlex.quote(_to_wsl_path(v))}"
+            for k, v in sorted({**env_map, "RDLAB_SELF_STOP_STATUS_FILE": wsl_ss}.items())
+        ]
+        if state.get("deadline_iso"):
+            exports.append(f"export OFFRIG_DEADLINE={shlex.quote(str(state['deadline_iso']))}")
+        arg_str = " ".join(shlex.quote(a) for a in wsl_args)
+        bash_body = (
+            f"{'; '.join(exports)}; "
+            f"PY={shlex.quote(wsl_repo + '/.venv/bin/python')}; "
+            "[ -x \"$PY\" ] || PY=python3; "
+            f"\"$PY\" {shlex.quote(wsl_script)} {arg_str} > {shlex.quote(wsl_log)} 2>&1 < /dev/null; "
+            f"rc=$?; printf '%s\\n' \"$rc\" > {shlex.quote(wsl_rc + '.tmp')} && mv {shlex.quote(wsl_rc + '.tmp')} {shlex.quote(wsl_rc)}"
+        )
+        proc = subprocess.Popen(
+            ["wsl.exe", "-e", "bash", "-c", bash_body],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    else:
+        wrapper = (
+            "import os, subprocess, sys\n"
+            "from pathlib import Path\n"
+            "log_p = Path(sys.argv[1])\n"
+            "rc_p = Path(sys.argv[2])\n"
+            "cmd = sys.argv[3:]\n"
+            "with log_p.open('wb') as fh:\n"
+            "    p = subprocess.run(cmd, stdout=fh, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, check=False)\n"
+            "tmp = rc_p.with_suffix('.rc.tmp')\n"
+            "tmp.write_text(str(p.returncode) + '\\n', encoding='utf-8')\n"
+            "os.replace(tmp, rc_p)\n"
+        )
+        proc = subprocess.Popen(
+            [sys.executable, "-c", wrapper, str(log_file), str(rc_file), sys.executable, script, *script_args],
+            env=run_env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
     return {
         "state": "running",
         "code": None,
@@ -528,6 +626,15 @@ def _handle_tool_call(
                     "timed_out": False,
                 }
             if cfg.get("real_detached_subprocess"):
+                py_res = _handle_real_run_command(cmd, pod_vm_root, local_vm_root)
+                if py_res is not None:
+                    rc_run, out_run, err_run = py_res
+                    return False, {
+                        "exit_code": rc_run,
+                        "stdout": out_run,
+                        "stderr": err_run,
+                        "timed_out": False,
+                    }
                 local_cmd = _rewrite_pod_command_for_local(cmd, pod_vm_root, local_vm_root)
                 local_vm_root.mkdir(parents=True, exist_ok=True)
                 proc = subprocess.run(
@@ -584,6 +691,8 @@ def _handle_tool_call(
                     command=command,
                     pod_vm_root=pod_vm_root,
                     local_vm_root=local_vm_root,
+                    repo_root=repo_root,
+                    cfg=cfg,
                     state=state,
                 )
             else:
@@ -609,6 +718,16 @@ def _handle_tool_call(
                 if cfg.get("crash_on_failed_status_poll"):
                     raise SystemExit(1)
                 return True, {"error": f"simulated status poll failure #{poll_n}"}
+            fail_exec_map = cfg.get("fail_exec_status_polls")
+            if isinstance(fail_exec_map, dict) and job_name in fail_exec_map:
+                rem_map = state.setdefault("exec_status_fail_remaining", {})
+                if job_name not in rem_map:
+                    rem_map[job_name] = int(fail_exec_map[job_name])
+                rem_errs = int(rem_map[job_name] or 0)
+                if rem_errs > 0:
+                    rem_map[job_name] = rem_errs - 1
+                    _save_json(state_path, state)
+                    return True, {"error": f"simulated transient status poll failure for {job_name} ({rem_errs} remaining)"}
             if cfg.get("advance_clock_on_step") and isinstance(cfg["advance_clock_on_step"], dict):
                 adv = cfg["advance_clock_on_step"]
                 step_delta = adv.get(job_name)
@@ -729,6 +848,9 @@ def _handle_tool_call(
         state["plan_state"] = "closed"
         state["shutdown"] = True
         state["shutdown_reason"] = reason
+        state["accumulated_spent_usd"] = round(
+            float(state.get("accumulated_spent_usd") or 0.0) + spent, 2
+        )
         _save_json(state_path, state)
         return False, {
             "plan_id": plan_id,
@@ -740,11 +862,58 @@ def _handle_tool_call(
     return True, {"error": f"unknown tool {tool_name!r}"}
 
 
+def _handle_budget_cli(argv: list[str]) -> int:
+    b_parser = argparse.ArgumentParser(description="Fake offrig CLI budget output")
+    b_sub = b_parser.add_subparsers(dest="cmd", required=True)
+    p_b = b_sub.add_parser("budget")
+    p_b.add_argument("--show", action="store_true")
+    p_b.add_argument("--json", action="store_true")
+    p_b.add_argument("--project", default=".")
+    b_args, _ = b_parser.parse_known_args(argv)
+    cfg_raw = os.environ.get("RDLAB_FAKE_OFFRIG_CONFIG")
+    state_raw = os.environ.get("RDLAB_FAKE_OFFRIG_STATE")
+    cfg = _load_json(Path(cfg_raw), {}) if cfg_raw else {}
+    state = _load_json(Path(state_raw), {}) if state_raw else {}
+    cap = float(cfg.get("budget_cap_usd") if cfg.get("budget_cap_usd") is not None else 49.01)
+    prior_spent = float(cfg.get("budget_prior_spent_usd") if cfg.get("budget_prior_spent_usd") is not None else 4.01)
+    acc_spent = float(state.get("accumulated_spent_usd") or 0.0)
+    spent = round(prior_spent + acc_spent, 2)
+    remaining = round(max(0.0, cap - spent), 2)
+    doc = {
+        "version": 1,
+        "project": Path(b_args.project).name or "offrig-project",
+        "providers": {
+            "runpod": {
+                "cap": cap,
+                "cap_source": str(cfg.get("budget_cap_source") or "own"),
+                "committed": 0.0,
+                "spent": spent,
+                "remaining": remaining,
+                "balance": float(cfg.get("budget_balance_usd") if cfg.get("budget_balance_usd") is not None else 64.52),
+                "balance_note": None,
+                "warning": None,
+            }
+        },
+        "overall": {
+            "cap": cap,
+            "ceiling": bool(cfg.get("budget_overall_ceiling", False)),
+            "committed": 0.0,
+            "spent": spent,
+            "remaining": remaining,
+        },
+    }
+    sys.stdout.write(json.dumps(doc, indent=2) + "\n")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Fake offrig-mcp server")
     parser.add_argument("--version", action="store_true")
+    parser.add_argument("--budget-cli", action="store_true")
     parser.add_argument("--project", default="")
-    args, _unknown = parser.parse_known_args()
+    args, unknown = parser.parse_known_args()
+    if args.budget_cli:
+        return _handle_budget_cli(unknown)
     if args.version:
         print(os.environ.get("RDLAB_FAKE_OFFRIG_VERSION") or "offrig-mcp 1.4.0 (fake)")
         return 0
