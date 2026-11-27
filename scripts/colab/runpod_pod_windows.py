@@ -1459,9 +1459,9 @@ def run_pod_window(
             errors="replace",
             check=False,
         )
-        if gate_status_tmp.is_file():
-            shutil.copyfile(gate_status_tmp, resolved_out / "gate_status.json")
         if gate_proc.returncode != 0:
+            if gate_status_tmp.is_file():
+                shutil.copyfile(gate_status_tmp, resolved_out / "gate_status.json")
             shutil.rmtree(staged_input_dir, ignore_errors=True)
             runner_log_path = resolved_out / "logs" / "pod_runner.log"
             runner_log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1500,11 +1500,17 @@ def run_pod_window(
     )
     if status_tmp.is_file():
         shutil.copyfile(status_tmp, resolved_out / "status.json")
+    if gate_status_tmp.is_file():
+        # Copied only after vm_judges exits, so it never sits in run_dir while the result tar is sealed.
+        shutil.copyfile(gate_status_tmp, resolved_out / "gate_status.json")
     if result_tar_tmp.is_file():
         shutil.move(str(result_tar_tmp), str(resolved_out / "result.tar.gz"))
 
     for lf in (resolved_out / "logs").glob("*.log"):
         vm_judges.scrub_log_file_in_place(lf)
+    for jf in (resolved_out / "gate_status.json", resolved_out / "status.json"):
+        if jf.is_file():
+            vm_judges.scrub_log_file_in_place(jf)
 
     vm_status = _read_json_dict(resolved_out / "status.json")
     vm_receipt = _read_json_dict(resolved_out / "vm_receipt.json")

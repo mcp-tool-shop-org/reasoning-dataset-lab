@@ -667,6 +667,7 @@ TAR_ALLOWED_EXACT_FILES: frozenset[str] = frozenset(
         "boot_nvidia_smi.txt",
         "window_plan.json",
         "resume_ledger.json",
+        "gate_status.json",
     }
 )
 TAR_ALLOWED_DIRS: frozenset[str] = frozenset(

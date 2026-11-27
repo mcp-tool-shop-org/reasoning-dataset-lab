@@ -2221,3 +2221,422 @@ def test_live_window_env_carries_window_id_and_refuses_stub_ids(tmp_path: Path, 
     assert env.get("RDLAB_SESSION_ID") == win and env.get("RDLAB_RUN_ID") == win
     assert "VM_DRYRUN" not in env
     assert not vm_judges.is_stub_window_id(win)
+
+
+# --- Real-mode (stub=False) pod windows, $0 on CPU -------------------------------------------------------------------
+# run_pod_window(stub=True) skips `--step gate` and injects VM_DRYRUN=1, so vm_judges never ran in real mode under the
+# tests and three live RunPod aborts (2026-11-27) escaped them. This harness runs the REAL `--step gate` and
+# `--step run` of vm_judges.main in-process under the exact env run_pod_window builds, with only hardware, disk,
+# interpreter/venv install and 35B-engine leaves replaced. Tripwires refuse any process spawn or network connection.
+
+_RTX_PRO_6000_NAME = "NVIDIA RTX PRO 6000 Blackwell Server Edition"
+_RTX_PRO_6000_TABLE = (
+    "+-----------------------------------------------------------------------------------------+\n"
+    "| NVIDIA-SMI 595.112.07             Driver Version: 595.112.07     CUDA Version: 13.2     |\n"
+    "|   0  NVIDIA RTX PRO 6000 Blackwell Server Edition  On  |   00000000:01:00.0 Off |    0 |\n"
+    "+-----------------------------------------------------------------------------------------+\n"
+)
+_RTX_PRO_6000_FIELDS = {
+    "name": _RTX_PRO_6000_NAME,
+    "driver_version": "595.112.07",
+    "memory.total": "97887 MiB",
+    "memory.used": "1024",
+    "pci.device_id": "0x2BB510DE",
+    "vbios_version": "98.02.6A.00.01",
+    "compute_cap": "12.0",
+    "ecc.errors.uncorrected.volatile.total": "0",
+    "ecc.errors.uncorrected.aggregate.total": "0",
+}
+_QWEN36_FOUR_ARMS = "thinking,nothink-greedy,nothink-card,nothink-matched"
+
+
+def _rtx_pro_6000_nvidia_smi(argv: list[str]) -> subprocess.CompletedProcess[str]:
+    """Answer an nvidia-smi call as an RTX PRO 6000 Blackwell Server Edition pod would (table or --query-gpu CSV)."""
+    query = next((x.split("=", 1)[1] for x in argv[1:] if x.startswith("--query-gpu=")), None)
+    if query is None:
+        return subprocess.CompletedProcess(argv, 0, stdout=_RTX_PRO_6000_TABLE, stderr="")
+    fields = query.split(",")
+    if any(f not in _RTX_PRO_6000_FIELDS for f in fields):
+        return subprocess.CompletedProcess(argv, 2, stdout="", stderr=f"field not modelled: {query}")
+    return subprocess.CompletedProcess(argv, 0, stdout=", ".join(_RTX_PRO_6000_FIELDS[f] for f in fields) + "\n", stderr="")
+
+
+class _RealModeVllmStandInTransport(bakeoff_judge.DeterministicFakeJudgeTransport):
+    """Stands in for the Qwen3.6 vLLM engine only: deterministic CPU outputs, presented as a real transport."""
+
+    is_stub_transport = False
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(torch_dtype=str(kwargs.get("torch_dtype") or bakeoff_judge.DEFAULT_TORCH_DTYPE))
+
+
+class _InProcessEnv:
+    """Swap os.environ for exactly the env a subprocess would have been given, then restore it."""
+
+    def __init__(self, env: dict[str, str]) -> None:
+        self._env = dict(env)
+        self._saved: dict[str, str] = {}
+
+    def __enter__(self) -> None:
+        self._saved = dict(os.environ)
+        os.environ.clear()
+        os.environ.update(self._env)
+
+    def __exit__(self, *exc: Any) -> None:
+        os.environ.clear()
+        os.environ.update(self._saved)
+
+
+def _install_real_mode_pod_harness(
+    monkeypatch: pytest.MonkeyPatch, *, tmp_path: Path, copy_gate_status_early: bool = False
+) -> dict[str, Any]:
+    """Intercept runpod_pod_windows' subprocess.run (nvidia-smi + the two vm_judges steps) and only leaf calls."""
+    import contextlib
+    import io
+    import platform
+    import socket
+    import types
+
+    for k in list(os.environ):
+        if k == "VM_DRYRUN" or k.startswith("FAKE_COLAB_") or k.startswith("RDLAB_") or vm_judges.is_forbidden_counted_test_hook(k):
+            monkeypatch.delenv(k, raising=False)
+
+    calls: dict[str, list[Any]] = {
+        "nvidia_smi": [],
+        "gate": [],
+        "run": [],
+        "judge_child": [],
+        "gatekeeper_child": [],
+        "vllm_install": [],
+    }
+
+    # Hard tripwires: nothing in this test may spawn a process or open a network connection ($0, offline, no GPU).
+    def _no_spawn(*a: Any, **_kw: Any) -> Any:
+        raise AssertionError(f"real-mode harness: unexpected process spawn {a[:1]!r}")
+
+    def _no_network(*a: Any, **_kw: Any) -> Any:
+        raise AssertionError(f"real-mode harness: unexpected network connection {a[1:2]!r}")
+
+    monkeypatch.setattr(subprocess, "Popen", _no_spawn)
+    monkeypatch.setattr(os, "posix_spawn", _no_spawn, raising=False)
+    monkeypatch.setattr(os, "posix_spawnp", _no_spawn, raising=False)
+    monkeypatch.setattr(socket.socket, "connect", _no_network)
+    monkeypatch.setattr(socket.socket, "connect_ex", _no_network)
+    monkeypatch.setattr(platform, "platform", lambda *a, **k: "Linux-6.8.0-runpod-x86_64-with-glibc2.39")
+    # ensure_vllm_venv records its install in a module global; restore it so later tests see the prior state.
+    monkeypatch.setattr(vm_judges, "_LAST_VLLM_INSTALL", None)
+
+    # (a)-(c): runpod_pod_windows' own subprocess.run.
+    vm_script = str(REPO_ROOT / "scripts" / "colab" / "vm_judges.py")
+
+    def _fake_run(cmd: Any, *a: Any, **kw: Any) -> Any:
+        argv = [str(c) for c in cmd]
+        if argv and Path(argv[0]).name == "nvidia-smi":
+            calls["nvidia_smi"].append(argv)
+            return _rtx_pro_6000_nvidia_smi(argv)
+        if len(argv) >= 2 and argv[1] == vm_script:
+            env = dict(kw.get("env") or {})
+            step = env.get("RDLAB_STEP", "")
+            assert step in ("gate", "run"), step
+            assert "VM_DRYRUN" not in env and not any(k.startswith("FAKE_COLAB_") for k in env)
+            calls[step].append(env)
+            out_buf, err_buf = io.StringIO(), io.StringIO()
+            with _InProcessEnv(env), contextlib.redirect_stdout(out_buf), contextlib.redirect_stderr(err_buf):
+                rc = vm_judges.main(argv[2:])
+            if step == "gate" and copy_gate_status_early and Path(env["RDLAB_GATE_STATUS_FILE"]).is_file():
+                # The pre-fix runner (099eff4a) copied gate_status.json into the run dir right after the gate, so it
+                # sat in run_dir while vm_judges sealed the result tar.
+                shutil.copyfile(env["RDLAB_GATE_STATUS_FILE"], Path(env["RDLAB_RUN_DIR"]) / "gate_status.json")
+            return subprocess.CompletedProcess(argv, rc, stdout=out_buf.getvalue(), stderr=err_buf.getvalue())
+        raise AssertionError(f"unexpected subprocess.run from runpod_pod_windows: {argv}")
+
+    sub_proxy = types.SimpleNamespace(**{k: getattr(subprocess, k) for k in dir(subprocess) if not k.startswith("__")})
+    sub_proxy.run = _fake_run
+    monkeypatch.setattr(runpod_pod_windows, "subprocess", sub_proxy)
+    # capture_boot_nvidia_smi(stub=False) itself runs unmodified; its runner/which seams get the answering fake.
+    real_capture = runpod_pod_windows.capture_boot_nvidia_smi
+    monkeypatch.setattr(
+        runpod_pod_windows,
+        "capture_boot_nvidia_smi",
+        lambda out_dir, *, stub=False, **_kw: real_capture(
+            out_dir, stub=stub, runner=_fake_run, which=lambda name: f"/usr/bin/{name}"
+        ),
+    )
+
+    # vm_judges' own subprocess.run: only the device_check / gpu_gate torch probes, nvidia-smi, the venv-vllm sync and
+    # version reads, and the deletion check are answered (as an RTX PRO 6000 pod would); the gates run unmodified.
+    def _vm_fake_run(cmd: Any, *a: Any, **kw: Any) -> Any:
+        argv = [str(c) for c in cmd]
+        if argv and Path(argv[0]).name == "nvidia-smi":
+            calls["nvidia_smi"].append(argv)
+            return _rtx_pro_6000_nvidia_smi(argv)
+        if len(argv) >= 3 and argv[1] == "-c" and argv[2] == vm_judges.DEVICE_CHECK_PYTHON_SCRIPT:
+            doc = {"device_index": 0, "device_type": "cuda", "torch_version": "2.14.1+cu132"}
+            return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(doc) + "\n", stderr="")
+        if len(argv) >= 3 and argv[1] == "-c" and argv[2] == vm_judges.GPU_GATE_PYTHON_SCRIPT:
+            doc = {
+                "cuda_is_available": True,
+                "device_count": 1,
+                "device_query": {
+                    "device_name": _RTX_PRO_6000_NAME,
+                    "matmul_shape": [1024, 1024],
+                    "matmul_finite": True,
+                    "vram_free_bytes": 100 * 1024**3,
+                    "vram_total_bytes": 102 * 1024**3,
+                },
+                "torch_version": "2.14.1+cu132",
+                "torch_version_cuda": "13.2",
+                "cuda_runtime_version": 13020,
+            }
+            return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(doc) + "\n", stderr="")
+        if len(argv) == 4 and argv[:3] == ["test", "!", "-e"]:
+            # The uploaded-items deletion receipt asks the shell whether each file is gone; answer from the filesystem.
+            return subprocess.CompletedProcess(argv, 1 if os.path.lexists(argv[3]) else 0, stdout="", stderr="")
+        # venv-vllm sync (uv venv / uv pip sync / import check): the 35B engine's install is a leaf here.
+        if argv[:2] == ["uv", "venv"]:
+            vpy = Path(argv[-1]) / "bin" / "python"
+            vpy.parent.mkdir(parents=True, exist_ok=True)
+            vpy.write_text("#!/bin/sh\necho 'venv-vllm stand-in: never executed' >&2\nexit 97\n", encoding="utf-8")
+            vpy.chmod(0o755)
+            calls["vllm_install"].append(argv[:2])
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+        if argv[:3] == ["uv", "pip", "sync"] or (len(argv) == 3 and argv[1] == "-c" and argv[2] == "import vllm, transformers, torch"):
+            calls["vllm_install"].append(argv[:3])
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+        if len(argv) == 3 and argv[1] == "-c" and Path(argv[0]).parent.parent.name == vm_judges.VLLM_VENV_NAME:
+            if argv[2] == "import platform; print(platform.python_version())":
+                return subprocess.CompletedProcess(argv, 0, stdout="3.13.9\n", stderr="")
+            if "vllm" in argv[2] and "version" in argv[2]:
+                return subprocess.CompletedProcess(argv, 0, stdout="0.34.0\n", stderr="")
+        raise AssertionError(f"real-mode harness: unexpected vm_judges subprocess.run {argv[:3]!r}")
+
+    vm_sub_proxy = types.SimpleNamespace(**{k: getattr(subprocess, k) for k in dir(subprocess) if not k.startswith("__")})
+    vm_sub_proxy.run = _vm_fake_run
+    monkeypatch.setattr(vm_judges, "subprocess", vm_sub_proxy)
+
+    # vm_judges hardware / disk / interpreter leaves.
+    monkeypatch.setattr(vm_judges, "read_vm_gpu_name", lambda: (_RTX_PRO_6000_NAME, "nvidia-smi"))
+    monkeypatch.setattr(vm_judges, "_query_free_disk_bytes", lambda _p: 4 * 1024**4)
+    py_report = {
+        "uv_source": "pinned",
+        "uv_path": "/usr/local/bin/uv",
+        "uv_version": f"uv {vm_judges.PINNED_UV_VERSION}",
+        "uv_metadata_version": vm_judges.PINNED_UV_METADATA_VERSION,
+        "uv_wheel_download_seconds": 0.0,
+        "uv_wheel_unpack_seconds": 0.0,
+        "python_version": vm_judges.REQUIRED_PYTHON_VERSION,
+        "python_315": sys.executable,
+        "interpreter_version": vm_judges.PINNED_PYTHON_VERSION_BUILD.split("+", 1)[0],
+        "interpreter_build": vm_judges.PINNED_PYTHON_BUILD,
+        "source_url": "https://example.invalid/python.tar.gz",
+        "archive_sha256_expected": "0" * 64,
+        "archive_sha256_actual": None,
+        "download_bytes": 0,
+        "installed_bytes": 0,
+        "install_seconds": 0.0,
+        "route": "found",
+    }
+    monkeypatch.setattr(vm_judges, "find_or_install_vm_python_315", lambda **_kw: dict(py_report))
+    # venv sync: the real planner and lock checks run; only the uv venv/sync subprocesses are skipped (dryrun wrappers).
+    real_sync = vm_judges.sync_judge_venvs
+    monkeypatch.setattr(
+        vm_judges, "sync_judge_venvs", lambda work_dir, repo_dir, **kw: real_sync(work_dir, repo_dir, **{**kw, "dryrun": True})
+    )
+    # Weight download: the HF fetch child is the leaf; the real receipt verification of the fixture snapshots runs.
+    monkeypatch.setattr(vm_judges, "download_all_judge_weights", lambda *_a, **_kw: [])
+
+    # Boot gatekeeper: its real record-mode checks (window id, card type, goldens) run; only the child that loads
+    # the 4B judge on the card and hashes its two synthetic generations is replaced.
+    def _fake_gatekeeper_child(*, prompts: Any, seed: int, judge_id: str, **_kw: Any) -> dict[str, str]:
+        calls["gatekeeper_child"].append(judge_id)
+        return {
+            str(p["prompt_id"]): hashlib.sha256(f"rtx-pro-6000:{judge_id}:{p['prompt_id']}:{seed}".encode("utf-8")).hexdigest()
+            for p in prompts
+        }
+
+    monkeypatch.setattr(vm_judges, "run_boot_gatekeeper_subprocess", _fake_gatekeeper_child)
+
+    # The Qwen3.6 vLLM child: the REAL judge runner CLI (bakeoff_judge.main_judge_runner) runs in-process under the
+    # child's env and argv; only the vLLM engine (transport class), its no-compile process setup and the VRAM probe
+    # are replaced, so rows/*.jsonl, judge_done/*.json and qwen36_arms_job.json are the runner's own output.
+    monkeypatch.setattr(bakeoff_judge, "real_transport_class_for", lambda _spec: _RealModeVllmStandInTransport)
+    monkeypatch.setattr(bakeoff_judge, "prepare_qwen36_no_compile_process_env", lambda **_kw: {})
+    monkeypatch.setattr(bakeoff_judge, "query_gpu_vram_peak_mib", lambda: 0)
+
+    def _fake_judge_child(child_cmd: Any, *, env: Any, timeout_seconds: float) -> dict[str, Any]:
+        argv = [str(c) for c in child_cmd]
+        assert argv[1:3] == ["-m", vm_judges.JUDGE_RUNNER_MODULE], argv[:3]
+        assert Path(argv[0]).parent.parent.name == vm_judges.VLLM_VENV_NAME, argv[0]
+        assert "--stub" not in argv
+        calls["judge_child"].append(argv)
+        out_buf, err_buf = io.StringIO(), io.StringIO()
+        with _InProcessEnv(dict(env)), contextlib.redirect_stdout(out_buf), contextlib.redirect_stderr(err_buf):
+            try:
+                rc = int(bakeoff_judge.main_judge_runner(argv[3:]) or 0)
+            except SystemExit as exc:
+                rc = int(exc.code) if isinstance(exc.code, int) else 1
+        return {
+            "returncode": rc,
+            "stdout": out_buf.getvalue(),
+            "stderr": err_buf.getvalue(),
+            "timed_out": False,
+            "elapsed_seconds": 0.5,
+            "pgid": os.getpid(),
+            "process_group_id": os.getpid(),
+            "surviving_pids": [],
+            "any_member_survived": False,
+        }
+
+    monkeypatch.setattr(vm_judges, "_run_child_with_group_timeout", _fake_judge_child)
+
+    # Session-env runtime query of venv-judge (torch/CUDA import) and the bounded disk-throughput probe.
+    monkeypatch.setattr(
+        vm_judges,
+        "_query_judge_venv_runtime",
+        lambda **_kw: {
+            "cuda_runtime": "13.2",
+            "torch_version": "2.14.1+cu132",
+            "transformers_version": "5.19.0",
+            "bitsandbytes_version": "absent",
+            "determinism_status": "enforced",
+            "determinism_warn_only": False,
+            "fill_uninitialized_memory": True,
+            "sdpa_backend": vm_judges.PINNED_SDPA_BACKEND,
+            "cudnn_benchmark": False,
+            "probe_timings": {"total_seconds": 0.01, "timed_out": False, "running_phase": None, "phases_started": []},
+        },
+    )
+    monkeypatch.setattr(
+        vm_judges,
+        "measure_session_disk_throughput",
+        lambda **_kw: {
+            "hard_bound_seconds": vm_judges.DISK_THROUGHPUT_HARD_BOUND_SECONDS,
+            "elapsed_seconds": 0.01,
+            "unit": "MB/s (1e6 bytes/s)",
+            "workspace": {"status": "ok", "write_mb_s": 1500.0, "read_mb_s": 2500.0, "read_method": "o_direct"},
+            "container_disk": {"status": "ok", "write_mb_s": 900.0, "read_mb_s": 1800.0, "read_method": "o_direct"},
+        },
+    )
+
+    # Synthetic pinned-revision snapshots + receipts for the Qwen3.6 judge and the boot gatekeeper's judge.
+    receipts_dir, hf_home, _unused_stub_env = runpod_pod_windows._prepare_stub_support_env(
+        tmp_path / "fixture_snapshots", repo_dir=REPO_ROOT, receipts_dir=tmp_path / "unused", hf_home=tmp_path / "unused"
+    )
+    return {"calls": calls, "py_report": py_report, "receipts_dir": receipts_dir, "hf_home": hf_home}
+
+
+def _run_real_mode_proof_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, copy_gate_status_early: bool = False
+) -> tuple[int, dict[str, Any], Path, dict[str, Any]]:
+    harness = _install_real_mode_pod_harness(monkeypatch, tmp_path=tmp_path, copy_gate_status_early=copy_gate_status_early)
+    synth_items = _write_synthetic_items(tmp_path / "synth.jsonl", count=4)
+    proof_bundle = tmp_path / "bundles" / "proof"
+    runpod_pod_windows.prepare_input_bundle(items_file=synth_items, out_bundle_dir=proof_bundle, synthetic_items=True)
+    proof_out = tmp_path / "runs" / "proof"
+    rc, out = runpod_pod_windows.run_pod_window(
+        window_id="qwen36-counted-proof-g4-01",
+        window_role="proof",
+        input_bundle_dir=proof_bundle,
+        out_dir=proof_out,
+        repo_dir=REPO_ROOT,
+        receipts_dir=harness["receipts_dir"],
+        work_dir=tmp_path / "work",
+        hf_home=harness["hf_home"],
+        arms=_QWEN36_FOUR_ARMS,
+        repeats=2,
+        canary_calls=4,
+        max_new_tokens=32768,
+        wall_seconds=3900,
+        stub=False,
+    )
+    return rc, out, proof_out, harness
+
+
+def test_real_mode_pod_windows_run_gate_and_vm_judges_and_seal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """stub=False proof window, then a counted window, through the real vm_judges gate and run steps ($0, CPU)."""
+    rc, out, proof_out, harness = _run_real_mode_proof_window(tmp_path, monkeypatch)
+    calls = harness["calls"]
+    log = proof_out / "logs" / "pod_runner.log"
+    assert rc == 0 and out["status"] == "ok", (out, log.read_text(encoding="utf-8")[-4000:] if log.is_file() else None)
+    assert out["seal_ok"] is True and out["failure_class"] is None
+
+    # Both vm_judges steps ran, in real mode, with the window id the boot gatekeeper needs (abort 2 of 2026-11-27).
+    assert len(calls["gate"]) == 1 and len(calls["run"]) == 1
+    for env in (calls["gate"][0], calls["run"][0]):
+        assert env["RDLAB_SESSION_ID"] == env["RDLAB_RUN_ID"] == "qwen36-counted-proof-g4-01"
+        assert env["RDLAB_HOST"] == "runpod" and env["RDLAB_CARD_TYPE"] == runpod_pod_windows.RUNPOD_CARD_TYPE
+    assert calls["gatekeeper_child"] == ["nemotron-3-nano-4b"]
+    gk = json.loads((proof_out / "status.json").read_text(encoding="utf-8"))["boot_gatekeeper"]
+    assert gk["hash_source"] == "real_transport" and gk["gatekeeper"] == vm_judges.BOOT_GATEKEEPER_RECORDED_NOT_COMPARED
+    assert len(calls["judge_child"]) == 1 and "--window-mode" in calls["judge_child"][0]
+    assert calls["judge_child"][0][calls["judge_child"][0].index("--window-mode") + 1] == "time-one"
+    assert calls["vllm_install"], "venv-vllm sync was never reached (real mode would install it)"
+
+    receipt = json.loads((proof_out / "vm_receipt.json").read_text(encoding="utf-8"))
+    assert receipt["status"] == "ok" and receipt.get("dryrun") is False, receipt.get("status")
+    plan = json.loads((proof_out / "window_plan.json").read_text(encoding="utf-8"))
+    assert plan["stub"] is False
+    boot = json.loads((proof_out / "boot_nvidia_smi.json").read_text(encoding="utf-8"))
+    assert boot["host_gpu_name"] == _RTX_PRO_6000_NAME and boot["cuda_version"] == "13.2" and boot["stub_mode"] is False
+
+    # Abort 3: gate_status.json is an allowed tar member, and it reaches out_dir (copied after vm_judges exits).
+    assert vm_judges.is_allowed_tar_member("gate_status.json")
+    gate_doc = json.loads((proof_out / "gate_status.json").read_text(encoding="utf-8"))
+    assert gate_doc["status"] == "ok"
+    summary = json.loads((proof_out / "window_summary.json").read_text(encoding="utf-8"))
+    for arm in _QWEN36_FOUR_ARMS.split(","):
+        assert summary["per_arm"][arm]["completed"] is True and summary["per_arm"][arm]["seal_ok"] is True, summary["per_arm"][arm]
+
+    proof_check = runpod_pod_windows.verify_proof_window_sealed(proof_out, allow_stub_proof=False)
+    assert proof_check["proof_window_id"] == "qwen36-counted-proof-g4-01"
+
+    # A counted window on the same pod after the sealed proof: a synthetic frozen part (bakeoff part builder, stub mode,
+    # mock writer, all under tmp_path), the real proof gate, and the same real gate + run steps.
+    part_dir, projected = _make_frozen_part_and_projection(tmp_path / "frozen_part", triads=3)
+    counted_bundle = tmp_path / "bundles" / "counted"
+    runpod_pod_windows.prepare_input_bundle(items_file=projected, part_dir=part_dir, out_bundle_dir=counted_bundle)
+    counted_out = tmp_path / "runs" / "counted"
+    rc_c, out_c = runpod_pod_windows.run_pod_window(
+        window_id="qwen36-counted-cal-01",
+        window_role="counted",
+        input_bundle_dir=counted_bundle,
+        out_dir=counted_out,
+        proof_out_dir=proof_out,
+        repo_dir=REPO_ROOT,
+        receipts_dir=harness["receipts_dir"],
+        work_dir=tmp_path / "work",
+        hf_home=harness["hf_home"],
+        arms=_QWEN36_FOUR_ARMS,
+        repeats=2,
+        canary_calls=4,
+        max_new_tokens=32768,
+        wall_seconds=23400,
+        stub=False,
+    )
+    c_log = counted_out / "logs" / "pod_runner.log"
+    assert rc_c == 0 and out_c["status"] == "ok", (out_c, c_log.read_text(encoding="utf-8")[-4000:] if c_log.is_file() else None)
+    assert out_c["seal_ok"] is True
+    c_summary = json.loads((counted_out / "window_summary.json").read_text(encoding="utf-8"))
+    assert c_summary["proof_check"]["proof_window_id"] == "qwen36-counted-proof-g4-01" and c_summary["stub"] is False
+    assert len(calls["gate"]) == 2 and len(calls["run"]) == 2
+    assert calls["run"][1]["RDLAB_SESSION_ID"] == calls["run"][1]["RDLAB_RUN_ID"] == "qwen36-counted-cal-01"
+    assert "RDLAB_SYNTHETIC_ITEMS" not in calls["run"][1]
+    assert json.loads((counted_out / "gate_status.json").read_text(encoding="utf-8"))["status"] == "ok"
+    c_ok, c_info = runpod_pod_windows.verify_sealed_manifest_dir(counted_out)
+    assert c_ok, c_info
+
+
+def test_real_mode_proof_window_pre_fix_gate_status_handling_fails_tar_allowlist(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Negative control for 2026-11-27 abort 3: with the pre-fix gate_status handling (copied into run_dir right after
+    the gate, and not in TAR_ALLOWED_EXACT_FILES) the real-mode proof window fails TAR_ALLOWLIST_VIOLATION, so the
+    harness above would have caught it before a pod was rented. Either half of the fix alone makes it seal."""
+    monkeypatch.setattr(
+        vm_judges, "TAR_ALLOWED_EXACT_FILES", frozenset(vm_judges.TAR_ALLOWED_EXACT_FILES - {"gate_status.json"})
+    )
+    assert not vm_judges.is_allowed_tar_member("gate_status.json")
+    rc, out, _proof_out, _harness = _run_real_mode_proof_window(tmp_path, monkeypatch, copy_gate_status_early=True)
+    assert rc == 2 and out["status"] == "failed" and out["seal_ok"] is False
+    assert out["failure_class"] == "TAR_ALLOWLIST_VIOLATION"
+    assert "gate_status.json" in str(out["detail"])
