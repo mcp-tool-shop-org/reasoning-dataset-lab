@@ -7314,7 +7314,7 @@ def run_qwen36_arms_job(
                         schedule_seed=schedule_seed,
                         pass_mode=pass_mode,
                         limit_items=limit_items,
-                        fake_transport=False,
+                        fake_transport=fake_transport,
                         transport=shared_transport,
                         receipts_dir=receipts_dir,
                         hf_home=hf_home,

@@ -163,23 +163,26 @@ def test_counted_window_refuses_without_sealed_proof_and_succeeds_after_proof(tm
     assert (counted_out / "outcome.json").is_file()
     assert (counted_out / "window_summary.json").is_file()
 
-    # Run proof window on stub.
-    rc_proof, out_proof = runpod_pod_windows.run_pod_window(
-        window_id="proof-01",
-        window_role="proof",
-        input_bundle_dir=proof_bundle,
-        out_dir=proof_out,
-        repo_dir=REPO_ROOT,
-        work_dir=work_dir,
-        hf_home=hf_home,
-        arms="thinking,nothink-greedy,nothink-card,nothink-matched",
-        repeats=2,
-        canary_calls=4,
-        max_new_tokens=32768,
-        limit_items=4,
-        wall_seconds=3900,
-        stub=True,
-    )
+    # Run proof window on stub with host nvidia-smi removed from PATH (matches CPU-only CI runners).
+    monkeypatch_path = ":".join(p for p in ("/usr/bin", "/bin") if Path(p).exists()) or "/usr/bin:/bin"
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("PATH", monkeypatch_path)
+        rc_proof, out_proof = runpod_pod_windows.run_pod_window(
+            window_id="proof-01",
+            window_role="proof",
+            input_bundle_dir=proof_bundle,
+            out_dir=proof_out,
+            repo_dir=REPO_ROOT,
+            work_dir=work_dir,
+            hf_home=hf_home,
+            arms="thinking,nothink-greedy,nothink-card,nothink-matched",
+            repeats=2,
+            canary_calls=4,
+            max_new_tokens=32768,
+            limit_items=4,
+            wall_seconds=3900,
+            stub=True,
+        )
     assert rc_proof == 0, out_proof
     assert out_proof["status"] == "ok", out_proof
     assert out_proof["seal_ok"] is True

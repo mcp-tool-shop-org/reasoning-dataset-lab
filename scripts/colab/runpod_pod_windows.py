@@ -903,6 +903,25 @@ def _prepare_stub_support_env(work_dir: Path, *, repo_dir: Path, receipts_dir: P
     )
     stub_uv.chmod(0o755)
 
+    stub_smi = stub_bin / "nvidia-smi"
+    _atomic_write_text(
+        stub_smi,
+        (
+            "#!/usr/bin/env bash\n"
+            'if [[ "$*" == *"--query-gpu=memory.used"* ]]; then\n'
+            '  echo "1024"\n'
+            "  exit 0\n"
+            "fi\n"
+            'if [[ "$*" == *"--query-gpu=name,driver_version,memory.total"* ]]; then\n'
+            '  echo "NVIDIA RTX PRO 6000 Blackwell Server Edition, 595.112.07, 97887 MiB"\n'
+            "  exit 0\n"
+            "fi\n"
+            'echo "| NVIDIA-SMI 595.112.07 Driver Version: 595.112.07 CUDA Version: 13.2 |"\n'
+            "exit 0\n"
+        ),
+    )
+    stub_smi.chmod(0o755)
+
     for jid in (bakeoff_judge.QWEN36_JUDGE_ID, "nemotron-3-nano-4b"):
         spec = vm_judges.JUDGE_SPECS[jid]
         owner, repo = spec.repo_id.split("/", 1)
@@ -1452,7 +1471,22 @@ def run_pod_window(
     if vm_ok and not all(entry["completed"] and entry["seal_ok"] for entry in per_arm.values()):
         seal_ok = False
         failure_class = failure_class or "ARM_INCOMPLETE_OR_UNSEALED"
-        detail = detail or "One or more scheduled arms failed to complete or seal"
+        arms_job_doc = _read_json_dict(resolved_out / bakeoff_judge.QWEN36_ARMS_JOB_FILENAME)
+        arm_errs: list[str] = []
+        if isinstance(arms_job_doc, Mapping):
+            raw_failed = arms_job_doc.get("failed_arms")
+            if isinstance(raw_failed, Mapping):
+                for failed_arm_name, failed_rec in sorted(raw_failed.items()):
+                    if isinstance(failed_rec, Mapping):
+                        fc_part = str(failed_rec.get("failure_class") or "ARM_FAILED")
+                        msg_part = str(failed_rec.get("message") or "").strip()
+                        arm_errs.append(
+                            f"{failed_arm_name}={fc_part}: {msg_part}" if msg_part else f"{failed_arm_name}={fc_part}"
+                        )
+            if arms_job_doc.get("stop_reason"):
+                arm_errs.append(f"stop_reason={arms_job_doc['stop_reason']}")
+        if detail is None:
+            detail = "; ".join(arm_errs) if arm_errs else "One or more scheduled arms failed to complete or seal"
 
     rows_run = max(0, total_rows_after - rows_reused) if resume_after_platform_death else total_rows_after
     final_status = "ok" if (vm_ok and seal_ok and failure_class is None) else "failed"
