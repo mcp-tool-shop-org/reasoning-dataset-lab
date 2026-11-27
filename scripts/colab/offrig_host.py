@@ -1553,7 +1553,7 @@ def verify_self_stop_armed(
             "OFFRIG_SELF_STOP_NOT_ARMED",
             f"on-pod self-stop timer is not armed: {matched_line or '<empty>'}",
         )
-    m = re.fullmatch(r"offrig self-stop:\s*armed\s+fire_at=(\d+)", matched_line)
+    m = re.fullmatch(r"offrig self-stop:\s*armed\s+fire_at=(\d+)(?:\s+via\s+\S+)?", matched_line)
     if not m:
         raise OffrigHostError(
             "OFFRIG_SELF_STOP_NOT_ARMED",

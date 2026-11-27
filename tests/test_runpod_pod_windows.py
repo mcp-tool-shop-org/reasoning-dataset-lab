@@ -1170,6 +1170,16 @@ def test_offrig_140_version_self_stop_and_detached_sequence_stub(tmp_path: Path)
         pod_deadline_iso="2026-11-28T15:33:20Z",
     )
     assert ss_ok["armed"] is True and ss_ok["fire_at"] == 1795880120
+    ss_via = offrig_host.verify_self_stop_armed(
+        "offrig self-stop: armed fire_at=1795880120 via python3",
+        plan_deadline_str="2026-11-28 15:33 UTC",
+        pod_deadline_iso="2026-11-28T15:33:20Z",
+    )
+    assert ss_via["armed"] is True and ss_via["fire_at"] == 1795880120
+    with pytest.raises(offrig_host.OffrigHostError, match="OFFRIG_SELF_STOP_NOT_ARMED"):
+        offrig_host.verify_self_stop_armed(
+            "offrig self-stop: STOPPED NOT TERMINATED: volume still billing", plan_deadline_str="2026-11-28 15:33 UTC"
+        )
     with pytest.raises(offrig_host.OffrigHostError, match="OFFRIG_SELF_STOP_NOT_ARMED"):
         offrig_host.verify_self_stop_armed("offrig self-stop: UNAVAILABLE (runpodctl)", plan_deadline_str="2026-11-28 15:33 UTC")
     with pytest.raises(offrig_host.OffrigHostError, match="OFFRIG_SELF_STOP_FIRE_AT_MISMATCH"):
