@@ -65,16 +65,7 @@ BOOT_NVIDIA_SMI_JSON_FILENAME = "boot_nvidia_smi.json"
 _HEX64_RE = re.compile(r"\A[0-9a-f]{64}\Z")
 _CUDA_VERSION_RE = re.compile(r"CUDA\s+Version:\s*([0-9]+(?:\.[0-9]+)*)")
 _STUB_FORBIDDEN_ID_RE = re.compile(r"(stub|test|local|fake)", re.IGNORECASE)
-_ENV_TOKEN_KEY_RE = re.compile(r"^(HF_TOKEN(_[A-Za-z0-9_]+)?|HUGGING_FACE_HUB_TOKEN|RUNPOD_API_KEY|GITHUB_TOKEN|GH_TOKEN)$")
-_SECRET_VALUE_PATTERNS: tuple[re.Pattern[str], ...] = (
-    vm_judges.UNREDACTED_PROXY_TOKEN_RE,
-    vm_judges.BEARER_TOKEN_RE,
-    vm_judges.OAUTH_YA29_RE,
-    vm_judges.OAUTH_REFRESH_RE,
-    vm_judges.JWT_RE,
-    vm_judges.HF_TOKEN_RE,
-    re.compile(r"\brpa_[A-Za-z0-9]{12,}\b"),
-)
+_STRIPPED_ENV_VAR_RE = re.compile(r"^(HF_TOKEN(_[A-Za-z0-9_]+)?|HUGGING_FACE_HUB_TOKEN|RUNPOD_API_KEY|GITHUB_TOKEN|GH_TOKEN)$")
 
 
 class PodWindowError(Exception):
@@ -141,7 +132,8 @@ def _read_json_dict(path: Path) -> dict[str, Any] | None:
     return dict(loaded) if isinstance(loaded, Mapping) else None
 
 
-def _scrub_secret_text(text: str) -> str:
+def scrub_log_output(text: str) -> str:
+    """Redact proxy, OAuth, Bearer, HF, and RunPod keys from captured runner text."""
     cleaned = vm_judges.scrub_log_text(text)
     cleaned = re.sub(r"\brpa_[A-Za-z0-9]{12,}\b", "rpa_[REDACTED]", cleaned)
     return cleaned
@@ -256,7 +248,7 @@ def capture_boot_nvidia_smi(
         try:
             tbl = runner([smi_bin], capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=30, check=False)
             if int(getattr(tbl, "returncode", 1)) == 0 and (tbl.stdout or "").strip():
-                raw_table = _scrub_secret_text(tbl.stdout)
+                raw_table = scrub_log_output(tbl.stdout)
                 m = _CUDA_VERSION_RE.search(raw_table)
                 if m:
                     cuda_version = m.group(1)
@@ -280,9 +272,9 @@ def capture_boot_nvidia_smi(
                     memory_total = parts[2]
                 available = True
             elif not available:
-                error_detail = _scrub_secret_text((tbl.stderr or q.stderr or "nvidia-smi returned non-zero").strip())
+                error_detail = scrub_log_output((tbl.stderr or q.stderr or "nvidia-smi returned non-zero").strip())
         except (OSError, subprocess.SubprocessError) as exc:
-            error_detail = _scrub_secret_text(f"{type(exc).__name__}: {exc}")
+            error_detail = scrub_log_output(f"{type(exc).__name__}: {exc}")
     else:
         error_detail = "nvidia-smi binary not found on PATH"
 
@@ -1025,7 +1017,7 @@ def _write_outcome_and_summary(
         "stub": bool(stub),
         "status": status,
         "failure_class": failure_class,
-        "detail": _scrub_secret_text(detail) if detail else None,
+        "detail": scrub_log_output(detail) if detail else None,
         "seal_ok": bool(seal_ok),
         "outputs_closed_sha256": outputs_closed_sha256,
         "rows_reused": int(rows_reused),
@@ -1115,7 +1107,7 @@ def run_pod_window(
             "id": window_id,
             "status": "refused",
             "failure_class": err.failure_class,
-            "detail": _scrub_secret_text(err.detail),
+            "detail": scrub_log_output(err.detail),
         }
 
     try:
@@ -1252,7 +1244,7 @@ def run_pod_window(
         )
 
     eff_judge_to = int(judge_timeout_seconds) if judge_timeout_seconds is not None else max(60, int(wall_seconds) - 300)
-    child_env = {k: v for k, v in os.environ.items() if not _ENV_TOKEN_KEY_RE.match(k)}
+    child_env = {k: v for k, v in os.environ.items() if not _STRIPPED_ENV_VAR_RE.match(k)}
     child_env.update(env_extra)
     repo_src_str = str(resolved_repo / "src")
     existing_pypath = child_env.get("PYTHONPATH", "")
@@ -1364,7 +1356,7 @@ def run_pod_window(
             runner_log_path.parent.mkdir(parents=True, exist_ok=True)
             _atomic_write_text(
                 runner_log_path,
-                f"gate_rc={gate_proc.returncode}\n--- stdout ---\n{_scrub_secret_text(gate_proc.stdout or '')}\n--- stderr ---\n{_scrub_secret_text(gate_proc.stderr or '')}\n",
+                f"gate_rc={gate_proc.returncode}\n--- stdout ---\n{scrub_log_output(gate_proc.stdout or '')}\n--- stderr ---\n{scrub_log_output(gate_proc.stderr or '')}\n",
             )
             gate_doc = _read_json_dict(resolved_out / "gate_status.json")
             return _finish_failure(
@@ -1393,7 +1385,7 @@ def run_pod_window(
     runner_log_path.parent.mkdir(parents=True, exist_ok=True)
     _atomic_write_text(
         runner_log_path,
-        f"rc={proc.returncode}\n--- stdout ---\n{_scrub_secret_text(proc.stdout or '')}\n--- stderr ---\n{_scrub_secret_text(proc.stderr or '')}\n",
+        f"rc={proc.returncode}\n--- stdout ---\n{scrub_log_output(proc.stdout or '')}\n--- stderr ---\n{scrub_log_output(proc.stderr or '')}\n",
     )
     if status_tmp.is_file():
         shutil.copyfile(status_tmp, resolved_out / "status.json")
@@ -1424,7 +1416,7 @@ def run_pod_window(
             outputs_closed_sha256 = str(seal_info.get("outputs_closed_sha256") or closed_doc.get("outputs_closed_sha256") or "")
         except Exception as exc:
             failure_class = "OUTPUTS_CLOSE_FAILED"
-            detail = _scrub_secret_text(str(exc))
+            detail = scrub_log_output(str(exc))
     else:
         failure_class = str(
             (vm_status or {}).get("failure_class")
@@ -1515,7 +1507,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             sys.stdout.write(json.dumps(manifest, sort_keys=True) + "\n")
             return 0
         except (PodWindowError, vm_judges.RefusalError) as exc:
-            sys.stderr.write(_scrub_secret_text(str(exc)) + "\n")
+            sys.stderr.write(scrub_log_output(str(exc)) + "\n")
             return 2
 
     rc, outcome = run_pod_window(
