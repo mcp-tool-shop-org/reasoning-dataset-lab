@@ -47,8 +47,9 @@ MIN_LIVE_CAL_NF_WALL_SECONDS = 6000
 
 DEFAULT_PROOF_WALL_SECONDS = 3900
 DEFAULT_CAL_WALL_SECONDS = 22200
-DEFAULT_CAL_NF_WALL_SECONDS = 6000
+DEFAULT_CAL_NF_WALL_SECONDS = 18000
 DEFAULT_HOLD_WALL_SECONDS = 20400
+PRIOR_RUNS_RESUME_TRIGGER = "wall_or_arm_incomplete"
 
 DEFAULT_PROOF_WINDOW_ID = "qwen36-counted-proof-g4-01"
 DEFAULT_CAL_WINDOW_ID = "qwen36-counted-cal-01"
@@ -61,7 +62,7 @@ POD_RUNS_DIR = "/workspace/job/runs"
 POD_REPO_TAR = "/workspace/rdlab.tar.gz"
 POD_BUNDLES_TAR = "/workspace/bundles.tar.gz"
 POD_PRIOR_PROOF_TAR = "/workspace/prior_proof.tar.gz"
-POD_PRIOR_PARTIAL_TAR = "/workspace/prior_partial.tar.gz"
+POD_PRIOR_PARTIAL_TAR_FMT = "/workspace/prior_partial_{window_id}.tar.gz"
 
 _WIN_DRIVE_RE = re.compile(r"^[A-Za-z]:[/\\]")
 
@@ -1232,15 +1233,74 @@ def _build_window_specs(args: argparse.Namespace) -> list[dict[str, Any]]:
     ]
 
 
+def _select_prior_runs_continuation_specs(
+    args: argparse.Namespace,
+    specs: Sequence[Mapping[str, Any]],
+    *,
+    prior_runs: Path,
+    res_trig: str | None,
+) -> tuple[list[dict[str, Any]], Path, dict[str, Path], str]:
+    """`--prior-runs-dir`: verify the prior sealed proof, skip sealed counted windows, resume incomplete ones once."""
+    if res_trig != PRIOR_RUNS_RESUME_TRIGGER:
+        raise SequenceError(
+            "RESUME_FLAGS_INCONSISTENT",
+            f"--prior-runs-dir requires --resume-trigger {PRIOR_RUNS_RESUME_TRIGGER}, got {res_trig!r}",
+        )
+    if args.resume_window or args.prior_proof_dir or args.prior_partial_dir:
+        raise SequenceError(
+            "RESUME_FLAGS_INCONSISTENT",
+            "--prior-runs-dir cannot be combined with --resume-window, --prior-proof-dir or --prior-partial-dir",
+        )
+    if not prior_runs.is_dir():
+        raise SequenceError("RESUME_OUT_DIR_MISSING", f"--prior-runs-dir must be an existing directory: {prior_runs}")
+    proof_wid = str(next(s["window_id"] for s in specs if s["role"] == "proof"))
+    prior_proof = prior_runs / proof_wid
+    if not prior_proof.is_dir():
+        raise SequenceError("PROOF_WINDOW_NOT_SEALED", f"prior proof window directory missing: {prior_proof}")
+    runpod_pod_windows.verify_proof_window_sealed(
+        prior_proof,
+        expected_max_new_tokens=int(args.max_new_tokens),
+        allow_stub_proof=bool(args.stub),
+    )
+    active: list[dict[str, Any]] = []
+    partials: dict[str, Path] = {}
+    for spec in specs:
+        if spec["role"] != "counted":
+            continue
+        wid = str(spec["window_id"])
+        win_dir = prior_runs / wid
+        outcome = runpod_pod_windows._read_json_dict(win_dir / runpod_pod_windows.OUTCOME_FILENAME)
+        if outcome is not None and outcome.get("status") == "ok" and outcome.get("seal_ok") is True:
+            continue
+        if win_dir.is_dir():
+            ledger = runpod_pod_windows._read_json_dict(win_dir / runpod_pod_windows.RESUME_LEDGER_FILENAME)
+            if (int(ledger.get("resume_count", 0) or 0) if ledger else 0) >= runpod_pod_windows.MAX_RESUMES_PER_WINDOW:
+                raise SequenceError(
+                    "RESUME_LIMIT_EXCEEDED",
+                    f"{wid}: journal replay is allowed at most once per window",
+                )
+            partials[wid] = win_dir
+        active.append(dict(spec))
+    if not active:
+        raise SequenceError("NOTHING_TO_RESUME", f"every counted window under {prior_runs} is already ok and sealed")
+    return active, prior_proof, partials, res_trig
+
+
 def _validate_and_select_replay_specs(
     args: argparse.Namespace,
     specs: Sequence[Mapping[str, Any]],
-) -> tuple[list[dict[str, Any]], Path | None, Path | None]:
-    """Validate optional 1x platform-death replay flags at $0 and slice active specs."""
+) -> tuple[list[dict[str, Any]], Path | None, dict[str, Path], str | None]:
+    """Validate optional 1x replay flags at $0 and slice active specs.
+
+    Returns (active_specs, prior_proof_dir, {window_id: prior_partial_dir}, resume_trigger).
+    """
     res_win = str(args.resume_window or "").strip() or None
     res_trig = str(args.resume_trigger or "").strip() or None
     prior_proof = Path(args.prior_proof_dir) if args.prior_proof_dir else None
     prior_partial = Path(args.prior_partial_dir) if args.prior_partial_dir else None
+    prior_runs = getattr(args, "prior_runs_dir", None)
+    if prior_runs:
+        return _select_prior_runs_continuation_specs(args, specs, prior_runs=Path(prior_runs), res_trig=res_trig)
 
     if (res_win is None) != (res_trig is None):
         raise SequenceError(
@@ -1253,7 +1313,7 @@ def _validate_and_select_replay_specs(
                 "RESUME_FLAGS_INCONSISTENT",
                 "--prior-proof-dir and --prior-partial-dir require --resume-window and --resume-trigger",
             )
-        return [dict(s) for s in specs], None, None
+        return [dict(s) for s in specs], None, {}, None
 
     if res_trig not in runpod_pod_windows.ALLOWED_RESUME_TRIGGERS:
         raise SequenceError(
@@ -1298,7 +1358,12 @@ def _validate_and_select_replay_specs(
             "--prior-proof-dir cannot be combined with resuming the proof window itself",
         )
 
-    return [dict(s) for s in specs[resume_idx:]], (prior_proof if resume_idx > 0 else None), prior_partial
+    return (
+        [dict(s) for s in specs[resume_idx:]],
+        (prior_proof if resume_idx > 0 else None),
+        {res_win: prior_partial},
+        res_trig,
+    )
 
 
 def run_counted_sequence(args: argparse.Namespace) -> int:
@@ -1343,9 +1408,9 @@ def run_counted_sequence(args: argparse.Namespace) -> int:
         )
 
     all_specs = _build_window_specs(args)
-    active_specs, prior_proof_dir, prior_partial_dir = _validate_and_select_replay_specs(args, all_specs)
-    resume_wid = str(args.resume_window or "").strip() or None
-    resume_trigger = str(args.resume_trigger or "").strip() or None
+    active_specs, prior_proof_dir, prior_partial_dirs, resume_trigger = _validate_and_select_replay_specs(
+        args, all_specs
+    )
 
     total_wall_seconds = sum(int(s["wall_seconds"]) for s in active_specs)
     local_plan = offrig_host.compute_local_plan_worst_case(
@@ -1396,13 +1461,13 @@ def run_counted_sequence(args: argparse.Namespace) -> int:
     bundles_tar = _stage_counted_bundles(args, stage_dir=stage_dir)
 
     prior_proof_tar: Path | None = None
-    prior_partial_tar: Path | None = None
+    prior_partial_tars: dict[str, Path] = {}
     if prior_proof_dir is not None:
         prior_proof_tar = stage_dir / "prior_proof.tar.gz"
         _pack_named_dir_tar_gz(prior_proof_dir, prior_proof_tar, arcname=str(args.proof_window_id))
-    if prior_partial_dir is not None and resume_wid is not None:
-        prior_partial_tar = stage_dir / "prior_partial.tar.gz"
-        _pack_named_dir_tar_gz(prior_partial_dir, prior_partial_tar, arcname=resume_wid)
+    for p_wid, p_dir in prior_partial_dirs.items():
+        prior_partial_tars[p_wid] = stage_dir / f"prior_partial_{p_wid}.tar.gz"
+        _pack_named_dir_tar_gz(p_dir, prior_partial_tars[p_wid], arcname=p_wid)
 
     plan_id: int | None = None
     pod_id: str | None = None
@@ -1493,13 +1558,14 @@ def run_counted_sequence(args: argparse.Namespace) -> int:
                 command=f"tar -xzf {POD_PRIOR_PROOF_TAR} -C {POD_RUNS_DIR}",
                 label="unpack prior sealed proof",
             )
-        if prior_partial_tar is not None:
-            _put_file(client, plan_id=plan_id, local_path=prior_partial_tar, pod_path=POD_PRIOR_PARTIAL_TAR)
+        for p_wid, p_tar in prior_partial_tars.items():
+            pod_p_tar = POD_PRIOR_PARTIAL_TAR_FMT.format(window_id=p_wid)
+            _put_file(client, plan_id=plan_id, local_path=p_tar, pod_path=pod_p_tar)
             _exec_run_ok(
                 client,
                 plan_id=plan_id,
-                command=f"tar -xzf {POD_PRIOR_PARTIAL_TAR} -C {POD_RUNS_DIR}",
-                label="unpack prior partial out-dir",
+                command=f"tar -xzf {pod_p_tar} -C {POD_RUNS_DIR}",
+                label=f"unpack prior partial out-dir {p_wid}",
             )
 
         for spec in active_specs:
@@ -1549,7 +1615,8 @@ def run_counted_sequence(args: argparse.Namespace) -> int:
                 win_args.append("--stub")
                 if args.stub_limit_items is not None:
                     win_args.extend(["--limit-items", str(args.stub_limit_items)])
-            if resume_wid == wid and resume_trigger is not None:
+            win_resumed = wid in prior_partial_dirs and resume_trigger is not None
+            if win_resumed:
                 win_args.extend(
                     [
                         "--resume-after-platform-death",
@@ -1629,8 +1696,8 @@ def run_counted_sequence(args: argparse.Namespace) -> int:
                 "ok": win_ok,
                 "step_error": step_err,
                 "fetch_error": fetch_err,
-                "resumed": resume_wid == wid,
-                "resume_trigger": resume_trigger if resume_wid == wid else None,
+                "resumed": win_resumed,
+                "resume_trigger": resume_trigger if win_resumed else None,
             }
             window_results.append(entry)
             runpod_pod_windows._atomic_write_json(
@@ -1776,6 +1843,7 @@ def _add_counted_args(p: argparse.ArgumentParser, *, for_counted: bool) -> None:
     p.add_argument("--resume-trigger", default=None)
     p.add_argument("--prior-proof-dir", type=Path, default=None)
     p.add_argument("--prior-partial-dir", type=Path, default=None)
+    p.add_argument("--prior-runs-dir", type=Path, default=None)
     p.add_argument("--stub-limit-items", type=int, default=None)
     p.add_argument("--stub-repeats", type=int, default=None)
     p.add_argument("--stub-canary-calls", type=int, default=None)

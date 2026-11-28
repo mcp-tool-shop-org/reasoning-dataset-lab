@@ -6983,6 +6983,9 @@ def run_qwen36_arms_job(
     resumed_set: set[str] = set()
     last_completed_arm_seconds: float | None = None
     last_per_call_seconds: float | None = None
+    # enable_thinking regime of the arm that produced last_* timings; between-arm extrapolation
+    # only applies to a next arm in the same regime (thinking ~30x slower per call than nothink-*).
+    last_timed_arm_is_thinking: bool | None = None
     last_estimated_next_arm_seconds: float | None = None
 
     for arm_idx, arm in enumerate(arms):
@@ -7018,6 +7021,7 @@ def run_qwen36_arms_job(
             )
             if resumed_elapsed is not None and resumed_elapsed >= 0.0:
                 last_completed_arm_seconds = resumed_elapsed
+                last_timed_arm_is_thinking = arm == QWEN36_THINKING_ARM
                 recorded_calls = int(existing_done.get("row_count", 0) or 0) + int(
                     existing_done.get("duplicate_canary_row_count", 0) or 0
                 )
@@ -7199,6 +7203,11 @@ def run_qwen36_arms_job(
             last_remaining_wall_seconds = rem_s
             if rem_s <= 0.0:
                 return WALL_STOP_BETWEEN_ARMS
+            if rem_s < eff_margin_seconds:
+                return WALL_BUDGET_INSUFFICIENT_BETWEEN_ARMS
+            if last_timed_arm_is_thinking is None or last_timed_arm_is_thinking != (name == QWEN36_THINKING_ARM):
+                # Cross-regime (thinking -> nothink-*): no extrapolation from the other regime's timing.
+                return None
             if last_per_call_seconds is not None:
                 est_next_s = last_per_call_seconds * float(planned_calls_by_arm.get(name, 0))
                 last_estimated_next_arm_seconds = est_next_s
@@ -7388,6 +7397,7 @@ def run_qwen36_arms_job(
                 )
                 arm_duration_s = max(arm_wall_s, arm_measured_s)
                 last_completed_arm_seconds = arm_duration_s
+                last_timed_arm_is_thinking = arm == QWEN36_THINKING_ARM
                 completed_calls = int(arm_res.get("row_count", 0) or 0) + int(
                     arm_res.get("duplicate_canary_row_count", 0) or 0
                 )

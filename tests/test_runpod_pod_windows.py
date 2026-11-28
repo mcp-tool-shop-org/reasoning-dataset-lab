@@ -26,6 +26,10 @@ import vm_judges  # noqa: E402
 from reasoning_dataset_lab.pilot_b import bakeoff_judge  # noqa: E402
 from reasoning_dataset_lab.pilot_b.bakeoff_part import run_bakeoff_part_build  # noqa: E402
 
+# CAL-nf's default wall is 18,000 s since 2026-11-28 (Carbon ruling). With it the default 4-window counted
+# sequence (64,500 s) exceeds the locked $45 worst case, so stub sequence tests pin CAL-nf to the 6,000 s floor.
+_CAL_NF_FLOOR_ARGS: tuple[str, ...] = ("--cal-nf-wall-seconds", "6000")
+
 
 def _write_synthetic_items(path: Path, count: int = 4) -> Path:
     rows = [
@@ -1333,6 +1337,7 @@ def test_offrig_140_version_self_stop_and_detached_sequence_stub(tmp_path: Path)
             sys.executable,
             str(seq_script),
             "counted",
+            *_CAL_NF_FLOOR_ARGS,
             "--repo-dir",
             str(REPO_ROOT),
             "--stage-dir",
@@ -1359,6 +1364,7 @@ def test_offrig_140_version_self_stop_and_detached_sequence_stub(tmp_path: Path)
             sys.executable,
             str(seq_script),
             "counted",
+            *_CAL_NF_FLOOR_ARGS,
             "--repo-dir",
             str(REPO_ROOT),
             "--stage-dir",
@@ -1413,6 +1419,7 @@ def test_offrig_140_version_self_stop_and_detached_sequence_stub(tmp_path: Path)
             sys.executable,
             str(seq_script),
             "counted",
+            *_CAL_NF_FLOOR_ARGS,
             "--repo-dir",
             str(REPO_ROOT),
             "--stage-dir",
@@ -1496,6 +1503,7 @@ def test_offrig_140_version_self_stop_and_detached_sequence_stub(tmp_path: Path)
             sys.executable,
             str(seq_script),
             "counted",
+            *_CAL_NF_FLOOR_ARGS,
             "--repo-dir",
             str(REPO_ROOT),
             "--stage-dir",
@@ -1563,6 +1571,7 @@ def test_offrig_140_version_self_stop_and_detached_sequence_stub(tmp_path: Path)
             sys.executable,
             str(seq_script),
             "counted",
+            *_CAL_NF_FLOOR_ARGS,
             "--repo-dir",
             str(REPO_ROOT),
             "--stage-dir",
@@ -1623,6 +1632,7 @@ def test_offrig_140_version_self_stop_and_detached_sequence_stub(tmp_path: Path)
             sys.executable,
             str(seq_script),
             "counted",
+            *_CAL_NF_FLOOR_ARGS,
             "--repo-dir",
             str(REPO_ROOT),
             "--stage-dir",
@@ -1707,6 +1717,7 @@ def test_targeted_fix_1_offrig_project_and_dot_offrig_tar_exclude(tmp_path: Path
             sys.executable,
             str(REPO_ROOT / "scripts" / "colab" / "runpod_pod_sequence.py"),
             "preflight",
+            *_CAL_NF_FLOOR_ARGS,
             "--repo-dir",
             str(REPO_ROOT),
             "--offrig-project",
@@ -1762,6 +1773,7 @@ def test_targeted_fix_2_dead_mcp_client_mid_window_still_tears_down_with_fresh_r
             sys.executable,
             str(REPO_ROOT / "scripts" / "colab" / "runpod_pod_sequence.py"),
             "counted",
+            *_CAL_NF_FLOOR_ARGS,
             "--repo-dir",
             str(REPO_ROOT),
             "--offrig-project",
@@ -1931,6 +1943,7 @@ def test_targeted_fix_6_poll_fallback_timeout_stops_pod_job_before_next_window(t
             sys.executable,
             str(REPO_ROOT / "scripts" / "colab" / "runpod_pod_sequence.py"),
             "counted",
+            *_CAL_NF_FLOOR_ARGS,
             "--repo-dir",
             str(REPO_ROOT),
             "--offrig-project",
@@ -2019,6 +2032,7 @@ def test_targeted_fix_7_replay_passthrough_mid_cal_death_reruns_tampered_row(tmp
             sys.executable,
             seq_py,
             "counted",
+            *_CAL_NF_FLOOR_ARGS,
             "--repo-dir",
             str(REPO_ROOT),
             "--offrig-project",
@@ -2076,6 +2090,7 @@ def test_targeted_fix_7_replay_passthrough_mid_cal_death_reruns_tampered_row(tmp
             sys.executable,
             seq_py,
             "counted",
+            *_CAL_NF_FLOOR_ARGS,
             "--repo-dir",
             str(REPO_ROOT),
             "--offrig-project",
@@ -2140,6 +2155,7 @@ def test_targeted_fix_7_replay_passthrough_mid_cal_death_reruns_tampered_row(tmp
             sys.executable,
             seq_py,
             "counted",
+            *_CAL_NF_FLOOR_ARGS,
             "--repo-dir",
             str(REPO_ROOT),
             "--offrig-project",
@@ -2170,6 +2186,165 @@ def test_targeted_fix_7_replay_passthrough_mid_cal_death_reruns_tampered_row(tmp
     )
     assert p3_proc.returncode == 2
     assert "RESUME_LIMIT_EXCEEDED" in p3_proc.stderr
+    assert not (p3_stage / "_stub_offrig" / "offrig_calls.jsonl").exists()
+
+
+def test_prior_runs_dir_selects_skip_resume_and_fresh_windows_at_zero_cost(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`counted --prior-runs-dir`: verify the prior proof, skip ok+sealed counted windows, resume incomplete ones once."""
+    import socket
+
+    import runpod_pod_sequence
+
+    def _trip(*_a: Any, **_k: Any) -> Any:
+        raise AssertionError("tripwire: process spawn or network connect attempted in an in-process test")
+
+    monkeypatch.setattr(subprocess, "Popen", _trip)
+    for name in ("posix_spawn", "posix_spawnp"):
+        if hasattr(os, name):
+            monkeypatch.setattr(os, name, _trip)
+    monkeypatch.setattr(socket.socket, "connect", _trip)
+    monkeypatch.setattr(socket.socket, "connect_ex", _trip)
+
+    assert "wall_or_arm_incomplete" in runpod_pod_windows.ALLOWED_RESUME_TRIGGERS
+    assert runpod_pod_windows.MAX_RESUMES_PER_WINDOW == 1
+    assert runpod_pod_sequence.DEFAULT_CAL_NF_WALL_SECONDS == 18000
+    assert runpod_pod_sequence.MIN_LIVE_CAL_NF_WALL_SECONDS == 6000
+
+    proof_checked: list[Path] = []
+    monkeypatch.setattr(
+        runpod_pod_windows,
+        "verify_proof_window_sealed",
+        lambda p, **kw: proof_checked.append(Path(p)) or {"ok": True},
+    )
+    prior = tmp_path / "prior_runs"
+    (prior / "qwen36-counted-proof-g4-01").mkdir(parents=True)
+    (prior / "qwen36-counted-cal-01").mkdir()
+    (prior / "qwen36-counted-cal-nf-01").mkdir()
+    (prior / "qwen36-counted-cal-nf-01" / "outcome.json").write_text(
+        json.dumps({"status": "ok", "seal_ok": True}), encoding="utf-8"
+    )
+    parser = runpod_pod_sequence._build_parser()
+    base = ["counted", "--repo-dir", str(REPO_ROOT), "--stage-dir", str(tmp_path / "st"), "--runs-local", str(tmp_path / "rl"), "--stub"]
+
+    def _select(*extra: str) -> Any:
+        ns = parser.parse_args([*base, *extra])
+        return runpod_pod_sequence._validate_and_select_replay_specs(ns, runpod_pod_sequence._build_window_specs(ns))
+
+    ok_flags = ("--prior-runs-dir", str(prior), "--resume-trigger", "wall_or_arm_incomplete")
+    active, proof_dir, partials, trig = _select(*ok_flags)
+    assert [s["window_id"] for s in active] == ["qwen36-counted-cal-01", "qwen36-counted-hold-01"]
+    assert proof_dir == prior / "qwen36-counted-proof-g4-01" and proof_checked == [proof_dir]
+    assert partials == {"qwen36-counted-cal-01": prior / "qwen36-counted-cal-01"}
+    assert trig == "wall_or_arm_incomplete"
+
+    for bad in (
+        ("--prior-runs-dir", str(prior), "--resume-trigger", "pod_gone"),
+        ("--prior-runs-dir", str(prior)),
+        (*ok_flags, "--resume-window", "qwen36-counted-cal-01"),
+        (*ok_flags, "--prior-partial-dir", str(prior / "qwen36-counted-cal-01")),
+    ):
+        with pytest.raises(runpod_pod_sequence.SequenceError, match="RESUME_FLAGS_INCONSISTENT"):
+            _select(*bad)
+
+    (prior / "qwen36-counted-cal-01" / runpod_pod_windows.RESUME_LEDGER_FILENAME).write_text(
+        json.dumps({"resume_count": 1}), encoding="utf-8"
+    )
+    with pytest.raises(runpod_pod_sequence.SequenceError, match="RESUME_LIMIT_EXCEEDED"):
+        _select(*ok_flags)
+
+    for wid in ("qwen36-counted-cal-01", "qwen36-counted-hold-01"):
+        (prior / wid).mkdir(exist_ok=True)
+        (prior / wid / "outcome.json").write_text(json.dumps({"status": "ok", "seal_ok": True}), encoding="utf-8")
+    with pytest.raises(runpod_pod_sequence.SequenceError, match="NOTHING_TO_RESUME"):
+        _select(*ok_flags)
+
+
+def test_prior_runs_dir_stub_continuation_resumes_incomplete_cal_and_runs_the_rest(tmp_path: Path) -> None:
+    """Pod 1 dies mid-CAL; pod 2 `counted --prior-runs-dir` resumes cal-01 once and finishes cal-nf-01 + hold-01."""
+    sv = _make_stub_smoke_verified(tmp_path, stub_flag=True)
+    synth_items = _write_synthetic_items(tmp_path / "synth_pr.jsonl", count=4)
+    seq_py = str(REPO_ROOT / "scripts" / "colab" / "runpod_pod_sequence.py")
+    proj_dir = tmp_path / "proj_pr"
+    stub_tail = ["--poll-interval", "0.1", "--stub", "--stub-limit-items", "4", "--stub-repeats", "1", "--stub-canary-calls", "2"]
+
+    p1_stage = tmp_path / "p1_stage"
+    p1_runs = tmp_path / "p1_runs"
+    (p1_stage / "_stub_offrig").mkdir(parents=True, exist_ok=True)
+    p1_cfg = p1_stage / "_stub_offrig" / "fake_cfg.json"
+    p1_cfg.write_text(
+        json.dumps(
+            {
+                "vm_root_dir": str(p1_stage / "_stub_offrig" / "vm_root"),
+                "pod_vm_root": "/workspace",
+                "gpu": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+                "launch_include_pod_id": True,
+                "real_detached_subprocess": True,
+                "simulate_mid_window_death": "qwen36-counted-cal-01",
+            }
+        ),
+        encoding="utf-8",
+    )
+    p1_env = dict(os.environ)
+    p1_env["RDLAB_FAKE_OFFRIG_CONFIG"] = str(p1_cfg)
+    p1_proc = subprocess.run(
+        [
+            sys.executable, seq_py, "counted", *_CAL_NF_FLOOR_ARGS,
+            "--repo-dir", str(REPO_ROOT), "--offrig-project", str(proj_dir),
+            "--stage-dir", str(p1_stage), "--runs-local", str(p1_runs),
+            "--smoke-verified", str(sv), "--proof-items-file", str(synth_items),
+            *stub_tail,
+        ],
+        env=p1_env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=180, check=False,
+    )
+    assert p1_proc.returncode == 2, p1_proc.stdout + "\n" + p1_proc.stderr
+    assert not (p1_runs / "qwen36-counted-cal-01" / "outcome.json").exists()
+
+    p2_stage = tmp_path / "p2_stage"
+    p2_runs = tmp_path / "p2_runs"
+    p2_proc = subprocess.run(
+        [
+            sys.executable, seq_py, "counted", *_CAL_NF_FLOOR_ARGS,
+            "--repo-dir", str(REPO_ROOT), "--offrig-project", str(proj_dir),
+            "--stage-dir", str(p2_stage), "--runs-local", str(p2_runs),
+            "--smoke-verified", str(sv), "--proof-items-file", str(synth_items),
+            "--prior-runs-dir", str(p1_runs), "--resume-trigger", "wall_or_arm_incomplete",
+            *stub_tail,
+        ],
+        stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=180, check=False,
+    )
+    assert p2_proc.returncode == 0, p2_proc.stdout + "\n" + p2_proc.stderr
+    p2_sum = json.loads((p2_runs / "sequence_summary.json").read_text(encoding="utf-8"))
+    by_wid = {w["window_id"]: w for w in p2_sum["windows"]}
+    assert list(by_wid) == ["qwen36-counted-cal-01", "qwen36-counted-cal-nf-01", "qwen36-counted-hold-01"]
+    assert by_wid["qwen36-counted-cal-01"]["resumed"] is True
+    assert by_wid["qwen36-counted-cal-01"]["resume_trigger"] == "wall_or_arm_incomplete"
+    assert all(w["ok"] and w["seal_ok"] for w in p2_sum["windows"])
+    assert p2_sum["teardown"]["teardown_ok"] is True
+    cal_outcome = json.loads((p2_runs / "qwen36-counted-cal-01" / "outcome.json").read_text(encoding="utf-8"))
+    assert cal_outcome["resume_count"] == 1 and cal_outcome["trigger"] == "wall_or_arm_incomplete"
+    assert cal_outcome["rows_dropped_invalid"] == 0 and cal_outcome["rows_reused"] > 0
+
+    # Every counted window is now ok+sealed beside the prior proof: a further continuation refuses at $0.
+    p3_prior = tmp_path / "p3_prior"
+    shutil.copytree(p1_runs / "qwen36-counted-proof-g4-01", p3_prior / "qwen36-counted-proof-g4-01")
+    for wid in by_wid:
+        shutil.copytree(p2_runs / wid, p3_prior / wid)
+    p3_stage = tmp_path / "p3_stage"
+    p3_proc = subprocess.run(
+        [
+            sys.executable, seq_py, "counted", *_CAL_NF_FLOOR_ARGS,
+            "--repo-dir", str(REPO_ROOT), "--offrig-project", str(proj_dir),
+            "--stage-dir", str(p3_stage), "--runs-local", str(tmp_path / "p3_runs"),
+            "--smoke-verified", str(sv), "--proof-items-file", str(synth_items),
+            "--prior-runs-dir", str(p3_prior), "--resume-trigger", "wall_or_arm_incomplete",
+            "--stub",
+        ],
+        stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60, check=False,
+    )
+    assert p3_proc.returncode == 2
+    assert "NOTHING_TO_RESUME" in p3_proc.stderr
     assert not (p3_stage / "_stub_offrig" / "offrig_calls.jsonl").exists()
 
 

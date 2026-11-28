@@ -49,6 +49,9 @@ ALLOWED_RESUME_TRIGGERS: tuple[str, ...] = (
     "ssh_lost",
     "engine_oom",
     "offrig_watchdog",
+    # Non-platform: a counted window that ended on its wall or between arms (e.g. cal-01's
+    # WALL_BUDGET_INSUFFICIENT_FOR_NEXT_ARM) replays its verified rows once on a continuation pod.
+    "wall_or_arm_incomplete",
 )
 MAX_RESUMES_PER_WINDOW = 1
 
