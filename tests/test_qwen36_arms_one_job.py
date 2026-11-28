@@ -2412,6 +2412,144 @@ def test_between_arm_guard_scales_by_planned_calls_and_seeds_from_resumed_arm(
     assert res2["estimated_next_arm_seconds"] == pytest.approx(2.0)
 
 
+def _install_no_spawn_no_net_tripwires(monkeypatch: pytest.MonkeyPatch) -> None:
+    import socket
+
+    def _trip(*_a: Any, **_k: Any) -> Any:
+        raise AssertionError("tripwire: process spawn or network connect attempted in an in-process test")
+
+    monkeypatch.setattr(subprocess, "Popen", _trip)
+    for name in ("posix_spawn", "posix_spawnp"):
+        if hasattr(os, name):
+            monkeypatch.setattr(os, name, _trip)
+    monkeypatch.setattr(socket.socket, "connect", _trip)
+    monkeypatch.setattr(socket.socket, "connect_ex", _trip)
+
+
+@pytest.mark.parametrize("resume_after_thinking", [False, True], ids=["one_job", "resumed_thinking"])
+def test_between_arm_guard_is_regime_aware_thinking_never_blocks_nothink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    resume_after_thinking: bool,
+) -> None:
+    """Slow thinking timing (1.0 s/call) is never extrapolated onto nothink-greedy; greedy (0.05 s/call) calibrates card.
+
+    2026-11-28 cal-01: thinking 27.3 s/call x 606 greedy calls refused nothink-greedy with 6,121 s left, though
+    nothink-* runs ~30x faster per call. The rem <= 0 and rem < margin checks still apply across regimes.
+    """
+    _install_no_spawn_no_net_tripwires(monkeypatch)
+    items_path = _write_items_jsonl(tmp_path / "items.jsonl", _synth_items(count=4, prefix="regime"))
+    env_wall = _setup_fake_vllm_with_dynamic_responder(tmp_path / "hf_regime", monkeypatch)
+    monkeypatch.setenv(bakeoff_judge.QWEN36_MAX_NEW_TOKENS_ENV_VAR, "2048")
+    monkeypatch.setenv(bakeoff_judge.QWEN36_REPEATS_ENV_VAR, "5")
+    monkeypatch.setenv(bakeoff_judge.QWEN36_CANARY_CALLS_ENV_VAR, "0")
+
+    # 4 items = 8 calls in thinking/nothink-greedy, 40 in nothink-card.
+    # thinking takes 8.00 s (1.0 s/call); each nothink arm takes 0.40 s (0.05 s/call).
+    arm_seconds = {"thinking": 8.0, "nothink-greedy": 0.40, "nothink-card": 0.40, "nothink-matched": 0.40}
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(bakeoff_judge.time, "monotonic", lambda: clock["now"])
+    orig_impl = bakeoff_judge._run_bakeoff_judge_impl
+
+    def _step_clock(*a: Any, **kw: Any) -> Any:
+        out = orig_impl(*a, **kw)
+        dur = arm_seconds[Path(kw["output_dir"]).name]
+        clock["now"] += dur
+        out["elapsed_seconds"] = dur
+        done_p = Path(out["judge_done_path"])
+        dd = json.loads(done_p.read_text(encoding="utf-8"))
+        dd["elapsed_seconds"] = dur
+        dd["llm_init_seconds"] = 0.0
+        done_p.write_text(json.dumps(dd, indent=2) + "\n", encoding="utf-8")
+        return out
+
+    monkeypatch.setattr(bakeoff_judge, "_run_bakeoff_judge_impl", _step_clock)
+    four = "thinking,nothink-greedy,nothink-card,nothink-matched"
+    out_dir = tmp_path / "regime_out"
+
+    def _run(deadline: float) -> dict[str, Any]:
+        return run_qwen36_arms_job(
+            part_dir=items_path,
+            output_dir=out_dir,
+            judge=QWEN36_ID,
+            qwen36_arms=four,
+            pass_mode=CONTRA,
+            fake_transport=False,
+            receipts_dir=env_wall["receipts_dir"],
+            hf_home=env_wall["hf_home"],
+            device="cpu",
+            schedule_seed=42,
+            shard_spec="1/1",
+            window_mode="time-one",
+            run_canary=False,
+            wall_deadline_monotonic=deadline,
+            between_arm_margin_seconds=0.10,
+        )
+
+    if resume_after_thinking:
+        # Pod 1: thinking completes, then 0.05 s left (< 0.10 s margin) -> refused before greedy, across regimes.
+        res0 = _run(1000.0 + 8.0 + 0.05)
+        assert res0["completed_arms"] == ["thinking"]
+        assert res0["stop_reason"] == bakeoff_judge.WALL_BUDGET_INSUFFICIENT_BETWEEN_ARMS
+        assert res0["estimated_next_arm_seconds"] is None
+        # Pod 2 (journal replay): resumed thinking seeds 1.0 s/call, which must not refuse greedy with 1.60 s left.
+        clock["now"] = 2000.0
+        res = _run(2000.0 + 0.40 + 1.20)
+        assert res["resumed_skipped_arms"] == ["thinking"]
+    else:
+        # Old guard: 1.0 s/call x 8 greedy calls = 8.0 s > 1.60 s left -> would have refused nothink-greedy.
+        res = _run(1000.0 + 8.0 + 0.40 + 1.20)
+        assert res["resumed_skipped_arms"] == []
+    assert res["completed_arms"] == ["thinking", "nothink-greedy"]
+    assert res["not_started_arms"] == ["nothink-card", "nothink-matched"]
+    assert res["stopped_between_arms"] is True
+    # Same-regime extrapolation from greedy: 40 x 0.05 = 2.00 s + 0.10 s margin > 1.20 s left.
+    assert res["stop_reason"] == bakeoff_judge.WALL_BUDGET_INSUFFICIENT_BETWEEN_ARMS
+    assert res["last_per_call_seconds"] == pytest.approx(0.05)
+    assert res["estimated_next_arm_seconds"] == pytest.approx(2.0)
+
+
+def test_between_arm_guard_cross_regime_still_stops_when_wall_is_spent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """rem <= 0 after thinking stops with WALL_STOP_BETWEEN_ARMS even though the next arm is in the other regime."""
+    _install_no_spawn_no_net_tripwires(monkeypatch)
+    items_path = _write_items_jsonl(tmp_path / "items.jsonl", _synth_items(count=4, prefix="spent"))
+    env_wall = _setup_fake_vllm_with_dynamic_responder(tmp_path / "hf_spent", monkeypatch)
+    monkeypatch.setenv(bakeoff_judge.QWEN36_MAX_NEW_TOKENS_ENV_VAR, "2048")
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(bakeoff_judge.time, "monotonic", lambda: clock["now"])
+    orig_impl = bakeoff_judge._run_bakeoff_judge_impl
+
+    def _step_clock(*a: Any, **kw: Any) -> Any:
+        out = orig_impl(*a, **kw)
+        clock["now"] += 8.0
+        return out
+
+    monkeypatch.setattr(bakeoff_judge, "_run_bakeoff_judge_impl", _step_clock)
+    res = run_qwen36_arms_job(
+        part_dir=items_path,
+        output_dir=tmp_path / "spent_out",
+        judge=QWEN36_ID,
+        qwen36_arms="thinking,nothink-greedy",
+        pass_mode=CONTRA,
+        fake_transport=False,
+        receipts_dir=env_wall["receipts_dir"],
+        hf_home=env_wall["hf_home"],
+        device="cpu",
+        schedule_seed=42,
+        shard_spec="1/1",
+        window_mode="time-one",
+        run_canary=False,
+        wall_deadline_monotonic=1007.0,
+        between_arm_margin_seconds=0.10,
+    )
+    assert res["completed_arms"] == ["thinking"]
+    assert res["not_started_arms"] == ["nothink-greedy"]
+    assert res["stop_reason"] == bakeoff_judge.WALL_STOP_BETWEEN_ARMS
+
+
 def test_single_arm_subblock_progress_elapsed_seconds_stays_per_pass(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -663,6 +663,11 @@ TAR_ALLOWED_EXACT_FILES: frozenset[str] = frozenset(
         P0A_REPORT_FILENAME,
         P0A_CHILDREN_FILENAME,
         WINDOW_MANIFEST_FILENAME,
+        "boot_nvidia_smi.json",
+        "boot_nvidia_smi.txt",
+        "window_plan.json",
+        "resume_ledger.json",
+        "gate_status.json",
     }
 )
 TAR_ALLOWED_DIRS: frozenset[str] = frozenset(
@@ -2316,6 +2321,46 @@ def build_vm_venv_commands(
     }
 
 
+def _uv_venv_is_valid(venv_dir: Path) -> bool:
+    """A venv `uv venv` finished: `bin/python` and `pyvenv.cfg` both on disk."""
+    return (venv_dir / "bin" / "python").is_file() and (venv_dir / "pyvenv.cfg").is_file()
+
+
+def ensure_uv_venv_synced(
+    venv_dir: Path,
+    venv_cmd: Sequence[str],
+    after_cmds: Sequence[Sequence[str]],
+    *,
+    env: Mapping[str, str],
+) -> str:
+    """Create, reuse or rebuild one VM venv, then run `after_cmds` (its `uv pip sync`, and any import check).
+
+    A fresh dir runs `venv_cmd` as given (never `--clear`). A valid venv already on disk (an earlier window on the
+    same pod `work_dir`) skips `uv venv`, which would exit 2 ("already exists"), and runs `after_cmds` alone. A
+    partial dir, or a reused venv whose `after_cmds` fail, is rebuilt once with `uv venv --clear` and `after_cmds`
+    run again. Returns the route taken: "created", "reused" or "rebuilt"."""
+    venv_dir = Path(venv_dir)
+    clear_cmd = ["uv", "venv", "--clear", *[str(c) for c in list(venv_cmd)[2:]]]
+
+    def _run_after() -> None:
+        for cmd in after_cmds:
+            run_vm_subprocess(cmd, env=env, check=True)
+
+    if not venv_dir.exists():
+        run_vm_subprocess(venv_cmd, env=env, check=True)
+        _run_after()
+        return "created"
+    if _uv_venv_is_valid(venv_dir):
+        try:
+            _run_after()
+            return "reused"
+        except (RefusalError, subprocess.SubprocessError, OSError):
+            pass
+    run_vm_subprocess(clear_cmd, env=env, check=True)
+    _run_after()
+    return "rebuilt"
+
+
 def sync_judge_venvs(
     work_dir: Path,
     repo_dir: Path,
@@ -2380,7 +2425,9 @@ def sync_judge_venvs(
     if not dryrun and mode == "stub":
         pyyaml_lock_file = work_dir / "pyyaml-sdist.lock.txt"
         pyyaml_lock_file.write_text(pyyaml_req_text, encoding="utf-8", newline="\n")
-        run_vm_subprocess(plan["venv_judge"]["venv_cmd"], env=sync_env, check=True)
+        ensure_uv_venv_synced(
+            Path(plan["venv_judge"]["path"]), plan["venv_judge"]["venv_cmd"], [], env=sync_env
+        )
         venv_judge_created = True
         run_vm_subprocess(pyyaml_build_cmd, env=sync_env, check=True)
     pyyaml_timing = _record_step_end(
@@ -2406,9 +2453,10 @@ def sync_judge_venvs(
             extra={"venv": vinfo["path"], "lock": vinfo["lock"]},
         )
         if not dryrun:
-            if not (key == "venv_judge" and venv_judge_created):
-                run_vm_subprocess(vinfo["venv_cmd"], env=sync_env, check=True)
-            run_vm_subprocess(vinfo["sync_cmd"], env=sync_env, check=True)
+            if key == "venv_judge" and venv_judge_created:
+                run_vm_subprocess(vinfo["sync_cmd"], env=sync_env, check=True)
+            else:
+                ensure_uv_venv_synced(Path(vinfo["path"]), vinfo["venv_cmd"], [vinfo["sync_cmd"]], env=sync_env)
         else:
             _ensure_dryrun_venv_python_wrapper(Path(vinfo["python"]))
         venv_timings_by_key[key] = _record_step_end(
@@ -6337,6 +6385,8 @@ def is_allowed_tar_member(rel_posix_path: str) -> bool:
             return True
         return False
     if cleaned in TAR_ALLOWED_DIRS or cleaned in TAR_ALLOWED_EXACT_FILES:
+        return True
+    if len(parts) == 1 and parts[0].startswith("refusal-") and parts[0].endswith(".json"):
         return True
     if len(parts) == 2 and parts[0] == ROWS_DIRNAME and parts[1].endswith(".jsonl"):
         return True
@@ -19958,27 +20008,29 @@ def ensure_vllm_venv(
     uv_env = build_vm_uv_env()
     t0 = time.monotonic()
     try:
-        run_vm_subprocess(["uv", "venv", "--python", VLLM_PYTHON_VERSION, str(venv_dir)], env=uv_env, check=True)
-        run_vm_subprocess(
+        ensure_uv_venv_synced(
+            venv_dir,
+            ["uv", "venv", "--python", VLLM_PYTHON_VERSION, str(venv_dir)],
             [
-                "uv",
-                "pip",
-                "sync",
-                "--python",
-                str(venv_python),
-                "--only-binary",
-                ":all:",
-                "--no-binary",
-                "pyyaml",
-                "--require-hashes",
-                "--index-strategy",
-                "unsafe-best-match",
-                str(vllm_lock),
+                [
+                    "uv",
+                    "pip",
+                    "sync",
+                    "--python",
+                    str(venv_python),
+                    "--only-binary",
+                    ":all:",
+                    "--no-binary",
+                    "pyyaml",
+                    "--require-hashes",
+                    "--index-strategy",
+                    "unsafe-best-match",
+                    str(vllm_lock),
+                ],
+                [str(venv_python), "-c", "import vllm, transformers, torch"],
             ],
             env=uv_env,
-            check=True,
         )
-        run_vm_subprocess([str(venv_python), "-c", "import vllm, transformers, torch"], env=uv_env, check=True)
     except (RefusalError, subprocess.SubprocessError, OSError) as exc:
         rec["status"] = "failed"
         rec["failure_class"] = "VLLM_INSTALL_FAILED"

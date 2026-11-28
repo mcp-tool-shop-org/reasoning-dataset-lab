@@ -59,6 +59,11 @@ DEFAULT_NO_POD_REREAD_DELAY_SECONDS = 15.0
 MIN_NO_POD_REREAD_DELAY_SECONDS = 15.0
 DEFAULT_NO_POD_REREAD_MAX_WAIT_SECONDS = 30.0
 MIN_MAX_HOURS = 0.02
+OFFRIG_SELF_STOP_MARGIN_SECONDS = 120
+OFFRIG_SELF_STOP_STATUS_POD_PATH = "/workspace/offrig/self-stop.status"
+OFFRIG_SELF_STOP_PREFIX = "offrig self-stop: "
+DEFAULT_MIN_OFFRIG_VERSION = "1.4.0"
+EXIT_STATUS_POLLS_EXHAUSTED = 75
 
 _DEFAULT_FIVE_JUDGE_IDS: tuple[str, ...] = (
     "d3-mini",
@@ -800,7 +805,7 @@ def extract_status_pods(status_reply: Any) -> dict[str, Any]:
             out["open_plans"] = [
                 {
                     k: pl.get(k)
-                    for k in ("plan_id", "lane", "pod_name", "profile", "pod_id", "deadline")
+                    for k in ("plan_id", "lane", "pod_name", "profile", "pod_id", "deadline", "self_stop")
                     if k in pl
                 }
                 for pl in raw_plans
@@ -1347,7 +1352,7 @@ def resolve_offrig_mcp_bin(environ: Mapping[str, str] | None = None) -> str:
             f"RDLAB_OFFRIG_MCP_BIN points to missing or non-executable binary: {override!r}",
         )
     path_val = env.get("PATH")
-    for name in ("offrig-mcp", "offrig-mcp.exe"):
+    for name in ("offrig-mcp", "offrig-mcp.exe", "offrig-mcp.cmd"):
         found = shutil.which(name, path=path_val)
         if found:
             return found
@@ -1355,6 +1360,250 @@ def resolve_offrig_mcp_bin(environ: Mapping[str, str] | None = None) -> str:
         "OFFRIG_NOT_FOUND",
         "offrig-mcp binary not found in PATH or RDLAB_OFFRIG_MCP_BIN",
     )
+
+
+def resolve_offrig_cli_bin(environ: Mapping[str, str] | None = None) -> str:
+    """Resolve the `offrig` CLI binary path, raising `OFFRIG_NOT_FOUND` if missing."""
+    env = os.environ if environ is None else environ
+    override = str(env.get("RDLAB_OFFRIG_BIN") or "").strip()
+    if override:
+        cand = Path(override)
+        if cand.is_file() and (os.name == "nt" or os.access(cand, os.X_OK)):
+            return str(cand)
+        raise OffrigHostError(
+            "OFFRIG_NOT_FOUND",
+            f"RDLAB_OFFRIG_BIN points to missing or non-executable binary: {override!r}",
+        )
+    path_val = env.get("PATH")
+    for name in ("offrig", "offrig.exe", "offrig.cmd"):
+        found = shutil.which(name, path=path_val)
+        if found:
+            return found
+    mcp_override = str(env.get("RDLAB_OFFRIG_MCP_BIN") or "").strip()
+    if mcp_override:
+        mcp_parent = Path(mcp_override).parent
+        for name in ("offrig", "offrig.exe", "offrig.cmd"):
+            sib = mcp_parent / name
+            if sib.is_file() and (os.name == "nt" or os.access(sib, os.X_OK)):
+                return str(sib)
+    raise OffrigHostError(
+        "OFFRIG_NOT_FOUND",
+        "offrig CLI binary not found in PATH or RDLAB_OFFRIG_BIN",
+    )
+
+
+def read_offrig_project_budget(
+    project_dir: str | Path,
+    *,
+    min_remaining_usd: float | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Read `offrig budget --show --json` and enforce remaining RunPod budget >= `min_remaining_usd`."""
+    env = os.environ if environ is None else environ
+    offrig_bin = resolve_offrig_cli_bin(env)
+    cmd = [offrig_bin, "budget", "--show", "--json", "--project", str(project_dir)]
+    try:
+        proc = subprocess.run(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            env=dict(env),
+            timeout=15.0,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise OffrigHostError(
+            "OFFRIG_BUDGET_UNREADABLE",
+            f"failed running offrig budget for {project_dir}: {exc}",
+        ) from exc
+    if proc.returncode != 0:
+        err_msg = (proc.stderr or proc.stdout or f"rc={proc.returncode}").strip()
+        raise OffrigHostError(
+            "OFFRIG_BUDGET_UNREADABLE",
+            f"offrig budget exited rc={proc.returncode}: {err_msg}",
+        )
+    try:
+        doc = json.loads((proc.stdout or "").strip())
+    except json.JSONDecodeError as exc:
+        raise OffrigHostError(
+            "OFFRIG_BUDGET_UNREADABLE",
+            f"offrig budget emitted invalid JSON: {exc}",
+        ) from exc
+    if not isinstance(doc, Mapping):
+        raise OffrigHostError("OFFRIG_BUDGET_UNREADABLE", "offrig budget JSON must be an object")
+    providers = doc.get("providers")
+    rp = providers.get("runpod") if isinstance(providers, Mapping) else None
+    if not isinstance(rp, Mapping) or str(rp.get("cap_source") or "") == "not set":
+        raise OffrigHostError(
+            "OFFRIG_BUDGET_UNREADABLE",
+            f"RunPod project budget cap is not set in {project_dir}",
+        )
+    try:
+        rp_remaining = float(rp.get("remaining"))  # type: ignore[arg-type]
+        rp_cap = float(rp.get("cap"))  # type: ignore[arg-type]
+        rp_spent = float(rp.get("spent"))  # type: ignore[arg-type]
+        rp_committed = float(rp.get("committed") or 0.0)
+    except (TypeError, ValueError) as exc:
+        raise OffrigHostError("OFFRIG_BUDGET_UNREADABLE", f"non-numeric RunPod budget fields: {exc}") from exc
+    if not (math.isfinite(rp_remaining) and math.isfinite(rp_cap) and math.isfinite(rp_spent)):
+        raise OffrigHostError("OFFRIG_BUDGET_UNREADABLE", "non-finite RunPod budget values")
+
+    overall = doc.get("overall")
+    overall_ceiling = isinstance(overall, Mapping) and overall.get("ceiling") is True
+    effective_remaining = rp_remaining
+    if overall_ceiling and isinstance(overall, Mapping):
+        try:
+            ov_remaining = float(overall.get("remaining"))  # type: ignore[arg-type]
+        except (TypeError, ValueError) as exc:
+            raise OffrigHostError("OFFRIG_BUDGET_UNREADABLE", f"non-numeric overall budget remaining: {exc}") from exc
+        if math.isfinite(ov_remaining):
+            effective_remaining = min(effective_remaining, ov_remaining)
+
+    info: dict[str, Any] = {
+        "offrig_bin": offrig_bin,
+        "project": doc.get("project"),
+        "cap_usd": round(rp_cap, 2),
+        "cap_source": rp.get("cap_source"),
+        "spent_usd": round(rp_spent, 2),
+        "committed_usd": round(rp_committed, 2),
+        "runpod_remaining_usd": round(rp_remaining, 2),
+        "overall_ceiling": bool(overall_ceiling),
+        "effective_remaining_usd": round(effective_remaining, 2),
+        "account_balance_usd": rp.get("balance"),
+    }
+    if min_remaining_usd is not None:
+        need = float(min_remaining_usd)
+        if effective_remaining + 1e-9 < need:
+            raise OffrigHostError(
+                "RUNPOD_BUDGET_INSUFFICIENT",
+                f"remaining RunPod project budget (${effective_remaining:.2f}) is below required worst-case (${need:.2f})",
+            )
+    return info
+
+
+def _parse_semver_tuple(raw: str) -> tuple[int, int, int] | None:
+    m = re.search(r"(\d+)\.(\d+)\.(\d+)", str(raw or ""))
+    if not m:
+        return None
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3)))
+
+
+def check_offrig_mcp_version(
+    mcp_bin: str | Path,
+    *,
+    min_version: str = DEFAULT_MIN_OFFRIG_VERSION,
+) -> dict[str, Any]:
+    """Verify `offrig-mcp --version` meets `min_version` (default `1.4.0`)."""
+    want = _parse_semver_tuple(min_version)
+    if want is None:
+        raise OffrigHostError("OFFRIG_VERSION_INVALID", f"Invalid min_version {min_version!r}")
+    try:
+        proc = subprocess.run(
+            [str(mcp_bin), "--version"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=10.0,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise OffrigHostError(
+            "OFFRIG_VERSION_UNREADABLE",
+            f"failed to run {mcp_bin!r} --version: {exc}",
+        ) from exc
+    raw_out = (proc.stdout or proc.stderr or "").strip()
+    got = _parse_semver_tuple(raw_out)
+    if proc.returncode != 0 or got is None:
+        raise OffrigHostError(
+            "OFFRIG_VERSION_UNREADABLE",
+            f"unreadable version output from {mcp_bin!r} --version (rc={proc.returncode}): {raw_out!r}",
+        )
+    if got < want:
+        raise OffrigHostError(
+            "OFFRIG_VERSION_TOO_OLD",
+            f"{mcp_bin!r} reports version {'.'.join(map(str, got))}, require >= {'.'.join(map(str, want))}",
+        )
+    return {
+        "offrig_bin": str(mcp_bin),
+        "version": ".".join(map(str, got)),
+        "min_version": ".".join(map(str, want)),
+        "raw": raw_out,
+    }
+
+
+def verify_self_stop_armed(
+    status_text: str | None,
+    *,
+    plan_deadline_str: str | None = None,
+    pod_deadline_iso: str | None = None,
+    margin_seconds: int = OFFRIG_SELF_STOP_MARGIN_SECONDS,
+) -> dict[str, Any]:
+    """Verify offrig 1.4.0 `/workspace/offrig/self-stop.status` is `armed fire_at=<deadline+120>`."""
+    lines = [ln.strip() for ln in str(status_text or "").splitlines() if ln.strip()]
+    matched_line = ""
+    for ln in reversed(lines):
+        if ln.startswith(OFFRIG_SELF_STOP_PREFIX) or "self-stop" in ln.lower():
+            matched_line = ln
+            break
+    if not matched_line and lines:
+        matched_line = lines[-1]
+    if not matched_line or "UNAVAILABLE" in matched_line or matched_line.lower().startswith("self-stop status unknown"):
+        raise OffrigHostError(
+            "OFFRIG_SELF_STOP_NOT_ARMED",
+            f"on-pod self-stop timer is not armed: {matched_line or '<empty>'}",
+        )
+    m = re.fullmatch(r"offrig self-stop:\s*armed\s+fire_at=(\d+)(?:\s+via\s+\S+)?", matched_line)
+    if not m:
+        raise OffrigHostError(
+            "OFFRIG_SELF_STOP_NOT_ARMED",
+            f"unexpected self-stop.status line: {matched_line!r}",
+        )
+    fire_at = int(m.group(1))
+    margin = int(margin_seconds)
+
+    raw_pod_dl = str(pod_deadline_iso or "").strip()
+    raw_plan_dl = str(plan_deadline_str or "").strip()
+    if not raw_pod_dl and not raw_plan_dl:
+        raise OffrigHostError(
+            "OFFRIG_DEADLINE_INVALID",
+            "plan_deadline_str or pod_deadline_iso is required to verify self-stop fire_at",
+        )
+
+    pod_dl_epoch: int | None = None
+    if raw_pod_dl:
+        pod_dl_epoch = int(round(parse_offrig_deadline_utc(raw_pod_dl)))
+        if fire_at != pod_dl_epoch + margin:
+            raise OffrigHostError(
+                "OFFRIG_SELF_STOP_FIRE_AT_MISMATCH",
+                f"self-stop fire_at={fire_at} disagrees with pod OFFRIG_DEADLINE+120 ({pod_dl_epoch + margin})",
+            )
+
+    plan_dl_epoch: int | None = None
+    if raw_plan_dl:
+        plan_dl_epoch = int(round(parse_offrig_deadline_utc(raw_plan_dl)))
+        delta = fire_at - (plan_dl_epoch + margin)
+        # `when(d)` truncates `YYYY-MM-DD HH:MM UTC` to whole minutes (`0 <= d - trunc <= 59`).
+        max_delta = 59 if raw_plan_dl.endswith(" UTC") else 0
+        if delta < 0 or delta > max_delta:
+            raise OffrigHostError(
+                "OFFRIG_SELF_STOP_FIRE_AT_MISMATCH",
+                f"self-stop fire_at={fire_at} disagrees with plan deadline {raw_plan_dl!r} ({plan_dl_epoch} + {margin})",
+            )
+        if pod_dl_epoch is not None and (pod_dl_epoch - plan_dl_epoch < 0 or pod_dl_epoch - plan_dl_epoch > max_delta):
+            raise OffrigHostError(
+                "OFFRIG_SELF_STOP_FIRE_AT_MISMATCH",
+                f"pod OFFRIG_DEADLINE ({pod_dl_epoch}) disagrees with plan deadline ({plan_dl_epoch})",
+            )
+
+    return {
+        "armed": True,
+        "line": matched_line,
+        "fire_at": fire_at,
+        "margin_seconds": margin,
+        "plan_deadline_epoch": plan_dl_epoch,
+        "pod_deadline_epoch": pod_dl_epoch,
+    }
 
 
 def _extract_tool_payload(tool_name: str, result: Mapping[str, Any]) -> dict[str, Any]:
@@ -1815,6 +2064,7 @@ def launch_and_wait(
                 "job_dir": prog.get("job_dir") or DEFAULT_RUNPOD_VM_ROOT,
                 "deadline": launch_res.get("deadline"),
                 "worst_case": launch_res.get("worst_case"),
+                "self_stop": job_res.get("self_stop") or prog.get("self_stop"),
             }
         if state in ("failed", "cancelled"):
             err_msg = str(job_res.get("error") or job_res.get("failure") or state)
@@ -2160,7 +2410,8 @@ def _build_cli_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="RunPod offrig MCP host helper")
     sub = parser.add_subparsers(dest="subcommand", required=True)
 
-    sub.add_parser("check-bin")
+    p_cbin = sub.add_parser("check-bin")
+    p_cbin.add_argument("--min-version", default="")
 
     p_vis = sub.add_parser("check-path-visibility")
     p_vis.add_argument("--bin", default=None)
@@ -2180,6 +2431,10 @@ def _build_cli_parser() -> argparse.ArgumentParser:
 
     p_mwc = sub.add_parser("check-max-worst-case")
     p_mwc.add_argument("--max-worst-case-usd", required=True)
+
+    p_cbud = sub.add_parser("check-budget")
+    p_cbud.add_argument("--project", required=True)
+    p_cbud.add_argument("--min-remaining-usd", type=float, default=None)
 
     p_floor = sub.add_parser("compute-run-floor")
     p_floor.add_argument("--receipts-dir", default="")
@@ -2280,6 +2535,7 @@ def _build_cli_parser() -> argparse.ArgumentParser:
     p_step.add_argument("--job-name", required=True)
     p_step.add_argument("--vm-script", required=True)
     p_step.add_argument("--env", action="append", default=[])
+    p_step.add_argument("--arg", dest="script_args", action="append", default=[])
     p_step.add_argument("--timeout-seconds", type=int, default=1800)
     p_step.add_argument("--poll-interval", type=float, default=1.0)
     p_step.add_argument(
@@ -2310,6 +2566,12 @@ def _build_cli_parser() -> argparse.ArgumentParser:
 
     p_stat = sub.add_parser("status")
     p_stat.add_argument("--project", required=True)
+
+    p_ss = sub.add_parser("verify-self-stop")
+    p_ss.add_argument("--status-file", default="")
+    p_ss.add_argument("--status-text", default="")
+    p_ss.add_argument("--plan-deadline", default="")
+    p_ss.add_argument("--pod-deadline", default="")
 
     p_ac = sub.add_parser("resolve-already-closed")
     p_ac.add_argument("--plan-id", default="")
@@ -2345,7 +2607,27 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(list(argv) if argv is not None else None)
     try:
         if args.subcommand == "check-bin":
-            print(resolve_offrig_mcp_bin())
+            mcp_bin = resolve_offrig_mcp_bin()
+            if str(args.min_version or "").strip():
+                check_offrig_mcp_version(mcp_bin, min_version=args.min_version)
+            print(mcp_bin)
+            return 0
+        if args.subcommand == "verify-self-stop":
+            raw_ss = str(args.status_text or "")
+            if str(args.status_file or "").strip():
+                ss_p = Path(args.status_file)
+                if not ss_p.is_file():
+                    raise OffrigHostError(
+                        "OFFRIG_SELF_STOP_NOT_ARMED",
+                        f"self-stop status file not found: {ss_p}",
+                    )
+                raw_ss = ss_p.read_text(encoding="utf-8", errors="replace")
+            res = verify_self_stop_armed(
+                raw_ss,
+                plan_deadline_str=args.plan_deadline or None,
+                pod_deadline_iso=args.pod_deadline or None,
+            )
+            print(json.dumps(res, sort_keys=True))
             return 0
         if args.subcommand == "check-path-visibility":
             offrig_bin = args.bin or resolve_offrig_mcp_bin()
@@ -2371,6 +2653,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.subcommand == "check-max-worst-case":
             val = validate_max_worst_case_usd(args.max_worst_case_usd)
             print(json.dumps({"max_worst_case_usd": val, "ok": True}, sort_keys=True))
+            return 0
+        if args.subcommand == "check-budget":
+            res = read_offrig_project_budget(
+                args.project,
+                min_remaining_usd=args.min_remaining_usd,
+            )
+            print(json.dumps(res, sort_keys=True))
             return 0
         if args.subcommand == "compute-run-floor":
             res = compute_useful_run_floor_seconds(
@@ -2583,6 +2872,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                             job_name=args.job_name,
                             vm_script=args.vm_script,
                             env_pairs=args.env,
+                            script_args=args.script_args,
                             timeout_seconds=args.timeout_seconds,
                             poll_interval=args.poll_interval,
                             status_poll_retries=args.status_poll_retries,
@@ -2625,6 +2915,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     except OffrigHostError as exc:
         if exc.status_polls_exhausted:
             sys.stderr.write(f"OFFRIG_EXEC_STATUS_POLLS_EXHAUSTED: {exc.code}: {exc.detail}\n")
+            if args.subcommand == "exec-vm-step":
+                return EXIT_STATUS_POLLS_EXHAUSTED
         else:
             sys.stderr.write(f"{exc.code}: {exc.detail}\n")
         return 2
