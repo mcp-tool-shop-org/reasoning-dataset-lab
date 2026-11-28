@@ -2308,6 +2308,7 @@ def _install_real_mode_pod_harness(
         "judge_child": [],
         "gatekeeper_child": [],
         "vllm_install": [],
+        "uv": [],
     }
 
     # Hard tripwires: nothing in this test may spawn a process or open a network connection ($0, offline, no GPU).
@@ -2392,16 +2393,38 @@ def _install_real_mode_pod_harness(
         if len(argv) == 4 and argv[:3] == ["test", "!", "-e"]:
             # The uploaded-items deletion receipt asks the shell whether each file is gone; answer from the filesystem.
             return subprocess.CompletedProcess(argv, 1 if os.path.lexists(argv[3]) else 0, stdout="", stderr="")
-        # venv-vllm sync (uv venv / uv pip sync / import check): the 35B engine's install is a leaf here.
+        # uv venv / uv pip sync for venv-judge, venv-d3 and venv-vllm, and venv-vllm's import check, are leaves here.
+        # `uv venv` keeps uv 0.13.5's collision rule (as tests/fixtures/fake_colab.py models it): an existing non-empty
+        # dir without --clear exits 2 "already exists"; otherwise it writes bin/python and pyvenv.cfg (--clear wipes first).
         if argv[:2] == ["uv", "venv"]:
-            vpy = Path(argv[-1]) / "bin" / "python"
-            vpy.parent.mkdir(parents=True, exist_ok=True)
-            vpy.write_text("#!/bin/sh\necho 'venv-vllm stand-in: never executed' >&2\nexit 97\n", encoding="utf-8")
-            vpy.chmod(0o755)
+            calls["uv"].append(argv)
             calls["vllm_install"].append(argv[:2])
+            vdir = Path(argv[-1])
+            if vdir.is_dir() and any(vdir.iterdir()) and "--clear" not in argv:
+                return subprocess.CompletedProcess(
+                    argv,
+                    2,
+                    stdout="",
+                    stderr=(
+                        "error: Failed to create virtual environment\n"
+                        f"  Caused by: A virtual environment already exists at: {vdir}\n\n"
+                        "  hint: Use the `--clear` flag or set `UV_VENV_CLEAR=1` to replace the existing virtual environment\n"
+                    ),
+                )
+            if vdir.is_dir() and "--clear" in argv:
+                shutil.rmtree(vdir)
+            vpy = vdir / "bin" / "python"
+            vpy.parent.mkdir(parents=True, exist_ok=True)
+            vpy.write_text(f"#!/bin/sh\necho '{vdir.name} stand-in: never executed' >&2\nexit 97\n", encoding="utf-8")
+            vpy.chmod(0o755)
+            (vdir / "pyvenv.cfg").write_text("implementation = CPython\nuv = 0.13.5\n", encoding="utf-8")
             return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
         if argv[:3] == ["uv", "pip", "sync"] or (len(argv) == 3 and argv[1] == "-c" and argv[2] == "import vllm, transformers, torch"):
+            calls["uv"].append(argv)
             calls["vllm_install"].append(argv[:3])
+            target_py = Path(argv[argv.index("--python") + 1]) if argv[:3] == ["uv", "pip", "sync"] else Path(argv[0])
+            if not target_py.is_file():
+                return subprocess.CompletedProcess(argv, 2, stdout="", stderr=f"error: No interpreter found at `{target_py}`\n")
             return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
         if len(argv) == 3 and argv[1] == "-c" and Path(argv[0]).parent.parent.name == vm_judges.VLLM_VENV_NAME:
             if argv[2] == "import platform; print(platform.python_version())":
@@ -2437,11 +2460,7 @@ def _install_real_mode_pod_harness(
         "route": "found",
     }
     monkeypatch.setattr(vm_judges, "find_or_install_vm_python_315", lambda **_kw: dict(py_report))
-    # venv sync: the real planner and lock checks run; only the uv venv/sync subprocesses are skipped (dryrun wrappers).
-    real_sync = vm_judges.sync_judge_venvs
-    monkeypatch.setattr(
-        vm_judges, "sync_judge_venvs", lambda work_dir, repo_dir, **kw: real_sync(work_dir, repo_dir, **{**kw, "dryrun": True})
-    )
+    # venv sync: the real sync_judge_venvs (dryrun=False) runs end to end; its uv venv / uv pip sync are the leaves above.
     # Weight download: the HF fetch child is the leaf; the real receipt verification of the fixture snapshots runs.
     monkeypatch.setattr(vm_judges, "download_all_judge_weights", lambda *_a, **_kw: [])
 
@@ -2640,3 +2659,191 @@ def test_real_mode_proof_window_pre_fix_gate_status_handling_fails_tar_allowlist
     assert rc == 2 and out["status"] == "failed" and out["seal_ok"] is False
     assert out["failure_class"] == "TAR_ALLOWLIST_VIOLATION"
     assert "gate_status.json" in str(out["detail"])
+
+
+_POD_VENV_NAMES = ("venv-judge", "venv-d3", vm_judges.VLLM_VENV_NAME)
+
+
+def _run_real_mode_counted_window_after_proof(
+    tmp_path: Path, harness: dict[str, Any], proof_out: Path
+) -> tuple[int, dict[str, Any], Path]:
+    """qwen36-counted-cal-01 on the same work_dir as the sealed proof window (synthetic frozen part under tmp_path)."""
+    part_dir, projected = _make_frozen_part_and_projection(tmp_path / "frozen_part", triads=3)
+    counted_bundle = tmp_path / "bundles" / "counted"
+    runpod_pod_windows.prepare_input_bundle(items_file=projected, part_dir=part_dir, out_bundle_dir=counted_bundle)
+    counted_out = tmp_path / "runs" / "counted"
+    rc, out = runpod_pod_windows.run_pod_window(
+        window_id="qwen36-counted-cal-01",
+        window_role="counted",
+        input_bundle_dir=counted_bundle,
+        out_dir=counted_out,
+        proof_out_dir=proof_out,
+        repo_dir=REPO_ROOT,
+        receipts_dir=harness["receipts_dir"],
+        work_dir=tmp_path / "work",
+        hf_home=harness["hf_home"],
+        arms=_QWEN36_FOUR_ARMS,
+        repeats=2,
+        canary_calls=4,
+        max_new_tokens=32768,
+        wall_seconds=23400,
+        stub=False,
+    )
+    return rc, out, counted_out
+
+
+def _uv_venv_calls(uv_calls: list[list[str]]) -> list[list[str]]:
+    return [a for a in uv_calls if a[:2] == ["uv", "venv"]]
+
+
+def _pip_sync_targets(uv_calls: list[list[str]]) -> list[str]:
+    return [Path(a[a.index("--python") + 1]).parent.parent.name for a in uv_calls if a[:3] == ["uv", "pip", "sync"]]
+
+
+def _window_log_tail(out_dir: Path) -> str | None:
+    log = out_dir / "logs" / "pod_runner.log"
+    return log.read_text(encoding="utf-8")[-4000:] if log.is_file() else None
+
+
+def test_real_mode_two_windows_one_work_dir_reuse_all_three_venvs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """2026-11-27 d5c counted abort: proof-g4-01 then cal-01 on ONE pod work_dir. Window 1 creates venv-judge, venv-d3
+    and venv-vllm with `uv venv` (no --clear); window 2 runs no `uv venv` at all, re-syncs all three from their locks
+    (plus venv-vllm's import check) and ends ok and sealed."""
+    rc, out, proof_out, harness = _run_real_mode_proof_window(tmp_path, monkeypatch)
+    calls = harness["calls"]
+    assert rc == 0 and out["status"] == "ok" and out["seal_ok"] is True, (out, _window_log_tail(proof_out))
+    w1 = list(calls["uv"])
+    w1_venvs = _uv_venv_calls(w1)
+    assert sorted(Path(a[-1]).name for a in w1_venvs) == sorted(_POD_VENV_NAMES), w1_venvs
+    assert all("--clear" not in a for a in w1_venvs), w1_venvs
+    assert sorted(_pip_sync_targets(w1)) == sorted(_POD_VENV_NAMES)
+    for name in _POD_VENV_NAMES:
+        assert (tmp_path / "work" / name / "pyvenv.cfg").is_file() and (tmp_path / "work" / name / "bin" / "python").is_file()
+
+    rc_c, out_c, counted_out = _run_real_mode_counted_window_after_proof(tmp_path, harness, proof_out)
+    assert rc_c == 0 and out_c["status"] == "ok" and out_c["seal_ok"] is True, (out_c, _window_log_tail(counted_out))
+    w2 = calls["uv"][len(w1):]
+    assert _uv_venv_calls(w2) == [], _uv_venv_calls(w2)
+    assert sorted(_pip_sync_targets(w2)) == sorted(_POD_VENV_NAMES)
+    assert [a[1:] for a in w2 if a[1:2] == ["-c"]] == [["-c", "import vllm, transformers, torch"]]
+    assert len(calls["run"]) == 2 and calls["run"][1]["RDLAB_RUN_ID"] == "qwen36-counted-cal-01"
+    c_ok, c_info = runpod_pod_windows.verify_sealed_manifest_dir(counted_out)
+    assert c_ok, c_info
+
+
+def test_real_mode_partial_venv_dirs_recover_once_with_clear(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A venv dir left half-made (bin/python but no pyvenv.cfg; or a stray file only) is rebuilt once with
+    `uv venv --clear`; a fresh dir still gets `uv venv` without --clear; the window ends ok and sealed."""
+    work = tmp_path / "work"
+    (work / "venv-d3" / "bin").mkdir(parents=True)
+    (work / "venv-d3" / "bin" / "python").write_text("partial\n", encoding="utf-8")
+    (work / vm_judges.VLLM_VENV_NAME).mkdir(parents=True)
+    (work / vm_judges.VLLM_VENV_NAME / "stray.txt").write_text("partial\n", encoding="utf-8")
+    rc, out, proof_out, harness = _run_real_mode_proof_window(tmp_path, monkeypatch)
+    assert rc == 0 and out["status"] == "ok" and out["seal_ok"] is True, (out, _window_log_tail(proof_out))
+    venvs = _uv_venv_calls(harness["calls"]["uv"])
+    by_name = {name: [a for a in venvs if Path(a[-1]).name == name] for name in _POD_VENV_NAMES}
+    assert len(by_name["venv-judge"]) == 1 and "--clear" not in by_name["venv-judge"][0]
+    for name in ("venv-d3", vm_judges.VLLM_VENV_NAME):
+        assert len(by_name[name]) == 1 and by_name[name][0][:3] == ["uv", "venv", "--clear"], by_name[name]
+        assert (work / name / "pyvenv.cfg").is_file()
+    assert not (work / vm_judges.VLLM_VENV_NAME / "stray.txt").exists()
+
+
+def _old_create_every_time(venv_dir: Path, venv_cmd: Any, after_cmds: Any, *, env: Any) -> str:
+    """The pre-fix behaviour (e5c93ca1): `uv venv` on every window, then the sync (and import check)."""
+    vm_judges.run_vm_subprocess(venv_cmd, env=env, check=True)
+    for cmd in after_cmds:
+        vm_judges.run_vm_subprocess(cmd, env=env, check=True)
+    return "created"
+
+
+@pytest.mark.parametrize("bypassed", ["all", "venv-vllm-only"])
+def test_real_mode_two_windows_pre_fix_venv_creation_fails_window_2(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bypassed: str
+) -> None:
+    """Negative control: with ensure_uv_venv_synced bypassed (the old unconditional `uv venv`), window 1 still seals but
+    window 2 on the same work_dir hits uv's "already exists" (rc 2): in sync_judge_venvs when every call site is
+    bypassed, and in ensure_vllm_venv (VLLM_INSTALL_FAILED) when only venv-vllm keeps the old behaviour."""
+    real_helper = vm_judges.ensure_uv_venv_synced
+
+    def _helper(venv_dir: Path, venv_cmd: Any, after_cmds: Any, *, env: Any) -> str:
+        if bypassed == "all" or Path(venv_dir).name == vm_judges.VLLM_VENV_NAME:
+            return _old_create_every_time(venv_dir, venv_cmd, after_cmds, env=env)
+        return real_helper(venv_dir, venv_cmd, after_cmds, env=env)
+
+    monkeypatch.setattr(vm_judges, "ensure_uv_venv_synced", _helper)
+    rc, out, proof_out, harness = _run_real_mode_proof_window(tmp_path, monkeypatch)
+    assert rc == 0 and out["status"] == "ok" and out["seal_ok"] is True, (out, _window_log_tail(proof_out))
+    rc_c, out_c, counted_out = _run_real_mode_counted_window_after_proof(tmp_path, harness, proof_out)
+    print(
+        f"NEGATIVE CONTROL [{bypassed}] window 2: rc={rc_c} status={out_c.get('status')} "
+        f"failure_class={out_c.get('failure_class')} seal_ok={out_c.get('seal_ok')} "
+        f"detail={str(out_c.get('detail'))[:600]!r}"
+    )
+    assert rc_c == 2 and out_c["status"] == "failed", out_c
+    # Window 1 made three venvs; window 2's first `uv venv` (venv-judge, or venv-vllm) collided and stopped the window.
+    assert len([a for a in _uv_venv_calls(harness["calls"]["uv"]) if "--clear" not in a]) == 4
+    evidence = json.dumps(out_c, default=str) + (_window_log_tail(counted_out) or "")
+    for p in sorted(counted_out.rglob("*.json")):
+        evidence += p.read_text(encoding="utf-8", errors="replace")
+    assert "already exists" in evidence
+    assert ("VM_SUBPROCESS_FAILED" if bypassed == "all" else "VLLM_INSTALL_FAILED") in evidence
+
+
+def test_ensure_uv_venv_synced_reused_venv_sync_failure_rebuilds_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The helper's four routes with run_vm_subprocess replaced (no process, no network): fresh -> created, valid ->
+    reused (sync only), reused + sync failure -> one --clear rebuild, and a second failure after the rebuild raises."""
+    import socket
+    import types
+
+    def _no_spawn(*a: Any, **_kw: Any) -> Any:
+        raise AssertionError(f"unexpected process spawn {a[:1]!r}")
+
+    def _no_network(*a: Any, **_kw: Any) -> Any:
+        raise AssertionError(f"unexpected network connection {a[1:2]!r}")
+
+    monkeypatch.setattr(subprocess, "Popen", _no_spawn)
+    monkeypatch.setattr(os, "posix_spawn", _no_spawn, raising=False)
+    monkeypatch.setattr(os, "posix_spawnp", _no_spawn, raising=False)
+    monkeypatch.setattr(socket.socket, "connect", _no_network)
+    monkeypatch.setattr(socket.socket, "connect_ex", _no_network)
+
+    ran: list[list[str]] = []
+    fail_syncs = {"n": 0}
+
+    def _fake_run_vm_subprocess(cmd: Any, *, env: Any = None, check: bool = True, **_kw: Any) -> Any:
+        argv = [str(c) for c in cmd]
+        ran.append(argv)
+        if argv[:2] == ["uv", "venv"]:
+            vdir = Path(argv[-1])
+            if "--clear" in argv and vdir.exists():
+                shutil.rmtree(vdir)
+            (vdir / "bin").mkdir(parents=True, exist_ok=True)
+            (vdir / "bin" / "python").write_text("", encoding="utf-8")
+            (vdir / "pyvenv.cfg").write_text("", encoding="utf-8")
+        elif argv[:3] == ["uv", "pip", "sync"] and fail_syncs["n"] > 0:
+            fail_syncs["n"] -= 1
+            raise vm_judges.VmSubprocessError(argv, 2, "", "error: hash mismatch")
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(vm_judges, "run_vm_subprocess", _fake_run_vm_subprocess)
+    vdir = tmp_path / "work" / "venv-x"
+    venv_cmd = ["uv", "venv", "--python", "3.15", str(vdir)]
+    clear_cmd = ["uv", "venv", "--clear", "--python", "3.15", str(vdir)]
+    sync_cmd = ["uv", "pip", "sync", "--python", str(vdir / "bin" / "python"), "lock.txt"]
+
+    assert vm_judges.ensure_uv_venv_synced(vdir, venv_cmd, [sync_cmd], env={}) == "created"
+    assert ran == [venv_cmd, sync_cmd]
+    ran.clear()
+    assert vm_judges.ensure_uv_venv_synced(vdir, venv_cmd, [sync_cmd], env={}) == "reused"
+    assert ran == [sync_cmd]
+    ran.clear()
+    fail_syncs["n"] = 1
+    assert vm_judges.ensure_uv_venv_synced(vdir, venv_cmd, [sync_cmd], env={}) == "rebuilt"
+    assert ran == [sync_cmd, clear_cmd, sync_cmd]
+    ran.clear()
+    fail_syncs["n"] = 2
+    with pytest.raises(vm_judges.VmSubprocessError):
+        vm_judges.ensure_uv_venv_synced(vdir, venv_cmd, [sync_cmd], env={})
+    assert ran == [sync_cmd, clear_cmd, sync_cmd]
